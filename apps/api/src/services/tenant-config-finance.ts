@@ -32,6 +32,10 @@ import {
   taxRules,
   taxSettings,
 } from "../db/schema/index.ts";
+import {
+  CASH_MAPPING_ACCOUNT_HAS_HISTORY,
+  cashMappingHistoryConflicts,
+} from "./accounting-cash-mapping-history.ts";
 import { recordAudit } from "./core-audit.ts";
 import {
   TRADING_GUARD_HINT,
@@ -583,6 +587,19 @@ async function importChartOfAccounts(
     if (issues.length > 0)
       throw new ConfigImportError(
         `Account mapping of entity ${entity.id} is invalid: ${issues.join("; ")}`,
+      );
+    // legend 1147: a new cash-role mapping may not take an account that already
+    // has journal lines (same rule as the mapping endpoint).
+    const historyConflicts = await cashMappingHistoryConflicts(
+      tx,
+      tenantId,
+      entity.id,
+      values,
+      mapped,
+    );
+    if (historyConflicts.length > 0)
+      throw new ConfigImportError(
+        `${CASH_MAPPING_ACCOUNT_HAS_HISTORY}: account mapping of entity ${entity.id} is refused: ${historyConflicts.join("; ")}`,
       );
     await tx.insert(accountMappings).values(values);
   }

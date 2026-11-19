@@ -1,5 +1,5 @@
 // legend 1118 D4: the release gate script (scripts/preflight/1118-shared-cash-mapping.sql)
-// must stay executable AND must really block. Runs the three read-only statements as
+// must stay executable AND must really block. Runs the four read-only statements as
 // the database owner (RLS bypass). The shared test DB holds rows of other
 // tests, so every positive check filters on the legal entity / loan of its own
 // world instead of asserting an empty table.
@@ -38,6 +38,7 @@ const statements = script
 const SHARED_ACCOUNTS = statements[0] as string;
 const NEW_HOLDS = statements[1] as string;
 const SELF_CASH = statements[2] as string;
+const CASH_HISTORY = statements[3] as string;
 
 const AMOUNT = 100_000;
 const H = installLoanCashWorld("1118gate");
@@ -65,11 +66,11 @@ async function paidKasbon() {
 }
 
 describe("1118 release gate SQL: executes", () => {
-  it("has the three statements", () => {
-    expect(statements).toHaveLength(3);
+  it("has the four statements", () => {
+    expect(statements).toHaveLength(4);
   });
 
-  it.each([0, 1, 2])("statement %i runs read-only", async (index) => {
+  it.each([0, 1, 2, 3])("statement %i runs read-only", async (index) => {
     const result = await owner.query(statements[index] as string);
     expect(Array.isArray(result.rows)).toBe(true);
   });
@@ -265,6 +266,238 @@ describe("1118 release gate SQL: blocks on a hit", () => {
       expect(await hitsOf(id)).toHaveLength(0);
     }, 120_000);
   });
+
+  describe("statement 4: cash-role mapping whose account has history of another meaning", () => {
+    type Hit = {
+      legal_entity_id: string;
+      role: string;
+      account_id: string;
+      idempotency_key: string;
+      snapshot_account_id: string | null;
+    };
+
+    async function hitsOf(id: string) {
+      const rows = await entityRows<Hit>(CASH_HISTORY);
+      return rows.filter((row) => row.idempotency_key.endsWith(id));
+    }
+
+    it("[1147-gate-history-snapshot-differs] returns a row when the journal has a line on the petty cash account but its snapshot says petty_cash was another account", async () => {
+      const id = randomUUID();
+      await H.seedLoanJournal(id, AMOUNT, 0, {
+        snapshot: { petty_cash: await H.accountId("1204") },
+      });
+      const rows = await hitsOf(id);
+      expect(rows, "the gate must block").toHaveLength(1);
+      expect(rows[0]!.role).toBe("petty_cash");
+      expect(rows[0]!.account_id).toBe(await H.mappedAccountId("petty_cash"));
+      expect(rows[0]!.snapshot_account_id).toBe(await H.accountId("1204"));
+    }, 120_000);
+
+    it("[1147-gate-history-role-absent] returns a row when the snapshot is filled but has no entry for the role", async () => {
+      const id = randomUUID();
+      await H.seedLoanJournal(id, AMOUNT, 0, {
+        snapshot: { employee_receivable: await H.accountId("1204") },
+      });
+      const rows = await hitsOf(id);
+      expect(
+        rows,
+        "no entry for petty_cash is not the same account",
+      ).toHaveLength(1);
+      expect(rows[0]!.snapshot_account_id).toBeNull();
+    }, 120_000);
+
+    it("[1147-gate-history-after-remap] returns a row once petty_cash is moved onto an account that already carries a journal of another meaning, and none before", async () => {
+      const original = await H.mappedAccountId("petty_cash");
+      const moved = await H.createCashAccount("1199");
+      const id = randomUUID();
+      // Journal posted while petty cash was 1102: it touches the other account only.
+      await H.seedLoanJournal(id, AMOUNT, 0, {
+        snapshot: { petty_cash: original },
+        creditAccountId: moved,
+      });
+      try {
+        expect(
+          await hitsOf(id),
+          "before the remap the account is not a cash role",
+        ).toHaveLength(0);
+        await H.setPettyCashAccount(moved);
+        const rows = await hitsOf(id);
+        expect(rows, "the gate must block after the remap").toHaveLength(1);
+        expect(rows[0]!.account_id).toBe(moved);
+        expect(rows[0]!.snapshot_account_id).toBe(original);
+      } finally {
+        await H.setPettyCashAccount(original);
+      }
+      expect(await hitsOf(id)).toHaveLength(0);
+    }, 120_000);
+
+    it("[1147-gate-history-clean] returns no row when the snapshot names the mapped account (mapping unchanged since the journal)", async () => {
+      const id = randomUUID();
+      await H.seedLoanJournal(id, AMOUNT, 0, {
+        snapshot: { petty_cash: await H.mappedAccountId("petty_cash") },
+      });
+      expect(await hitsOf(id)).toHaveLength(0);
+    }, 120_000);
+
+    it("[1147-gate-history-legacy-skipped] skips a journal without a snapshot (NULL or empty object)", async () => {
+      const nullSnapshot = randomUUID();
+      await H.seedLoanJournal(nullSnapshot, AMOUNT);
+      expect(await hitsOf(nullSnapshot)).toHaveLength(0);
+
+      const emptySnapshot = randomUUID();
+      await H.seedLoanJournal(emptySnapshot, AMOUNT, 0, { snapshot: {} });
+      expect(await hitsOf(emptySnapshot)).toHaveLength(0);
+    }, 120_000);
+
+    // Audit branch: a manual/recurring/reversal journal has a NULL snapshot, so
+    // the only evidence is the accounting.account_mappings.replaced audit row.
+    async function withMappingAudit(
+      input: {
+        afterCode: string;
+        beforeCode: string | null;
+        ageHours: number; // + = audit row created in the future of the journal
+      },
+      run: () => Promise<void>,
+    ) {
+      const { rows } = await owner.query<{ tenant_id: string }>(
+        "SELECT tenant_id FROM chart_of_accounts WHERE legal_entity_id = $1 LIMIT 1",
+        [H.W.entityId()],
+      );
+      const tenantId = rows[0]!.tenant_id;
+      const auditId = randomUUID();
+      const mapping = (code: string) => ({
+        count: 1,
+        mappings: [{ role: "petty_cash", glCode: code }],
+      });
+      const event = {
+        tenantId,
+        outletId: null,
+        retentionClass: "audit_2y",
+        action: "accounting.account_mappings.replaced",
+        objectType: "account_mapping",
+        objectId: H.W.entityId(),
+        maskedChanges: {
+          before: input.beforeCode ? mapping(input.beforeCode) : null,
+          after: mapping(input.afterCode),
+        },
+      };
+      // The owner pool has one connection: take it, release it, then run.
+      const withClient = async (sql: string, params: unknown[]) => {
+        const client = await owner.connect();
+        try {
+          // Triggers off: the creation-time stamp and the append-only guard.
+          await client.query("BEGIN");
+          await client.query("SET LOCAL session_replication_role = replica");
+          await client.query(sql, params);
+          await client.query("COMMIT");
+        } catch (error) {
+          await client.query("ROLLBACK").catch(() => {});
+          throw error;
+        } finally {
+          client.release();
+        }
+      };
+      await withClient(
+        `INSERT INTO audit_logs (tenant_id, id, event, retention_class, created_at)
+         VALUES ($1, $2, $3, 'audit_2y', now() + ($4 || ' hours')::interval)`,
+        [tenantId, auditId, JSON.stringify(event), String(input.ageHours)],
+      );
+      try {
+        await run();
+      } finally {
+        await withClient(
+          "DELETE FROM audit_logs WHERE tenant_id = $1 AND id = $2",
+          [tenantId, auditId],
+        );
+      }
+    }
+
+    async function pettyCashCode() {
+      const { rows } = await owner.query<{ code: string }>(
+        "SELECT code FROM chart_of_accounts WHERE id = $1",
+        [await H.mappedAccountId("petty_cash")],
+      );
+      return rows[0]!.code;
+    }
+
+    it("[1147-gate-history-audit-null-snapshot] returns a row for a NULL-snapshot journal older than the audit event that moved the role onto its account", async () => {
+      const id = randomUUID();
+      await H.seedLoanJournal(id, AMOUNT); // no snapshot, lines on petty cash
+      await withMappingAudit(
+        { afterCode: await pettyCashCode(), beforeCode: "1199", ageHours: 1 },
+        async () => {
+          const rows = await hitsOf(id);
+          expect(rows, "the gate must block").toHaveLength(1);
+          expect(rows[0]!.role).toBe("petty_cash");
+          expect(rows[0]!.account_id).toBe(
+            await H.mappedAccountId("petty_cash"),
+          );
+          expect(rows[0]!.snapshot_account_id).toBeNull();
+        },
+      );
+      expect(await hitsOf(id), "audit row removed again").toHaveLength(0);
+    }, 120_000);
+
+    it("[1147-gate-history-audit-null-before] still counts the audit event when its before side is empty", async () => {
+      const id = randomUUID();
+      await H.seedLoanJournal(id, AMOUNT);
+      await withMappingAudit(
+        { afterCode: await pettyCashCode(), beforeCode: null, ageHours: 1 },
+        async () => {
+          expect(await hitsOf(id)).toHaveLength(1);
+        },
+      );
+    }, 120_000);
+
+    it("[1147-gate-history-audit-journal-newer] returns no row when the journal was created after the audit event", async () => {
+      const id = randomUUID();
+      await H.seedLoanJournal(id, AMOUNT);
+      await withMappingAudit(
+        { afterCode: await pettyCashCode(), beforeCode: "1199", ageHours: -1 },
+        async () => {
+          expect(await hitsOf(id)).toHaveLength(0);
+        },
+      );
+    }, 120_000);
+
+    it("[1147-gate-history-audit-unchanged] returns no row when the audit event kept the role on the same account (re-PUT)", async () => {
+      const id = randomUUID();
+      await H.seedLoanJournal(id, AMOUNT);
+      const code = await pettyCashCode();
+      await withMappingAudit(
+        { afterCode: code, beforeCode: code, ageHours: 1 },
+        async () => {
+          expect(await hitsOf(id)).toHaveLength(0);
+        },
+      );
+    }, 120_000);
+
+    it("[1147-gate-history-audit-other-code] returns no row when the audit event moved the role to another account", async () => {
+      const id = randomUUID();
+      await H.seedLoanJournal(id, AMOUNT);
+      await withMappingAudit(
+        { afterCode: "1199", beforeCode: "1198", ageHours: 1 },
+        async () => {
+          expect(await hitsOf(id)).toHaveLength(0);
+        },
+      );
+    }, 120_000);
+
+    it("[1147-gate-history-never-audited] returns no row for a NULL-snapshot journal when no audit event ever moved the mapping (original provisioning)", async () => {
+      const id = randomUUID();
+      await H.seedLoanJournal(id, AMOUNT);
+      expect(await hitsOf(id)).toHaveLength(0);
+    }, 120_000);
+
+    it("[1147-gate-history-non-cash-role] ignores history on an account that holds no cash role", async () => {
+      const id = randomUUID();
+      await H.seedLoanJournal(id, AMOUNT, 0, {
+        snapshot: { petty_cash: await H.mappedAccountId("petty_cash") },
+        creditAccountId: await H.accountId("1204"),
+      });
+      expect(await hitsOf(id)).toHaveLength(0);
+    }, 120_000);
+  });
 });
 
 describe("1118 release gate SQL: fails closed on schema drift", () => {
@@ -311,6 +544,34 @@ describe("1118 release gate SQL: fails closed on schema drift", () => {
       statement: SELF_CASH,
       from: "JOIN journal_lines l",
       to: "JOIN journal_lines_gone l",
+      code: "42P01",
+    },
+    {
+      name: "statement 4, missing column",
+      statement: CASH_HISTORY,
+      from: "je.posting_account_snapshot IS NOT NULL",
+      to: "je.posting_account_snapshot_gone IS NOT NULL",
+      code: "42703",
+    },
+    {
+      name: "statement 4, missing audit table",
+      statement: CASH_HISTORY,
+      from: "JOIN audit_logs a",
+      to: "JOIN audit_logs_gone a",
+      code: "42P01",
+    },
+    {
+      name: "statement 4, missing audit column",
+      statement: CASH_HISTORY,
+      from: "je.created_at < a.created_at",
+      to: "je.created_at < a.created_at_gone",
+      code: "42703",
+    },
+    {
+      name: "statement 4, missing table",
+      statement: CASH_HISTORY,
+      from: "FROM journal_lines l",
+      to: "FROM journal_lines_gone l",
       code: "42P01",
     },
     {

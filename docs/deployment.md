@@ -1143,7 +1143,7 @@ PGOPTIONS='-c default_transaction_read_only=on -c row_security=off' \
   -f scripts/preflight/1118-shared-cash-mapping.sql
 ```
 
-File itu berisi tiga statement read-only; ketiganya wajib nol baris (atau
+File itu berisi empat statement read-only; keempatnya wajib nol baris (atau
 dijelaskan finance).
 
 Aturan gerbang: baris apa pun = **blokir**. Error query (kolom atau tabel hilang,
@@ -1198,7 +1198,7 @@ Risiko yang diterima (architect, 1132):
   dan dicatat; baris yang muncul dijelaskan finance.
 
 1. **Ada baris atau query gagal: tahan rilis.** Hasil nol baris dari login yang
-   benar adalah syarat gerbang untuk ketiga statement, bukan sekadar exit code
+   benar adalah syarat gerbang untuk keempat statement, bukan sekadar exit code
    `psql` nol.
 2. **Resolusi.** Statement 1: pemilik akuntansi tenant memetakan ulang role
    non-kas ke akun sendiri lewat pengaturan mapping (validasi baru menolak
@@ -1207,7 +1207,18 @@ Risiko yang diterima (architect, 1132):
    berarti kas kecil sebesar pokoknya tertahan sampai jurnal dikoreksi, dan
    penahanan itu tidak punya jalan keluar otomatis. Jurnal yang sudah
    terposting tidak dibalik otomatis; keputusan koreksinya di finance.
-3. **Cek ulang.** Jalankan file yang sama; lanjut hanya bila kedua statement
+   Statement 4 (legend 1147): mapping role kas yang akunnya sudah punya jurnal
+   dengan snapshot role lain. Finance memeriksa tiap baris; endpoint mapping dan
+   impor kini menolak (409 `CASH_MAPPING_ACCOUNT_HAS_HISTORY`) memindahkan role
+   kas ke akun berjurnal, jadi baris sisa berasal dari pemetaan yang sudah ada
+   sebelum aturan itu. Statement 4 membaca dua bukti: snapshot role di jurnal
+   otomatis, dan audit `accounting.account_mappings.replaced` (jurnal tanpa
+   snapshot seperti manual, berulang, kas-bank, aset tetap, dan reversal hanya
+   terlihat lewat audit). Mapping yang tidak pernah diubah lewat audit dan
+   tidak punya jurnal ber-snapshot tidak terlihat gerbang ini; finance memeriksa
+   saldo awal akun kas secara manual. Memindahkan role kas ke akun berjurnal,
+   termasuk mengembalikan ke akun semula, harus lewat akun baru.
+3. **Cek ulang.** Jalankan file yang sama; lanjut hanya bila keempat statement
    nol baris atau barisnya sudah dijelaskan finance.
 
 ### Reset refund pra-switch DOIT (legend-d21p)

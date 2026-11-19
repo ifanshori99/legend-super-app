@@ -39,6 +39,7 @@ import { db } from "../db";
 import { accountMappings, chartOfAccounts } from "../db/schema";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
+import { assertCashMappingTargetsHaveNoHistory } from "./accounting-cash-mapping-history";
 import {
   auditAccountingChange,
   requireLegalEntity,
@@ -321,6 +322,13 @@ export async function replaceAccountMappingsForEntity(
         ),
       )
       .orderBy(asc(accountMappings.role));
+    await assertCashMappingTargetsHaveNoHistory(
+      tx,
+      context.tenant.tenantId,
+      legalEntityId,
+      candidates,
+      beforeRows,
+    );
     const auditShape = (rows: readonly AccountMapping[]) => ({
       count: rows.length,
       mappings: rows.map((mapping) => ({

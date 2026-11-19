@@ -111,19 +111,14 @@ async function dropReversalJournals() {
   reversalIds.length = 0;
 }
 
-/** Remaps petty_cash through the mapping endpoint (HTTP). */
+/**
+ * Remaps petty_cash straight in the database. Since legend 1147 the mapping
+ * endpoint refuses a cash role on an account that already has journal lines, so
+ * the remap these tests guard against only exists as legacy data (mapped before
+ * the rule, or by a direct write): simulate it the way old data looks.
+ */
 async function remapPettyCash(accountId: string) {
-  const current = await H.listMappings();
-  const res = await H.putMappings(
-    current.map((m) => ({
-      role: m.role,
-      accountId: m.role === "petty_cash" ? accountId : m.accountId,
-    })),
-  );
-  expect(
-    res.status,
-    `remap must be accepted: ${JSON.stringify(res.body)}`,
-  ).toBe(200);
+  await H.setPettyCashAccount(accountId);
 }
 
 /**
@@ -388,27 +383,16 @@ describe("1140 P1-1 reversal of a still-paid cash reimbursement journal after a 
 // says now (CTO decision: judged on the source identity and the journal's own
 // account snapshot, apart from today's mapping).
 
-/** One PUT: employee_receivable C -> D (spare account), petty_cash A -> C. */
+/**
+ * Legacy swap (written directly, the endpoint refuses it since legend 1147):
+ * employee_receivable C -> D (spare account), petty_cash A -> C.
+ */
 async function swapReceivableIntoPettyCash(code: string) {
   const receivable = await H.mappedAccountId("employee_receivable");
   const petty = await H.mappedAccountId("petty_cash");
-  const spare = await createAssetAccount(code);
-  const current = await H.listMappings();
-  const res = await H.putMappings(
-    current.map((m) => ({
-      role: m.role,
-      accountId:
-        m.role === "employee_receivable"
-          ? spare
-          : m.role === "petty_cash"
-            ? receivable
-            : m.accountId,
-    })),
-  );
-  expect(
-    res.status,
-    `the swap is a valid mapping and must be accepted: ${JSON.stringify(res.body)}`,
-  ).toBe(200);
+  await createAssetAccount(code);
+  await H.setReceivable(code);
+  await H.setPettyCashAccount(receivable);
   return { petty };
 }
 

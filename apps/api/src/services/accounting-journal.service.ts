@@ -1119,24 +1119,24 @@ async function assertAutoCashOutSourceNotPaid(
   lines: readonly { accountId: string; debitIdr: number; creditIdr: number }[],
 ): Promise<void> {
   if (row.sourceType === "manual" || row.sourceType === "recurring") return;
-  // The cash account is the one the journal was posted on (its snapshot), judged
-  // apart from today's mapping: a remap of petty_cash A -> B -> A (legend 1140)
-  // or onto the account the journal debited (legend 1142: Dr C / Cr A, then
-  // petty_cash A -> C nets the credit to zero) must not let a reversal of a
-  // still-paid source slip through. Today's mapping is used only when the
-  // journal has no petty_cash account of its own to name.
+  // Two cash accounts are judged, each on its own net credit, never summed:
+  // the petty cash account the journal was posted on (its snapshot) and the one
+  // petty_cash maps to today. Summing lets a remap cancel a real credit: Dr C /
+  // Cr A then petty_cash A -> C nets to zero (legend 1142). Judging the snapshot
+  // alone lets a remap onto a bank account turn a bank payment into a "cash"
+  // credit nobody checks (legend 1147: salary Cr bank B, then petty_cash A -> B,
+  // reversal Dr B would raise available cash). Either side crediting is enough
+  // to check the source; when in doubt the payment stays held.
   const snapshotPettyCashId = row.postingAccountSnapshot?.petty_cash;
   const cashAccountIds = new Set<string>();
-  if (typeof snapshotPettyCashId === "string") {
+  if (typeof snapshotPettyCashId === "string")
     cashAccountIds.add(snapshotPettyCashId);
-  } else {
-    const currentPettyCashId = await pettyCashGlAccount(
-      tx,
-      tenantId,
-      row.legalEntityId,
-    );
-    if (currentPettyCashId !== null) cashAccountIds.add(currentPettyCashId);
-  }
+  const currentPettyCashId = await pettyCashGlAccount(
+    tx,
+    tenantId,
+    row.legalEntityId,
+  );
+  if (currentPettyCashId !== null) cashAccountIds.add(currentPettyCashId);
   const key = row.idempotencyKey;
   // A journal without a snapshot (posted before the snapshot existed) has no
   // record of its cash account, and today's mapping may have moved since. For
@@ -1154,10 +1154,13 @@ async function assertAutoCashOutSourceNotPaid(
     knownCashOutSource;
   if (!judgeOnSourceOnly) {
     if (cashAccountIds.size === 0) return;
-    const netCredit = lines
-      .filter((line) => cashAccountIds.has(line.accountId))
-      .reduce((sum, line) => sum + line.creditIdr - line.debitIdr, 0);
-    if (netCredit <= 0) return;
+    const creditsCash = [...cashAccountIds].some(
+      (accountId) =>
+        lines
+          .filter((line) => line.accountId === accountId)
+          .reduce((sum, line) => sum + line.creditIdr - line.debitIdr, 0) > 0,
+    );
+    if (!creditsCash) return;
   }
   const uuidPart = (prefix: string): string | null | undefined => {
     if (key === null || !key.startsWith(prefix)) return undefined;
