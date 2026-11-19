@@ -1241,6 +1241,10 @@ async function holdSwitchedOffRefundSuccess(
      * may still match one of ours and close it. The pass after the window
      * tells finance (the alert id is stable, so a replay adds none). */
     deferAlert?: boolean;
+    /** 1144 (SO ronde 16 P2-1, switch off): the provider refund id the report
+     * names. Finance is told ONE alert per (tenant, integration, intent,
+     * refund id), whatever the alert type and retry (see `stableRefund`). */
+    alertRefundId?: string | null;
   },
   now: Date,
   variant: "switched_off" | "unmatched" = "switched_off",
@@ -1375,6 +1379,17 @@ async function holdSwitchedOffRefundSuccess(
             outletId: intent.outletId,
             dedupKey: `${hold.providerPaymentRef ?? ""}\0${variant}\0${key}`,
             amountIdr: hold.amountIdr,
+            ...(hold.alertRefundId
+              ? {
+                  stableRefund: {
+                    integrationId:
+                      locked?.gatewayIntegrationId ??
+                      intent.gatewayIntegrationId ??
+                      null,
+                    refundId: hold.alertRefundId,
+                  },
+                }
+              : {}),
           },
           now,
         );
@@ -1721,6 +1736,7 @@ async function announceOpenFirstPassHolds(
     .select({
       providerRefundedAt: paymentIntents.providerRefundedAt,
       providerRefundedAfterPaidAt: paymentIntents.providerRefundedAfterPaidAt,
+      gatewayIntegrationId: paymentIntents.gatewayIntegrationId,
     })
     .from(paymentIntents)
     .where(
@@ -1731,6 +1747,9 @@ async function announceOpenFirstPassHolds(
     )
     .limit(1);
   if (flag?.providerRefundedAt || flag?.providerRefundedAfterPaidAt) return;
+  // 1144 (SO ronde 16 P2-1): with the switch off the same report is also told
+  // by the switched-off alert; both share one stable id per refund id.
+  const switchedOff = refundProviderSwitchedOff(PROVIDER);
   const open = await tx
     .select({
       amountIdr: refundReconHolds.amountIdr,
@@ -1760,6 +1779,14 @@ async function announceOpenFirstPassHolds(
             ? `${key.paymentRef}\0unmatched\0${hold.providerRefundId}\0${Number(hold.amountIdr)}`
             : `${key.paymentRef}\0unmatched\0${hold.webhookEventId}`,
         amountIdr: Number(hold.amountIdr),
+        ...(switchedOff && hold.providerRefundId !== null
+          ? {
+              stableRefund: {
+                integrationId: flag?.gatewayIntegrationId ?? null,
+                refundId: hold.providerRefundId,
+              },
+            }
+          : {}),
       },
       now,
     );
@@ -2938,6 +2965,7 @@ async function processRefundEvent(
         {
           providerPaymentRef: switchedOffPaymentRef,
           amountIdr: Math.max(Number(intent.amountIdr), evidence),
+          alertRefundId: facts.refundId ?? null,
         },
         now,
       );
@@ -3049,7 +3077,6 @@ async function processRefundEvent(
         : null;
     // 1144: the updater refused a SMALLER amount of a refund already sent to
     // the provider (an echo, no surplus hold): R counts that money.
-    let smallerEchoOfSent = false;
     try {
       await applyRefundProviderUpdate(
         context,
@@ -3078,7 +3105,8 @@ async function processRefundEvent(
             facts.amountIdr !== undefined &&
             facts.amountIdr < Number(refusal.refund.amountIdr)
           ) {
-            smallerEchoOfSent = true;
+            // 1144 round 2: no surplus hold for the echo itself; the hold of
+            // minute 0 stays open here (see the refusal below).
             return;
           }
           await fileOwnRefundSurplusHoldInTx(
@@ -3112,34 +3140,23 @@ async function processRefundEvent(
             ["amount_mismatch"],
             now,
           );
-        // 1144: the hold of the first pass (minute 0) was left as it was. It is
-        // closed ONLY when R (this refund, same refund id and payment) covers
-        // its value in full (a smaller echo of a sent refund: hold <= R);
-        // any other refusal leaves it open. A hold still open is announced
-        // once (same rule as 1139).
-        if (status === "succeeded" && match.kind !== "payment_object") {
-          if (smallerEchoOfSent)
-            await closeUnmatchedHoldOfMatchedRefund(
-              context,
-              row,
-              refund,
-              intent,
-              facts.refundId ?? null,
-              holdPaymentRef ?? null,
-              now,
-            );
-          else
-            await announceFirstPassHoldOfIntent(
-              context,
-              intent,
-              {
-                eventRowId: row.id,
-                providerRefundId: facts.refundId ?? null,
-                paymentRef: holdPaymentRef,
-              },
-              now,
-            );
-        }
+        // 1144 round 2: the hold of the first pass (minute 0) is left as it
+        // was, also for a smaller echo of our SENT refund R that is still
+        // `approved`: R may yet fail, and then the provider may have paid the
+        // echo on top. It is closed only when R itself ends successful (the
+        // success of R below, `closeUnmatchedHoldOfMatchedRefund`). A hold
+        // still open is announced once (same rule as 1139).
+        if (status === "succeeded" && match.kind !== "payment_object")
+          await announceFirstPassHoldOfIntent(
+            context,
+            intent,
+            {
+              eventRowId: row.id,
+              providerRefundId: facts.refundId ?? null,
+              paymentRef: holdPaymentRef,
+            },
+            now,
+          );
         return await ignoredWith("REJECTED_CONFLICT");
       }
       if (error instanceof HttpError && error.status === 404)

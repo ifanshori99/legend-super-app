@@ -2,10 +2,10 @@
 // the CTO decision in the scratchpad (1144-shared.md) on top of refund-1072-harness and
 // refund-1119-support (pattern of refund-1139-d), not from the implementation.
 //
-// Rule under test: the hold filed on first processing (minute 0) of an echo X of our refund R
-// (R already sent to the provider) is closed automatically ONLY when R (same refund id, same
-// payment) covers the hold's value in full (R >= hold): R already counts that money. Anything
-// else stays open (restrictive) and finance is told by exactly ONE alert.
+// Rule under test (putaran 2): the hold filed on first processing (minute 0) of an echo X of our
+// refund R (R already sent to the provider) is closed automatically ONLY when R is final and
+// successful (refund-1144-d). While R is approved, or for anything else, it stays open
+// (restrictive) and finance is told by exactly ONE alert (dedup id stable per refund).
 //
 // What the code does today (read in payment-webhook.service.ts, only to pick the cases): at
 // minute 0 R's ref X is not stored yet, nothing matches, the echo is held (value X). On the
@@ -16,8 +16,8 @@
 // Scenario: T paid Rp100.000, our refund R of Rp60.000 sent (provider answered "pending", ref X).
 // The webhook outruns the storing of X (blanked in SQL), so the echo is held at minute 0; X is
 // restored, the event aged past the 15 minute window, the worker retries.
-//   - 1144-a-01 echo Rp50.000 < R, switch on: hold closed (R counts Rp60.000), still ONE hold
-//     row, the remaining Rp40.000 is refundable, one more rupiah is not (no double count).
+//   - 1144-a-01 echo Rp50.000 < R, switch on, R still approved (putaran 2): hold stays open, still
+//     ONE hold row, manual refused (closing when R is final: refund-1144-d).
 //   - 1144-a-02 echo Rp70.000 > R, switch on: hold stays open, ONE finance alert, manual refused.
 //   - 1144-a-03 echo naming ANOTHER payment (T2) than R's: the hold on T2 stays open, ONE alert,
 //     manual refused.
@@ -61,15 +61,20 @@ installSwitchHooks(h, true);
 
 const R_IDR = 60_000;
 const ROOM_IDR = BILL_IDR - R_IDR;
-const ALERT_TITLE = "Refund penyedia tidak cocok dengan refund Legend";
+// Putaran 2: with the switch off the single alert is titled by the switch, and its dedup id is
+// stable per refund, so the count is over both titles (one alert = one row per recipient).
+const ALERT_TITLES = [
+  "Refund penyedia tidak cocok dengan refund Legend",
+  "Refund penyedia ditahan, refund otomatis belum aktif",
+];
 
 const unmatchedAlerts = async () =>
   JSON.stringify(
     (
       await h.owner.query<{ user_id: string; n: string }>(
         `SELECT user_id::text AS user_id, count(*)::text AS n FROM notifications
-          WHERE tenant_id = $1 AND title = $2 GROUP BY user_id ORDER BY user_id`,
-        [h.tenantId, ALERT_TITLE],
+          WHERE tenant_id = $1 AND title = ANY($2::text[]) GROUP BY user_id ORDER BY user_id`,
+        [h.tenantId, ALERT_TITLES],
       )
     ).rows,
   );
@@ -149,6 +154,7 @@ async function expectHeldAndAnnounced(
   w: Awaited<ReturnType<typeof heldEcho>>,
   echoIdr: number,
   label: string,
+  expectAlert = true,
 ) {
   const holds = await h.allHolds(w.held.id);
   const dump = JSON.stringify(holds);
@@ -161,10 +167,11 @@ async function expectHeldAndAnnounced(
     Math.max(...open.map((hold) => hold.amount_idr)),
     `${label}: open value covers the echo (${dump})`,
   ).toBeGreaterThanOrEqual(echoIdr);
-  expect(
-    await alertsSince(w.alertsBefore),
-    `${label}: exactly one finance alert`,
-  ).toBe(1);
+  if (expectAlert)
+    expect(
+      await alertsSince(w.alertsBefore),
+      `${label}: exactly one finance alert`,
+    ).toBe(1);
   const probes: Probe[] = [];
   for (const amount of [BILL_IDR, ROOM_IDR]) {
     const probe = await tryManualOut(h, w.held.id, amount);
@@ -175,24 +182,17 @@ async function expectHeldAndAnnounced(
 }
 
 describe("1144 P2 an echo of our sent refund: the first-pass hold closes only when R covers it fully", () => {
-  it("1144-a-01 echo Rp50.000 of R Rp60.000 (switch on): hold at minute 0, closed after the window, no double count, Rp40.000 refundable", async () => {
+  it("1144-a-01 echo Rp50.000 of R Rp60.000 (switch on), R still approved: the hold stays open until R is final (closing on R success: 1144-d)", async () => {
     const w = await heldEcho({ echoIdr: 50_000, switchOn: true });
 
+    // Putaran 2 rule: R is only approved, so nothing closes the hold; still ONE hold row.
     const holds = await h.allHolds(w.code.id);
-    const dump = JSON.stringify(holds);
-    expect(holds, `never a second hold row (${dump})`).toHaveLength(1);
     expect(
-      holds[0]!.resolved_at,
-      `closed: R (Rp60.000) already counts the Rp50.000 (${dump})`,
-    ).not.toBeNull();
-    expect(await h.openOf(w.code.id)).toHaveLength(0);
-
-    // Room = paid 100.000 - R 60.000 = 40.000: not blocked, not more.
-    const rest = await tryManualOut(h, w.code.id, ROOM_IDR);
-    expect(rest.accepted, JSON.stringify(rest)).toBe(true);
-    const over = await tryManualOut(h, w.code.id, 1_000);
-    expectRefused(over, "1144-a-01 above the room");
-    expectWorstCaseWithinPaid(R_IDR, R_IDR, [rest, over], "1144-a-01");
+      holds,
+      `never a second hold row (${JSON.stringify(holds)})`,
+    ).toHaveLength(1);
+    // The alert promised by the announce is not asserted here (1144-d and 1144-e own it).
+    await expectHeldAndAnnounced(w, 50_000, "1144-a-01", false);
   });
 
   it("1144-a-02 echo Rp70.000 of R Rp60.000 (switch on): hold stays open, one finance alert, manual refused", async () => {
