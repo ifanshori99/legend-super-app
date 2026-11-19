@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { captureScreenshot } from "./screenshots.ts";
+import { waitForHydration } from "./hydration.ts";
 
 // WhatsApp login confirm card on /masuk (bead kmndq), against the FE mock
 // runtime. In mock mode the API never touches the network, so `page.route`
@@ -52,21 +53,6 @@ async function capture(page: Page, name: string) {
     }),
   );
   await captureScreenshot(page, name);
-}
-
-/** Waits for React to hydrate the page's button (a cold dev server paints first). */
-async function waitForHydration(page: Page) {
-  await page.waitForFunction(
-    () => {
-      const button = document.querySelector("#main-content button");
-      return (
-        button !== null &&
-        Object.keys(button).some((key) => key.startsWith("__reactFiber$"))
-      );
-    },
-    undefined,
-    { timeout: 60_000 },
-  );
 }
 
 async function startLogin(page: Page, path = "/masuk?lanjut=%2Fmember") {
@@ -164,6 +150,10 @@ for (const viewport of VIEWPORTS) {
       await page.getByRole("button", { name: "Ya, masuk" }).click();
 
       await expect(page).toHaveURL(/\/member$/, { timeout: 20_000 });
+      await expect(
+        page.getByRole("heading", { name: /^Halo, /, level: 1 }),
+      ).toBeVisible({ timeout: 30_000 });
+      await waitForHydration(page);
       await capture(page, `kmndq/success-${viewport.width}.png`);
     });
 
@@ -237,6 +227,10 @@ for (const viewport of VIEWPORTS) {
 
       await page.getByRole("button", { name: "Ya, masuk" }).click();
       await expect(page).toHaveURL(/\/member$/, { timeout: 20_000 });
+      await expect(
+        page.getByRole("heading", { name: /^Halo, /, level: 1 }),
+      ).toBeVisible({ timeout: 30_000 });
+      await waitForHydration(page);
     });
   });
 }
