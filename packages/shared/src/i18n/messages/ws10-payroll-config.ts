@@ -3,9 +3,6 @@
 // file so parallel WS-10 beads never edit the same catalog lines.
 export const payrollConfigMessages = {
   title: "Konfigurasi Payroll",
-  nav: {
-    config: "Pengaturan Payroll",
-  },
   subtitle:
     "Kebijakan gaji, komponen, tabel tarif BPJS/PTKP/TER, rumus lembur, dan jadwal THR. Versi tarif yang sudah terbit tidak pernah diubah di tempat.",
   tabsLabel: "Bagian konfigurasi payroll",

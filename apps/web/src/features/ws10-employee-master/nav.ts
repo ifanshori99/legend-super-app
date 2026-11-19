@@ -8,7 +8,7 @@ import type { AreaNavEntry } from "@/lib/areas/nav";
 const nav: AreaNavEntry[] = [
   {
     area: "kelola",
-    labelKey: "employeeMaster.nav.employees",
+    labelKey: "nav.management.employees",
     to: "/kelola/karyawan",
     icon: Users,
     group: "team",
@@ -17,7 +17,7 @@ const nav: AreaNavEntry[] = [
   },
   {
     area: "kelola",
-    labelKey: "employeeMaster.nav.organization",
+    labelKey: "nav.management.organization",
     to: "/kelola/organisasi",
     icon: Network,
     group: "team",

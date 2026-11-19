@@ -3,12 +3,6 @@
 // catalog lines.
 export const learningMessages = {
   title: "KPI, SOP & Pelatihan",
-  nav: {
-    kpi: "KPI",
-    sop: "SOP",
-    training: "Pelatihan",
-    announcements: "Pengumuman",
-  },
   common: {
     none: "—",
     meta: "{first} · {second}",

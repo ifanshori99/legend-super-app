@@ -7,7 +7,7 @@ import type { AreaNavEntry } from "@/lib/areas/nav";
 const nav: AreaNavEntry[] = [
   {
     area: "kelola",
-    labelKey: "learning.nav.kpi",
+    labelKey: "nav.management.kpi",
     to: "/kelola/kpi",
     icon: Target,
     order: 15,
@@ -16,7 +16,7 @@ const nav: AreaNavEntry[] = [
   },
   {
     area: "kelola",
-    labelKey: "learning.nav.sop",
+    labelKey: "nav.management.sop",
     to: "/kelola/sop",
     icon: BookOpenText,
     order: 25,
@@ -25,7 +25,7 @@ const nav: AreaNavEntry[] = [
   },
   {
     area: "kelola",
-    labelKey: "learning.nav.training",
+    labelKey: "nav.management.training",
     to: "/kelola/pelatihan",
     icon: GraduationCap,
     order: 35,
@@ -34,7 +34,7 @@ const nav: AreaNavEntry[] = [
   },
   {
     area: "kelola",
-    labelKey: "learning.nav.announcements",
+    labelKey: "nav.management.announcements",
     to: "/kelola/pengumuman",
     icon: Megaphone,
     order: 45,

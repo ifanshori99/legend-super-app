@@ -4,7 +4,7 @@ import type { AreaNavEntry } from "@/lib/areas/nav";
 const nav: AreaNavEntry[] = [
   {
     area: "platform",
-    labelKey: "platformOps.nav.paket",
+    labelKey: "nav.platform.paket",
     to: "/platform/paket",
     icon: Package,
     order: 40,
@@ -12,7 +12,7 @@ const nav: AreaNavEntry[] = [
   },
   {
     area: "platform",
-    labelKey: "platformOps.nav.kuota",
+    labelKey: "nav.platform.kuota",
     to: "/platform/kuota",
     icon: Gauge,
     order: 41,
@@ -20,7 +20,7 @@ const nav: AreaNavEntry[] = [
   },
   {
     area: "platform",
-    labelKey: "platformOps.nav.kesehatan",
+    labelKey: "nav.platform.kesehatan",
     to: "/platform/kesehatan",
     icon: HeartPulse,
     order: 42,
@@ -28,7 +28,7 @@ const nav: AreaNavEntry[] = [
   },
   {
     area: "platform",
-    labelKey: "platformOps.nav.audit",
+    labelKey: "nav.platform.audit",
     to: "/platform/audit",
     icon: ScrollText,
     order: 43,

@@ -3,11 +3,6 @@
 // same catalog lines.
 export const payslipMessages = {
   title: "Slip Gaji",
-  nav: {
-    payslips: "Slip Gaji",
-    kasbon: "Kasbon",
-    reimbursement: "Reimburse",
-  },
   backHome: "Kembali ke Beranda",
   backToHistory: "Kembali ke riwayat slip",
   paymentMethod: {

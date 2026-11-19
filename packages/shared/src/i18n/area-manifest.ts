@@ -8,9 +8,7 @@
 // its keys is reachable from a single route area (`routes/_<area>`) and none
 // from the document shell, `_auth`, or a route outside an area. Namespaces read
 // from several areas, from the shell, or built dynamically across areas stay in
-// core (paymentAdmin: the guest pay dialog reads its EDC card and the routing
-// error keys from the customer area, legend-mp44v; kds, supportAccess,
-// approvals, deviceRegistry, devicePin, qrRecovery, aiChat, theme, status, nav, facility, hrisRequests*, payslipPin, payroll*,
+// core (kds, supportAccess, approvals, deviceRegistry, devicePin, qrRecovery, aiChat, theme, status, nav, facility, hrisRequests*, payslipPin, payroll*,
 // staffAuth, login, qrGlass, qrOrders, edge, common, toast, app, shell,
 // errorPage, ...). tests/i18n-area-split.test.mjs pins this contract.
 //
@@ -51,13 +49,20 @@ export const AREA_MANIFEST: Readonly<
   reservationGuestRequest: "public",
   website: "public",
   // customer
+  member: "customer",
   facilityBreakfast: "customer",
   payment: "customer",
   qrCart: "customer",
   qrMenu: "customer",
   wifi: "customer",
   // ops
+  facilityStaff: "ops",
+  opsChecklist: "ops",
+  opsEquipment: "ops",
+  posKasirTicket: "ops",
+  posOrderCart: "ops",
   floor: "ops",
+  opsFoodSafety: "ops",
   posCaptainOrder: "ops",
   posCaptainTables: "ops",
   posCorrection: "ops",
@@ -81,6 +86,21 @@ export const AREA_MANIFEST: Readonly<
   kitchenTicket: "kitchen",
   pickup: "kitchen",
   // kelola
+  paymentAdmin: "kelola",
+  aiAdmin: "kelola",
+  attendanceQr: "kelola",
+  auditSettings: "kelola",
+  crmCampaigns: "kelola",
+  deliveryOps: "kelola",
+  employeeMaster: "kelola",
+  facilityAdmin: "kelola",
+  leaveClockinReview: "kelola",
+  lifecycle: "kelola",
+  payrollConfig: "kelola",
+  reportBuilder: "kelola",
+  reportViewer: "kelola",
+  roster: "kelola",
+  supportAccessOwner: "kelola",
   access: "kelola",
   accounting: "kelola",
   aiAction: "kelola",
@@ -90,6 +110,7 @@ export const AREA_MANIFEST: Readonly<
   edcRecon: "kelola",
   financeExceptions: "kelola",
   floorEditor: "kelola",
+  crm360: "kelola",
   inventory: "kelola",
   inventoryHpp: "kelola",
   inventoryInvoiceEntry: "kelola",
@@ -100,6 +121,7 @@ export const AREA_MANIFEST: Readonly<
   invfeNav: "kelola",
   invoiceMatchPreview: "kelola",
   kitchenConfig: "kelola",
+  learning: "kelola",
   loyalty: "kelola",
   managementHome: "kelola",
   menu: "kelola",
@@ -121,10 +143,13 @@ export const AREA_MANIFEST: Readonly<
   hris: "karyawan",
   hrisRequestsEmployee: "karyawan",
   hrisRequestsMine: "karyawan",
+  payslip: "karyawan",
   payslipPinForgot: "karyawan",
   payslipWaReset: "karyawan",
   // platform
+  platformTenants: "platform",
   designV2: "platform",
+  platformOps: "platform",
 };
 
 /** The chunk that carries a namespace; core when it is not listed. */

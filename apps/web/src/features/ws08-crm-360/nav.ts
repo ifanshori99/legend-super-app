@@ -6,14 +6,12 @@
 // /kelola/pelanggan) and the reviews queue at /kelola/ulasan, which needs its
 // own entry so the management topbar names the screen instead of "Kelola".
 import { MessageSquareText, Users } from "lucide-react";
-import type { MessageKey } from "@starter/shared/i18n";
 import type { AreaNavEntry } from "@/lib/areas/nav";
 
 const nav: AreaNavEntry[] = [
   {
     area: "kelola",
-    // Registered in id.ts as `crm360: crm360Messages`.
-    labelKey: "crm360.nav" as MessageKey,
+    labelKey: "nav.management.customers",
     to: "/kelola/pelanggan",
     icon: Users,
     order: 56,
@@ -22,7 +20,7 @@ const nav: AreaNavEntry[] = [
   },
   {
     area: "kelola",
-    labelKey: "crm360.navReviews" as MessageKey,
+    labelKey: "nav.management.reviews",
     to: "/kelola/ulasan",
     icon: MessageSquareText,
     order: 57,

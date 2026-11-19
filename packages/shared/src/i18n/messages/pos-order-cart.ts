@@ -1,9 +1,6 @@
 // POS cashier texts for the main sale screen: cart, channel, parked drafts (beads
 // legend-59v, sub-539-u1, C2). id.ts imports it as `posOrderCart`.
 export const posOrderCartMessages = {
-  nav: {
-    kasir: "Kasir",
-  },
   title: "Pesanan baru",
   subtitle: "Cari atau pilih menu untuk mulai",
   cart: {

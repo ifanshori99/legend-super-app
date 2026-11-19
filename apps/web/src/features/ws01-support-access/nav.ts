@@ -23,7 +23,7 @@ const nav: AreaNavEntry[] = [
   // Owner decides read_write requests (legend-8r77t); the API enforces 2FA.
   {
     area: "kelola",
-    labelKey: "supportAccessOwner.title",
+    labelKey: "nav.management.supportAccessOwner",
     to: "/kelola/akses-dukungan/permintaan",
     icon: LifeBuoy,
     order: 93,

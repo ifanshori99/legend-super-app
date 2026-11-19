@@ -7,7 +7,7 @@ import type { AreaNavEntry } from "@/lib/areas/nav";
 const nav: AreaNavEntry[] = [
   {
     area: "kelola",
-    labelKey: "leaveClockinReview.nav.label",
+    labelKey: "nav.management.leaveClockinReview",
     to: "/kelola/absensi/tinjauan-cuti",
     icon: CalendarX2,
     order: 45,

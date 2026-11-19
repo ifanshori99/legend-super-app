@@ -4,7 +4,7 @@ import type { AreaNavEntry } from "@/lib/areas/nav";
 const nav: AreaNavEntry[] = [
   {
     area: "kelola",
-    labelKey: "lifecycle.nav.onboarding",
+    labelKey: "nav.management.onboarding",
     to: "/kelola/onboarding",
     icon: LogIn,
     order: 80,
@@ -13,7 +13,7 @@ const nav: AreaNavEntry[] = [
   },
   {
     area: "kelola",
-    labelKey: "lifecycle.nav.offboarding",
+    labelKey: "nav.management.offboarding",
     to: "/kelola/offboarding",
     icon: LogOut,
     order: 90,

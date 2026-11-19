@@ -4,7 +4,6 @@
 // marks bold words (the page splits on it, no markup in the catalog).
 
 export const aiAdminMessages = {
-  nav: "MCP & AI",
   title: "Admin MCP & AI",
   heading: "Pengaturan MCP & AI",
   subtitle:

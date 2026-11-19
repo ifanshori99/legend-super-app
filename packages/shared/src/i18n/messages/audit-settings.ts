@@ -1,10 +1,6 @@
 // Text catalog namespace `auditSettings` (WS-11 FE, bead legend-max2; PRD v1.7
 // §3 F36 "Audit Log Viewer" and "Pengaturan"). Owned by one bead; see id.ts.
 export const auditSettingsMessages = {
-  nav: {
-    audit: "Log audit",
-    settings: "Pengaturan tenant",
-  },
   audit: {
     title: "Log audit",
     subtitle:

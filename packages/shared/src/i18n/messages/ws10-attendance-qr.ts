@@ -3,10 +3,6 @@
 // never edit the same catalog lines.
 export const attendanceQrMessages = {
   title: "QR Absensi Outlet",
-  nav: {
-    qrDisplay: "QR Absensi",
-    selfieReview: "Review Selfie",
-  },
   display: {
     outletHeading: "QR absensi {outlet}",
     description:

@@ -3,22 +3,17 @@
 import type { PermissionCode } from "@starter/shared/access";
 import type { MessageKey } from "@starter/shared/i18n";
 import type { PaymentProvider } from "@starter/shared/payment/admin";
-
-/** Gateway routing GET/PUT need this permission (sub-302 D14), not EDC's. */
-export const ROUTING_MANAGE_PERMISSION: PermissionCode = "org.settings.manage";
-
-/** Duitku credentials PUT/test need this permission (sub-302 D15-D16). */
-export const INTEGRATION_MANAGE_PERMISSION: PermissionCode =
-  "org.integration.manage";
-
-/** Permissions that may open /kelola/pembayaran (any one is enough). */
-export const PAYMENT_ADMIN_PERMISSIONS: readonly PermissionCode[] = [
-  "payment.transaction.view",
-  "payment.reconcile",
-  "payment.edc.manage",
-  ROUTING_MANAGE_PERMISSION,
+import {
   INTEGRATION_MANAGE_PERMISSION,
-];
+  PAYMENT_ADMIN_PERMISSIONS,
+  ROUTING_MANAGE_PERMISSION,
+} from "./permissions";
+
+export {
+  INTEGRATION_MANAGE_PERMISSION,
+  PAYMENT_ADMIN_PERMISSIONS,
+  ROUTING_MANAGE_PERMISSION,
+};
 
 export type PaymentAdminTab =
   | "routing"

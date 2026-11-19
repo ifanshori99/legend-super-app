@@ -3,7 +3,6 @@
 export const posKasirTicketMessages = {
   title: "Tiket fasilitas",
   subtitle: "Jual tiket masuk fasilitas dari kasir, lalu cetak tiketnya.",
-  nav: "Tiket fasilitas",
   back: "Kembali ke kasir",
   error: {
     hint: "Periksa koneksi kasir, lalu coba lagi.",

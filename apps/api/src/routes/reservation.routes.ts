@@ -9,7 +9,7 @@
 //
 // - Public (website): tenant from the host (TEN-02), no session; the outlet in
 //   the path is checked against that tenant in the service.
-// - Staff: requireAuth + requireTrustedOrigin + requireTenantContext, then
+// - Staff: requireAuthAllowSharedDevice + requireTrustedOrigin + requireTenantContext, then
 //   `reservation.view` / `reservation.manage` on the path's outlet (TEN-03).
 // - Every mutation needs the `Idempotency-Key` header (8-100 characters). The
 //   body goes to the strict contract parse untouched, so a body
@@ -42,11 +42,7 @@ import {
   requireActingStaffOnSharedDevice,
   resolveActingStaff,
 } from "../middleware/acting-staff.ts";
-import {
-  getAuth,
-  requireAuth,
-  requireAuthAllowSharedDevice,
-} from "../middleware/auth.ts";
+import { requireAuthAllowSharedDevice } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
@@ -83,9 +79,9 @@ const outletOf = (req: Request) => String(req.params.outletId ?? "");
 const view = requireOutletPermission("reservation.view", outletOf);
 const manage = requireOutletPermission("reservation.manage", outletOf);
 const bookingLimits = createPublicBookingLimits();
-const staff = [requireAuth, requireTrustedOrigin, requireTenantContext];
 // Shared-device cashier PIN: the actor (and audit) is the PIN cashier, not the
-// session owner. Only on the money-touching mutations below.
+// session owner. On every staff route, so a shared tablet can list, read and
+// act on reservations; a regular device is unchanged (actorOf = session owner).
 // requireAuthAllowSharedDevice lets a shared-tablet session reach the PIN guard
 // (plain requireAuth would refuse it before the cashier can identify).
 const sharedStaff = [
@@ -152,7 +148,7 @@ reservationRouter.post(
 
 reservationRouter.get(
   "/outlets/:outletId/reservations",
-  ...staff,
+  ...sharedStaff,
   view,
   async (req, res) => {
     const { outletId } = listEndpoint.params.parse(req.params);
@@ -160,7 +156,7 @@ reservationRouter.get(
     res.json(
       await listReservations(
         getScopedTenantContext(req),
-        getAuth(req).user.id,
+        actorOf(req),
         outletId,
         query,
       ),
@@ -170,14 +166,14 @@ reservationRouter.get(
 
 reservationRouter.get(
   "/outlets/:outletId/reservations/:reservationId",
-  ...staff,
+  ...sharedStaff,
   view,
   async (req, res) => {
     const { outletId, reservationId } = getEndpoint.params.parse(req.params);
     res.json({
       data: await getReservation(
         getScopedTenantContext(req),
-        getAuth(req).user.id,
+        actorOf(req),
         outletId,
         reservationId,
       ),
@@ -187,7 +183,7 @@ reservationRouter.get(
 
 reservationRouter.patch(
   "/outlets/:outletId/reservations/:reservationId/tables",
-  ...staff,
+  ...sharedStaff,
   jsonBody,
   manage,
   async (req, res) => {
@@ -196,7 +192,7 @@ reservationRouter.patch(
     res.json({
       data: await assignReservationTables(
         getScopedTenantContext(req),
-        getAuth(req).user.id,
+        actorOf(req),
         outletId,
         reservationId,
         assignEndpoint.body.parse(body),
@@ -208,7 +204,7 @@ reservationRouter.patch(
 
 reservationRouter.post(
   "/outlets/:outletId/reservations/:reservationId/seat",
-  ...staff,
+  ...sharedStaff,
   jsonBody,
   manage,
   async (req, res) => {
@@ -217,7 +213,7 @@ reservationRouter.post(
     res.json({
       data: await seatReservation(
         getScopedTenantContext(req),
-        getAuth(req).user.id,
+        actorOf(req),
         outletId,
         reservationId,
         seatEndpoint.body.parse(body),
@@ -315,7 +311,7 @@ reservationRouter.post(
 
 reservationRouter.get(
   "/outlets/:outletId/reservations/:reservationId/deposit-remainder",
-  ...staff,
+  ...sharedStaff,
   view,
   async (req, res) => {
     const { outletId, reservationId } = getEndpoint.params.parse(req.params);
@@ -325,7 +321,7 @@ reservationRouter.get(
         .parse(
           await getReservationDepositRemainders(
             getScopedTenantContext(req),
-            getAuth(req).user.id,
+            actorOf(req),
             outletId,
             reservationId,
           ),

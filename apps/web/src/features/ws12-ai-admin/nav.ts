@@ -6,7 +6,7 @@ import type { AreaNavEntry } from "@/lib/areas/nav";
 const nav: AreaNavEntry[] = [
   {
     area: "kelola",
-    labelKey: "aiAdmin.nav",
+    labelKey: "nav.management.aiAdmin",
     to: "/kelola/pengaturan/mcp-ai",
     icon: Plug,
     order: 94,

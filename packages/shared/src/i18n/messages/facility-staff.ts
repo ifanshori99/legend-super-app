@@ -25,12 +25,6 @@ export const facilityStaffMessages = {
     iosInstall:
       "Di iPhone, pasang aplikasi ke Layar Utama dulu, lalu aktifkan notifikasi alarm.",
   },
-  nav: {
-    board: "Papan bilik",
-    cleaning: "Kebersihan",
-    incidents: "Insiden",
-    emergency: "Darurat",
-  },
   common: {
     refresh: "Muat ulang",
     offlineTitle: "Koneksi terputus",

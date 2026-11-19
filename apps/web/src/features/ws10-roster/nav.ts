@@ -6,7 +6,7 @@ import type { AreaNavEntry } from "@/lib/areas/nav";
 const nav: AreaNavEntry[] = [
   {
     area: "kelola",
-    labelKey: "roster.nav.roster",
+    labelKey: "nav.management.roster",
     to: "/kelola/roster",
     icon: CalendarDays,
     order: 60,
@@ -16,7 +16,7 @@ const nav: AreaNavEntry[] = [
   },
   {
     area: "kelola",
-    labelKey: "roster.nav.templates",
+    labelKey: "nav.management.rosterTemplates",
     to: "/kelola/roster/template",
     icon: LayoutTemplate,
     order: 70,

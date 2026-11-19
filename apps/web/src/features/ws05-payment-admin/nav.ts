@@ -1,6 +1,6 @@
 import { CreditCard } from "lucide-react";
 import type { AreaNavEntry } from "@/lib/areas/nav";
-import { PAYMENT_ADMIN_PERMISSIONS } from "./lib";
+import { PAYMENT_ADMIN_PERMISSIONS } from "./permissions";
 
 // Management area: gateway routing, EDC terminals, refunds, unallocated funds
 // and settlement reconciliation (PRD §3 F13). The page guard re-checks the

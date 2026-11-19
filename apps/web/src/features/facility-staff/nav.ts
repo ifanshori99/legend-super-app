@@ -8,7 +8,7 @@ import type { AreaNavEntry } from "@/lib/areas/nav";
 const nav: AreaNavEntry[] = [
   {
     area: "ops",
-    labelKey: "facilityStaff.nav.board",
+    labelKey: "nav.ops.facilityBoard",
     to: "/fasilitas",
     icon: ClipboardList,
     order: 20,
@@ -16,7 +16,7 @@ const nav: AreaNavEntry[] = [
   },
   {
     area: "ops",
-    labelKey: "facilityStaff.nav.cleaning",
+    labelKey: "nav.ops.facilityCleaning",
     to: "/fasilitas/kebersihan",
     icon: SprayCan,
     order: 21,
@@ -24,7 +24,7 @@ const nav: AreaNavEntry[] = [
   },
   {
     area: "ops",
-    labelKey: "facilityStaff.nav.incidents",
+    labelKey: "nav.ops.facilityIncidents",
     to: "/fasilitas/insiden",
     icon: ShieldAlert,
     order: 22,
@@ -32,7 +32,7 @@ const nav: AreaNavEntry[] = [
   },
   {
     area: "ops",
-    labelKey: "facilityStaff.nav.emergency",
+    labelKey: "nav.ops.facilityEmergency",
     to: "/fasilitas/darurat",
     icon: Siren,
     order: 23,

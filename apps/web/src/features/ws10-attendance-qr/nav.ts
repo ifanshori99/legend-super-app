@@ -7,7 +7,7 @@ import type { AreaNavEntry } from "@/lib/areas/nav";
 const nav: AreaNavEntry[] = [
   {
     area: "kelola",
-    labelKey: "attendanceQr.nav.qrDisplay",
+    labelKey: "nav.management.attendanceQrDisplay",
     to: "/kelola/absensi/qr",
     icon: QrCode,
     order: 30,
@@ -17,7 +17,7 @@ const nav: AreaNavEntry[] = [
   },
   {
     area: "kelola",
-    labelKey: "attendanceQr.nav.selfieReview",
+    labelKey: "nav.management.attendanceSelfieReview",
     to: "/kelola/absensi/selfie",
     icon: ScanFace,
     order: 40,

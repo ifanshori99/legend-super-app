@@ -7,7 +7,7 @@ import type { AreaNavEntry } from "@/lib/areas/nav";
 const nav: AreaNavEntry[] = [
   {
     area: "ops",
-    labelKey: "opsChecklist.nav.checklist",
+    labelKey: "nav.ops.checklist",
     to: "/operasional/checklist",
     icon: ClipboardCheck,
     order: 10,
@@ -15,7 +15,7 @@ const nav: AreaNavEntry[] = [
   },
   {
     area: "ops",
-    labelKey: "opsChecklist.nav.template",
+    labelKey: "nav.ops.checklistTemplate",
     to: "/operasional/checklist/template",
     icon: ClipboardList,
     order: 11,

@@ -3,10 +3,6 @@
 // parallel WS-10 beads never edit the same catalog lines.
 export const rosterMessages = {
   title: "Roster & Shift",
-  nav: {
-    roster: "Roster",
-    templates: "Template Shift",
-  },
   subtitle:
     "Susun jadwal mingguan per stasiun dan jabatan, periksa kepatuhan jam kerja, lalu terbitkan roster.",
   gap: {

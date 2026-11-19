@@ -34,10 +34,10 @@ const entry = (area, labelKey, to, order) => ({
 // The customer-area entries as features register them (orders fixed by
 // legend-oibk: member screens, then facilities, then Wi-Fi).
 const customerEntries = [
-  entry("customer", "member.nav.points", "/member/poin", 10),
-  entry("customer", "member.nav.rewards", "/member/reward", 20),
-  entry("customer", "member.nav.vouchers", "/member/voucher", 30),
-  entry("customer", "member.nav.missions", "/member/misi", 40),
+  entry("customer", "nav.customer.memberPoints", "/member/poin", 10),
+  entry("customer", "nav.customer.memberRewards", "/member/reward", 20),
+  entry("customer", "nav.customer.memberVouchers", "/member/voucher", 30),
+  entry("customer", "nav.customer.memberMissions", "/member/misi", 40),
   entry("customer", "nav.customer.facility", "/member/fasilitas", 50),
   entry("customer", "nav.customer.wifi", "/wifi", 60),
 ];
