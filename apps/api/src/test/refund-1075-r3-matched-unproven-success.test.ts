@@ -40,7 +40,6 @@
 import { randomBytes } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { env } from "../config/env";
-import { HOLD_TRANSACTION_CONFLICT_REASON } from "../services/refund-hold-reasons";
 import {
   BILL_IDR,
   createRefundHarness,
@@ -410,25 +409,19 @@ describe("R7-3 (P1) a matched success that is not provably the echo of our refun
       provider_ref: own.x,
     });
     // Round 1 completes R (no hold). Round 2 is a new event id for the same
-    // report: R is completed now, so no refund of ours matches it. Since 1126
-    // (CTO decision 1) a signed success that names a Legend payment but
-    // matches no refund is held: EXACTLY one CONFLICT hold for the full
-    // Rp100.000 (the event gives no readable refund amount), keyed by the
-    // stored event, no fact, no journal, no refund. Replays add no second one.
+    // report: R is completed now, so no refund of ours matches it, which since
+    // 1126 held it as an unmatched success (one CONFLICT hold for the full
+    // Rp100.000). 1191 (legend-tbygu) changes that: R is a completed refund of
+    // ours that closes the WHOLE transaction (Rp100.000) and the report's amount
+    // (Rp100.000) does not exceed what R recorded, so the report is only R's
+    // echo: no new hold, no fact, no journal, no refund. A report above R, a
+    // transaction only partly closed by R, or an unreadable amount stays held
+    // (see refund-1191-a-echo-closed-by-own.test.ts).
     const holds = await h.allHolds(code.id);
     expect(
       holds,
-      `round 2 (R completed): exactly one new hold (${JSON.stringify(holds)})`,
-    ).toHaveLength(holdsBefore + 1);
-    expect(
-      holds.at(-1),
-      "the 1126 conflict hold of the unmatched report",
-    ).toMatchObject({
-      reason: HOLD_TRANSACTION_CONFLICT_REASON,
-      amount_idr: BILL_IDR,
-      provider_refund_id: null,
-      resolved_at: null,
-    });
+      `round 2 (R completed, bill closed by R): no new hold (${JSON.stringify(holds)})`,
+    ).toHaveLength(holdsBefore);
     expect(await h.providerRows(code.id), "no fact").toEqual(factsBefore);
     expect(await h.refundEventsOfIntent(code.id), "no event").toBe(
       eventsBefore,

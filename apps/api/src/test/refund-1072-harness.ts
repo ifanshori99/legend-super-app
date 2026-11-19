@@ -116,6 +116,14 @@ export function createRefundHarness(tag: string) {
   let approver: ReturnType<typeof agent>;
   let supervisorUserId = "";
   let fakeGateway: FakeRefundGateway = new FakeRefundGateway();
+  // A second tenant (created on demand by `other.bill`), for isolation tests.
+  type OtherTenant = {
+    scope: ReturnType<typeof paymentTestScope>;
+    integrationId: string;
+    linkIds: string[];
+  };
+  let otherTenant: OtherTenant | null = null;
+  const integrationByTenant = new Map<string, string>();
 
   const unique = () => randomBytes(4).toString("hex");
   const key = (prefix = "k") => `${prefix}-${randomUUID()}`;
@@ -140,6 +148,10 @@ export function createRefundHarness(tag: string) {
     private server: Server | null = null;
     baseUrl = "";
     nextId: string | null = null;
+    /** Status lookups (`GET /v1/payments/:id`) per payment id (the poller's questions). */
+    readonly lookups = new Map<string, number>();
+    /** When set, `GET /v1/payments/:id` answers this HTTP status (provider down). */
+    getFailsWith: number | null = null;
 
     async start(): Promise<void> {
       this.server = createServer((req, res) => void this.handle(req, res));
@@ -247,7 +259,13 @@ export function createRefundHarness(tag: string) {
       }
       const found = /^\/v1\/payments\/([^/]+)$/.exec(url.pathname);
       if (req.method === "GET" && found) {
-        const payment = this.payments.get(decodeURIComponent(found[1]!));
+        const askedId = decodeURIComponent(found[1]!);
+        this.lookups.set(askedId, (this.lookups.get(askedId) ?? 0) + 1);
+        if (this.getFailsWith !== null)
+          return send(this.getFailsWith, {
+            error: { code: "unavailable", message: "Provider unavailable" },
+          });
+        const payment = this.payments.get(askedId);
         return payment ? send(200, payment) : send(404, { error: "not_found" });
       }
       return send(404, { error: "not_found" });
@@ -344,9 +362,13 @@ export function createRefundHarness(tag: string) {
     integrationId = created.id;
     setPaymentGateway(
       createDoitGateway({
-        loadCredentials: async () => ({
+        loadCredentials: async (loadContext: {
+          tenant: { tenantId: string };
+        }) => ({
           integration: {
-            id: integrationId,
+            id:
+              integrationByTenant.get(loadContext.tenant.tenantId) ??
+              integrationId,
             outletId: null,
             config: { baseUrl: doit.baseUrl },
           },
@@ -359,6 +381,42 @@ export function createRefundHarness(tag: string) {
   afterAll(async () => {
     setPaymentGateway(null);
     setPaymentRefundGateway(null);
+    if (otherTenant) {
+      const idsB = otherTenant.linkIds;
+      const intentsB =
+        "SELECT id FROM payment_intents WHERE tenant_id = $1 AND payment_link_id = ANY($2::uuid[])";
+      const tenantB = otherTenant.scope.tenantId;
+      if (idsB.length > 0) {
+        for (const table of [
+          "payment_refunds",
+          "refund_recon_holds",
+          "payment_provider_refunds",
+          "payment_evidence",
+          "payment_unallocated_funds",
+        ])
+          await owner.query(
+            `DELETE FROM ${table} WHERE tenant_id = $1 AND payment_intent_id IN (${intentsB})`,
+            [tenantB, idsB],
+          );
+      }
+      await owner.query(
+        "DELETE FROM gateway_webhook_events WHERE tenant_id = $1",
+        [tenantB],
+      );
+      if (idsB.length > 0) {
+        await owner.query(
+          "DELETE FROM payment_intents WHERE tenant_id = $1 AND payment_link_id = ANY($2::uuid[])",
+          [tenantB, idsB],
+        );
+        await owner.query(
+          "DELETE FROM payment_links WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+          [tenantB, idsB],
+        );
+      }
+      await owner.query("DELETE FROM tenant_integrations WHERE id = $1", [
+        otherTenant.integrationId,
+      ]);
+    }
     const intentsOf =
       "SELECT id FROM payment_intents WHERE tenant_id = $1 AND payment_link_id = ANY($2::uuid[])";
     await owner.query(
@@ -542,6 +600,160 @@ export function createRefundHarness(tag: string) {
       payment_id: paymentRef,
     },
   });
+
+  // ---- a second tenant (isolation tests) -----------------------------------
+  function contextOfTenant(id: string): ScopedTenantContext {
+    return establishScopedTenantContext(
+      establishTenantContext({
+        tenantId: id as never,
+        brandId: null,
+        source: "session",
+      }),
+      { kind: "tenant" },
+    );
+  }
+  async function ensureOtherTenant(): Promise<OtherTenant> {
+    if (otherTenant) return otherTenant;
+    const scopeB = paymentTestScope();
+    await scopeB.seed(owner);
+    const context = contextOfTenant(scopeB.tenantId);
+    // Same key and webhook secret as the main tenant; the signature is checked
+    // against the tenant in the URL.
+    const created = await upsertIntegration(
+      context,
+      {
+        outletId: null,
+        provider: "doit",
+        config: { baseUrl: doit.baseUrl },
+        credentials: { apiKey, webhookSecret: secret },
+      },
+      actor,
+    );
+    await setIntegrationStatus(
+      context,
+      created.id,
+      { status: "active" },
+      actor,
+    );
+    integrationByTenant.set(scopeB.tenantId, created.id);
+    clearDoitWebhookSecretCache();
+    otherTenant = { scope: scopeB, integrationId: created.id, linkIds: [] };
+    return otherTenant;
+  }
+  /** Signed webhook delivery to ANY tenant's URL. */
+  async function deliverToTenant(tenant: string, body: object) {
+    const raw = JSON.stringify(body);
+    return request(app)
+      .post(`/api/webhooks/payments/doit/${tenant}`)
+      .set("Content-Type", "application/json")
+      .set("PayBridge-Signature", signatureHeader(raw))
+      .send(raw);
+  }
+  const other = {
+    /** A bill of the second tenant, paid through a signed webhook. */
+    async paidBill(amountIdr: number = BILL_IDR) {
+      const b = await ensureOtherTenant();
+      const outletB = outletIdSchema.parse(b.scope.outletId);
+      const opened = await createPaymentLink(
+        establishScopedTenantContext(
+          establishTenantContext({
+            tenantId: b.scope.tenantId,
+            brandId: null,
+            source: "session",
+          }),
+          { kind: "outlets", outletIds: [outletB] },
+        ),
+        {
+          outletId: outletB,
+          reference: `R${tag.toUpperCase()}B-${unique()}`,
+          tableLabel: "B01",
+          pax: 2,
+          subtotalIdr: amountIdr,
+          discountIdr: 0,
+          serviceChargeIdr: 0,
+          taxIdr: 0,
+          roundingIdr: 0,
+          totalIdr: amountIdr,
+          returnPath: "/t/v1.abc",
+        },
+        "00000000-0000-4000-8000-000000000001",
+      );
+      b.linkIds.push(opened.linkId);
+      const created = await agent(app)
+        .post(`/api/payments/links/${opened.token}/intents`)
+        .send({
+          method: "qris",
+          channelCode: null,
+          idempotencyKey: `k-${unique()}`,
+        });
+      expect(created.status, JSON.stringify(created.body)).toBe(201);
+      const intentId = created.body.data.id as string;
+      const { rows } = await owner.query<{ provider_ref: string }>(
+        "SELECT provider_ref FROM payment_intents WHERE id = $1",
+        [intentId],
+      );
+      const providerRef = rows[0]!.provider_ref;
+      doit.settle(providerRef, amountIdr);
+      const answered = await deliverToTenant(
+        b.scope.tenantId,
+        doit.eventFor(providerRef, "paid"),
+      );
+      expect(answered.status, JSON.stringify(answered.body)).toBe(200);
+      return { tenantId: b.scope.tenantId, intentId, providerRef };
+    },
+    deliver: (tenant: string, body: object) => deliverToTenant(tenant, body),
+    poll: (tenant: string, at: Date) =>
+      pollPendingGatewayIntents(contextOfTenant(tenant), at, 100),
+    async holds(tenant: string, intentId: string) {
+      const { rows } = await owner.query<{
+        id: string;
+        reason: string;
+        amount_idr: string;
+        resolved_at: Date | null;
+      }>(
+        `SELECT id, reason, amount_idr::text AS amount_idr, resolved_at
+           FROM refund_recon_holds
+          WHERE tenant_id = $1 AND payment_intent_id = $2
+          ORDER BY flagged_at, id`,
+        [tenant, intentId],
+      );
+      return rows.map((row) => ({
+        ...row,
+        amount_idr: Number(row.amount_idr),
+      }));
+    },
+    /** An open hold seeded directly (the other tenant has no staff roster). */
+    async seedHold(
+      tenant: string,
+      intentId: string,
+      reason: string,
+      amountIdr: number,
+      providerPaymentRef: string,
+    ) {
+      const id = randomUUID();
+      await owner.query(
+        `INSERT INTO refund_recon_holds
+           (id, tenant_id, payment_intent_id, webhook_event_id, amount_idr, reason, provider_payment_ref)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [
+          id,
+          tenant,
+          intentId,
+          randomUUID(),
+          amountIdr,
+          reason,
+          providerPaymentRef,
+        ],
+      );
+      return id;
+    },
+    async notificationCount(tenant: string) {
+      return count(
+        "SELECT count(*)::text AS n FROM notifications WHERE tenant_id = $1",
+        [tenant],
+      );
+    },
+  };
 
   // ---- HTTP actions --------------------------------------------------------
   const manualRefund = (intentId: string, amountIdr: number) =>
@@ -805,6 +1017,8 @@ export function createRefundHarness(tag: string) {
     app,
     owner,
     tenantId,
+    other,
+    deliverToTenant,
     outletId,
     doit,
     get fake() {

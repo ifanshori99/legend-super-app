@@ -1488,6 +1488,83 @@ const UNMATCHED_NO_MONEY_STATUSES = [
   "failed",
 ];
 
+/** 1191: an OPEN hold of this intent filed for this very stored event (under
+ * the event id, or the fixed fallback key of `holdSwitchedOffRefundSuccess`). */
+async function openHoldOfEvent(
+  context: ScopedTenantContext,
+  intent: PaymentIntentRow,
+  row: GatewayWebhookEvent,
+): Promise<boolean> {
+  const fallbackKey = createHash("sha256")
+    .update(
+      `refund_recon_hold.unmatched\0${context.tenant.tenantId}\0${intent.id.toLowerCase()}\0${row.id}`,
+    )
+    .digest("hex");
+  const keys = [
+    row.id,
+    `${fallbackKey.slice(0, 8)}-${fallbackKey.slice(8, 12)}-${fallbackKey.slice(12, 16)}-${fallbackKey.slice(16, 20)}-${fallbackKey.slice(20, 32)}`,
+  ];
+  return await withTenant(db, context, async (tx) => {
+    const [open] = await tx
+      .select({ id: refundReconHolds.id })
+      .from(refundReconHolds)
+      .where(
+        and(
+          eq(refundReconHolds.tenantId, context.tenant.tenantId),
+          eq(refundReconHolds.paymentIntentId, intent.id),
+          inArray(refundReconHolds.webhookEventId, keys),
+          isNull(refundReconHolds.resolvedAt),
+        ),
+      )
+      .limit(1);
+    return !!open;
+  });
+}
+
+/** 1191 (legend-tbygu): a signed success with no refund id, matching no refund
+ * of ours, is the echo of our own refund when the transaction is already CLOSED
+ * IN FULL by refunds of ours that are `completed` and the reported amount is
+ * readable and not above what they sum to. Then it is no news: no hold. Anything
+ * else stays held (restrictive): a transaction only partly closed, an amount
+ * above the refunds on record, an unreadable amount, a refund finance settled by
+ * hand (paid once already, a report may be a second payment). Only refunds of
+ * ours on THIS provider transaction count (same source rule as the recorder:
+ * an intent-level refund belongs to the intent's own transaction, a parked
+ * fund's refund to the transaction of its evidence). Tenant-scoped; a
+ * `completed` refund is final, so no lock is needed. */
+async function transactionClosedByOwnRefunds(
+  context: ScopedTenantContext,
+  intent: PaymentIntentRow,
+  providerPaymentRef: string,
+  transactionIdr: number,
+  reportedIdr: number,
+): Promise<boolean> {
+  if (!(transactionIdr > 0) || !(reportedIdr > 0)) return false;
+  const ownIdr = await withTenant(db, context, async (tx) => {
+    const { rows } = await tx.execute(sql`SELECT
+        coalesce(sum(r.amount_idr), 0)::text AS own
+      FROM payment_refunds r
+      WHERE r.tenant_id = ${context.tenant.tenantId}::uuid
+        AND r.payment_intent_id = ${intent.id}::uuid
+        AND r.status = 'completed'
+        AND r.provider_ref IS NOT NULL
+        AND r.last_payout_error IS DISTINCT FROM ${SETTLED_OUTSIDE_PROVIDER}
+        AND ((r.unallocated_fund_id IS NULL
+            AND ${intent.providerRef ?? null}::text
+              IS NOT DISTINCT FROM ${providerPaymentRef}::text)
+          OR EXISTS (SELECT 1 FROM payment_unallocated_funds f
+            JOIN payment_evidence e
+              ON e.tenant_id = f.tenant_id AND e.id = f.evidence_id
+            WHERE f.tenant_id = r.tenant_id
+              AND f.id = r.unallocated_fund_id
+              AND e.payment_intent_id = ${intent.id}::uuid
+              AND e.provider = ${PROVIDER}
+              AND e.provider_ref = ${providerPaymentRef}))`);
+    return Number(rows[0]?.own ?? 0);
+  });
+  return ownIdr >= transactionIdr && reportedIdr <= ownIdr;
+}
+
 /** 1126: a signed refund success that matches no refund of Legend must not end
  * without a hold (a refund made in the provider's dashboard otherwise leaves
  * the refund room untouched and a manual refund pays twice). The payment the
@@ -1666,13 +1743,50 @@ async function holdUnmatchedRefundSuccess(
     );
     return "unmapped";
   }
+  const heldPaymentRef =
+    namedPaymentId ?? mappedByReference ?? owner.intent.providerRef ?? null;
+  // 1191: the echo (no refund id) of a refund of ours that closed the whole
+  // transaction is no news. The amount it reports is the refund's own (a
+  // refund-shaped object) or, for a payment object (its amount is never read
+  // as a refund amount), the payment's whole amount when the payment says
+  // `refunded`; a partial status or an unreadable amount proves nothing and is
+  // held. Not with the switch off (1101: every success is held then).
+  const echoedIdr =
+    reported ??
+    (facts.payment?.status === "refunded" && facts.payment.amount > 0
+      ? facts.payment.amount
+      : undefined);
+  // Never skipped (held and told as before) when a reference names another
+  // intent than the payment's (the 1139 reference-mismatch alert below must
+  // still fire), when the payment was mapped by reference only, or when an
+  // earlier pass already filed an OPEN hold for this very event (inside the
+  // retry window, silent): the pass after the window must announce it.
+  const intentId = owner.intent.id.toLowerCase();
+  if (
+    !facts.refundId &&
+    echoedIdr !== undefined &&
+    heldPaymentRef !== null &&
+    mappedByReference === undefined &&
+    (facts.reference === undefined ||
+      facts.reference.toLowerCase() === intentId) &&
+    (!facts.payment || facts.payment.reference.toLowerCase() === intentId) &&
+    !refundProviderSwitchedOff(PROVIDER) &&
+    !(await openHoldOfEvent(context, owner.intent, row)) &&
+    (await transactionClosedByOwnRefunds(
+      context,
+      owner.intent,
+      heldPaymentRef,
+      full,
+      echoedIdr,
+    ))
+  )
+    return "skipped";
   const filed = await holdSwitchedOffRefundSuccess(
     context,
     row,
     owner.intent,
     {
-      providerPaymentRef:
-        namedPaymentId ?? mappedByReference ?? owner.intent.providerRef ?? null,
+      providerPaymentRef: heldPaymentRef,
       providerRefundId: facts.refundId ?? null,
       ...(reported !== undefined ? { reportedAmountIdr: reported } : {}),
       ...(mappedByReference !== undefined ? { mappedByReference: true } : {}),

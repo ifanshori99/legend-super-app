@@ -70,6 +70,7 @@ import {
   paymentUnallocatedFunds,
 } from "../db/schema";
 import { auditLogs } from "../db/schema/core-audit";
+import { refundReconHolds } from "../db/schema/refund-recon-holds.ts";
 import { assertNoOpenFundsOfPosOrderTx } from "./pos-order-open-funds.ts";
 import { orders } from "../db/schema/qr-order.ts";
 import { orderIssueCharges } from "../db/schema/kds-issues.ts";
@@ -98,6 +99,7 @@ import { GATEWAY_POLL_WINDOW_MS } from "./payment-poll-window";
 import { cancelUnpaidDeposit } from "./reservation-core";
 import { plausiblePaidAt } from "./payment-paid-at";
 import {
+  alertOwnRefundFailedStillOpen,
   alertProviderRefundedAfterRecorded,
   alertProviderRefundUnbound,
 } from "./payment-provider-refunded-alert.ts";
@@ -4395,6 +4397,14 @@ export async function pollPendingGatewayIntents(
   return { checked, settled };
 }
 
+const OWN_FAILED_YOUNG_MS = 60 * 60_000;
+const OWN_FAILED_DAY_MS = 24 * 60 * 60_000;
+const OWN_FAILED_MID_GAP_MS = 10 * 60_000;
+const OWN_FAILED_OLD_GAP_MS = 60 * 60_000;
+/** The Jakarta calendar date of `at` (the day key of the reminder). */
+const jakartaDayKey = (at: Date): string =>
+  new Date(at.getTime() + 7 * 60 * 60_000).toISOString().slice(0, 10);
+
 /**
  * legend-w2td5 (1045 F1): asks the provider about the own transaction of each
  * intent with an open `OWN_REFUND_FAILED_UNVERIFIED` hold on it (a hold on a
@@ -4405,8 +4415,10 @@ export async function pollPendingGatewayIntents(
  * Finance closes it (`not_this_intent` after checking the provider, or
  * `counted_against_intent`). An error or any other answer changes nothing.
  * Claimed with the poll lease (two workers never ask about the same intent),
- * at most once a minute per intent (`gateway_polled_at`), least recently
- * asked first.
+ * least recently asked first. 1191 (legend-rdg29): backed off by the age of
+ * the hold (`flagged_at`): every minute in its first hour, every 10 minutes
+ * up to 24 hours, hourly after that; it never gives up. Finance is told again
+ * once per calendar day while the hold stays open; the poller never closes it.
  */
 async function verifyOwnRefundFailedHolds(
   context: ScopedTenantContext,
@@ -4417,7 +4429,7 @@ async function verifyOwnRefundFailedHolds(
   if (providers.length === 0) return;
   const leaseNow = new Date();
   const leaseUntil = new Date(leaseNow.getTime() + GATEWAY_POLL_LEASE_MS);
-  const dueBefore = new Date(now.getTime() - GATEWAY_POLL_GRACE_MS);
+  const nowAt = sql`${now.toISOString()}::timestamptz`;
   const claimed = await withTenant(db, context, async (tx) => {
     const rows = await tx
       .select({ id: paymentIntents.id })
@@ -4431,16 +4443,20 @@ async function verifyOwnRefundFailedHolds(
           ),
           inArray(paymentIntents.provider, [...providers]),
           isNotNull(paymentIntents.providerRef),
-          or(
-            isNull(paymentIntents.gatewayPolledAt),
-            lte(paymentIntents.gatewayPolledAt, dueBefore),
-          ),
           sql`exists (select 1 from refund_recon_holds h
              where h.tenant_id = ${paymentIntents.tenantId}
                and h.payment_intent_id = ${paymentIntents.id}
                and h.resolved_at is null
                and h.reason = ${OWN_REFUND_FAILED_UNVERIFIED}
-               and h.provider_payment_ref = ${paymentIntents.providerRef})`,
+               and h.provider_payment_ref = ${paymentIntents.providerRef}
+               and (${paymentIntents.gatewayPolledAt} is null
+                 or ${paymentIntents.gatewayPolledAt} <= ${nowAt} - (case
+                   when ${nowAt} - h.flagged_at < ${`${OWN_FAILED_YOUNG_MS} milliseconds`}::interval
+                     then ${`${GATEWAY_POLL_GRACE_MS} milliseconds`}::interval
+                   when ${nowAt} - h.flagged_at < ${`${OWN_FAILED_DAY_MS} milliseconds`}::interval
+                     then ${`${OWN_FAILED_MID_GAP_MS} milliseconds`}::interval
+                   else ${`${OWN_FAILED_OLD_GAP_MS} milliseconds`}::interval
+                 end)))`,
         ),
       )
       .orderBy(
@@ -4482,6 +4498,10 @@ async function verifyOwnRefundFailedHolds(
               ),
             ),
         );
+        // Still open after an hour: finance is told again, once per day (the
+        // alert id carries the hold and the day). Before the provider is asked,
+        // so a slow or failing answer never keeps the reminder back.
+        await remindOwnRefundFailedStillOpen(context, row, providerRef, now);
         const outletContext =
           context.outletScope.kind === "tenant"
             ? establishScopedTenantContext(context.tenant, {
@@ -4511,5 +4531,52 @@ async function verifyOwnRefundFailedHolds(
       claimed.map((row) => row.id),
       leaseUntil,
     );
+  }
+}
+
+/** Reminds finance of the open own-failed holds of the intent that are over an
+ * hour old. Never closes or changes a hold; a failure is swallowed. */
+async function remindOwnRefundFailedStillOpen(
+  context: ScopedTenantContext,
+  row: { id: string; outletId: string },
+  providerRef: string,
+  now: Date,
+): Promise<void> {
+  try {
+    const dayKey = jakartaDayKey(now);
+    await withTenant(db, context, async (tx) => {
+      const holds = await tx
+        .select({
+          id: refundReconHolds.id,
+          amountIdr: refundReconHolds.amountIdr,
+        })
+        .from(refundReconHolds)
+        .where(
+          and(
+            eq(refundReconHolds.tenantId, context.tenant.tenantId),
+            eq(refundReconHolds.paymentIntentId, row.id),
+            isNull(refundReconHolds.resolvedAt),
+            eq(refundReconHolds.reason, OWN_REFUND_FAILED_UNVERIFIED),
+            eq(refundReconHolds.providerPaymentRef, providerRef),
+            sql`${refundReconHolds.flaggedAt} <= ${now.toISOString()}::timestamptz - ${`${OWN_FAILED_YOUNG_MS} milliseconds`}::interval`,
+          ),
+        );
+      for (const hold of holds)
+        await alertOwnRefundFailedStillOpen(
+          tx,
+          context,
+          {
+            intentId: row.id,
+            outletId: row.outletId,
+            dedupKey: hold.id,
+            holdId: hold.id,
+            dayKey,
+            amountIdr: Number(hold.amountIdr),
+          },
+          now,
+        );
+    });
+  } catch {
+    // The reminder is best effort; the next pass tries again.
   }
 }
