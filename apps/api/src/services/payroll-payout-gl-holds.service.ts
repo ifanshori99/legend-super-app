@@ -68,11 +68,7 @@ const alreadyResolved = () =>
  * refuses the batch requester. A posting of another tenant, or a malformed id,
  * is 404 before any lock beyond the tenant-filtered read.
  */
-async function lockPostingForResolve(
-  tx: Tx,
-  actor: Actor,
-  postingId: string,
-) {
+async function lockPostingForResolve(tx: Tx, actor: Actor, postingId: string) {
   const tenantId = actor.tenantId as TenantId;
   if (!isPayoutUuid(postingId)) throw notFound();
   const [peek] = await tx

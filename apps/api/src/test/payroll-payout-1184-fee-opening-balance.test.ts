@@ -112,11 +112,7 @@ afterAll(async () => {
 type Person = Awaited<ReturnType<typeof makePerson>>;
 
 /** Signed in, a custom role with `permissions`, TOTP enrolled in this very session (enrollment only). */
-async function makePerson(
-  label: string,
-  permissions: string[],
-  enroll = true,
-) {
+async function makePerson(label: string, permissions: string[], enroll = true) {
   const { client, userId } = await W.signedInClient(`Fee1184 ${label}`);
   await W.grantRole(userId, permissions);
   let factorId = "";
@@ -591,14 +587,18 @@ describe("legend-3xzop: mark the fee of a posting as already in the opening bala
     const conflict = results.filter((r) => r.status === 409);
     expect(ok, results.map(detail).join(" | ")).toHaveLength(1);
     expect(conflict, results.map(detail).join(" | ")).toHaveLength(3);
-    for (const r of conflict) expect(codeOf(r)).toBe("PAYOUT_GL_ALREADY_RESOLVED");
+    for (const r of conflict)
+      expect(codeOf(r)).toBe("PAYOUT_GL_ALREADY_RESOLVED");
     expect(await auditCount(), "one success audit row").toBe(audits + 1);
     expect(await journalCountOfEntity()).toBe(journals);
     const marked = await markColumns(postingId);
     expect(marked.fee_opening_balance_at).not.toBeNull();
-    expect(["Catatan A satu", "Catatan B satu", "Catatan A dua", "Catatan B dua"]).toContain(
-      marked.note,
-    );
+    expect([
+      "Catatan A satu",
+      "Catatan B satu",
+      "Catatan A dua",
+      "Catatan B dua",
+    ]).toContain(marked.note);
 
     const again = await markHttp(a, postingId);
     expect(again.status, detail(again)).toBe(409);
@@ -717,9 +717,7 @@ describe("legend-3xzop: mark the fee of a posting as already in the opening bala
     await runPayoutGlRecoverySweep(W.scope(), NOW);
     expect(await W.journalByKey(feeKey(w.posting))).toBeUndefined();
     expect(await W.countJournals(feeKey(w.posting))).toBe(0);
-    expect((await account("8101")).debit - feeBefore, "8101 untouched").toBe(
-      0,
-    );
+    expect((await account("8101")).debit - feeBefore, "8101 untouched").toBe(0);
     expect(await journalCountOfEntity()).toBe(journals);
     expect(await listedRow(postingId), "still delisted").toBeUndefined();
   });

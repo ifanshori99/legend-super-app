@@ -440,7 +440,9 @@ async function expectRefusedUntouched(
 
 /** First attempt of a return while held: refused 409 at one of its two steps, no journal. */
 async function returnWhileHeld(w: Held) {
-  const firstError = await W.httpFailure(returnItems(w.batchId, [w.itemId], APP));
+  const firstError = await W.httpFailure(
+    returnItems(w.batchId, [w.itemId], APP),
+  );
   let refusal = firstError;
   if (!firstError) {
     refusal = await W.httpFailure(returnItems(w.batchId, [w.itemId], APP3));
@@ -478,7 +480,9 @@ describe("1184 6qp12: release a payable_account_hold", () => {
     expect(state.payable_account_hold, "hold lifted").toBe(false);
     expect(state.payable_hold_released_at).not.toBeNull();
     expect(state.payable_hold_released_by).toBe(finance.userId);
-    expect(state.payable_hold_release_note, "note is stored trimmed").toBe(NOTE);
+    expect(state.payable_hold_release_note, "note is stored trimmed").toBe(
+      NOTE,
+    );
     expect(
       state.salaries_payable_account_id,
       "the frozen account is untouched by the release",
@@ -599,7 +603,7 @@ describe("1184 6qp12: release a payable_account_hold", () => {
       let settled = 0;
       const running = Promise.all(
         [first, second].map((who) =>
-          releaseHttp(who.client, w.postingId).finally(() => {
+          Promise.resolve(releaseHttp(who.client, w.postingId)).finally(() => {
             settled += 1;
           }),
         ),
@@ -661,13 +665,7 @@ describe("1184 6qp12: refused without effect", () => {
       const person = await personOf(`denied ${template}`, template);
       const journals = await journalCountOfEntity();
       const res = await releaseHttp(person.client, w.postingId);
-      await expectRefusedUntouched(
-        res,
-        [403],
-        w.postingId,
-        journals,
-        template,
-      );
+      await expectRefusedUntouched(res, [403], w.postingId, journals, template);
     });
   }
 
@@ -759,7 +757,13 @@ describe("1184 6qp12: refused without effect", () => {
     };
     for (const [label, body] of Object.entries(bodies)) {
       const res = await releaseHttp(person.client, w.postingId, body);
-      await expectRefusedUntouched(res, [400, 422], w.postingId, journals, label);
+      await expectRefusedUntouched(
+        res,
+        [400, 422],
+        w.postingId,
+        journals,
+        label,
+      );
     }
   });
 
@@ -774,7 +778,11 @@ describe("1184 6qp12: refused without effect", () => {
         `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
          SELECT $1, $2, 'Payout 1184 hold tenant B', plan, status, deployment_mode, feature_flags, limits, created_by
            FROM tenants WHERE id = $3`,
-        [foreignTenant, `payout-1184h-${foreignTenant.slice(0, 8)}`, tenantId()],
+        [
+          foreignTenant,
+          `payout-1184h-${foreignTenant.slice(0, 8)}`,
+          tenantId(),
+        ],
       );
       // A copy of the held posting under another tenant (FKs are off with guards off).
       await c.query(
@@ -828,6 +836,8 @@ describe("1184 6qp12: refused without effect", () => {
     const w = await heldWorld();
     const person = await personOf("finance other account", "finance");
     // Re-point the debit line of the settle journal from A to B (setup by SQL, guards off).
+    const fromAccount = await accountId(A);
+    const toAccount = await accountId(B);
     await W.asTenant(
       (c) =>
         c.query(
@@ -836,22 +846,26 @@ describe("1184 6qp12: refused without effect", () => {
               AND entry_id = (SELECT id FROM journal_entries
                                WHERE tenant_id = $1 AND legal_entity_id = $2
                                  AND idempotency_key = $5)`,
-          [
-            tenantId(),
-            W.entityId(),
-            await accountId(A),
-            await accountId(B),
-            w.journalKey,
-          ],
+          [tenantId(), W.entityId(), fromAccount, toAccount, w.journalKey],
         ),
       true,
     );
-    expect(await W.journalByKey(w.journalKey), "premise: debit moved to B").toEqual(
-      { [B]: { debit: NET, credit: 0 }, "1103": { debit: 0, credit: NET } },
-    );
+    expect(
+      await W.journalByKey(w.journalKey),
+      "premise: debit moved to B",
+    ).toEqual({
+      [B]: { debit: NET, credit: 0 },
+      "1103": { debit: 0, credit: NET },
+    });
     const journals = await journalCountOfEntity();
     const res = await releaseHttp(person.client, w.postingId);
-    await expectRefusedUntouched(res, [409], w.postingId, journals, "other account");
+    await expectRefusedUntouched(
+      res,
+      [409],
+      w.postingId,
+      journals,
+      "other account",
+    );
     expect(codeOf(res)).toBe("PAYOUT_PAYABLE_ACCOUNT_UNKNOWN");
   });
 
@@ -869,7 +883,13 @@ describe("1184 6qp12: refused without effect", () => {
     );
     const journals = await journalCountOfEntity();
     const res = await releaseHttp(person.client, w.postingId);
-    await expectRefusedUntouched(res, [409], w.postingId, journals, "null frozen");
+    await expectRefusedUntouched(
+      res,
+      [409],
+      w.postingId,
+      journals,
+      "null frozen",
+    );
     expect(codeOf(res)).toBe("PAYOUT_PAYABLE_ACCOUNT_UNKNOWN");
   });
 
@@ -887,7 +907,13 @@ describe("1184 6qp12: refused without effect", () => {
     );
     const journals = await journalCountOfEntity();
     const res = await releaseHttp(person.client, w.postingId);
-    await expectRefusedUntouched(res, [409], w.postingId, journals, "no journal");
+    await expectRefusedUntouched(
+      res,
+      [409],
+      w.postingId,
+      journals,
+      "no journal",
+    );
     expect(codeOf(res)).toBe("PAYOUT_PAYABLE_ACCOUNT_UNKNOWN");
   });
 });
