@@ -7849,3 +7849,5 @@ Cabang `ws/1136-p3-web-mock-e2e`, dasar `origin/milestone/m1`. Tingkat S, tanpa 
 - legend-yf2b: preview report builder memakai angka viewer untuk family batch A/B (bukan duplikat x73li, belum di m1).
 - legend-z274: kategori notifikasi `checklist_alert` (tanpa migrasi, kolom varchar); preferensi `schedule_update` lama untuk alert checklist tidak dimigrasi.
 - Bukti: vitest web 14/14, text-contract + selection 17/17, typecheck shared+web hijau, API hijau dengan heap 8 GB (heap default ~6 GB OOM), e2e `legend-46vt` lulus, eslint+prettier hijau.
+- Keputusan CTO z274 (19 Nov): `checklist_alert` tanpa preferensi eksplisit mewarisi `schedule_update` per kanal saat dibaca (`packages/shared/src/notification/delivery.ts`, tanpa migrasi data); preferensi eksplisit menang. Test `notification-checklist-alert-inherit.test.ts` (gagal-dulu 2 dari 6, lalu 50/50 bersama adapter). Typecheck shared+web+api hijau (heap 8 GB). Catatan: setelah user menyimpan panel preferensi, `checklist_alert` jadi eksplisit dan lepas dari `schedule_update`.
+- Bead baru P3: mock `assignExpoRunner` 422 `EXPO_RUNNER_INVALID` (lihat `bd list`).
