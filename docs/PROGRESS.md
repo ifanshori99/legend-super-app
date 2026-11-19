@@ -2294,3 +2294,4 @@ Langkah berikut CTO baru:
 - 20:40 CTO cek akun: Claude #1 satu-satunya hidup, 5h 5%, 7d 75% (laju ~1,6 poin/jam -> habis ~Nov 20 siang, sebelum reset Nov 24). Slot kosong sengaja tidak diisi; prioritas: 1192, 1199, batch97/98. Codex #2 disimpan SO refund 00:27. RAM hijau.
 - 20:59 CTO: batch97 full run: 1172 bug jam DB vs app di baca izin. Keputusan: 1172 keluar dari batch97 (revert 7254beba5), 6 cabang mendarat bila rerun hijau; fix Duitku 75799a6a3 di train wajib architect xhigh. 1201 (Sonnet) baca izin pakai jam DB di SQL, menggantikan 1172+1183 di batch98.
 - 21:04 CTO: founder: pakai Claude #1 saja dulu. Thread tetap di #1; slot diisi hemat (7d #1 76%).
+- 21:15 CTO: batch97 mendarat m1 cbec1feb6 (1178, 1182, 1175 + fix Duitku 75799a6a3 architect xhigh bersih; 1172 keluar). G1kc6 resolve (3 compact). Merge train baru batch98: 1177, 1184, 1170, 1187, 1188, 1179, 1198. Batch99: 1191 (cherry-pick), 1199, 1201, 1192.
