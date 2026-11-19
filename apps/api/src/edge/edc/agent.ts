@@ -802,20 +802,64 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
       ]).finally(() => clearTimeout(drainTimer));
       if (timedOut) {
         const sep = key.indexOf(":");
+        const tenantId = key.slice(0, sep);
+        const outletId = key.slice(sep + 1);
         logger.warn(
           {
-            tenantId: key.slice(0, sep),
-            outletId: key.slice(sep + 1),
+            tenantId,
+            outletId,
             pending: pending.length,
             stopTimeoutMs,
           },
-          "EDC release drain timed out; releasing the outlet with calls still pending",
+          "EDC release drain timed out; keeping the outlet lock until the pending calls settle",
         );
-        break;
+        // legend-1ffe: the lock, its connection and its heartbeat stay held
+        // while a terminal call is live, so no other agent can send next to
+        // it. `stop` returns now; the normal release runs in the background
+        // once the calls settle. A lock lost meanwhile still goes through
+        // `lost` (onFatal while a call is live), and a restart drops the lock
+        // with the connection.
+        void releaseWhenSettled(key, entry, tenantId, outletId);
+        return;
       }
     }
+    await finishRelease(key, entry);
+  }
+
+  /** Background half of a capped `releaseOutlet`. Never throws. */
+  async function releaseWhenSettled(
+    key: string,
+    entry: { client: PoolClient; lockName: string; lost: () => void },
+    tenantId: string,
+    outletId: string,
+  ): Promise<void> {
+    try {
+      for (;;) {
+        const pending = [...(sales.get(key) ?? []), ...(wires.get(key) ?? [])];
+        if (pending.length === 0) break;
+        await Promise.allSettled(pending);
+      }
+      if (await finishRelease(key, entry))
+        logger.info(
+          { tenantId, outletId },
+          "EDC outlet lock released after the pending calls settled",
+        );
+    } catch (error) {
+      logger.error(
+        { tenantId, outletId, kind: errorKind(error) },
+        "EDC deferred outlet lock release failed",
+      );
+    }
+  }
+
+  /** Frees the lock, the connection and the heartbeat. False when the lock
+   * was lost earlier (`lost` already released the client). */
+  async function finishRelease(
+    key: string,
+    entry: { client: PoolClient; lockName: string; lost: () => void },
+  ): Promise<boolean> {
     // The lock was lost during the drain: `lost` already released the client.
-    if (locks.get(key) !== entry) return;
+    if (locks.get(key) !== entry) return false;
     locks.delete(key);
     stopHeartbeat(key);
     let broken: Error | undefined;
@@ -846,6 +890,7 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
     entry.client.removeListener("error", entry.lost);
     entry.client.removeListener("end", entry.lost);
     entry.client.release(broken);
+    return true;
   }
 
   /** Takes one outlet. The lock lives on a dedicated connection: if that

@@ -11,8 +11,10 @@
 // Assumptions (spec silent on names/values; recorded here and in the report):
 // - The cap is configured through a new `createEdcAgent` option
 //   `stopTimeoutMs` (milliseconds). Its default is not asserted.
-// - After the cap, `stop(ctx)` RESOLVES (never rejects) and the per-outlet
-//   advisory lock is released, so a new agent for the outlet can `start`.
+// - After the cap, `stop(ctx)` RESOLVES (never rejects) but the per-outlet
+//   lock stays held while the stuck call is pending (round 2): a second agent
+//   cannot claim the outlet and its sale is not sent. When the call settles
+//   the lock is released in the background and a second agent can claim.
 // - The warning goes through the shared pino `logger` of lib/logger (the
 //   logger itself or a child), at any level, and its text mentions one of
 //   stop / shutdown / drain / in-flight. No such line is written when the
@@ -184,6 +186,56 @@ async function leaveCallInFlight(f: Awaited<ReturnType<typeof fixture>>) {
   expect(f.sim.callsFor(f.terminalId).sale).toBe(1);
 }
 
+// Second agent on the same DB for the same outlet. Own simulator, so
+// `saleCalls` shows whether a sale reached a terminal through it.
+// Assumption: a failed lock claim is refused with an error (from `start` or,
+// if claiming is lazy, from `requestPayment`); the exact message is not asserted.
+async function tryClaimAndSell(): Promise<{
+  agent: Agent | null;
+  error: unknown;
+  saleCalls: number;
+}> {
+  const sim = new EcrSimulator("bca");
+  const c = ctx();
+  const candidate = createEdcAgent({
+    db,
+    registry: new EdcProviderRegistry().register(sim),
+    saleTimeoutMs: 1_000,
+    inquiryTimeoutMs: 50,
+    cancelTimeoutMs: 50,
+  });
+  const terminalId = await seedTerminal();
+  let error: unknown;
+  try {
+    await candidate.start(c);
+    const req = {
+      tenantId: tenantIdSchema.parse(tenant.tenantId),
+      outletId: outletIdSchema.parse(tenant.outletId),
+      terminalId,
+      reference: refOf(),
+      idempotencyKey: randomUUID(),
+      amountIdr: idr(AMOUNT),
+      method: "card",
+    } as EdcPaymentRequest;
+    await ensureBill(owner, req);
+    await candidate.requestPayment(c, cashier, req);
+  } catch (caught) {
+    error = caught;
+  }
+  let saleCalls = 0;
+  try {
+    saleCalls = sim.callsFor(terminalId).sale;
+  } catch {
+    // Terminal never reached through this simulator.
+  }
+  if (error === undefined) {
+    started.push({ agent: candidate, ctx: c });
+    return { agent: candidate, error, saleCalls };
+  }
+  await candidate.stop(c).catch(() => undefined);
+  return { agent: null, error, saleCalls };
+}
+
 function captureLogs() {
   const lines: string[] = [];
   const record = (...args: unknown[]) => {
@@ -240,7 +292,7 @@ afterAll(async () => {
 });
 
 describe("legend-1ffe EDC agent stop() time cap", () => {
-  it("legend-1ffe stop gives up on a stuck terminal call after the cap, warns, and releases the outlet", async () => {
+  it("legend-1ffe stop returns at the cap and warns, but keeps the outlet locked until the stuck call settles", async () => {
     // The terminal ignores the abort and settles only ~3 s after it.
     const f = await fixture({ ignoreAbortDelayMs: 3_000, stopTimeoutMs: 150 });
     await leaveCallInFlight(f);
@@ -253,17 +305,24 @@ describe("legend-1ffe EDC agent stop() time cap", () => {
     expect(elapsed).toBeLessThan(2_000);
     expect(lines.some((line) => STOP_LOG.test(line))).toBe(true);
 
-    // The outlet lock is free: a new agent for the same outlet can start.
-    const next = createEdcAgent({
-      db,
-      registry: new EdcProviderRegistry().register(new EcrSimulator("bca")),
-      saleTimeoutMs: 50,
-      inquiryTimeoutMs: 50,
-      cancelTimeoutMs: 50,
-    });
-    started.push({ agent: next, ctx: f.ctx });
-    await next.start(f.ctx);
-  }, 20_000);
+    // The terminal call is still live, so the outlet must stay locked: a second
+    // agent on the same DB cannot take it and its sale never reaches a terminal.
+    const blocked = await tryClaimAndSell();
+    expect(blocked.agent).toBeNull();
+    expect(blocked.error).toBeDefined();
+    expect(blocked.saleCalls).toBe(0);
+
+    // Once the stuck call settles the lock is released in the background and a
+    // second agent can claim the outlet and sell.
+    await vi.waitFor(
+      async () => {
+        const claimed = await tryClaimAndSell();
+        expect(claimed.error).toBeUndefined();
+        expect(claimed.saleCalls).toBe(1);
+      },
+      { timeout: 15_000, interval: 250 },
+    );
+  }, 40_000);
 
   it("legend-1ffe stop still waits for a call that settles inside the cap, without a warning", async () => {
     const f = await fixture({ ignoreAbortDelayMs: 300, stopTimeoutMs: 5_000 });
