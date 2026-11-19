@@ -367,6 +367,10 @@ export const payrollPayoutReviewMessages = {
 
     reconNotFound:
       "Flag atau usulan penutupan tidak ditemukan. Muat ulang daftar lalu periksa lagi.",
+    reconHoldTakenOver:
+      "Flag yang menahan slip ini sudah ditulis, jadi hold tidak perlu dilepas. Muat ulang lalu periksa flag dan clearance-nya. Slip tetap tertahan.",
+    reconHoldEvidenceNotClean:
+      "Bukti rekonsiliasi belum bersih sejak hold dibuat, jadi hold tetap menahan slip. Tunggu pemeriksaan berikutnya bersih, lalu coba lagi.",
     returnWithdrawReasonInvalid:
       "Alasan penarikan klaim wajib diisi (10 sampai 500 karakter).",
     returnWithdrawSelfApproval:
@@ -607,6 +611,90 @@ export const payrollPayoutReviewMessages = {
       noData: "Data belum tersedia",
       noDataBody: "Daftar flag dan usulan clearance belum berhasil diambil.",
       retry: "Coba lagi",
+    },
+  },
+  reconHold: {
+    title: "Hold slip",
+    subtitle:
+      "Hold dibuat saat pemeriksaan malam tidak dapat menulis flag. Slip tetap tertahan sampai flag berikutnya mengambil alih, atau dua orang berbeda melepasnya setelah bukti bersih.",
+    loading: "Memuat hold slip",
+    count: "{count} hold",
+    status: {
+      held: "Ditahan",
+      proposed: "Diusulkan lepas",
+      released: "Dilepas",
+      takenOver: "Sudah diambil alih flag",
+    },
+    card: {
+      id: "Hold {id}",
+      ref: "Item {item} · Slip {slip} · Batch {batch}",
+      heldAt: "Ditahan sejak {time}",
+      cause: "Penyebab",
+      causeUnknown: "Penyebab tidak tercatat",
+      causeEvidenceMissing: "Berkas bukti tidak ditemukan",
+      causeEvidenceMismatch: "Isi berkas bukti tidak sama dengan catatan",
+      causeEvidenceLocked: "Berkas bukti tidak bisa dibaca tepat waktu",
+      causeOther: "Selisih lain pada rekonsiliasi",
+      held: "Slip tertahan · Belum boleh diterbitkan",
+      notClean:
+        "Bukti rekonsiliasi belum bersih sejak hold dibuat. Hold tetap menahan slip sampai pemeriksaan berikutnya bersih.",
+      takenOver:
+        "Flag yang menahan slip ini sudah ditulis. Keputusan ada pada flag dan clearance-nya di daftar flag.",
+      released:
+        "Dilepas · {proposer} mengusulkan, {approver} menyetujui pada {time}.",
+      releasedScope:
+        "Pelepasan hanya mengangkat hold ini. Flag atau syarat payout lain masih dapat menahan slip.",
+    },
+    propose: {
+      open: "Usulkan pelepasan",
+      title: "Usulkan pelepasan hold",
+      reasonLabel: "Alasan pelepasan",
+      reasonPlaceholder: "Jelaskan bukti bersih yang Anda periksa.",
+      reasonHint: "Wajib 10–500 karakter. Jelaskan mengapa hold dapat dilepas.",
+      counter: "{count}/500 karakter",
+      reasonError: "Tulis alasan minimal 10 karakter.",
+      passwordLabel: "Konfirmasi sandi untuk pelepasan hold",
+      passwordError: "Isi konfirmasi sandi untuk melanjutkan.",
+      submit: "Usulkan pelepasan",
+      cancel: "Batal",
+      note: "Usulan belum melepas hold. Orang lain yang berwenang harus meninjau dan menyetujuinya. Slip tetap tertahan.",
+      invalidTitle: "Usulan belum dapat dikirim",
+      invalidBody:
+        "Lengkapi alasan dan konfirmasi kata sandi pada kolom yang ditandai.",
+      failedTitle: "Usulan belum dapat dikirim",
+      sent: "Usulan pelepasan terkirim · Menunggu persetujuan orang lain",
+      sentBody: "Hold tetap menahan slip sampai orang lain menyetujuinya.",
+    },
+    approve: {
+      title: "Setujui pelepasan",
+      proposedBy: "Diusulkan oleh",
+      reasonCaption: "Alasan usulan",
+      submit: "Setujui pelepasan",
+      note: "Pelepasan hanya mengangkat hold ini. Tidak mengirim uang dan tidak mengubah nominal pembayaran.",
+      failedTitle: "Persetujuan belum dapat dikirim",
+      done: "Hold dilepas oleh orang kedua",
+      doneBody:
+        "Pelepasan disetujui. Pembayaran tidak dijalankan oleh tindakan ini.",
+    },
+    self: {
+      title: "Anda adalah pengusul",
+      body: "Anda mengusulkan pelepasan ini. Persetujuan harus dilakukan oleh orang lain.",
+    },
+    stale: {
+      title: "Status hold sudah berubah",
+      body: "Data sudah dimuat ulang. Periksa status terbaru; slip tetap tertahan sampai hold terbukti lepas.",
+      action: "Tutup pesan",
+    },
+    empty: {
+      title: "Tidak ada hold slip",
+      description:
+        "Belum ada slip yang ditahan karena flag yang gagal ditulis.",
+    },
+    error: {
+      title: "Hold slip belum dapat dimuat",
+      description:
+        "Periksa koneksi, lalu coba lagi. Status hold belum dapat dipastikan; jangan lanjutkan penerbitan slip berdasarkan layar ini.",
+      retry: "Muat ulang hold",
     },
   },
   detail: {

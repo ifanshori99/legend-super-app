@@ -3466,6 +3466,27 @@
       "when": 1795000018101,
       "tag": "0508_sealed_reseal_frozen",
       "breakpoints": true
+    },
+    {
+      "idx": 509,
+      "version": "7",
+      "when": 1795000019101,
+      "tag": "0509_payout_1192_hold_release",
+      "breakpoints": true
+    },
+    {
+      "idx": 510,
+      "version": "7",
+      "when": 1795000020101,
+      "tag": "0510_payout_1192_hold_release_grant",
+      "breakpoints": true
+    },
+    {
+      "idx": 511,
+      "version": "7",
+      "when": 1795000021101,
+      "tag": "0511_payout_1192_hold_release_functions",
+      "breakpoints": true
     }
   ]
 }

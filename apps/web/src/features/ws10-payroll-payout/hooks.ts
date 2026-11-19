@@ -54,6 +54,7 @@ import {
   payableRunsQuery,
   payoutKeys,
   payoutReconFlagsQuery,
+  payoutReconHoldsQuery,
   resolutionProposalsQuery,
   runBatchesQuery,
   sourceAccountsQuery,
@@ -536,6 +537,39 @@ export function useApproveReconClearance() {
       api.approveReconClearance(clearanceId, body),
     onSettled: () =>
       queryClient.invalidateQueries({ queryKey: payoutKeys.reconFlags() }),
+  });
+}
+
+/** Every slip hold of the tenant, newest first (`release` null = nobody proposed a release). */
+export function usePayoutReconHolds() {
+  return useQuery(payoutReconHoldsQuery());
+}
+
+/** `mutate({ holdId, reason, password? })`; `data.releaseId`. Lifts nothing yet. */
+export function useProposeReconHoldRelease() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      holdId,
+      ...body
+    }: { holdId: string } & api.ReconClearanceProposalInput) =>
+      api.proposeReconHoldRelease(holdId, body),
+    onSettled: () =>
+      queryClient.invalidateQueries({ queryKey: payoutKeys.reconHolds() }),
+  });
+}
+
+/** `mutate({ releaseId, password? })`: the second person, not the proposer. */
+export function useApproveReconHoldRelease() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      releaseId,
+      ...body
+    }: { releaseId: string } & api.PasswordStepInput) =>
+      api.approveReconHoldRelease(releaseId, body),
+    onSettled: () =>
+      queryClient.invalidateQueries({ queryKey: payoutKeys.reconHolds() }),
   });
 }
 

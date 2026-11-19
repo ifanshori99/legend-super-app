@@ -247,6 +247,38 @@ export type PayoutReconFlagDto = {
 };
 
 /**
+ * A hold of a slip whose reconciliation flag could not be written (legend-6o7pc;
+ * GET /payout-recon-holds). Two finance people release it (propose, approve) only
+ * while the latest recon evidence is clean; until `release.status` is `approved`
+ * (or a later flag took the hold over) the slip stays held. No amount, name or
+ * account number.
+ */
+export type PayoutReconHoldDto = {
+  id: string;
+  kind: string;
+  itemId: string;
+  payslipId: string;
+  batchId: string;
+  /** Base reason of the flag that could not be written (null when unknown). */
+  reason: string | null;
+  /** ISO datetime the hold was made. */
+  heldAt: string;
+  /** True when a later flag took the hold over (the flag + its clearance decide now). */
+  takenOver: boolean;
+  /** True when the latest recon evidence of the operation is clean after the hold (a release can be proposed). */
+  releasable: boolean;
+  release: {
+    id: string;
+    status: "proposed" | "approved";
+    reason: string;
+    proposedBy: string;
+    proposedAt: string;
+    approvedBy: string | null;
+    approvedAt: string | null;
+  } | null;
+};
+
+/**
  * One return claim of a batch and its two-person withdrawal (legend-snwnn; GET
  * /disbursement-batches/:id/return-claims). `withdrawal` is the open (not yet
  * approved) proposal to withdraw an `open` claim, null when there is none.

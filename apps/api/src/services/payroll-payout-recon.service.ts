@@ -2108,11 +2108,16 @@ export async function recordReadOk(
   tenantId: string,
   operationId: string,
 ): Promise<void> {
-  await asReconRole(tx, () =>
-    tx.execute(
+  await asReconRole(tx, async () => {
+    await tx.execute(
       sql`SELECT app.payout_recon_evidence_observe_ok(${tenantId}::uuid, ${operationId}::uuid)`,
-    ),
-  );
+    );
+    // 1192: the ok observation is deduped, so a clean read is recorded apart (only
+    // while an evidence hold of the operation is open); a hold release needs it.
+    await tx.execute(
+      sql`SELECT app.payout_recon_clean_read(${tenantId}::uuid, ${operationId}::uuid)`,
+    );
+  });
 }
 
 /**
@@ -2287,11 +2292,20 @@ async function holdUnwrittenFlags(
     try {
       await withTenant(db, context, async (tx) => {
         // Only the role legend_payout_recon may record a hold (like observe_ok).
-        await asReconRole(tx, () =>
-          tx.execute(
-            sql`SELECT app.payout_recon_hold_unwritten(${tenantId}::uuid, ${group.kind}::text, ${group.operationId}::uuid, ARRAY[${uuidList([...group.itemIds])}]::uuid[], ${group.reason}::text)`,
-          ),
-        );
+        let held = Number.NaN;
+        await asReconRole(tx, async () => {
+          const result = await tx.execute(
+            sql`SELECT app.payout_recon_hold_unwritten(${tenantId}::uuid, ${group.kind}::text, ${group.operationId}::uuid, ARRAY[${uuidList([...group.itemIds])}]::uuid[], ${group.reason}::text) AS held`,
+          );
+          held = Number(
+            (result.rows[0] as { held?: unknown } | undefined)?.held,
+          );
+        });
+        // 1192: the function returns how many DISTINCT items of the group hold
+        // after the call. Every item must hold (an item it could not find or
+        // write holds nothing): otherwise the page must fail, the cursor stays.
+        if (!Number.isInteger(held) || held !== group.itemIds.size)
+          throw new Error("payout recon: not every item of the flag is held");
       });
     } catch (error) {
       allHeld = false;

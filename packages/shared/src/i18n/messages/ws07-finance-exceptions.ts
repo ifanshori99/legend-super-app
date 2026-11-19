@@ -16,6 +16,7 @@ export const financeExceptionsMessages = {
     receipt_pending_stale: "Jurnal penjualan menunggu struk lebih dari 1 hari",
     payout_proof_stuck: "Bukti payout tertahan pemeriksaan",
     payout_recon_flag: "Selisih rekonsiliasi payout",
+    payout_recon_hold: "Slip payout ditahan (flag gagal ditulis)",
     release_recon_unproven:
       "Kode QRIS/VA yang dilepas belum terbukti mati lebih dari 3 hari",
     payout_batch_disputed: "Pencairan dibekukan (bukan saya)",
@@ -39,6 +40,8 @@ export const financeExceptionsMessages = {
       "Bukti bank pencairan gaji belum bisa diperiksa: berkasnya tidak terbaca atau sama dengan bukti lain. Pengembalian dengan bukti baru tetap ditahan. Berlaku untuk seluruh PT dan tidak mengikuti rentang tanggal.",
     payout_recon_flag:
       "Pemeriksaan malam menemukan langkah koreksi, pembayaran ganda, pengembalian, atau akun sumber pencairan gaji yang tidak cocok dengan catatan dua orang, bukti, atau jurnalnya. Slip terkait ditahan dari pencairan ulang. Berlaku untuk seluruh PT dan tidak mengikuti rentang tanggal.",
+    payout_recon_hold:
+      "Pemeriksaan malam tidak dapat menulis flag untuk slip ini, jadi slip tetap ditahan dari pencairan ulang. Hold lepas bila flag ditulis kemudian, atau bila dua orang berbeda melepasnya setelah bukti bersih di layar rekonsiliasi. Berlaku untuk seluruh PT dan tidak mengikuti rentang tanggal.",
     release_recon_unproven:
       "Kode QRIS atau VA yang dilepas manual masih belum dijawab final oleh penyedia setelah lebih dari 3 hari. Antrean terus bertanya tiap hari dan tidak menutup baris tanpa bukti, jadi uang masih bisa masuk ke kode ini. Tidak mengikuti rentang tanggal.",
     payout_batch_disputed:
@@ -52,6 +55,7 @@ export const financeExceptionsMessages = {
     payout_posting: "Jurnal pencairan gaji",
     payout_proof: "Bukti pencairan gaji",
     payout_recon: "Rekonsiliasi pencairan gaji",
+    payout_recon_hold: "Hold slip pencairan gaji",
     qris_release_recon: "Antrean cek QRIS dilepas",
     va_release_recon: "Antrean cek VA dilepas",
     payout_batch_dispute: "Sengketa pencairan gaji",
@@ -136,6 +140,7 @@ export const financeExceptionsMessages = {
     refId: "Nomor referensi",
     refDetail: "Keterangan",
     refOpen: "Lihat rincian {ref}",
+    reconLink: "Buka layar rekonsiliasi payout",
     wib: "WIB",
   },
   states: {

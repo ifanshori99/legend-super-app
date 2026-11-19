@@ -34,6 +34,7 @@ export type PayoutGrantBinding = {
     | "disown"
     | "unfreeze"
     | "recon_clear"
+    | "hold_release"
     | "return_withdraw";
   step: "propose" | "approve" | "record" | "confirm" | "withdraw";
   batchId: string | null;
@@ -45,7 +46,8 @@ export type PayoutGrantBinding = {
    * The outcome a grant covers (legend-r86qa): `failed` or `not_sent` for kind
    * `resolve`, `succeeded` for kind `bank_confirm`, the sha256 (hex) of the
    * reason for kind `disown`, `unfreeze` (legend-l2zru), `recon_clear`
-   * (legend-xbagc) and `return_withdraw` (legend-snwnn); NULL for every
+   * (legend-xbagc), `hold_release` (legend-6o7pc) and `return_withdraw`
+   * (legend-snwnn); NULL for every
    * other kind.
    */
   detail?: string | null;
@@ -158,6 +160,19 @@ function issueError(error: unknown): unknown {
         409,
         "PAYOUT_RECON_CLEAR_STATE",
         "Penutupan flag ini sudah disetujui.",
+      );
+    case "96":
+      // A hold that a later flag took over is decided by that flag (legend-6o7pc).
+      return new HttpError(
+        409,
+        "PAYOUT_RECON_HOLD_TAKEN_OVER",
+        "Hold ini sudah diambil alih flag rekonsiliasi. Flag itu dan penutupannya yang menentukan.",
+      );
+    case "97":
+      return new HttpError(
+        409,
+        "PAYOUT_RECON_HOLD_EVIDENCE_NOT_CLEAN",
+        "Bukti rekonsiliasi belum bersih, jadi hold tetap ditahan.",
       );
     case "72":
       return new HttpError(

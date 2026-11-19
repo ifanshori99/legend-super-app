@@ -1,0 +1,228 @@
+{
+  "baseUrl": "http://localhost:3226",
+  "axe": "axe-core bundle",
+  "tags": [
+    "wcag2a",
+    "wcag2aa",
+    "wcag21aa",
+    "wcag22aa"
+  ],
+  "states": {
+    "recon-hold-normal": {
+      "status": "pass",
+      "runs": {
+        "1280-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "1280-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "390-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "390-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        }
+      }
+    },
+    "recon-hold-empty": {
+      "status": "pass",
+      "runs": {
+        "1280-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "1280-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "390-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "390-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        }
+      }
+    },
+    "recon-hold-loading": {
+      "status": "pass",
+      "runs": {
+        "1280-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "1280-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "390-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "390-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        }
+      }
+    },
+    "recon-hold-error": {
+      "status": "pass",
+      "runs": {
+        "1280-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "1280-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "390-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "390-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        }
+      }
+    },
+    "recon-hold-validation": {
+      "status": "pass",
+      "runs": {
+        "1280-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "1280-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "390-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "390-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        }
+      }
+    },
+    "recon-hold-approve": {
+      "status": "pass",
+      "runs": {
+        "1280-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "1280-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "390-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "390-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        }
+      }
+    },
+    "recon-hold-self": {
+      "status": "pass",
+      "runs": {
+        "1280-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "1280-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "390-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "390-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        }
+      }
+    },
+    "recon-hold-taken-over": {
+      "status": "pass",
+      "runs": {
+        "1280-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "1280-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "390-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "390-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        }
+      }
+    }
+  }
+}

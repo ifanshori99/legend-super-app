@@ -35,6 +35,12 @@
 // `slow` and `error` work as everywhere. The proposals live in sessionStorage
 // (key `payoutReconMock`), so a spec can reload and switch the mock role cookie
 // (`finance` / `hr`) to approve as a different person.
+// Recon holds (legend-6o7pc) follow the same rules: `?mock=hold-approve` has a
+// release proposed by the other user, `hold-self` one proposed by the signed-in
+// user (approve refused), `hold-taken-over` answers 409 PAYOUT_RECON_HOLD_TAKEN_OVER
+// to the next write (a flag took the hold over). Plain `normal` shows one hold
+// of each status; `empty` shows none. Stored in sessionStorage (key
+// `payoutReconHoldMock`) like the recon flags.
 // Every call of the approve endpoint is also logged in
 // `window.__payoutApproveCalls` (batch ids), to prove nothing was sent.
 // Bank items carry the locked payee snapshot (name + "****1234"); cash items
@@ -74,6 +80,7 @@ import {
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import type {
   PayoutReconFlagDto,
+  PayoutReconHoldDto,
   PayoutReturnClaimDto,
   PayrollDisbursementBatchDto,
   PayrollDisbursementItemDto,
@@ -85,10 +92,13 @@ import { registerMock } from "@/lib/mock/registry";
 import { createMockStore } from "@/lib/mock/store";
 import {
   approveReconClearanceEndpoint,
+  approveReconHoldReleaseEndpoint,
   approveReturnWithdrawalEndpoint,
   listBatchReturnClaimsEndpoint,
   listPayoutReconFlagsEndpoint,
+  listPayoutReconHoldsEndpoint,
   proposeReconClearanceEndpoint,
+  proposeReconHoldReleaseEndpoint,
   proposeReturnWithdrawalEndpoint,
   type PayableRun,
   type PayoutEmployee,
@@ -489,13 +499,23 @@ type ReconScenario = (typeof RECON_SCENARIOS)[number];
 const isReconScenario = (value: string | null): value is ReconScenario =>
   (RECON_SCENARIOS as readonly (string | null)[]).includes(value);
 
+const HOLD_SCENARIOS = [
+  "hold-approve",
+  "hold-self",
+  "hold-taken-over",
+] as const;
+type HoldScenario = (typeof HOLD_SCENARIOS)[number];
+const isHoldScenario = (value: string | null): value is HoldScenario =>
+  (HOLD_SCENARIOS as readonly (string | null)[]).includes(value);
+
 type PayoutScenario =
   | "legacy-account"
   | "batches-paged"
   | "batches-paged-open"
   | "resolve-proposal"
   | "two-pending"
-  | ReconScenario;
+  | ReconScenario
+  | HoldScenario;
 let rememberedScenario: PayoutScenario | null = null;
 
 /**
@@ -511,7 +531,8 @@ function payoutScenario(): PayoutScenario | null {
       value === "batches-paged-open" ||
       value === "resolve-proposal" ||
       value === "two-pending" ||
-      isReconScenario(value)
+      isReconScenario(value) ||
+      isHoldScenario(value)
     )
       rememberedScenario = value;
     else if (value !== null) rememberedScenario = null;
@@ -1731,4 +1752,227 @@ registerMock(approveReturnWithdrawalEndpoint, ({ params, body, scenario }) => {
   return {
     data: { withdrawalId: withdrawal.id, restoredItems: found.itemCount },
   };
+});
+
+// ---- Recon holds (legend-6o7pc) -----------------------------------------------------
+
+type HoldRelease = NonNullable<PayoutReconHoldDto["release"]>;
+type HoldMockState = {
+  /** Scenario the state was seeded for; another scenario re-seeds it. */
+  seededFor: string;
+  holds: PayoutReconHoldDto[];
+};
+
+const HOLD_STORAGE_KEY = "payoutReconHoldMock";
+const holdId = (n: number) => spreadUid(8000 + n);
+export const MOCK_HOLD_IDS = {
+  held: holdId(1),
+  notClean: holdId(2),
+  proposed: holdId(3),
+  released: holdId(4),
+  takenOver: holdId(5),
+} as const;
+
+function seedHolds(scenario: string): HoldMockState {
+  const other = otherUser();
+  const proposer = scenario === "hold-self" ? currentActor() : other;
+  const hold = (
+    n: number,
+    patch: Partial<PayoutReconHoldDto> = {},
+  ): PayoutReconHoldDto => ({
+    id: holdId(n),
+    kind: "return",
+    itemId: spreadUid(2000 + n),
+    payslipId: spreadUid(6000 + n),
+    batchId: MOCK_PAYOUT_IDS.batchStatus,
+    reason: "evidence_read_locked",
+    heldAt: `2026-11-1${n}T03:15:00.000Z`,
+    takenOver: false,
+    releasable: true,
+    release: null,
+    ...patch,
+  });
+  const proposed = (n: number): HoldRelease => ({
+    id: holdId(10 + n),
+    status: "proposed",
+    reason: "Bukti bank terbaca bersih pada pemeriksaan malam berikutnya.",
+    proposedBy: proposer,
+    proposedAt: "2026-11-16T08:40:00.000Z",
+    approvedBy: null,
+    approvedAt: null,
+  });
+  if (scenario === "empty") return { seededFor: scenario, holds: [] };
+  if (scenario === "hold-approve" || scenario === "hold-self")
+    return {
+      seededFor: scenario,
+      holds: [hold(3, { release: proposed(3) })],
+    };
+  if (scenario === "hold-taken-over")
+    return {
+      seededFor: scenario,
+      holds: [hold(1), hold(3, { release: proposed(3) })],
+    };
+  return {
+    seededFor: scenario,
+    holds: [
+      hold(1),
+      hold(2, { releasable: false }),
+      hold(3, { release: proposed(3) }),
+      hold(4, {
+        release: {
+          ...proposed(4),
+          status: "approved",
+          proposedBy: userIds.financeApprover,
+          approvedBy: userIds.hrApprover,
+          approvedAt: "2026-11-15T09:30:00.000Z",
+        },
+      }),
+      hold(5, { takenOver: true, releasable: false }),
+    ],
+  };
+}
+
+const holdStore = createMockStore<HoldMockState | null>(() => null);
+
+function holdState(scenario: string): HoldMockState {
+  // Only `empty` and the hold scenarios change the data; `slow` and `error`
+  // act in the transport and must not wipe a stored proposal.
+  const effective = isHoldScenario(payoutScenario())
+    ? (payoutScenario() as string)
+    : scenario === "empty"
+      ? "empty"
+      : "normal";
+  const stored = (() => {
+    if (typeof window === "undefined") return holdStore.get();
+    try {
+      const raw = window.sessionStorage.getItem(HOLD_STORAGE_KEY);
+      return raw ? (JSON.parse(raw) as HoldMockState) : null;
+    } catch {
+      return holdStore.get();
+    }
+  })();
+  // The proposer is picked relative to the signed-in user at seed time only;
+  // a changed user keeps the stored state, which is what a two-person spec needs.
+  if (stored?.seededFor === effective) return stored;
+  const seeded = seedHolds(effective);
+  saveHolds(seeded);
+  return seeded;
+}
+
+function saveHolds(next: HoldMockState) {
+  holdStore.set(next);
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(HOLD_STORAGE_KEY, JSON.stringify(next));
+  } catch {
+    // Storage blocked: the in-memory copy still serves this page.
+  }
+}
+
+/** A flag took the hold over: the release is moot, the flag and its clearance decide. */
+function takeOverHold(current: HoldMockState, id: string): never {
+  saveHolds({
+    ...current,
+    holds: current.holds.map((row) =>
+      row.id === id ? { ...row, takenOver: true, releasable: false } : row,
+    ),
+  });
+  throw refuse(
+    409,
+    "PAYOUT_RECON_HOLD_TAKEN_OVER",
+    "Hold sudah diambil alih flag.",
+  );
+}
+
+registerMock(listPayoutReconHoldsEndpoint, ({ scenario }) => ({
+  data: holdState(scenario).holds,
+}));
+
+registerMock(proposeReconHoldReleaseEndpoint, ({ params, body, scenario }) => {
+  passwordStepUp("recon", body.password);
+  const current = holdState(scenario);
+  const found = current.holds.find((row) => row.id === params.holdId);
+  if (!found)
+    throw refuse(
+      404,
+      "PAYOUT_RECON_HOLD_NOT_FOUND",
+      "Hold slip tidak ditemukan.",
+    );
+  // The same proposal again answers the same id; the first reason stays.
+  if (found.release) return { data: { releaseId: found.release.id } };
+  if (found.takenOver || payoutScenario() === "hold-taken-over")
+    takeOverHold(current, found.id);
+  if (!found.releasable)
+    throw refuse(
+      409,
+      "PAYOUT_RECON_HOLD_EVIDENCE_NOT_CLEAN",
+      "Bukti rekonsiliasi belum bersih.",
+    );
+  const releaseId = nextId();
+  saveHolds({
+    ...current,
+    holds: current.holds.map((row) =>
+      row.id === found.id
+        ? {
+            ...row,
+            release: {
+              id: releaseId,
+              status: "proposed" as const,
+              reason: body.reason,
+              proposedBy: currentActor(),
+              proposedAt: new Date().toISOString(),
+              approvedBy: null,
+              approvedAt: null,
+            },
+          }
+        : row,
+    ),
+  });
+  return { data: { releaseId } };
+});
+
+registerMock(approveReconHoldReleaseEndpoint, ({ params, body, scenario }) => {
+  passwordStepUp("recon", body.password);
+  const current = holdState(scenario);
+  const found = current.holds.find(
+    (row) => row.release?.id === params.releaseId,
+  );
+  const release = found?.release;
+  if (!found || !release)
+    throw refuse(
+      404,
+      "PAYOUT_RECON_HOLD_NOT_FOUND",
+      "Usulan pelepasan hold tidak ditemukan.",
+    );
+  if (release.status === "approved")
+    throw refuse(
+      409,
+      "PAYOUT_RECON_CLEAR_STATE",
+      "Penutupan flag ini sudah disetujui.",
+    );
+  if (release.proposedBy === currentActor())
+    throw refuse(
+      403,
+      "PAYOUT_RECON_CLEAR_SELF_APPROVAL",
+      "Pengusul penutupan flag tidak boleh menyetujuinya sendiri.",
+    );
+  if (found.takenOver || payoutScenario() === "hold-taken-over")
+    takeOverHold(current, found.id);
+  saveHolds({
+    ...current,
+    holds: current.holds.map((row) =>
+      row.id === found.id
+        ? {
+            ...row,
+            release: {
+              ...release,
+              status: "approved" as const,
+              approvedBy: currentActor(),
+              approvedAt: new Date().toISOString(),
+            },
+          }
+        : row,
+    ),
+  });
+  return { data: { releaseId: release.id } };
 });

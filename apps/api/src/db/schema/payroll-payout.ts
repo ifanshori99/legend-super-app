@@ -1435,6 +1435,10 @@ export const PAYOUT_GRANT_KINDS = [
   // Two-person clearance of a false reconciliation flag (legend-xbagc):
   // writes payroll_payout_recon_clearances, attests nothing.
   "recon_clear",
+  // Two-person release of a hold of a flag that could not be written
+  // (legend-6o7pc, migration 0510): writes payroll_payout_recon_hold_releases,
+  // attests nothing. Short because the kind column is varchar(16).
+  "hold_release",
 ] as const;
 export type PayoutGrantKind = (typeof PAYOUT_GRANT_KINDS)[number];
 
@@ -1505,7 +1509,7 @@ export const payrollPayoutGrants = pgTable(
     ),
     check(
       "payroll_payout_grants_detail_check",
-      sql`(${table.kind} = 'resolve' AND ${table.detail} IN ('failed', 'not_sent')) OR (${table.kind} = 'bank_confirm' AND ${table.detail} = 'succeeded') OR (${table.kind} IN ('disown', 'unfreeze', 'recon_clear', 'return_withdraw') AND ${table.detail} ~ '^[0-9a-f]{64}$') OR (${table.kind} NOT IN ('resolve', 'bank_confirm', 'disown', 'unfreeze', 'recon_clear', 'return_withdraw') AND ${table.detail} IS NULL)`,
+      sql`(${table.kind} = 'resolve' AND ${table.detail} IN ('failed', 'not_sent')) OR (${table.kind} = 'bank_confirm' AND ${table.detail} = 'succeeded') OR (${table.kind} IN ('disown', 'unfreeze', 'recon_clear', 'return_withdraw', 'hold_release') AND ${table.detail} ~ '^[0-9a-f]{64}$') OR (${table.kind} NOT IN ('resolve', 'bank_confirm', 'disown', 'unfreeze', 'recon_clear', 'return_withdraw', 'hold_release') AND ${table.detail} IS NULL)`,
     ),
     check(
       "payroll_payout_grants_step_check",
@@ -2019,6 +2023,10 @@ export const payrollPayoutReconUnwrittenHolds = pgTable(
       .defaultNow(),
   },
   (table) => [
+    unique("payroll_payout_recon_unwritten_holds_tenant_id_key").on(
+      table.tenantId,
+      table.id,
+    ),
     index("payroll_payout_recon_unwritten_holds_payslip_idx").on(
       table.tenantId,
       table.payslipId,
@@ -2045,6 +2053,105 @@ export const payrollPayoutReconUnwrittenHolds = pgTable(
     check(
       "payroll_payout_recon_unwritten_holds_kind_check",
       sql`${table.kind} IN (${inList(PAYOUT_ATTESTATION_KINDS)})`,
+    ),
+  ],
+);
+
+/**
+ * Two-person release of a hold of a flag that could not be written (legend-6o7pc,
+ * migration 0510/0511). The hold row stays (insert-only); an approved release stops
+ * it holding the payslip back (`app.payout_payslip_held_by_recon`). Allowed only
+ * while the hold is not taken over by a flag and the latest recon evidence of its
+ * operation is clean after the hold. A finance person proposes with a reason, a
+ * different one approves, each with a one-time password step-up grant (kind
+ * `hold_release`). One release per hold; never deleted.
+ */
+export const payrollPayoutReconHoldReleases = pgTable(
+  "payroll_payout_recon_hold_releases",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    holdId: uuid("hold_id").notNull(),
+    reason: varchar("reason", { length: 500 }).notNull(),
+    proposedBy: actor("proposed_by").notNull(),
+    proposedSessionId: text("proposed_session_id").notNull(),
+    proposedGrantId: uuid("proposed_grant_id").notNull(),
+    proposedAt: timestamp("proposed_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    approvedBy: actor("approved_by"),
+    approvedSessionId: text("approved_session_id"),
+    approvedGrantId: uuid("approved_grant_id"),
+    approvedAt: timestamp("approved_at", { withTimezone: true }),
+    /** Why the approval was allowed; null until approved. */
+    basis: varchar("basis", { length: 16 }).$type<
+      "flag_rewritten" | "clean_evidence"
+    >(),
+  },
+  (table) => [
+    unique("payroll_payout_recon_hold_releases_tenant_id_key").on(
+      table.tenantId,
+      table.id,
+    ),
+    unique("payroll_payout_recon_hold_releases_hold_key").on(
+      table.tenantId,
+      table.holdId,
+    ),
+    foreignKey({
+      name: "payroll_payout_recon_hold_releases_hold_fk",
+      columns: [table.tenantId, table.holdId],
+      foreignColumns: [
+        payrollPayoutReconUnwrittenHolds.tenantId,
+        payrollPayoutReconUnwrittenHolds.id,
+      ],
+    }),
+    foreignKey({
+      name: "payroll_payout_recon_hold_releases_proposed_grant_fk",
+      columns: [table.tenantId, table.proposedGrantId],
+      foreignColumns: [payrollPayoutGrants.tenantId, payrollPayoutGrants.id],
+    }),
+    foreignKey({
+      name: "payroll_payout_recon_hold_releases_approved_grant_fk",
+      columns: [table.tenantId, table.approvedGrantId],
+      foreignColumns: [payrollPayoutGrants.tenantId, payrollPayoutGrants.id],
+    }),
+    check(
+      "payroll_payout_recon_hold_releases_reason_check",
+      sql`char_length(btrim(${table.reason})) >= 10`,
+    ),
+    check(
+      "payroll_payout_recon_hold_releases_approved_check",
+      sql`(${table.approvedBy} IS NULL AND ${table.approvedSessionId} IS NULL AND ${table.approvedGrantId} IS NULL AND ${table.approvedAt} IS NULL AND ${table.basis} IS NULL) OR (${table.approvedBy} IS NOT NULL AND ${table.approvedSessionId} IS NOT NULL AND ${table.approvedGrantId} IS NOT NULL AND ${table.approvedAt} IS NOT NULL AND ${table.basis} IN ('flag_rewritten', 'clean_evidence') AND ${table.approvedBy} <> ${table.proposedBy} AND ${table.approvedSessionId} <> ${table.proposedSessionId})`,
+    ),
+  ],
+);
+
+/**
+ * A clean read of the proof file of an operation while an evidence hold of it was open
+ * (1192, legend-6o7pc, migration 0509). The 'ok' observation is deduped and is not
+ * written twice, so this is the record a hold release needs: `read_at` after the
+ * hold's `created_at`. Insert-only (PAYOUT-87), written only by
+ * `app.payout_recon_clean_read` (payout role); the app role may read.
+ */
+export const payrollPayoutReconHoldCleanReads = pgTable(
+  "payroll_payout_recon_hold_clean_reads",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    operationId: uuid("operation_id").notNull(),
+    readAt: timestamp("read_at", { withTimezone: true })
+      .notNull()
+      .default(sql`clock_timestamp()`),
+  },
+  (table) => [
+    unique("payroll_payout_recon_hold_clean_reads_tenant_id_key").on(
+      table.tenantId,
+      table.id,
+    ),
+    index("payroll_payout_recon_hold_clean_reads_op_idx").on(
+      table.tenantId,
+      table.operationId,
+      table.readAt,
     ),
   ],
 );

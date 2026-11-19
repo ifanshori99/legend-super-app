@@ -13,6 +13,7 @@ import { isPayoutOffline } from "../errors";
 import type { PayoutAccess } from "../guard";
 import { useActingUserId, usePayoutReconFlags } from "../hooks";
 import { useReconFacts } from "./recon-facts";
+import { ReconHoldSection } from "./recon-hold";
 import { ReconFlagList } from "./recon-list";
 import {
   batchIdsOf,
@@ -99,6 +100,7 @@ function ReconContent({ sessionUserId }: { sessionUserId: string }) {
       ) : (
         <ReconBoard flags={query.data} currentUserId={currentUserId} />
       )}
+      <ReconHoldSection currentUserId={currentUserId} />
     </div>
   );
 }

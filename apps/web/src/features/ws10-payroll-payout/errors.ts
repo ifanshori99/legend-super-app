@@ -54,6 +54,9 @@ const CODE_KEYS: Record<string, MessageKey> = {
   PAYOUT_RECON_PROOF_UNREADABLE:
     "payrollPayoutReview.error.reconProofUnreadable",
 
+  PAYOUT_RECON_HOLD_TAKEN_OVER: "payrollPayoutReview.error.reconHoldTakenOver",
+  PAYOUT_RECON_HOLD_EVIDENCE_NOT_CLEAN:
+    "payrollPayoutReview.error.reconHoldEvidenceNotClean",
   PAYOUT_RECON_FLAG_NOT_FOUND: "payrollPayoutReview.error.reconNotFound",
   PAYOUT_RECON_CLEARANCE_NOT_FOUND: "payrollPayoutReview.error.reconNotFound",
   PAYOUT_RETURN_WITHDRAW_REASON_INVALID:
@@ -135,6 +138,12 @@ const RECON_CONFLICT_CODES = new Set([
   "PAYOUT_RECON_CLEAR_STATE",
 ]);
 
+const HOLD_CONFLICT_CODES = new Set([
+  "PAYOUT_RECON_HOLD_TAKEN_OVER",
+  "PAYOUT_RECON_HOLD_EVIDENCE_NOT_CLEAN",
+  "PAYOUT_RECON_CLEAR_STATE",
+]);
+
 const WITHDRAW_CONFLICT_CODES = new Set([
   "PAYOUT_RETURN_WITHDRAW_REFUSED",
   "PAYOUT_RETURN_WITHDRAW_STATE",
@@ -149,6 +158,19 @@ export function isReconConflict(error: unknown): boolean {
     error instanceof ApiError &&
     error.status === 409 &&
     RECON_CONFLICT_CODES.has(error.code)
+  );
+}
+
+/**
+ * The hold changed under the person (409: a flag took it over, the evidence is
+ * not clean, or the release was already approved). Reload the holds and look
+ * again; the slip stays held.
+ */
+export function isHoldConflict(error: unknown): boolean {
+  return (
+    error instanceof ApiError &&
+    error.status === 409 &&
+    HOLD_CONFLICT_CODES.has(error.code)
   );
 }
 

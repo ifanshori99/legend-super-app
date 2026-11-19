@@ -23,6 +23,7 @@ export const payoutKeys = {
     [...payoutKeys.all, "paid-runs", legalEntityId] as const,
   employees: () => [...payoutKeys.all, "employees"] as const,
   reconFlags: () => [...payoutKeys.all, "recon-flags"] as const,
+  reconHolds: () => [...payoutKeys.all, "recon-holds"] as const,
   returnClaims: (batchId: string) =>
     [...payoutKeys.all, "return-claims", batchId] as const,
 };
@@ -137,6 +138,14 @@ export const payoutReconFlagsQuery = () =>
   queryOptions({
     queryKey: payoutKeys.reconFlags(),
     queryFn: ({ signal }) => api.listPayoutReconFlags(signal),
+    staleTime: 0,
+  });
+
+/** Slip holds of the tenant with their release state. Always re-read: a person approves what they see. */
+export const payoutReconHoldsQuery = () =>
+  queryOptions({
+    queryKey: payoutKeys.reconHolds(),
+    queryFn: ({ signal }) => api.listPayoutReconHolds(signal),
     staleTime: 0,
   });
 

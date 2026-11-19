@@ -1174,7 +1174,7 @@ describe("t1ufu round 3: a refused flag write holds the slip without any excepti
   );
 
   it(
-    "[t1ufu-hold-old-flag-cleared-before-keeps-hold] the older flag was cleared by two people BEFORE the hold: it does not take the hold over, a good read does not release it, a second call writes no second row",
+    "[t1ufu-hold-old-flag-cleared-before-keeps-hold] the older flag was cleared by two people BEFORE the hold: it does not take the hold over, a good read does not release it, a second call without a read in between writes no second row, one after a good read writes a new row",
     async () => {
       const w = await correctedWorld();
       await runRecon(makeStorage());
@@ -1203,6 +1203,9 @@ describe("t1ufu round 3: a refused flag write holds the slip without any excepti
         await heldBySql(payslipId),
         "a good read does not release the hold",
       ).toBe(true);
+      // 1192 (P1b): the good read above is a clean read after the hold, so a NEW failure
+      // to write the same flag is a new fact and gets its own row (it must not be
+      // swallowed into the old hold, which a release could lift on the stale read).
       await holdUnwritten(
         kind,
         operationId,
@@ -1213,8 +1216,21 @@ describe("t1ufu round 3: a refused flag write holds the slip without any excepti
       );
       expect(
         await holdRows(w.itemId),
-        "one hold row, no duplicate while not taken over",
-      ).toHaveLength(1);
+        "a failure after a clean read is a new hold row",
+      ).toHaveLength(2);
+      await holdUnwritten(
+        kind,
+        operationId,
+        [w.itemId],
+        undefined,
+        undefined,
+        reason,
+      );
+      expect(
+        await holdRows(w.itemId),
+        "no duplicate while no clean read came in between",
+      ).toHaveLength(2);
+      expect(await heldBySql(payslipId), "still held").toBe(true);
     },
     TEST_TIMEOUT_MS,
   );
@@ -1568,6 +1584,117 @@ describe("t1ufu round 4: the cursor stays when a hold cannot be written", () => 
         (await exceptionRows(w.itemId)).length,
         "the retry raises the flag the failed page could not write",
       ).toBeGreaterThan(0);
+      expect(await heldBySql(payslipId), "held by the flag").toBe(true);
+    },
+    TEST_TIMEOUT_MS,
+  );
+});
+
+// =========================================================================
+// 1192 (legend-6o7pc): app.payout_recon_hold_unwritten returns the number of
+// DISTINCT items of p_items that hold after the call (new rows plus old holds that
+// still hold); the service counts a flag as held only when every item of its group
+// is covered (brief docs/briefs/sub-1192-payout-hold-release.md, Part 1a).
+// Assumption: the number is read as the single column of the one result row.
+// =========================================================================
+
+/** A temporary trigger that silently drops INSERTs of `table` matching `when` (no error). */
+async function skipInserts(table: string, when: string) {
+  const guard = `t1ufu_skip_${randomUUID().replaceAll("-", "")}`;
+  await W.asTenant(async (c) => {
+    await c.query(
+      `CREATE FUNCTION ${guard}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$`,
+    );
+    await c.query(
+      `CREATE TRIGGER ${guard} BEFORE INSERT ON ${table} FOR EACH ROW WHEN (${when}) EXECUTE FUNCTION ${guard}()`,
+    );
+  }, true);
+  return () =>
+    W.asTenant(async (c) => {
+      await c.query(`DROP TRIGGER IF EXISTS ${guard} ON ${table}`);
+      await c.query(`DROP FUNCTION IF EXISTS ${guard}()`);
+    }, true);
+}
+const heldCountOf = (outcome: Outcome3) => {
+  expect(outcome.code, outcome.message).toBeUndefined();
+  expect(outcome.rows, "one result row").toHaveLength(1);
+  const [value] = Object.values(outcome.rows[0]!);
+  return Number(value);
+};
+
+describe("t1ufu 1192: hold_unwritten returns how many items hold", () => {
+  it(
+    "[t1ufu-1192-hold-count-distinct] one item returns 1 (also on a second call and with the item listed twice); a hold that a write did not make returns 0",
+    async () => {
+      const w = await correctedWorld();
+      await runRecon(makeStorage());
+      const { operationId, kind } = await slipOf(w);
+
+      const first = await holdUnwritten(kind, operationId, [w.itemId]);
+      expect(heldCountOf(first), "one new hold").toBe(1);
+      const second = await holdUnwritten(kind, operationId, [w.itemId]);
+      expect(heldCountOf(second), "the old hold still holds: counted").toBe(1);
+      const twice = await holdUnwritten(kind, operationId, [
+        w.itemId,
+        w.itemId,
+      ]);
+      expect(heldCountOf(twice), "DISTINCT items").toBe(1);
+      expect(await holdRows(w.itemId), "still one row").toHaveLength(1);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "[t1ufu-1192-hold-count-silent-skip] a hold insert that is silently dropped (no error) returns 0, not 1",
+    async () => {
+      const w = await correctedWorld();
+      await runRecon(makeStorage());
+      const { operationId, kind } = await slipOf(w);
+      const unskip = await skipInserts(HOLDS, `NEW.item_id = '${w.itemId}'`);
+      try {
+        const out = await holdUnwritten(kind, operationId, [w.itemId]);
+        expect(heldCountOf(out), "no row was made: nothing holds").toBe(0);
+        expect(await holdRows(w.itemId)).toHaveLength(0);
+      } finally {
+        await unskip();
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "[t1ufu-1192-silent-skipped-hold-fails-page] the flag write is refused and the hold insert is silently dropped (the call does not throw): the hold is NOT counted as committed, so the page rejects (the cursor stays), the slip is free, and the retry flags the item",
+    async () => {
+      const w = await correctedWorld();
+      await runRecon(makeStorage());
+      const { payslipId } = await slipOf(w);
+      const unblockFlag = await blockInserts(
+        EXCEPTIONS,
+        `NEW.item_id = '${w.itemId}'`,
+      );
+      const unskip = await skipInserts(HOLDS, `NEW.item_id = '${w.itemId}'`);
+      try {
+        const outcome = await within(
+          runRecon(makeStorage({ tampered: [w.key] })),
+        );
+        expect(
+          outcome.kind,
+          `a hold that did not hold fails the page (${JSON.stringify(outcome)})`,
+        ).toBe("threw");
+        expect(await holdRows(w.itemId), "no hold row").toHaveLength(0);
+        expect(await exceptionRows(w.itemId), "no flag").toHaveLength(0);
+        expect(await heldBySql(payslipId), "nothing holds the slip").toBe(
+          false,
+        );
+      } finally {
+        await unskip();
+        await unblockFlag();
+      }
+      const retry = await within(runRecon(makeStorage({ tampered: [w.key] })));
+      expect(retry.kind, `the retry finishes (${JSON.stringify(retry)})`).toBe(
+        "done",
+      );
+      expect((await exceptionRows(w.itemId)).length).toBeGreaterThan(0);
       expect(await heldBySql(payslipId), "held by the flag").toBe(true);
     },
     TEST_TIMEOUT_MS,
