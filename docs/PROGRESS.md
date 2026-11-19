@@ -8209,3 +8209,10 @@ Cabang `ws/1136-p3-web-mock-e2e`, dasar `origin/milestone/m1`. Tingkat S, tanpa 
 - Cabang ws/1123-perf-web-i18n (2 commit di atas 4418628e0). Katalog id dipecah per area lewat manifest `packages/shared/src/i18n/area-manifest.ts` + plugin Vite `apps/web/vite-i18n-chunks.ts` (modul virtual per chunk, impor barrel diarahkan ke `i18n/runtime.ts`); chunk area dimuat di beforeLoad layout dan sebelum hidrasi; key meleset memuat chunk pemilik. CLS: font fallback size-adjust, dimensi gambar logo/thumbnail.
 - Ukuran (JS di HTML SSR /masuk): 2497 KB raw / 751 KB gz -> 1929 KB / 662 KB (-23%/-12%). Total aset build 7285 KB -> 7650 KB (lebih banyak chunk kecil, bukan dimuat awal).
 - Sisa: core masih ~374 KB (label features/*/nav.ts membuat namespace tampak lintas area; kunci-per-namespace belum dipecah), kelola 300 KB. CLS belum diukur (Lighthouse belum dijalankan).
+
+## 1184 Payout GL: tandai biaya accounting_was_off + lepas payable_account_hold (19 Nov 2026, legend-3xzop, legend-6qp12)
+- Cabang ws/1184-payout-gl-holds di atas d99aae067 (milestone/m1). Migrasi 0715 (kolom tanda/lepas + guard update/insert postings diganti dari 0412/0415 dengan dua transisi baru, jam DB, tanpa self-approval) dan 0716 (izin `payroll.payout.gl_resolve` ke template owner + finance).
+- API: `POST /payout-gl-postings/:postingId/fee-opening-balance` dan `/payable-hold-release`, `{password, note}`; guard requireTenantPermission(`payroll.payout.gl_resolve`) + step-up MFA + password. Service `payroll-payout-gl-holds.service.ts`: kunci run -> batch -> posting, batch beku 409, UPDATE bersyarat, audit hanya saat sukses.
+- Biaya yang ditandai tidak pernah dijurnal: repost manual, recovery job, resolver, laporan finance exceptions.
+- Lepas hold hanya bila jurnal settle ada dan hanya mendebit akun utang gaji yang dibekukan. Architect: baris 0390 nyata selalu gagal syarat ini (gagal-tertutup, aman); perlu keputusan CTO untuk alur "pindah akun utang" (re-point). Kartu legend-6qp12 dibiarkan terbuka.
+- Test: 1184 fee 7/7 dan hold 19/19 gagal-dulu di base (route 404), hijau bersama 12 berkas payout/registry lama (239 test); kontrak root 12 berkas 259 lulus.
