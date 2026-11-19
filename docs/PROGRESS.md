@@ -2219,3 +2219,4 @@ Langkah berikut CTO baru:
 - 12:33 CTO: 1163 selesai (cca06c1a6), G88jh resolve, worktree legend-6c25b38d dihapus (bersih, = origin). legend-m0kqn ditutup. Kartu gerbang rilis cek baris legacy production dibuat.
 - 12:36 CTO: mulai 1172 (Sonnet, akun #1, base m1): hb1u9, v8dfx, hzdy5, z2kaf; tingkat K akses, tanpa migrasi. Pemilih kartu: P1/P2 untuk Claude tidak ada yang bisa sekarang (m2m03 tunggu d158b041, rx5ik/igclp/zlc6 butuh keputusan). Codex 2 slot kosong: tidak ada kartu S bebas tumpang tindih; SO 1171 dijadwalkan 14:17 Codex #2.
 - 13:09 CTO: 1162 lapor rh1hk + rzt8s (946c5aa27), kartu ditutup. CTO terima retry per device per tick tanpa backoff untuk rilis 1 (P3 ubt6n). Migrasi 0704-0705 kembali bebas. G36xz tetap untuk vet9d sesudah batch95.
+- 13:10 CTO: Claude #4 dicabut org (subscription access disabled); G1kc6 dan G18iv sudah pindah ke #1 dan jalan lagi. Thread baru ke #5. bd memory claude-akun4-disabled.
