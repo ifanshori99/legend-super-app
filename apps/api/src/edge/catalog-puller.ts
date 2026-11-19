@@ -18,7 +18,15 @@
 //   `sync_txid` stamps are normalized once: local transaction ids are not
 //   comparable with the cloud's. A separate durable initialization marker
 //   prevents an initial pull from zeroing newer event stamps; held receipts
-//   also protect event-backed documents when a rejected HTTP cursor rewinds.
+//   also protect event-backed documents in normal operation.
+// - A rewind (the cloud refused the cursor, or the watermark is the operator's
+//   `CATALOG_REWIND_MARK`) means the cloud history was restored (legend-7r7q6):
+//   in the first page's transaction the node's receipt floor is raised, so
+//   receipts from before the rewind stop protecting rows (catalog-receipt-floor.ts),
+//   and a durable `catalog:replay:<stream>` marker is set. When the replay's
+//   last page commits, the rows the complete snapshot did not touch are
+//   deactivated (never deleted) in the same transaction and the marker is
+//   cleared; a replay cut at maxPages keeps the marker for a later pull.
 // - A stream whose rows another stream's rows point at (stations for
 //   menu_items and modifiers, inventory_items for recipes, recipes for
 //   menu_items and item_variants; modifiers have no recipe key on the edge)
@@ -63,6 +71,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { db } from "../db/index.ts";
 import { edgeNodes, edgePullCheckpoints } from "../db/schema/edge-node.ts";
 import { withTenant } from "../db/tenant.ts";
+import { deactivateAbsentCatalogRows } from "../services/edge-catalog-restore-membership.ts";
 import { isCatalogSyncCursorError } from "../services/edge-catalog-sync.ts";
 import {
   applyCatalogRecords,
@@ -79,6 +88,7 @@ import {
   type DeferredCategoryParent,
 } from "../services/edge-catalog-apply.ts";
 import { CATALOG_CURSOR_REJECTED_MARKER } from "./catalog-cursor-marker.ts";
+import { CATALOG_RECEIPT_FLOOR_CHECKPOINT } from "./catalog-receipt-floor.ts";
 import { EdgeCloudHttpError } from "./cloud-http.ts";
 import {
   completePromoCatalogStream,
@@ -119,6 +129,21 @@ const PARENT_STREAMS: Readonly<
 const PROMO_INVALIDATED_AT = new Date(0);
 const isPromoStream = (stream: CatalogSyncStream): boolean =>
   stream === "promotions" || stream === "vouchers";
+
+/**
+ * Watermark an operator sets on `catalog:<stream>` to rewind that stream after
+ * a cloud restore (docs/deployment.md). It is not a cursor, so the stream is
+ * pulled from the start, and unlike a cleared watermark it also lifts the
+ * protection of link receipts from before the rewind (see catalog-receipt-floor.ts).
+ */
+export const CATALOG_REWIND_MARK = "rewind";
+
+/** Durable "full replay pending" marker of a rewound stream (legend-7r7q6). */
+function catalogReplayCheckpoint(
+  stream: CatalogSyncStream,
+): `catalog:replay:${CatalogSyncStream}` {
+  return `catalog:replay:${stream}`;
+}
 
 /** Key of a stream's row in `edge_pull_checkpoints` (varchar(40)). */
 export function catalogCheckpointStream(
@@ -545,6 +570,27 @@ export async function ensureCatalogStreamInitialized(
   await saveCheckpointRow(tx, edgeNodeId, marker, "1", at);
 }
 
+/**
+ * Raises the node's receipt floor to now (monotonic): receipts received so far
+ * stop protecting catalog rows. The ISO text keeps microsecond precision.
+ */
+async function raiseCatalogReceiptFloor(
+  tx: Tx,
+  edgeNodeId: string,
+  at: Date,
+): Promise<void> {
+  const result = await tx.execute(
+    sql`SELECT to_char(GREATEST(clock_timestamp(), COALESCE((SELECT f.watermark::timestamptz FROM edge_pull_checkpoints f WHERE f.edge_node_id = ${edgeNodeId}::uuid AND f.stream = ${CATALOG_RECEIPT_FLOOR_CHECKPOINT}), '-infinity'::timestamptz)) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS floor`,
+  );
+  await saveCheckpointRow(
+    tx,
+    edgeNodeId,
+    CATALOG_RECEIPT_FLOOR_CHECKPOINT,
+    String(result.rows[0]?.floor),
+    at,
+  );
+}
+
 /** Pending category parents / printer fallbacks (JSON in the watermark); unreadable = none. */
 export async function loadPendingParents(
   tx: Tx,
@@ -772,10 +818,25 @@ async function pullStream(
           )
           .limit(1);
         const current = row?.watermark ?? null;
-        // A rewind only while the checkpoint is still the refused cursor: a
-        // concurrent pull that already moved it must not be undone.
+        // A rewind only while the checkpoint is still the refused cursor (or
+        // the operator's rewind mark): a concurrent pull that already moved it
+        // must not be undone.
         if (rejectedCursor !== null && current === rejectedCursor)
           rewindFrom = rejectedCursor;
+        else if (current === CATALOG_REWIND_MARK) rewindFrom = current;
+        if (rewindFrom !== null) {
+          // The history before the rewind is gone: its link receipts stop
+          // protecting rows (before the reset and the receipt filter below),
+          // and the full replay that follows decides which items are absent.
+          await raiseCatalogReceiptFloor(tx, options.edgeNodeId, succeededAt);
+          await saveCheckpointRow(
+            tx,
+            options.edgeNodeId,
+            catalogReplayCheckpoint(stream),
+            "1",
+            succeededAt,
+          );
+        }
         if (
           rewindFrom !== null ||
           current === null ||
@@ -835,6 +896,37 @@ async function pullStream(
           succeededAt,
           FALLBACKS_CHECKPOINT,
         );
+      }
+      // The last page of a rewound stream: items the complete snapshot did not
+      // touch are deactivated (never deleted), in the same commit as the page.
+      // An incremental pull, a first boot or a replay cut at maxPages has no
+      // marker or no last page here, so it deactivates nothing.
+      if (!page.hasMore) {
+        const [replay] = await tx
+          .select({ watermark: edgePullCheckpoints.watermark })
+          .from(edgePullCheckpoints)
+          .where(
+            and(
+              eq(edgePullCheckpoints.edgeNodeId, options.edgeNodeId),
+              eq(edgePullCheckpoints.stream, catalogReplayCheckpoint(stream)),
+            ),
+          )
+          .limit(1);
+        if (replay) {
+          await deactivateAbsentCatalogRows(tx, {
+            tenantId,
+            stream,
+            at: succeededAt,
+          });
+          await tx
+            .delete(edgePullCheckpoints)
+            .where(
+              and(
+                eq(edgePullCheckpoints.edgeNodeId, options.edgeNodeId),
+                eq(edgePullCheckpoints.stream, catalogReplayCheckpoint(stream)),
+              ),
+            );
+        }
       }
       await saveCatalogCheckpoint(
         tx,

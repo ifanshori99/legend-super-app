@@ -36,6 +36,7 @@ import {
   it,
 } from "vitest";
 import {
+  createUlid,
   decodeCursor,
   encodeCursor,
   outletIdSchema,
@@ -49,12 +50,22 @@ import {
   CATALOG_PROTOCOL_VERSION,
   catalogSyncQuerySchema,
 } from "@starter/shared/edge";
+import {
+  eventEnvelopeSchema,
+  type EventEnvelope,
+} from "@starter/shared/events";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { cafeLegendAccessFixtures } from "@starter/shared/access";
 import { createApp } from "../app.ts";
 import { db } from "../db/index.ts";
+import { resetEdgeApplierRegistryForTests } from "../edge/applier-registry.ts";
 import { pullCatalog } from "../edge/catalog-puller.ts";
 import { EdgeCloudHttpError } from "../edge/cloud-http.ts";
+import { createDbLinkStore } from "../edge/db-link-store.ts";
+import {
+  catalogRecordAggregateId,
+  registerMasterDataEdgeApplier,
+} from "../edge/master-data-applier.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import {
@@ -62,8 +73,10 @@ import {
   setCatalogSnapshotXmaxProvider,
 } from "../services/edge-catalog-sync.ts";
 import {
+  authenticateEdgeCredential,
   registerEdgeNode,
   verifyEdgeNodeCredential,
+  type AuthenticatedEdgeNode,
 } from "../services/edge-node.service.ts";
 import { setEdgeCredentialVerifier } from "../services/staff-pin-sync.ts";
 import { settleCloud } from "./helpers/catalog-cloud.ts";
@@ -513,3 +526,366 @@ describe("y9y8y edge: a restored cloud makes the edge rewind and sync again", ()
     });
   }, 120_000);
 });
+
+// ------------------------------------------------ 1199 R1: receipts vs restore
+//
+// Second opinion 1197, finding R1 (P1), test T1; CTO decision in
+// docs/briefs/sub-1199-edge-catalog-so1197.md. Written from the brief and the
+// second opinion, not from the implementation. Fail-first: at acf1edca3 a link
+// receipt at the old version (1000) keeps blocking the restored cloud history
+// (version 200) while the pull still stores its checkpoint as a success.
+//
+// Contract under test:
+//  - Records that reached the edge as link events (so the edge holds a receipt
+//    at version 1000) must NOT keep the edge on the old value after the cloud
+//    was restored (horizon 200) and the edge rewound: the cloud's value is
+//    applied, and the stream is only reported fresh after that.
+//  - Later changes (version 201) coming over HTTP or over the link are applied.
+//  - Normal protection stays: an older HTTP replay in the same generation never
+//    overwrites a newer event.
+//
+// Assumptions (the brief is silent), each easy to change:
+//  - The restore is simulated like the sibling tests: the edge's stored cursor
+//    is above the cloud's horizon, the cloud answers it with HTTP 400 plus the
+//    CATALOG_CURSOR_REJECTED marker, and the edge pulls from the start. The
+//    cloud is a scripted fetchPage (no HTTP route), so the test only depends on
+//    the edge behaviour. Recovery may take two pulls, like the tests above.
+//  - Event `sequence` equals the record's `syncTxid` (as in
+//    edge-master-data-applier.test.ts); a link event for a record is applied
+//    through the real receive transaction (createDbLinkStore.applyInbound).
+//  - A link event for a restored-generation version (201) is applied even
+//    though the edge once held a receipt at 1000 for the same record.
+//  - A printer tombstone delivered as a link event at version 1000 does not
+//    keep a printer deleted when the restored cloud history has it live at 200.
+
+// Two ways the edge learns about the restore (CTO design, 1199): the cloud
+// refuses the stored cursor (HTTP 400 + marker), or the operator sets the
+// catalog checkpoint watermark to the sentinel string 'rewind'. Both must
+// rewind the stream including receipt-backed rows.
+for (const mode of ["cursor-rejected", "operator-rewind"] as const)
+  describe(`1199 R1 (${mode}): an old link receipt must not block a restored catalog`, () => {
+    let authed: AuthenticatedEdgeNode;
+    const RESTORED = "Nama cloud setelah restore";
+    const FROM_EVENT = "Nama dari event lama";
+
+    beforeEach(async () => {
+      resetEdgeApplierRegistryForTests();
+      registerMasterDataEdgeApplier();
+      const found = await authenticateEdgeCredential(node.credential);
+      if (!found) throw new Error("Test node did not authenticate");
+      authed = found;
+    });
+
+    afterEach(() => resetEdgeApplierRegistryForTests());
+
+    const linkStore = () =>
+      createDbLinkStore({
+        database: edge.database,
+        context: authed.context,
+        node: authed.scope,
+        outboundDirection: "edge_to_cloud",
+      });
+
+    function catalogEvent(stream: string, record: Rec): EventEnvelope {
+      const eventId = createUlid();
+      return eventEnvelopeSchema.parse({
+        id: eventId,
+        tenantId,
+        outletId: O1,
+        name: "catalog_record.updated",
+        version: 1,
+        aggregateType: "catalog_record",
+        aggregateId: catalogRecordAggregateId(stream as never, record as never),
+        sequence: Number(record.syncTxid),
+        occurredAt: "2026-11-19T10:00:00.000Z",
+        actor: { type: "system" },
+        deviceId: null,
+        idempotencyKey: `epoch-1199:${eventId}`,
+        payloadSchemaRef: "catalog_record.updated.v1",
+        payload: { stream, record },
+      });
+    }
+
+    async function deliver(stream: string, record: Rec) {
+      const link = linkStore();
+      const fromSeq = await link.lastReceivedInbound();
+      await link.applyInbound({
+        fromSeq,
+        toSeq: fromSeq + 1,
+        events: [{ linkSeq: fromSeq + 1, event: catalogEvent(stream, record) }],
+      });
+    }
+
+    const cursorFor = (txid: bigint | number | string, key: string) =>
+      encodeCursor(["cat2", String(txid), key]);
+
+    /**
+     * A scripted cloud with its own history. It refuses a cursor whose txid is
+     * above its `horizon` (HTTP 400 + marker), serves every record from the
+     * start when asked without a cursor, and serves only records newer than the
+     * cursor otherwise. `publish` adds a change and moves the horizon up.
+     */
+    function scriptedHistory(stream: string, horizon: bigint, records: Rec[]) {
+      const state = { horizon, records: [...records] };
+      const asked: (string | null)[] = [];
+      const fetchPage = async (
+        requested: string,
+        since: string | null,
+      ): Promise<Page> => {
+        if (requested !== stream) return emptyPage(requested, since);
+        asked.push(since);
+        if (since !== null) {
+          // The sentinel 'rewind' must never reach the cloud as a cursor.
+          let tag: unknown;
+          try {
+            tag = decodeCursor(since)[0];
+          } catch {
+            tag = undefined;
+          }
+          if (tag !== "cat2")
+            throw new Error(
+              `The edge sent a non-cursor to the cloud: ${since}`,
+            );
+        }
+        if (
+          since !== null &&
+          BigInt(String(decodeCursor(since)[1])) > state.horizon
+        )
+          throw new EdgeCloudHttpError("HTTP_400", MARKER);
+        const floor =
+          since === null ? -1n : BigInt(String(decodeCursor(since)[1]));
+        const served = state.records.filter(
+          (r) => BigInt(String(r.syncTxid)) > floor,
+        );
+        const last = served.at(-1);
+        return {
+          protocolVersion: CATALOG_PROTOCOL_VERSION,
+          stream,
+          records: served,
+          nextCursor: last
+            ? cursorFor(String(last.syncTxid), String(last.id))
+            : since,
+          hasMore: false,
+        };
+      };
+      return {
+        fetchPage,
+        asked,
+        publish(record: Rec) {
+          state.records.push(record);
+          state.horizon = BigInt(String(record.syncTxid));
+        },
+        /** Pulls once more than needed: recovery may take two pulls. */
+        async pullTwice() {
+          if (mode === "operator-rewind") {
+            const updated = await edge.owner.query(
+              "UPDATE edge_pull_checkpoints SET watermark = 'rewind' WHERE edge_node_id = $1 AND stream = $2",
+              [node.id, `catalog:${stream}`],
+            );
+            expect(updated.rowCount, "the checkpoint row was rewound").toBe(1);
+          }
+          await pullStream(stream, fetchPage);
+          await pullStream(stream, fetchPage);
+        },
+      };
+    }
+
+    async function pullStream(stream: string, fetchPage: FetchPage) {
+      const result = (await pullCatalog({
+        database: edge.database,
+        context: scopeOf("device", O1),
+        edgeNodeId: node.id,
+        streams: [stream],
+        fetchPage,
+      } as never)) as PullResult;
+      return result;
+    }
+
+    /** The edge stored a cursor at `txid` for `stream` (a normal pull). */
+    async function seedCursor(stream: string, txid: number, key: string) {
+      const seeded = await pullStream(stream, async (requested, since) =>
+        requested === stream
+          ? ({
+              protocolVersion: CATALOG_PROTOCOL_VERSION,
+              stream,
+              records: [],
+              nextCursor: cursorFor(txid, key),
+              hasMore: false,
+            } satisfies Page)
+          : emptyPage(requested, since),
+      );
+      expect(seeded.streams[stream]?.error, "seed pull").toBeFalsy();
+    }
+
+    /** A category the edge holds from a link event at version 1000. */
+    async function categoryFromOldEvent(rowId: string) {
+      await deliver(STREAM, category(rowId, FROM_EVENT, 1000));
+      expect(await localRow(rowId), "link event applied").toEqual({
+        name: FROM_EVENT,
+        txid: "1000",
+      });
+      await seedCursor(STREAM, 1000, rowId);
+    }
+
+    /** The cloud was restored: its history says `RESTORED` at version 200. */
+    async function restoreCategory(rowId: string) {
+      const cloud = scriptedHistory(STREAM, 200n, [
+        category(rowId, RESTORED, 200),
+      ]);
+      await cloud.pullTwice();
+      expect(cloud.asked, "the edge pulled from the start").toContain(null);
+      return cloud;
+    }
+
+    it("T1a after a restore the cloud's value replaces the value held by a version-1000 link receipt, and the checkpoint only follows", async () => {
+      const rowId = id();
+      await categoryFromOldEvent(rowId);
+
+      await restoreCategory(rowId);
+
+      expect(
+        await localRow(rowId),
+        "restored cloud value applied over the old receipt",
+      ).toEqual({ name: RESTORED, txid: "200" });
+      expect(
+        BigInt(String(decodeCursor((await checkpoint())!)[1])),
+        "the stream is reported fresh at the restored horizon",
+      ).toBe(200n);
+    }, 120_000);
+
+    it("T1b a version-201 change over HTTP after the restore is applied, not lost", async () => {
+      const rowId = id();
+      await categoryFromOldEvent(rowId);
+      const cloud = await restoreCategory(rowId);
+
+      cloud.publish(category(rowId, "Nama versi 201 via HTTP", 201));
+      await pullStream(STREAM, cloud.fetchPage);
+
+      expect(await localRow(rowId)).toEqual({
+        name: "Nama versi 201 via HTTP",
+        txid: "201",
+      });
+    }, 120_000);
+
+    it("T1c a version-201 change over the link after the restore is applied, not lost", async () => {
+      const rowId = id();
+      await categoryFromOldEvent(rowId);
+      await restoreCategory(rowId);
+      expect((await localRow(rowId))?.name, "restore applied first").toBe(
+        RESTORED,
+      );
+
+      await deliver(STREAM, category(rowId, "Nama versi 201 via link", 201));
+
+      expect(await localRow(rowId)).toEqual({
+        name: "Nama versi 201 via link",
+        txid: "201",
+      });
+    }, 120_000);
+
+    it("T1d after the restore an older HTTP replay in the same generation still cannot overwrite a newer link event", async () => {
+      const rowId = id();
+      await categoryFromOldEvent(rowId);
+      const cloud = await restoreCategory(rowId);
+      expect((await localRow(rowId))?.name, "restore applied first").toBe(
+        RESTORED,
+      );
+      await deliver(STREAM, category(rowId, "Event baru 202", 202));
+
+      // The same generation replays version 201 over HTTP (older than the event).
+      cloud.publish(category(rowId, "Replay HTTP lama 201", 201));
+      await pullStream(STREAM, cloud.fetchPage);
+
+      expect(await localRow(rowId)).toEqual({
+        name: "Event baru 202",
+        txid: "202",
+      });
+    }, 120_000);
+
+    it.skipIf(mode !== "cursor-rejected")(
+      "T1e (guard, normal operation) without a restore an older HTTP replay does not overwrite a link event",
+      async () => {
+        const rowId = id();
+        await categoryFromOldEvent(rowId);
+
+        await pullStream(STREAM, async (requested, since) =>
+          requested === STREAM
+            ? ({
+                protocolVersion: CATALOG_PROTOCOL_VERSION,
+                stream: STREAM,
+                records: [category(rowId, "Replay HTTP lama 900", 900)],
+                nextCursor: cursorFor(1000, rowId),
+                hasMore: false,
+              } satisfies Page)
+            : emptyPage(requested, since),
+        );
+
+        expect(await localRow(rowId)).toEqual({
+          name: FROM_EVENT,
+          txid: "1000",
+        });
+      },
+      120_000,
+    );
+
+    // ------------------------------------------------------- printer tombstone
+
+    const printerRecord = (
+      printerId: string,
+      label: string,
+      txid: number,
+    ): Rec => ({
+      id: printerId,
+      tenantId,
+      outletId: O1,
+      label,
+      role: "receipt",
+      stationId: null,
+      transport: "network",
+      host: "192.168.1.50",
+      port: 9100,
+      devicePath: null,
+      paperWidth: 48,
+      fallbackPrinterId: null,
+      createdAt: "2026-11-19T10:00:00.000Z",
+      updatedAt: "2026-11-19T10:00:00.000Z",
+      deletedAt: null,
+      syncTxid: String(txid),
+    });
+    const printerTombstone = (printerId: string, txid: number): Rec => ({
+      id: printerId,
+      tenantId,
+      outletId: O1,
+      deletedAt: "2026-11-19T10:00:00.000Z",
+      syncTxid: String(txid),
+    });
+    const printerRows = (printerId: string) =>
+      edge.rows(
+        "SELECT label, retired_at FROM edge_printers WHERE tenant_id = $1 AND id = $2",
+        [tenantId, printerId],
+      );
+
+    it("T1f a printer deleted by a version-1000 tombstone event comes back when the restored cloud history has it live at 200, and a 201 change then applies", async () => {
+      const printerId = id();
+      await deliver("printers", printerRecord(printerId, "Printer lama", 1));
+      await deliver("printers", printerTombstone(printerId, 1000));
+      expect(await printerRows(printerId), "tombstone applied").toEqual([]);
+      await seedCursor("printers", 1000, printerId);
+
+      const cloud = scriptedHistory("printers", 200n, [
+        printerRecord(printerId, "Printer setelah restore", 200),
+      ]);
+      await cloud.pullTwice();
+
+      expect(
+        await printerRows(printerId),
+        "the restored live printer is not blocked by the old tombstone",
+      ).toMatchObject([{ label: "Printer setelah restore", retired_at: null }]);
+
+      cloud.publish(printerRecord(printerId, "Printer versi 201", 201));
+      await pullStream("printers", cloud.fetchPage);
+      expect(await printerRows(printerId)).toMatchObject([
+        { label: "Printer versi 201", retired_at: null },
+      ]);
+    }, 120_000);
+  });

@@ -173,7 +173,11 @@ import {
   type DeviceRegistrySyncState,
 } from "./device-registry-puller.ts";
 
-/** Episodes already alerted by this process; the notification tables dedupe too. */
+/**
+ * Fast path only: episodes this process already alerted. The durable dedupe is
+ * the per-episode marker in notifyEdgeCatalogStale, so clearing this never
+ * re-alerts (legend-7r7q6).
+ */
 const catalogStaleAlerted = new Set<string>();
 
 /**
@@ -272,9 +276,9 @@ export async function reportEdgeAuditRetentionStatus(
 /**
  * legend-10nex: the edge says critical catalog streams are stale for over 30
  * minutes while it reaches the cloud. Notify the outlet's supervisors and
- * owners once per edge and stale episode (stable alert id). legend-ssnf9: one
- * notification per heartbeat covers the whole stale set; it is sent only when
- * at least one entry is new, and its id hashes the whole set.
+ * owners once per edge, stream and stale episode (durable marker per episode,
+ * legend-7r7q6). legend-ssnf9: one notification per heartbeat covers the new
+ * entries only; it is sent only when at least one entry is new.
  */
 async function notifyCatalogStale(
   identity: AuthenticatedEdgeNode & EdgeLinkIdentity,

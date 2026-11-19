@@ -383,3 +383,272 @@ describe("ssnf9 edge: the heartbeat reports every alarm stream", () => {
     expect(catalogStaleForHeartbeat(freshness.snapshot())).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// R3 / T3 (bead legend-7r7q6, second opinion 1197): the once-per-episode rule
+// must hold per (stream, staleSince) EPISODE, not per whole heartbeat set, and
+// must survive a cloud restart and the 1000-entry in-memory eviction.
+//
+// Contract (docs/briefs/sub-1199-edge-catalog-so1197.md, R3):
+//  - {A@t,B@t} then a cloud restart then {B@t} => still ONE alert.
+//  - {B@t,C@u} adds exactly ONE alert (only C is new).
+//  - Subsets and reorders of already-reported episodes add nothing.
+//  - After the in-memory cache has been evicted (1000 entries) an episode that
+//    was already reported does not alert again.
+//
+// Assumptions (spec silent), easy to change:
+//  - One alert = 2 `notifications` rows (supervisor + owner), as above.
+//  - "Episode" identity = stream + staleSince. Each scenario below uses its own
+//    stream names and staleSince so it is independent of the other tests.
+//  - The cloud accepts any stream name (the wire schema only demands text);
+//    eviction needs >1000 distinct entries and a heartbeat carries at most 16,
+//    so 64 heartbeats of 16 distinct (stream, staleSince) pairs are sent.
+//  - Heartbeats are handled in order for one edge, so after two identical
+//    "sentinel" heartbeats of a brand-new episode every earlier heartbeat has
+//    been fully processed; the total row count is then final.
+// ---------------------------------------------------------------------------
+
+async function startCloud() {
+  vi.resetModules();
+  const fresh = await import("../edge/runtime.ts");
+  const srv = createServer();
+  const handle = await fresh.registerEdgeLink(srv);
+  await new Promise<void>((resolve) => srv.listen(0, "127.0.0.1", resolve));
+  const cloudUrl = `ws://127.0.0.1:${(srv.address() as AddressInfo).port}/api/edge-link`;
+  return {
+    handle,
+    url: cloudUrl,
+    close: async () => {
+      await handle.close().catch(() => undefined);
+      await new Promise<void>((resolve) =>
+        srv.listening ? srv.close(() => resolve()) : resolve(),
+      );
+    },
+  };
+}
+
+type Cloud = Awaited<ReturnType<typeof startCloud>>;
+const rowCount = async () => (await notificationRows()).length;
+const entry = (stream: string, staleSince: string, reason = "HTTP_500") => ({
+  stream,
+  staleSince,
+  reason,
+});
+
+/**
+ * Proves every earlier heartbeat has been processed: a brand-new episode must
+ * add exactly one alert (2 rows), and the same heartbeat again adds nothing.
+ * Then the total is exactly `expectedRows`.
+ */
+async function expectTotalAfterSentinel(
+  cloud: Cloud,
+  sentinel: CatalogStale,
+  expectedRows: number,
+) {
+  await sendHeartbeat(sentinel, cloud.handle, cloud.url);
+  await sendHeartbeat(sentinel, cloud.handle, cloud.url);
+  await until(async () => (await rowCount()) >= expectedRows);
+  const rows = await notificationRows();
+  expect(rows).toHaveLength(expectedRows);
+  expect(perUser(rows, supervisorUserId)).toBe(perUser(rows, ownerUserId));
+}
+
+describe("7r7q6 R3 cloud: alerts dedupe per episode, durable across restart and eviction", () => {
+  it("{A@t,B@t}, restart, then {B@t} stays at ONE alert", async () => {
+    const t = "2026-11-12T01:00:00.000Z";
+    const base = await rowCount();
+    const before = await startCloud();
+    try {
+      await sendHeartbeat(
+        [entry("price_lists", t), entry("menu_items", t)],
+        before.handle,
+        before.url,
+      );
+      await until(async () => (await rowCount()) >= base + 2);
+    } finally {
+      await before.close();
+    }
+
+    // The cloud process restarts: in-memory memory is empty.
+    const after = await startCloud();
+    try {
+      await sendHeartbeat([entry("menu_items", t)], after.handle, after.url);
+      // Sentinel: one more new episode proves the {B@t} heartbeat was handled.
+      await expectTotalAfterSentinel(
+        after,
+        [entry("modifiers", "2026-11-12T01:05:00.000Z")],
+        base + 2 + 2,
+      );
+    } finally {
+      await after.close();
+    }
+  }, 120_000);
+
+  it("{B@t,C@u} adds exactly ONE alert; subsets and reorders add none", async () => {
+    const t = "2026-11-13T01:00:00.000Z";
+    const u = "2026-11-13T02:00:00.000Z";
+    const base = await rowCount();
+    const cloud = await startCloud();
+    try {
+      await sendHeartbeat(
+        [entry("price_lists", t), entry("menu_items", t)],
+        cloud.handle,
+        cloud.url,
+      );
+      await until(async () => (await rowCount()) >= base + 2);
+
+      // Only C@u is new: exactly one more alert for the recipients.
+      await sendHeartbeat(
+        [entry("menu_items", t), entry("item_variants", u)],
+        cloud.handle,
+        cloud.url,
+      );
+      await until(async () => (await rowCount()) >= base + 4);
+
+      // Subsets and reorders of what was reported: nothing new.
+      await sendHeartbeat([entry("item_variants", u)], cloud.handle, cloud.url);
+      await sendHeartbeat([entry("menu_items", t)], cloud.handle, cloud.url);
+      await sendHeartbeat(
+        [entry("item_variants", u), entry("menu_items", t)],
+        cloud.handle,
+        cloud.url,
+      );
+      await sendHeartbeat(
+        [
+          entry("menu_items", t),
+          entry("price_lists", t),
+          entry("item_variants", u),
+        ],
+        cloud.handle,
+        cloud.url,
+      );
+
+      await expectTotalAfterSentinel(
+        cloud,
+        [entry("stations", "2026-11-13T03:00:00.000Z")],
+        base + 4 + 2,
+      );
+    } finally {
+      await cloud.close();
+    }
+  }, 120_000);
+
+  it("after the in-memory cache is evicted (1000+ entries) an already reported episode does not alert again", async () => {
+    const t = "2026-11-14T01:00:00.000Z";
+    const ownerRows = async () =>
+      perUser(await notificationRows(), ownerUserId);
+    const cloud = await startCloud();
+    const clients: Array<ReturnType<typeof createEdgeLinkClient>> = [];
+    try {
+      await sendHeartbeat(
+        [entry("price_lists", t), entry("menu_categories", t)],
+        cloud.handle,
+        cloud.url,
+      );
+      await until(async () => (await ownerRows()) >= 1);
+      const ownerBase = await ownerRows();
+
+      // The cloud throttles heartbeats per edge, so 1024 distinct episodes
+      // (> 1000) are spread over 64 edges (16 per heartbeat, the wire maximum),
+      // all connected at once. Each heartbeat is one new alert for the owner.
+      const EDGES = 64;
+      const { rows: shape } = await owner.query<{
+        brand_id: string;
+        legal_entity_id: string;
+      }>("SELECT brand_id, legal_entity_id FROM outlets WHERE id = $1", [
+        outletId,
+      ]);
+      const origin = Date.parse("2027-01-01T00:00:00.000Z");
+      const extra: Array<{ id: string; credential: string; outlet: string }> =
+        [];
+      for (let i = 0; i < EDGES; i += 1) {
+        const extraOutlet = randomUUID();
+        await owner.query(
+          `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, opening_hours, status)
+           VALUES ($1, $2, $3, $4, $5, $5, 'Jl. Uji', '{}', 'active')`,
+          [
+            extraOutlet,
+            tenantId,
+            shape[0]!.brand_id,
+            shape[0]!.legal_entity_id,
+            `EVI-${i}`,
+          ],
+        );
+        const ctx = establishScopedTenantContext(
+          establishTenantContext({
+            tenantId,
+            brandId: null,
+            source: "session",
+          }),
+          { kind: "outlets", outletIds: [outletIdSchema.parse(extraOutlet)] },
+        );
+        const reg = await registerEdgeNode(ctx, randomUUID(), {
+          outletId: extraOutlet,
+          role: "primary",
+          label: `Mini PC eviction ${i}`,
+        });
+        extra.push({
+          id: reg.edgeNode.id,
+          credential: reg.credential,
+          outlet: extraOutlet,
+        });
+      }
+      extra.forEach((edge, i) => {
+        const batch = Array.from({ length: 16 }, (_, j) =>
+          entry(
+            `evict_${i * 16 + j}`,
+            new Date(origin + (i * 16 + j) * 1000).toISOString(),
+          ),
+        );
+        clients.push(
+          createEdgeLinkClient({
+            url: cloud.url,
+            credential: edge.credential,
+            scope: {
+              tenantId,
+              outletId: edge.outlet,
+              edgeNodeId: edge.id,
+            } as never,
+            store: emptyStore(),
+            version: "1.0.0",
+            catalogStale: () => batch,
+            heartbeatIntervalMs: 600_000,
+            ackTimeoutMs: 60_000,
+            random: () => 0,
+          }),
+        );
+      });
+      await until(
+        async () => (await ownerRows()) >= ownerBase + EDGES,
+        120_000,
+      );
+      await Promise.all(clients.map((client) => client.stop()));
+      await until(() => !cloud.handle.isConnected(node.id));
+
+      // B@t was reported before the cache was evicted: still nothing new.
+      const afterFillers = await ownerRows();
+      await sendHeartbeat(
+        [entry("menu_categories", t)],
+        cloud.handle,
+        cloud.url,
+      );
+      await sendHeartbeat(
+        [entry("price_lists", t), entry("menu_categories", t)],
+        cloud.handle,
+        cloud.url,
+      );
+
+      // Sentinel: a brand-new episode adds exactly one owner alert.
+      const sentinel = [entry("modifiers", "2026-11-14T05:00:00.000Z")];
+      await sendHeartbeat(sentinel, cloud.handle, cloud.url);
+      await sendHeartbeat(sentinel, cloud.handle, cloud.url);
+      await until(async () => (await ownerRows()) >= afterFillers + 1);
+      expect(await ownerRows()).toBe(afterFillers + 1);
+    } finally {
+      await Promise.all(clients.map((client) => client.stop())).catch(
+        () => undefined,
+      );
+      await cloud.close();
+    }
+  }, 300_000);
+});

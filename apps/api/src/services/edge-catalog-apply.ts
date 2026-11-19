@@ -114,6 +114,7 @@ import {
   promotions,
   promoSettings,
 } from "../db/schema/crm-promo.ts";
+import { receiptAfterCatalogFloor } from "../edge/catalog-receipt-floor.ts";
 import type { Tx } from "./menu-internals.ts";
 import { catalogRecordIdFromKeys } from "../lib/edge-catalog-identity.ts";
 
@@ -470,7 +471,11 @@ export const STREAM_TABLES: Readonly<Record<CatalogSyncStream, PgTable>> = {
   vouchers: edgeVoucherCatalog,
 };
 
-/** Highest successfully held event version, scoped to this receiving node. */
+/**
+ * Highest successfully held event version, scoped to this receiving node.
+ * Receipts at or before the node's receipt floor (raised by a rewind after a
+ * cloud restore, legend-7r7q6) no longer count: they describe a lost history.
+ */
 async function heldCatalogEventVersions(
   tx: Tx,
   tenantId: TenantId,
@@ -486,6 +491,7 @@ async function heldCatalogEventVersions(
           AND i.direction = 'cloud_to_edge'
           AND i.kind = 'master_data'
           AND i.aggregate_type = 'catalog_record'
+          AND ${receiptAfterCatalogFloor("i", edgeNodeId)}
           AND (i.outcome = 'applied' OR (i.outcome = 'conflict' AND EXISTS (
             SELECT 1 FROM edge_sync_conflicts c
             JOIN edge_sync_conflict_resolutions r
@@ -539,7 +545,8 @@ export async function filterCatalogRecordsAfterEvents(
 /**
  * A full HTTP pull may reset HTTP-only versions after a cloud restore. Rows
  * backed by held link events keep their current version, so an older HTTP
- * snapshot cannot undo them. The caller holds the same stream apply lock.
+ * snapshot cannot undo them. After a rewind the receipt floor (raised first by
+ * the puller) retires the receipts of the lost history, so those rows reset too. The caller holds the same stream apply lock.
  */
 export async function resetCatalogSyncTxid(
   tx: Tx,
