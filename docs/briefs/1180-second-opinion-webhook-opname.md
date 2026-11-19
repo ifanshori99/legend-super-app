@@ -1,0 +1,7 @@
+# 1180 Second opinion webhook claim/secret + opname buta (ws/1167 + ws/1176)
+Peran: second-opinion (baca ~/.agents/team/roles/second-opinion.md). Codex xhigh. Read-only, tanpa worktree: `git diff`/`git show` dari folder utama, jangan checkout. Selesaikan dan lapor dalam SATU giliran.
+
+Fokus (sesudah `git fetch origin`): `git diff origin/ws/1144-refund-hold-echo...4fdcaaec1` (ws/1176 memuat ws/1167 1014c8963).
+Isi: legend-f03o (atribusi retry event ke pemilik baris bila secret cocok dengan secret sekarang/lama milik pemilik itu), legend-tipkj + dhzqb (claim atomik baris webhook: `received` segar hanya di-claim sesudah diam 5 menit, attempts+1, backoff, menyerah sesudah 6 claim -> failed STUCK_EXHAUSTED + alert atomik; markRow tidak menimpa processed/ignored), legend-0hzu + nxqrw (BLIND_COUNT_LOCKED 409 seragam sebelum cek stok: waste, transfer, produksi, retur pembelian), legend-5nmo3 (alert refund unmatched identitas stabil), legend-qi21 (test akses route).
+Cari: pembayaran tercatat dua kali atau hilang (event dibuang sebagai duplicate lalu tidak pernah diproses), baris parkir yang tidak pernah diulang, lintas tenant/integrasi lewat secret bersama, kebocoran stok tersembunyi lewat kode/pesan/waktu, alert ganda atau hilang.
+Hasil: tulis `docs/qa/second-opinion-webhook-opname-1180.md` di folder utama (P0-P3, berkas:baris, skenario, usul test). JANGAN commit, JANGAN edit file lain.
