@@ -2286,3 +2286,4 @@ Langkah berikut CTO baru:
 - 19:33 CTO: mulai SO 1197 edge catalog (Codex #2 high; 5h 60%, 7d 82%). Sesudah ini Codex #2 dihemat sampai reset 00:22.
 - 19:34 CTO: SO 1196 -> P1 (lintas tenant via GUC) + 3 P2, bead legend-qwm9r. 1189 ditarik dari SIAP sampai 1198 (G?, Sonnet) siap; batch98 bawa 1198 menggantikan 1189.
 - 19:38 CTO: SO 1197 -> P1 + 2 P2, bead legend-7r7q6. 1190 ditahan, 1199 (Sonnet) menggantikan di batch98. Semua area SO putaran ini sudah diperiksa; Codex #2 dihemat sampai 00:22.
+- 19:38 CTO: 1179 SIAP d58a535de. G8u3h lanjut (2) ws/1192 lepas hold: API + UI ikut pola finance exceptions, screenshot 390/1280 untuk review founder.
