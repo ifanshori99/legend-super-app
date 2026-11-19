@@ -11,14 +11,17 @@
 //   booking (constant fallback `DEPOSIT_ATTACH_GRACE_MINUTES`). The PRD sets
 //   no grace; this is the safest default, a guest could not pay longer anyway.
 // A DP that WAS paid is confirmed instead, never released (`reconcileDeposit`
-// decides both under the row lock).
+// decides both under the row lock). Rows whose gateway code is still inside its
+// poll window are left out of the candidate batch (legend-m0kqn).
 //
 // Runs (a) from the worker relay tick per tenant (worker-main.ts) and (b)
 // lazily at the start of every new booking under the outlet hold lock, so a
 // stale hold never blocks a guest even when the worker is behind.
 import { and, asc, eq, isNull, lte, or, sql } from "drizzle-orm";
 import type { OutletId, ScopedTenantContext } from "@starter/shared/core";
+import { paymentIntents } from "../db/schema/index.ts";
 import { reservations } from "../db/schema/reservation.ts";
+import { GATEWAY_POLL_WINDOW_MS } from "./payment-poll-window.ts";
 import {
   DEPOSIT_ATTACH_GRACE_MINUTES,
   reconcileDeposit,
@@ -52,9 +55,46 @@ export async function sweepStaleDepositHolds(
   options: { outletId?: OutletId; limit?: number } = {},
 ): Promise<DepositSweepResult> {
   const window = sql`make_interval(mins => coalesce((${reservations.policySnapshot}->>'paymentWindowMinutes')::int, ${DEPOSIT_ATTACH_GRACE_MINUTES}))`;
+  const nowSql = sql`${now.toISOString()}::timestamptz`;
+  // legend-m0kqn: the cancel decision stays in `reconcileDeposit`
+  // (reservation-core.ts). This filter only keeps rows that are certain no-ops
+  // (a gateway code still pollable) from filling the LIMIT batch and starving
+  // the rows behind them (ORDER BY created_at). A legacy row without a DP
+  // link (pre-0049) is never capped by `reconcileDeposit` (the late refund
+  // cannot reach it), so an unanswered provider code keeps it a no-op for
+  // good: same predicate here, or 100 of them starve every newer booking
+  // (legend-chmz2). A legacy row that is paid is not pollable: it still
+  // reconciles to confirmed.
+  const gatewayStillPollable = sql`exists (
+    select 1 from payment_intents
+    where ${paymentIntents.tenantId} = ${reservations.tenantId}
+      and (
+        ${paymentIntents.paymentLinkId} = ${reservations.depositPaymentLinkId}
+        or ${paymentIntents.id} = ${reservations.depositPaymentId}
+      )
+      and ${paymentIntents.providerRef} is not null
+      and ${paymentIntents.providerFinalAt} is null
+      and ${paymentIntents.status} not in ('paid', 'partially_refunded', 'refunded')
+      and (
+        ${reservations.depositPaymentLinkId} is null
+        or greatest(
+          coalesce(${reservations.depositLinkExpiresAt}, ${reservations.createdAt} + ${window}),
+          ${paymentIntents.expiresAt}
+        ) + make_interval(secs => ${GATEWAY_POLL_WINDOW_MS / 1000}) > ${nowSql}
+      )
+  ) and not exists (
+    select 1 from payment_intents paid_pi
+    where paid_pi.tenant_id = ${reservations.tenantId}
+      and (
+        paid_pi.payment_link_id = ${reservations.depositPaymentLinkId}
+        or paid_pi.id = ${reservations.depositPaymentId}
+      )
+      and paid_pi.status in ('paid', 'partially_refunded')
+  )`;
   const filters = [
     eq(reservations.tenantId, context.tenant.tenantId),
     eq(reservations.status, "pending_deposit"),
+    sql`not (${gatewayStillPollable})`,
     or(
       // Link attached (or legacy intent): its window passed.
       lte(reservations.depositLinkExpiresAt, now),

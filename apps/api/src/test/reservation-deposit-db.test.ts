@@ -251,6 +251,17 @@ async function openIntent(created: ReservationCreated): Promise<string> {
   return intent.id;
 }
 
+/** legend-pdi5u: the provider answered final for the code (expired, no money),
+ * so only then may the booking drop the DP; local time alone is not proof. */
+async function providerFinal(intentId: string) {
+  await asOwner((client) =>
+    client.query(
+      "UPDATE payment_intents SET provider_final_at = now() WHERE id = $1",
+      [intentId],
+    ),
+  );
+}
+
 /** Verified webhook settles the code (WS-05 appends `payment.paid`). */
 async function settle(intentId: string, amountIdr: number) {
   await confirmPayment(tenantScope(), intentId, {
@@ -646,6 +657,7 @@ describe("RSV-01 an unpaid DP never holds a table forever", () => {
       "pending_deposit",
     );
 
+    await providerFinal(open);
     const later = await withTenant(db, tenantScope(), (tx) =>
       sweepStaleDepositHolds(
         tx,
@@ -671,7 +683,9 @@ describe("RSV-02 a late DP is refunded in full", () => {
       t0,
     );
     const intentId = await openIntent(created);
-    // The window passes with the code unpaid: the sweep releases the hold.
+    // The window passes with the code unpaid and the provider answers final:
+    // the sweep releases the hold.
+    await providerFinal(intentId);
     await withTenant(db, tenantScope(), (tx) =>
       sweepStaleDepositHolds(
         tx,
@@ -753,6 +767,7 @@ describe("RSV-02 a late DP is refunded in full", () => {
         t0,
       );
       const intentId = await openIntent(created);
+      await providerFinal(intentId);
       await withTenant(db, tenantScope(), (tx) =>
         sweepStaleDepositHolds(
           tx,

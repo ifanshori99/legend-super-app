@@ -36,6 +36,8 @@ import {
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
+import { GATEWAY_POLL_WINDOW_MS } from "./payment-poll-window.ts";
+import { depositIntentMayStillPay } from "./reservation-deposit-proof.ts";
 import {
   loadTenantAccessInTransaction,
   resolveAccessSnapshot,
@@ -305,6 +307,8 @@ export const RESERVATION_AUDIT_SAFE_FIELDS = [
   "refundStatus",
   "refundAttempts",
   "paymentRefundId",
+  // legend-m0kqn: the cancel was forced by the poll-window cap, not by the guest.
+  "providerUnanswered",
 ] as const;
 
 /** Sensitive writes (cancel, no-show, refund/forfeit decisions) are audited. */
@@ -674,6 +678,11 @@ export type DepositState = {
    * creation time plus the payment window (the attach grace).
    */
   readonly payableUntil: Date;
+  /**
+   * legend-pdi5u: an intent of the DP is still open at the provider (see
+   * `depositIntentMayStillPay`), so the local `payableUntil` is not proof.
+   */
+  readonly providerPending: boolean;
 };
 
 /**
@@ -700,6 +709,8 @@ export async function loadDepositState(
             status: paymentIntents.status,
             expiresAt: paymentIntents.expiresAt,
             paidAt: paymentIntents.paidAt,
+            providerRef: paymentIntents.providerRef,
+            providerFinalAt: paymentIntents.providerFinalAt,
           })
           .from(paymentIntents)
           .where(
@@ -716,9 +727,16 @@ export async function loadDepositState(
     row.depositLinkExpiresAt ??
     new Date(row.createdAt.getTime() + paymentWindowMinutes(row) * 60_000);
   for (const intent of intents)
-    if (intent.status === "pending" && intent.expiresAt > payableUntil)
+    if (
+      (intent.status === "pending" || depositIntentMayStillPay(intent)) &&
+      intent.expiresAt > payableUntil
+    )
       payableUntil = intent.expiresAt;
-  return { settledIntentId: settled?.id ?? null, payableUntil };
+  return {
+    settledIntentId: settled?.id ?? null,
+    payableUntil,
+    providerPending: intents.some(depositIntentMayStillPay),
+  };
 }
 
 /**
@@ -793,6 +811,7 @@ export async function cancelUnpaidDeposit(
   context: ScopedTenantContext,
   row: ReservationRow,
   now: Date,
+  cause: { providerUnanswered?: boolean } = {},
 ): Promise<ReservationRow> {
   const [updated] = await tx
     .update(reservations)
@@ -841,12 +860,17 @@ export async function cancelUnpaidDeposit(
     action: "reservation.cancelled",
     reservationId: row.id,
     reason: DEPOSIT_NOT_PAID_REASON,
-    before: { status: row.status, depositPaidIdr: 0 },
+    before: {
+      status: row.status,
+      depositPaidIdr: 0,
+      ...(cause.providerUnanswered ? { providerUnanswered: true } : {}),
+    },
     after: {
       status: "cancelled",
       depositRefundIdr: 0,
       depositForfeitedIdr: 0,
       policyVersion: version,
+      ...(cause.providerUnanswered ? { providerUnanswered: true } : {}),
     },
     now,
   });
@@ -899,7 +923,24 @@ export async function reconcileDeposit(
     });
     return updated;
   }
-  if (state.payableUntil <= now)
-    return cancelUnpaidDeposit(tx, context, row, now);
+  if (state.payableUntil <= now) {
+    if (!state.providerPending)
+      return cancelUnpaidDeposit(tx, context, row, now);
+    // legend-m0kqn: a provider-backed code the provider never answers final
+    // must not hold the tables forever. The payment poller gives up on a code
+    // `GATEWAY_POLL_WINDOW_MS` after its expiry; the booking follows. Money
+    // that still lands afterwards settles the code but never confirms the
+    // cancelled booking: the RSV-02 late-DP flow refunds it in full, once
+    // (`handlePaymentPaid` -> `late_refund_requested`). Legacy rows without a
+    // deposit link (pre-0049, intent id only) are not capped: the late refund
+    // cannot reach them (`refundLateDeposit`), so cancelling would lose the DP.
+    if (
+      row.depositPaymentLinkId !== null &&
+      state.payableUntil.getTime() + GATEWAY_POLL_WINDOW_MS <= now.getTime()
+    )
+      return cancelUnpaidDeposit(tx, context, row, now, {
+        providerUnanswered: true,
+      });
+  }
   return row;
 }

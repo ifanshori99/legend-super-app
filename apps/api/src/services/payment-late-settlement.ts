@@ -8,14 +8,24 @@
  * intent row locks (see the lock order above), so the answer cannot change before its write.
  */
 import type { ScopedTenantContext } from "@starter/shared/core";
+import { reservationPolicySnapshotSchema } from "@starter/shared/reservation";
 import { and, asc, eq, inArray, or } from "drizzle-orm";
-import { orders, posOrders, posOrderTenders, reservations } from "../db/schema";
+import {
+  orders,
+  paymentIntents,
+  posOrders,
+  posOrderTenders,
+  reservations,
+} from "../db/schema";
+import { GATEWAY_POLL_WINDOW_MS } from "./payment-poll-window";
 import {
   outstandingIdr,
   type PaymentIntentRow,
   type PaymentLinkRow,
 } from "./payment-support";
 import type { Tx } from "./permission-resolver";
+import { depositIntentMayStillPay } from "./reservation-deposit-proof";
+import type { ReservationRow } from "./reservation-core";
 
 /**
  * LOCK ORDER FOR PAYMENTS (legend-s0u8c). Every writer that settles, fails or
@@ -107,14 +117,154 @@ export async function lockBillOwner(
 const CLOSED_ORDER_STATUSES = ["voided", "completed"] as const;
 const CLOSED_TENDER_STATUSES = ["voided", "failed"];
 
+/** Same fallback as `DEPOSIT_ATTACH_GRACE_MINUTES` in `reservation-core.ts`
+ * (not imported: that module imports the payment services). */
+const DEPOSIT_WINDOW_FALLBACK_MINUTES = 30;
+
+/**
+ * legend-pdi5u: a reservation deposit confirmed AFTER its payment window is
+ * proven late. `confirmedAt` is the evidence time (the provider's paid time or
+ * the first receipt), never the local clock at processing. The window is the
+ * later of the reservation's link limit and the intent's own expiry, and only
+ * a reservation still `pending_deposit` is affected: the money is then parked
+ * as unallocated funds instead of crediting the reservation or the bill.
+ */
+export async function depositProvenLate(
+  tx: Tx,
+  context: ScopedTenantContext,
+  link: PaymentLinkRow,
+  intent: PaymentIntentRow,
+  confirmedAt: Date,
+): Promise<boolean> {
+  const [reservation] = await tx
+    .select({
+      createdAt: reservations.createdAt,
+      policySnapshot: reservations.policySnapshot,
+      depositLinkExpiresAt: reservations.depositLinkExpiresAt,
+    })
+    .from(reservations)
+    .where(
+      and(
+        eq(reservations.tenantId, context.tenant.tenantId),
+        eq(reservations.depositPaymentLinkId, link.id),
+        eq(reservations.status, "pending_deposit"),
+      ),
+    )
+    .limit(1);
+  if (!reservation) return false;
+  const policy = reservationPolicySnapshotSchema.safeParse(
+    reservation.policySnapshot,
+  );
+  const windowMinutes = policy.success
+    ? policy.data.paymentWindowMinutes
+    : DEPOSIT_WINDOW_FALLBACK_MINUTES;
+  const linkLimit =
+    reservation.depositLinkExpiresAt ??
+    new Date(reservation.createdAt.getTime() + windowMinutes * 60_000);
+  const limit = Math.max(linkLimit.getTime(), intent.expiresAt.getTime());
+  return confirmedAt.getTime() > limit;
+}
+
+/**
+ * legend-3dfri (SO 1171): a verified gateway payment for a reservation DP that
+ * is proven to have been paid AFTER the cap (`payableUntil` +
+ * `GATEWAY_POLL_WINDOW_MS`, the same cap `reconcileDeposit` cancels at) is not
+ * parked and not credited to the booking. The caller cancels the booking if it
+ * is still `pending_deposit`, settles the intent and lets RSV-02
+ * (`handlePaymentPaid` -> `late_refund_requested`) refund it in full, once.
+ * The same answer for DOIT and Duitku, callback and polling, before or after
+ * the sweep: it is decided here from the locked rows and the evidence time.
+ *
+ * Returns the locked reservation row, or null when this is not that case
+ * (no reservation on the link, a DP already recorded or the booking confirmed
+ * / seated, another code of the link already paid, or the evidence is not
+ * past the cap). `payableUntil` is computed
+ * like `loadDepositState`: the link limit, pushed out by this intent and by
+ * any other intent on the link that can still take money. Caller holds the
+ * bill owner, bill and intent locks.
+ */
+export async function depositPaidPastCap(
+  tx: Tx,
+  context: ScopedTenantContext,
+  link: PaymentLinkRow,
+  intent: PaymentIntentRow,
+  confirmedAt: Date,
+): Promise<ReservationRow | null> {
+  const [reservation] = await tx
+    .select()
+    .from(reservations)
+    .where(
+      and(
+        eq(reservations.tenantId, context.tenant.tenantId),
+        eq(reservations.depositPaymentLinkId, link.id),
+        inArray(reservations.status, ["pending_deposit", "cancelled", "no_show"]),
+      ),
+    )
+    .limit(1);
+  if (!reservation || reservation.depositPaymentId !== null) return null;
+  // Covered, fully or partly, by another payment: not a refund-in-full case.
+  if (outstandingIdr(link) < intent.amountIdr) return null;
+  const policy = reservationPolicySnapshotSchema.safeParse(
+    reservation.policySnapshot,
+  );
+  const windowMinutes = policy.success
+    ? policy.data.paymentWindowMinutes
+    : DEPOSIT_WINDOW_FALLBACK_MINUTES;
+  let payableUntil = Math.max(
+    (
+      reservation.depositLinkExpiresAt ??
+      new Date(reservation.createdAt.getTime() + windowMinutes * 60_000)
+    ).getTime(),
+    intent.expiresAt.getTime(),
+  );
+  const siblings = await tx
+    .select({
+      id: paymentIntents.id,
+      status: paymentIntents.status,
+      expiresAt: paymentIntents.expiresAt,
+      providerRef: paymentIntents.providerRef,
+      providerFinalAt: paymentIntents.providerFinalAt,
+    })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, context.tenant.tenantId),
+        eq(paymentIntents.paymentLinkId, link.id),
+      ),
+    );
+  // Another code of this link already holds the DP (paid in time, its event
+  // not consumed yet): the booking is not cancelled for this late one. The
+  // existing rules decide (double payment, or parked).
+  if (
+    siblings.some(
+      (sibling) =>
+        sibling.id !== intent.id &&
+        (sibling.status === "paid" || sibling.status === "partially_refunded"),
+    )
+  )
+    return null;
+  for (const sibling of siblings)
+    if (
+      (sibling.status === "pending" || depositIntentMayStillPay(sibling)) &&
+      sibling.expiresAt.getTime() > payableUntil
+    )
+      payableUntil = sibling.expiresAt.getTime();
+  return confirmedAt.getTime() > payableUntil + GATEWAY_POLL_WINDOW_MS
+    ? reservation
+    : null;
+}
+
 export async function billClosedForLateSettlement(
   tx: Tx,
   context: ScopedTenantContext,
   link: PaymentLinkRow,
   intent: PaymentIntentRow,
+  confirmedAt: Date,
 ): Promise<boolean> {
   // Covered, fully or partly, by another payment since this intent closed.
   if (outstandingIdr(link) < intent.amountIdr) return true;
+  if (await depositProvenLate(tx, context, link, intent, confirmedAt))
+    return true;
 
   const tenantId = context.tenant.tenantId;
   const [closedOrder] = await tx

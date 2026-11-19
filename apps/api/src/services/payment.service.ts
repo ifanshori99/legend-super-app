@@ -90,8 +90,12 @@ import {
 } from "./payment-failover.service";
 import {
   billClosedForLateSettlement,
+  depositPaidPastCap,
+  depositProvenLate,
   lockBillOwner,
 } from "./payment-late-settlement";
+import { GATEWAY_POLL_WINDOW_MS } from "./payment-poll-window";
+import { cancelUnpaidDeposit } from "./reservation-core";
 import { plausiblePaidAt } from "./payment-paid-at";
 import {
   alertProviderRefundedAfterRecorded,
@@ -3014,10 +3018,89 @@ async function applyConfirmation(
     // Opt-in late settlement guard: a pending, failed or expired intent may
     // only settle a bill that is still open. Checked under the bill + intent locks above
     // and before any write, so the caller can park the money as unallocated.
+    // legend-pdi5u: a reservation DP confirmed after its window is parked for
+    // every intent, also a still pending one. The time is the earliest
+    // evidence (provider paid time or first receipt), not the local clock.
+    const evidenceAtMs = Math.min(
+      new Date(rawConfirmation.at).getTime(),
+      (receivedAt ?? now).getTime(),
+    );
+    const confirmedAt = new Date(
+      Number.isFinite(evidenceAtMs)
+        ? evidenceAtMs
+        : new Date(confirmation.at).getTime(),
+    );
+    const gatewayProof =
+      decision.kind === "settle" &&
+      (confirmation.source === "verified_webhook" ||
+        confirmation.source === "gateway_status");
+    // legend-3dfri (SO 1171): a DP proven paid AFTER the cap is decided here,
+    // under the locks, the same way for every provider, callback or polling,
+    // before or after the sweep: the booking is cancelled (if the sweep has not
+    // yet), the intent settles, and RSV-02 (`handlePaymentPaid`) refunds it in
+    // full once. It never confirms the booking and is not parked. A DP late
+    // BEFORE the cap keeps the parking rule below.
+    const pastCapReservation = gatewayProof
+      ? await depositPaidPastCap(tx, context, freshLink, current, confirmedAt)
+      : null;
+    if (pastCapReservation?.status === "pending_deposit")
+      await cancelUnpaidDeposit(tx, context, pastCapReservation, now);
     if (
+      !pastCapReservation &&
+      gatewayProof &&
+      (await depositProvenLate(tx, context, freshLink, current, confirmedAt))
+    ) {
+      // Parked here, under the locks (like the QRIS hold above), so every
+      // caller parks the same money once (keyed by the provider transaction)
+      // and the rejection is thrown after this commit. The provider has
+      // answered with money, so the code is final: the reservation may then
+      // cancel with a zero DP instead of waiting on this code forever.
+      const inserted = await recordUnsettledGatewayFundsInTx(
+        tx,
+        context,
+        current,
+        {
+          provider: current.provider,
+          providerRef: confirmation.providerRef,
+          source: confirmation.source,
+          paidAmountIdr: confirmation.amountIdr,
+          receivedAt: confirmedAt,
+        },
+        now,
+      );
+      if (inserted !== "none")
+        await tx
+          .update(paymentIntents)
+          .set({
+            providerFinalAt: now,
+            providerAnsweredAt: now,
+            // A code left `pending` would be polled forever; its own expiry
+            // has already passed by construction (the DP is proven late).
+            ...(current.status === "pending"
+              ? { status: "expired" as const, updatedAt: now }
+              : {}),
+          })
+          .where(
+            and(
+              eq(paymentIntents.tenantId, context.tenant.tenantId),
+              eq(paymentIntents.id, current.id),
+              isNull(paymentIntents.providerFinalAt),
+            ),
+          );
+      holdRefusal = "BILL_CLOSED";
+      return current;
+    }
+    if (
+      !pastCapReservation &&
       options.closedIntentNeedsOpenBill &&
       decision.kind === "settle" &&
-      (await billClosedForLateSettlement(tx, context, freshLink, current))
+      (await billClosedForLateSettlement(
+        tx,
+        context,
+        freshLink,
+        current,
+        confirmedAt,
+      ))
     )
       throw new PaymentConfirmationRejected(
         "BILL_CLOSED",
@@ -3402,7 +3485,7 @@ export const GATEWAY_POLL_GRACE_MS = 60_000;
  * documented cancel call, so a VA the guest abandoned by switching bank stays
  * payable at DOIT until it lapses there; the window keeps reconciling it
  * (late payment, refund request) for at least that long. */
-export const GATEWAY_POLL_WINDOW_MS = 24 * 60 * 60_000;
+export { GATEWAY_POLL_WINDOW_MS };
 
 /** Longest wait between two polls of a lapsed code. Before it, the wait is
  * half the time since expiry (1, 2, 4… minutes), so a lapsed code costs a
