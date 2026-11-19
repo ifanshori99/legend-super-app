@@ -89,6 +89,7 @@ import {
   SETTLED_OUTSIDE_PROVIDER,
 } from "./payment-refund.service";
 import { refundProviderSwitchedOff } from "./payment-refund-gateway";
+import { holdFactCoversSql } from "./refund-hold-coverage";
 import { HOLD_TRANSACTION_CONFLICT_REASON } from "./refund-hold-reasons";
 import {
   fileOwnRefundSurplusHoldInTx,
@@ -1235,6 +1236,11 @@ async function holdSwitchedOffRefundSuccess(
      * this provider's, with this provider ref and the integration that was
      * checked against the signature. Else `stale`: no hold. */
     mappedByReference?: boolean;
+    /** 1139 P1-1 (`unmatched` only): first processing, inside the retry
+     * window. The hold is filed now but finance is not told yet: the refund
+     * may still match one of ours and close it. The pass after the window
+     * tells finance (the alert id is stable, so a replay adds none). */
+    deferAlert?: boolean;
   },
   now: Date,
   variant: "switched_off" | "unmatched" = "switched_off",
@@ -1296,33 +1302,6 @@ async function holdSwitchedOffRefundSuccess(
           .limit(1);
         if (covering) return "skipped";
       }
-      const snapshot = async (): Promise<string> =>
-        JSON.stringify(
-          (
-            await tx
-              .select({
-                id: refundReconHolds.id,
-                amountIdr: refundReconHolds.amountIdr,
-                reason: refundReconHolds.reason,
-                resolvedAt: refundReconHolds.resolvedAt,
-              })
-              .from(refundReconHolds)
-              .where(
-                and(
-                  eq(refundReconHolds.tenantId, context.tenant.tenantId),
-                  eq(refundReconHolds.paymentIntentId, intent.id),
-                  sql`coalesce(${refundReconHolds.providerPaymentRef}, '') = ${hold.providerPaymentRef ?? ""}`,
-                ),
-              )
-              .orderBy(refundReconHolds.id)
-          ).map((held) => [
-            held.id,
-            Number(held.amountIdr),
-            held.reason,
-            held.resolvedAt === null,
-          ]),
-        );
-      const before = await snapshot();
       await fileTransactionConflictHoldInTx(
         tx,
         context,
@@ -1337,7 +1316,9 @@ async function holdSwitchedOffRefundSuccess(
         },
         now,
       );
-      if ((await snapshot()) !== before)
+      // Inside the retry window finance is not told yet (`deferAlert`); after
+      // it, every pass tells finance (a stable alert id: replays add none).
+      if (!hold.deferAlert)
         await alertProviderRefundUnmatched(
           tx,
           context,
@@ -1380,7 +1361,8 @@ async function holdSwitchedOffRefundSuccess(
         })
         .onConflictDoNothing()
         .returning({ id: refundReconHolds.id });
-      if (held) {
+      const alertFiled = async () => {
+        if (hold.deferAlert) return;
         await (
           variant === "unmatched"
             ? alertProviderRefundUnmatched
@@ -1396,6 +1378,9 @@ async function holdSwitchedOffRefundSuccess(
           },
           now,
         );
+      };
+      if (held) {
+        await alertFiled();
         return "filed";
       }
       // The key is taken. A hold of THIS intent under it is the hold of this
@@ -1425,6 +1410,22 @@ async function holdSwitchedOffRefundSuccess(
             isNull(refundReconHolds.resolvedAt),
           ),
         );
+      // 1139: the hold of an earlier pass (silent inside the retry window) is
+      // announced by the pass after it; the alert id is stable. Only for a hold
+      // still open: one finance already closed is not announced again.
+      if (variant === "unmatched") {
+        const [open] = await tx
+          .select({ id: refundReconHolds.id })
+          .from(refundReconHolds)
+          .where(
+            and(
+              eq(refundReconHolds.id, mine.id),
+              isNull(refundReconHolds.resolvedAt),
+            ),
+          )
+          .limit(1);
+        if (open) await alertFiled();
+      }
       return "filed";
     }
     throw new Error("Refund hold of a switched-off provider was not filed");
@@ -1462,6 +1463,15 @@ async function holdUnmatchedRefundSuccess(
   /** 1139 P1-1: first processing, inside the retry window. A payment that
    * cannot be mapped yet is only logged (the pass after the window alerts). */
   inRetryWindow = false,
+  /** The readable provider-initiated refund of the event (refund id, payment
+   * id, amount), when `readProviderInitiatedRefund` reads one: after the
+   * window it is recorded as a fact (or held as a reference mismatch) by
+   * `recordRefundFor`. */
+  providerRefund: {
+    refundId: string;
+    paymentId: string;
+    amountIdr: number;
+  } | null = null,
 ): Promise<"held" | "unmapped" | "skipped"> {
   // Only a KNOWN pending or failed status moved no money and is skipped; a
   // success status, no status, and any status we do not know are held
@@ -1487,8 +1497,9 @@ async function holdUnmatchedRefundSuccess(
   // 1139 P1-2: the `reference` (the Legend intent id) is a fallback mapping,
   // only when the event names no payment id at all: a payment id always wins
   // (a conflicting reference is only alerted below). The intent must be of the
-  // receiving tenant (found by the tenant-scoped read), this provider's, paid
-  // (own provider ref), and map back to itself by that ref (one intent).
+  // receiving tenant (found by the tenant-scoped read), this provider's, with an
+  // own provider ref (a payment exists, not checked as paid), and map back to
+  // itself by that ref (one intent).
   let mappedByReference: string | undefined;
   if (
     !known &&
@@ -1549,6 +1560,32 @@ async function holdUnmatchedRefundSuccess(
   ) {
     owner = candidate;
   }
+  // 1139: inside the window an event that `recordRefundFor` would hold as a
+  // reference mismatch after it (a readable refund whose reference names
+  // another intent than the payment id's) is held NOW by that very path: the
+  // same countable mismatch hold and alert, only earlier, never a second
+  // conflict hold next to it.
+  if (inRetryWindow && providerRefund && owner && !known) {
+    const references = [
+      ...(facts.reference !== undefined ? [facts.reference] : []),
+      ...(facts.payment ? [facts.payment.reference] : []),
+    ];
+    if (references.some((reference) => reference !== owner.intent.id)) {
+      await holdRefundReferenceMismatch(
+        context,
+        row,
+        owner.intent,
+        {
+          providerRefundId: providerRefund.refundId,
+          amountIdr: providerRefund.amountIdr,
+          providerPaymentRef: providerRefund.paymentId,
+          refundStatus: facts.refundStatus,
+        },
+        now,
+      );
+      return "held";
+    }
+  }
   const full = owner
     ? Math.max(Number(owner.intent.amountIdr), owner.evidenceAmountIdr ?? 0)
     : 0;
@@ -1587,6 +1624,7 @@ async function holdUnmatchedRefundSuccess(
       providerRefundId: facts.refundId ?? null,
       ...(reported !== undefined ? { reportedAmountIdr: reported } : {}),
       ...(mappedByReference !== undefined ? { mappedByReference: true } : {}),
+      ...(inRetryWindow ? { deferAlert: true } : {}),
       amountIdr: heldAmount,
     },
     now,
@@ -1615,7 +1653,7 @@ async function holdUnmatchedRefundSuccess(
     filed === "filed" &&
     mappedByReference === undefined &&
     facts.reference !== undefined &&
-    facts.reference !== owner.intent.id
+    facts.reference.toLowerCase() !== owner.intent.id.toLowerCase()
   )
     await withTenant(db, context, (tx) =>
       alertRefundReferenceMismatch(
@@ -1644,18 +1682,24 @@ async function holdUnmatchedRefundSuccess(
 /** 1139 P1-1: the event was held on first processing (no refund of ours
  * matched yet) and a retry now matches our refund R, which counts the money on
  * its own. The hold of this event (its stored event id, or its provider refund
- * id on this intent) is closed so the money is not counted twice: closed as
- * `not_this_intent` (a conflict hold is never counted, R is). Restrictive: only
- * an open conflict hold worth no more than R's amount is closed; a larger one
- * (an unreadable amount held the whole payment) stays for finance. */
+ * id on this intent) for THE SAME payment (`paymentRef`) is closed so the money
+ * is not counted twice. Closed as `not_this_intent`, with a note that says R
+ * counts it: a conflict hold is never counted as a provider refund (no
+ * `same_as_counted` identity, which would block later facts of the payment).
+ * Restrictive: only an open conflict hold of that payment worth no more than
+ * R's amount is closed; a larger one (an unreadable amount held the whole
+ * payment) stays for finance, and so does any hold when the payment is not
+ * known. */
 async function closeUnmatchedHoldOfMatchedRefund(
   context: ScopedTenantContext,
   row: GatewayWebhookEvent,
   refund: { amountIdr: number | string },
   intent: PaymentIntentRow,
   providerRefundId: string | null,
+  paymentRef: string | null,
   now: Date,
 ): Promise<void> {
+  if (paymentRef === null) return;
   await withTenant(db, context, async (tx) => {
     await tx
       .select({ id: paymentIntents.id })
@@ -1674,7 +1718,7 @@ async function closeUnmatchedHoldOfMatchedRefund(
         resolvedAt: now,
         resolution: "not_this_intent",
         resolutionNote:
-          "Otomatis: refund Legend yang cocok dengan laporan ini sudah dihitung",
+          "Otomatis: laporan ini ternyata refund Legend yang sudah dihitung; bukan refund tambahan",
       })
       .where(
         and(
@@ -1683,6 +1727,7 @@ async function closeUnmatchedHoldOfMatchedRefund(
           isNull(refundReconHolds.resolvedAt),
           eq(refundReconHolds.reason, HOLD_TRANSACTION_CONFLICT_REASON),
           sql`${refundReconHolds.amountIdr} <= ${Number(refund.amountIdr)}`,
+          eq(refundReconHolds.providerPaymentRef, paymentRef),
           providerRefundId === null
             ? eq(refundReconHolds.webhookEventId, row.id)
             : or(
@@ -1692,6 +1737,57 @@ async function closeUnmatchedHoldOfMatchedRefund(
                   eq(refundReconHolds.providerRefundId, providerRefundId),
                 ),
               ),
+        ),
+      );
+  });
+}
+
+/** 1139 P2-1: a first-pass hold (conflict reason, key intent + refund id X +
+ * payment P) outlives the fact of X that `recordRefundFor` books after the
+ * retry window, though the fact limits later refunds on its own. Closed as
+ * `counted_against_intent` once the facts on record for that key cover the
+ * hold's value (`holdFactCoversSql`, one atomic statement under the intent
+ * and deposit-intent locks); a fact below the hold leaves it open. The intent
+ * is the one `recordRefundFor` bound (same candidate rule, signature checked
+ * there). */
+async function closeFirstPassHoldCoveredByFact(
+  context: ScopedTenantContext,
+  refund: { refundId: string; paymentId: string },
+  now: Date,
+): Promise<void> {
+  const candidate = await findRefundCandidate(context, refund.paymentId);
+  if (!candidate) return;
+  const { intent } = candidate;
+  await withTenant(db, context, async (tx) => {
+    await tx
+      .select({ id: paymentIntents.id })
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, context.tenant.tenantId),
+          eq(paymentIntents.id, intent.id),
+        ),
+      )
+      .for("update");
+    await lockDepositIntentsExclusive(tx, context.tenant.tenantId, intent.id);
+    await tx
+      .update(refundReconHolds)
+      .set({
+        resolvedAt: now,
+        resolution: "counted_against_intent",
+        resolutionNote:
+          "Otomatis: refund penyedia sudah dicatat sebagai fakta dan membatasi refund berikutnya",
+      })
+      .where(
+        and(
+          eq(refundReconHolds.tenantId, context.tenant.tenantId),
+          eq(refundReconHolds.paymentIntentId, intent.id),
+          isNull(refundReconHolds.resolvedAt),
+          eq(refundReconHolds.reason, HOLD_TRANSACTION_CONFLICT_REASON),
+          eq(refundReconHolds.providerRefundIdKind, "provider"),
+          eq(refundReconHolds.providerRefundId, refund.refundId),
+          eq(refundReconHolds.providerPaymentRef, refund.paymentId),
+          holdFactCoversSql(context.tenant.tenantId, refundReconHolds.id),
         ),
       );
   });
@@ -2479,6 +2575,10 @@ async function processRefundEvent(
           return "failed";
         }
         if (applied === "bound") {
+          // 1139 P2-1: the fact of X now limits the refunds of the payment, so
+          // the hold of the first pass (same refund id and payment) is closed
+          // when that fact covers its value.
+          await closeFirstPassHoldCoveredByFact(context, providerRefund, now);
           await markRow(
             context,
             row.id,
@@ -2509,6 +2609,7 @@ async function processRefundEvent(
           now,
           knownIntent,
           retryable,
+          providerRefund,
         );
         if (!retryable)
           logger.warn(
@@ -2810,6 +2911,10 @@ async function processRefundEvent(
         refund,
         intent,
         facts.refundId ?? providerRef ?? null,
+        facts.paymentId ??
+          facts.payment?.id ??
+          (await refundSourcePayment(context, refund, intent))?.providerRef ??
+          intent.providerRef,
         now,
       );
     await markRow(

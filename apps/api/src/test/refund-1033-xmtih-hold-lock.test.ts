@@ -434,12 +434,14 @@ function signatureHeader(raw: string): string {
 }
 
 /**
- * The provider's refund.succeeded reaches the webhook. Inside the 15 minute
- * retry window the event is stored `failed` and nothing is held yet; the hold
- * is filed by the retry worker once the event is older (as the 1025-C tests do).
- * This stores the event and ages it, so `runWorker` files the hold.
+ * The provider's refund.succeeded reaches the webhook. Decision 1139: the hold
+ * of a succeeded refund that maps to our payment but matches no refund is filed
+ * at the FIRST processing (this delivery), not by the retry worker after the
+ * 15 minute window. The hold creator must therefore wait for the deposit-intent
+ * lock inside this very request: `postMismatch` is the delivery alone, so a test
+ * can send it while a credit apply is stalled.
  */
-async function armMismatch(d: Deposit, amountIdr: number) {
+async function postMismatch(d: Deposit, amountIdr: number) {
   const eventId = `evt_${randomBytes(8).toString("hex")}`;
   eventIds.push(eventId);
   const otherReference = randomUUID(); // not this intent's id
@@ -468,13 +470,6 @@ async function armMismatch(d: Deposit, amountIdr: number) {
     .send(raw);
   // Signature accepted and event stored (a 5xx asks the provider to retry).
   expect(response.status, JSON.stringify(response.body)).not.toBe(401);
-  await owner.query(
-    `UPDATE gateway_webhook_events
-        SET received_at = now() - interval '20 minutes',
-            updated_at = now() - interval '20 minutes'
-      WHERE tenant_id = $1 AND event_id = $2`,
-    [seededTenantId, eventId],
-  );
   expect(
     (
       await owner.query(
@@ -487,6 +482,19 @@ async function armMismatch(d: Deposit, amountIdr: number) {
   return eventId;
 }
 
+/** Delivery, then the stored event aged so the retry worker can reprocess it. */
+async function armMismatch(d: Deposit, amountIdr: number) {
+  const eventId = await postMismatch(d, amountIdr);
+  await owner.query(
+    `UPDATE gateway_webhook_events
+        SET received_at = now() - interval '20 minutes',
+            updated_at = now() - interval '20 minutes'
+      WHERE tenant_id = $1 AND event_id = $2`,
+    [seededTenantId, eventId],
+  );
+  return eventId;
+}
+
 const webhookContext = establishScopedTenantContext(
   establishTenantContext({
     tenantId: tenantIdSchema.parse(seededTenantId),
@@ -496,7 +504,7 @@ const webhookContext = establishScopedTenantContext(
   { kind: "tenant" },
 );
 
-/** The retry worker reprocesses the aged event: this is where the hold is filed. */
+/** The retry worker reprocesses the aged event (the hold already exists since the delivery). */
 const runWorker = () =>
   reprocessStoredWebhookEvents(webhookContext, new Date(), 100).catch(
     () => null,
@@ -844,9 +852,10 @@ describe("legend-xmtih controls: the hold paths work when no credit apply runs",
 describe("legend-xmtih the hold creator waits for a running credit apply", () => {
   it("xmtih-a1 path (a): mismatch hold waits while a credit apply holds the deposit-intent lock, files after it committed", async () => {
     const d = await closedSourceWithCredit();
-    await armMismatch(d, 40_000);
     const { result } = await whileApplyStalled(d, async ({ keys }) => {
-      const worker = track(runWorker());
+      // The hold is filed by the delivery itself (decision 1139), so the
+      // delivery is what must queue on the lock.
+      const worker = track(postMismatch(d, 40_000));
       const outcome = await waitsOrFinishes(keys, () => worker.state.done);
       const visible = await mismatchHolds(d.intentId);
       return { worker, outcome, visible };
@@ -896,9 +905,8 @@ describe("legend-xmtih the hold creator waits for a running credit apply", () =>
 describe("legend-xmtih money: hold and credit apply together never pay the guest more", () => {
   it("xmtih-m1 mismatch hold 40k at the same time as a 40k credit apply: guest can spend nothing above the net, or the surplus is held with a credit trace", async () => {
     const d = await closedSourceWithCredit();
-    await armMismatch(d, 40_000);
     const { result, target } = await whileApplyStalled(d, async ({ keys }) => {
-      const worker = track(runWorker());
+      const worker = track(postMismatch(d, 40_000));
       // Either it queues behind the apply (fixed) or it ran at once (bug); the
       // apply is released in both cases and the outcome is judged afterwards.
       await waitsOrFinishes(keys, () => worker.state.done);
@@ -939,9 +947,12 @@ describe("legend-xmtih other intents and tenants are not slowed down", () => {
     const stalled = await closedSourceWithCredit();
     const other = await closedSourceWithCredit();
     await addOwnRefundInFlight(other, 100_000);
-    await armMismatch(other, 40_000);
     await whileApplyStalled(stalled, async () => {
-      await within(15_000, runWorker(), "mismatch hold of the other intent");
+      await within(
+        15_000,
+        postMismatch(other, 40_000),
+        "mismatch hold of the other intent",
+      );
       await within(
         15_000,
         recordFullRefund(other),

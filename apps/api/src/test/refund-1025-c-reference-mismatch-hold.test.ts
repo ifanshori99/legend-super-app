@@ -1132,7 +1132,11 @@ describe("legend-9s33i an open hold blocks every refund and payout of the held i
 // ---------------------------------------------------------------------------
 
 describe("legend-9s33i control: a refund naming the intent that owns the payment id", () => {
-  it("1025-9s33i control: recorded on that intent as a provider refund, no recon hold", async () => {
+  // Decision 1139: a succeeded refund that maps to our payment but matches no
+  // refund is held at the FIRST processing; when the fact records its value on
+  // the intent (as here) that hold is closed counted_against_intent at once.
+  // So: no OPEN hold, any hold is closed counted_against_intent, refunded once.
+  it("1025-9s33i control: recorded on that intent as a provider refund, no open recon hold (a first-pass hold is closed counted_against_intent)", async () => {
     const s = await scene();
     const bRef = referenceOf(s.b);
     const body = envelope({
@@ -1148,7 +1152,20 @@ describe("legend-9s33i control: a refund naming the intent that owns the payment
       rows: 1,
       idr: s.x.amountIdr,
     });
-    expect(await holdsOfIfTable([s.a.id, s.b.id])).toHaveLength(0);
+    const holds = await holdsOfIfTable([s.a.id, s.b.id]);
+    expect(
+      holds.filter((h) => h.resolved_at === null),
+      "no open hold",
+    ).toHaveLength(0);
+    const { rows: closed } = await owner.query<{ resolution: string | null }>(
+      `SELECT resolution FROM refund_recon_holds
+        WHERE tenant_id = $1 AND payment_intent_id = ANY($2::uuid[])`,
+      [tenantId, [s.a.id, s.b.id]],
+    );
+    for (const h of closed)
+      expect(h.resolution, "a hold that exists is counted, not dismissed").toBe(
+        "counted_against_intent",
+      );
     const rows = await eventRow(body.id);
     expect(rows[0]!.last_error_code).not.toBe("REFERENCE_MISMATCH");
   });
