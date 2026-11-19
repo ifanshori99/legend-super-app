@@ -2169,3 +2169,4 @@ Langkah berikut CTO baru:
 - 09:05 CTO: 1137 selesai (G0s0c resolved, bf1567dec). SO approval 1148 mulai.
 - 09:08 CTO: mulai 1149 flake (G4d60, Codex #5, cabang ghostex/769735ff: 5voa6, h4ary, c2z4x, inflf) dan 1150 member QR (G4fbc, Claude #5 sonnet, ghostex/0a8ebb6f: fmw1u). Cabang nyata beda dari nama di brief (Ghostex).
 - 09:09 CTO: SO 1148 P1+P2 approval waktu; 1137 ditahan, fix 1151 (engineer Sonnet). G4ca3 resolved.
+- 09:12 CTO: 1150 opsi A (QR attach-only + body kontrak shared); kartu lanjutan legend-0ne0z, mockup 1152 (Codex #4). 1151 fix approval (G4m76, Claude #5). Disk: hapus worktree bersih 1136/1137 + cleanup-ssd, 14.6 -> 17 GB.
