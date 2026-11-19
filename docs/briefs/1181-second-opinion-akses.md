@@ -1,0 +1,7 @@
+# 1181 Second opinion akses: audit outlet, kunci peran, jam DB, kunci IP, aktor tablet bersama (ws/1172 + ws/1177)
+Peran: second-opinion (baca ~/.agents/team/roles/second-opinion.md). Codex xhigh. Read-only, tanpa worktree: `git diff`/`git show` dari folder utama, jangan checkout. Selesaikan dan lapor dalam SATU giliran.
+
+Fokus (sesudah `git fetch origin`): (a) `git diff origin/milestone/m1...1017da431` (ws/1172), (b) `git diff origin/milestone/m1...f48fe4134 -- apps/api` (ws/1177; abaikan i18n web).
+Isi (a): legend-hb1u9 (audit outlet.status_changed satu transaksi), v8dfx (advisory lock role-assignment-end di updateCustomRole), hzdy5 + e3qgo (readDbClock sesudah kunci di grant/end/tenant-owner/sole-owner-self-approval/hris offboarding/manager), z2kaf (clientIpKey rate limit edge link, staff-pin-sync, edge-bootstrap, mcp). (b): legend-5f6is + jvaqa (actorOf(req) di reservation.routes; list/detail/deposit-remainder/seat/PATCH tables dibuka di tablet bersama via requireAuthAllowSharedDevice + requireActingStaffOnSharedDevice; tanpa PIN 401 ACTING_STAFF_REQUIRED).
+Cari: eskalasi akses atau izin basi sesudah pencabutan, aktor salah di audit, persetujuan uang oleh sole owner di luar jendela, rate limit yang bisa digeser header atau dibagi antar-IP, rute tablet bersama yang lolos tanpa PIN kasir, lintas tenant/outlet.
+Hasil: tulis `docs/qa/second-opinion-akses-1181.md` di folder utama (P0-P3, berkas:baris, skenario, usul test). JANGAN commit, JANGAN edit file lain.
