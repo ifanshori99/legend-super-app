@@ -270,7 +270,7 @@ async function recordSkips(
   }
 }
 
-async function applyReceiptRunReported(
+export async function applyReceiptRunReported(
   tx: EdgeTx,
   event: EventEnvelope,
   meta: EdgeApplyMeta,

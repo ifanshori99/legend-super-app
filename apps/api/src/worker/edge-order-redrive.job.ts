@@ -22,6 +22,7 @@ import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import {
   assertTrustedScopedContext,
+  CoreError,
   uuidToUlid,
   type ScopedTenantContext,
 } from "@starter/shared/core";
@@ -29,6 +30,14 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
+import {
+  eventEnvelopeSchema,
+  type EventEnvelope,
+} from "@starter/shared/events";
+import {
+  RECEIPT_RUN_AGGREGATE,
+  RECEIPT_RUN_REPORTED_EVENT,
+} from "@starter/shared/pos";
 import { db } from "../db/index.ts";
 import type * as schema from "../db/schema/index.ts";
 import { edgeDeferredEvents } from "../db/schema/edge-deferred-event.ts";
@@ -41,12 +50,15 @@ import {
 } from "../edge/order-ingest.ts";
 import type { EdgeApplyMeta } from "../edge/ports.ts";
 import { sourceIdToDb } from "../services/inventory.service.ts";
+import { applyReceiptRunReported } from "../edge/receipt-run-applier.ts";
 
 type Database = NodePgDatabase<typeof schema>;
 
 export const EDGE_ORDER_REDRIVE_BATCH = 200;
 export const EDGE_ORDER_REDRIVE_LOCK_TIMEOUT_MS = 5_000;
 const VOID_REFUSED_PREFIX = "void_refused:";
+/** Most refused receipt run events re-applied for one recovered void. */
+const RECEIPT_RUN_REAPPLY_LIMIT = 100;
 
 export type EdgeOrderRedriveDeps = {
   database?: Database;
@@ -211,6 +223,70 @@ async function redrivePaid(
 type OrderTx = Parameters<Parameters<typeof withTenant>[2]>[0];
 
 /**
+ * legend-gdjpu: the edge reporter sends a receipt run once `order.voided` is
+ * ACKed, and the ACK only proves the transport. A run that reached the cloud
+ * before the void was recovered was refused (RECEIPT_VOID_UNMATCHED) and
+ * stored as an `applier_refused` conflict; the sender never requeues it. Once
+ * the void is in, the refused run events of the devices that reported this
+ * order are applied again, in event order, through the receipt run applier.
+ * The merge is idempotent (numbers fixed, nothing inserted twice, no journal
+ * of its own), so this never double reverses. A run still refused (another
+ * hole, a prefix mismatch) stays refused and its conflict row is untouched.
+ */
+async function reapplyRefusedReceiptRuns(
+  tx: OrderTx,
+  context: ScopedTenantContext,
+  orderId: string,
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const dbId = sourceIdToDb(orderId);
+  const forms = [...new Set([orderId, dbId, uuidToUlid(dbId)])];
+  const mentions = sql.join(
+    forms.map(
+      (form) =>
+        sql`event -> 'payload' -> 'receipts' @> ${JSON.stringify([{ receipt: { orderId: form } }])}::jsonb`,
+    ),
+    sql` OR `,
+  );
+  const found = await tx.execute(
+    sql`SELECT edge_node_id::text AS edge_node_id, event
+        FROM edge_sync_conflicts
+        WHERE tenant_id = ${tenantId}::uuid
+          AND direction = 'edge_to_cloud'
+          AND reason = 'applier_refused'
+          AND aggregate_type = ${RECEIPT_RUN_AGGREGATE}
+          AND event ->> 'name' = ${RECEIPT_RUN_REPORTED_EVENT}
+          AND aggregate_id IN (
+            SELECT aggregate_id FROM edge_sync_conflicts
+            WHERE tenant_id = ${tenantId}::uuid
+              AND direction = 'edge_to_cloud'
+              AND reason = 'applier_refused'
+              AND aggregate_type = ${RECEIPT_RUN_AGGREGATE}
+              AND event ->> 'name' = ${RECEIPT_RUN_REPORTED_EVENT}
+              AND (${mentions}))
+        ORDER BY event_id
+        LIMIT ${RECEIPT_RUN_REAPPLY_LIMIT}`,
+  );
+  for (const row of found.rows as { edge_node_id: string; event: unknown }[]) {
+    const parsed = eventEnvelopeSchema.safeParse(row.event);
+    if (!parsed.success) continue;
+    const event: EventEnvelope = parsed.data;
+    try {
+      // Savepoint: a refusal (still a hole, ...) rolls back only this run.
+      await tx.transaction((savepoint) =>
+        applyReceiptRunReported(
+          savepoint,
+          event,
+          metaOf(context, row.edge_node_id),
+        ),
+      );
+    } catch (error) {
+      if (!(error instanceof CoreError)) throw error;
+    }
+  }
+}
+
+/**
  * Runs the parked `order.voided` events of one order through the ingest, in
  * sequence order. True once the order is voided; the stale refusal note on
  * the ledger row is then cleared.
@@ -265,6 +341,7 @@ async function ingestParkedVoids(
             eq(edgeOrderIngests.orderId, orderId),
           ),
         );
+      await reapplyRefusedReceiptRuns(tx, context, orderId);
       return true;
     }
   }
