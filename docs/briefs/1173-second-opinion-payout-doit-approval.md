@@ -1,0 +1,7 @@
+# 1173 Second opinion payout recon, DOIT recurring, approval lock (ws/1164)
+Peran: second-opinion (baca ~/.agents/team/roles/second-opinion.md). Codex xhigh. Read-only, tanpa worktree: `git diff`/`git show` dari folder utama, jangan checkout. Selesaikan dan lapor dalam SATU giliran.
+
+Fokus (sesudah `git fetch origin`): `git diff e1020c77e...d9806d79d` (origin/ws/1164-payout-recurring-approval; abaikan file snapshot `drizzle/meta/*.json`). Konteks: `docs/qa/second-opinion-approval-waktu-r2-1160.md`.
+Isi: legend-q2nkl (recon payout: waiter `lock_timeout` 55P03 tidak melewati operasi), legend-ww562 (flag `DOIT_RECURRING_ENABLED` di service: create/resume/charge diblok, pause/cancel lolos; stop gagal -> `needs_reconcile` + `CANCEL_PENDING`, tidak ditagih lagi; resolve-reconcile hanya `cancelled` yang menutup), legend-k8g62 (peran approver dimuat ulang sesudah `lockChain`), legend-jsrcs (migrasi 0706: tutup dua orang ditolak PAYOUT-91 409 selama backend lain memegang lock operasi), SO 1160 P2 (waktu segar sesudah lock: max(jam pemanggil, jam server)). Cherry-pick 64d5d345e dari m1 ikut.
+Cari: payout atau charge ganda, tagihan recurring sesudah stop/flag mati, baris parkir yang bisa kembali menagih, approval oleh peran yang sudah dicabut, cancel/approve lewat tenggat, migrasi 0706 yang bisa mengunci permanen atau lolos, lintas tenant.
+Hasil: tulis `docs/qa/second-opinion-payout-doit-approval-1173.md` di folder utama (P0-P3, berkas:baris, skenario, usul test). JANGAN commit, JANGAN edit file lain.
