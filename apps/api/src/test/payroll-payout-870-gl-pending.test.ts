@@ -720,7 +720,23 @@ describe("second-opinion F3 (legend-cnpap): pending cash settlement keeps the ca
         "no journal added by the second run",
       ).toBe(journals);
     } finally {
-      await replace(mappings);
+      // Teardown, not behaviour under test: legend 1147 refuses moving a cash
+      // role back onto an account with journal lines (A has some), so the
+      // original mapping is put back with SQL. Without it later tests would
+      // see petty_cash on the empty 1109 and an available cash of Rp0.
+      await W.asTenant(
+        (c) =>
+          c.query(
+            `UPDATE account_mappings SET account_id = $3
+              WHERE tenant_id = $1 AND legal_entity_id = $2 AND role = 'petty_cash'`,
+            [
+              tenantId(),
+              W.entityId(),
+              mappings.find((m) => m.role === "petty_cash")!.accountId,
+            ],
+          ),
+        true,
+      );
     }
 
     const postings = await W.postingsOf(batchId);
