@@ -257,17 +257,6 @@ async function ord09Attempt(
   };
 }
 
-/** A refused ORD-09 names its refusal: resolve 422 room (or 409), or the consumer filed nothing. */
-function expectRefusalIsClean(attempt: Ord09) {
-  if (attempt.resolveStatus !== 200) {
-    expect([409, 422], JSON.stringify(attempt)).toContain(
-      attempt.resolveStatus,
-    );
-    if (attempt.resolveStatus === 422)
-      expect(attempt.resolveCode, JSON.stringify(attempt)).toBe(ROOM_CODE);
-  }
-}
-
 async function payVerifiedQr(intentId: string, amountIdr: number) {
   const context = contextOf(tenantId());
   await confirmPayment(context, intentId, {
@@ -347,37 +336,40 @@ async function paidAbcOrder(): Promise<AbcOrder> {
 }
 
 describe("1145b (a) an ORD-09 on a plain line never takes more than that line's share", () => {
-  it("control (promo kept): ORD-09 of A (kopi, 25.000 of 91.000) on the promo order: filed <= A's share 23.163 (+3), or refused 422 REFUND_OVER_ORDER_ROOM; never the repriced 28.875", async () => {
+  it("control (promo kept): ORD-09 of A (kopi, 25.000 of 91.000) on the promo order: filed at A's share 23.163 (+1), never the repriced 28.875", async () => {
     const abc = await paidAbcOrder();
 
     const attempt = await ord09Attempt(abc.aLine, KOPI_PRICE);
 
     expect(attempt.consumerError, JSON.stringify(attempt)).toBeNull();
+    // Capped at A's share (never blocked to 0, never the repriced amount). The
+    // 1 IDR left over by the floors goes to A or C (tied remainders).
     expect(
       attempt.filedIdr,
       `ORD-09 of A filed ${attempt.filedIdr}; A's share is ${A_SHARE}, the promo repricing would file ${A_REPRICED}`,
-    ).toBeLessThanOrEqual(A_SHARE + SLACK);
-    if (attempt.filedIdr === 0) expectRefusalIsClean(attempt);
+    ).toBeGreaterThanOrEqual(A_SHARE);
+    expect(attempt.filedIdr).toBeLessThanOrEqual(A_SHARE + 1);
     expect(attempt.filedIdr, "total out <= paid").toBeLessThanOrEqual(
       ABC_PAID,
     );
   });
 
-  it("ORD-09 of C (teh, 12.000 of 91.000) is cut the same way: filed <= C's share 11.118 (+3)", async () => {
+  it("ORD-09 of C (teh, 12.000 of 91.000) is cut the same way: filed at C's share 11.118 (+1)", async () => {
     const abc = await paidAbcOrder();
 
     const attempt = await ord09Attempt(abc.cLine, PRICES.teh);
 
     expect(attempt.consumerError, JSON.stringify(attempt)).toBeNull();
-    expect(attempt.filedIdr).toBeLessThanOrEqual(C_SHARE + SLACK);
-    if (attempt.filedIdr === 0) expectRefusalIsClean(attempt);
+    expect(attempt.filedIdr).toBeGreaterThanOrEqual(C_SHARE);
+    expect(attempt.filedIdr).toBeLessThanOrEqual(C_SHARE + 1);
   });
 
   it("A's ORD-09 attempt, then a voucher on B up to B's share (50.000 <= 50.033): the voucher passes, total out <= paid and C keeps its money", async () => {
     const abc = await paidAbcOrder();
 
     const ord09 = await ord09Attempt(abc.aLine, KOPI_PRICE);
-    expect(ord09.filedIdr).toBeLessThanOrEqual(A_SHARE + SLACK);
+    expect(ord09.filedIdr).toBeGreaterThanOrEqual(A_SHARE);
+    expect(ord09.filedIdr).toBeLessThanOrEqual(A_SHARE + 1);
 
     const voucher = await p.apologyVoucherRequest(abc.bLine, 50_000);
     expect(
@@ -421,7 +413,7 @@ const PROMO_ROTI_SHARE = 13_986;
 // Order matters: paidPromoOrder seeds a second promotion (buy 2 kopi/teh, roti free) that would
 // also hit the A/B/C order of (a), so (a2) stays after (a).
 describe("1145b (a2) a repriced ORD-09 on a plain line never passes the line's share", () => {
-  it("kopi ORD-09 (promo withdrawn, 8.085), then the roti (recompute 20.790): filed <= roti's share 13.986 (+3) or refused 422 room; total out <= paid; teh keeps its share", async () => {
+  it("kopi ORD-09 (promo withdrawn, 8.085), then the roti (recompute 20.790): capped at the roti's share 13.986; total out <= paid; teh keeps its share", async () => {
     const paid = await p.paidPromoOrder();
 
     const kopi = await ord09Attempt(paid.kopiLine, KOPI_PRICE);
@@ -431,11 +423,11 @@ describe("1145b (a2) a repriced ORD-09 on a plain line never passes the line's s
     const roti = await ord09Attempt(paid.rotiLine, ROTI_PRICE);
 
     expect(roti.consumerError, JSON.stringify(roti)).toBeNull();
+    // Capped exactly at the roti's share (the recompute is 20.790), not blocked.
     expect(
       roti.filedIdr,
       `roti filed ${roti.filedIdr}; its share is ${PROMO_ROTI_SHARE}, the recompute would file ${ROTI_PAID}`,
-    ).toBeLessThanOrEqual(PROMO_ROTI_SHARE + SLACK);
-    if (roti.filedIdr === 0) expectRefusalIsClean(roti);
+    ).toBe(PROMO_ROTI_SHARE);
     const out = kopi.filedIdr + roti.filedIdr;
     expect(out, "total out <= paid").toBeLessThanOrEqual(PROMO_PAID);
     expect(
@@ -444,7 +436,7 @@ describe("1145b (a2) a repriced ORD-09 on a plain line never passes the line's s
     ).toBeGreaterThanOrEqual(PROMO_TEH_SHARE - SLACK);
   });
 
-  it("roti ORD-09 first (free item, nothing left), then the kopi (recompute 28.875): filed <= kopi's share 19.425 (+3) or refused; total out <= paid", async () => {
+  it("roti ORD-09 first (free item, nothing left), then the kopi (recompute 28.875): capped at the kopi's share 19.425; total out <= paid", async () => {
     const paid = await p.paidPromoOrder();
 
     const roti = await ord09Attempt(paid.rotiLine, ROTI_PRICE);
@@ -454,8 +446,7 @@ describe("1145b (a2) a repriced ORD-09 on a plain line never passes the line's s
     expect(
       kopi.filedIdr,
       `kopi filed ${kopi.filedIdr}; its share is ${PROMO_KOPI_SHARE}`,
-    ).toBeLessThanOrEqual(PROMO_KOPI_SHARE + SLACK);
-    if (kopi.filedIdr === 0) expectRefusalIsClean(kopi);
+    ).toBe(PROMO_KOPI_SHARE);
     expect(roti.filedIdr + kopi.filedIdr).toBeLessThanOrEqual(PROMO_PAID);
   });
 
@@ -754,6 +745,21 @@ async function sameWaySwapOfA(so: SoOrder): Promise<string> {
   return toUlid(replacement.rows[0]!.id!);
 }
 
+/** Money of the order's intent already on its way back, so the order room is `roomIdr`. */
+async function shrinkOrderRoomTo(orderId: string, roomIdr: number) {
+  await owner.query(
+    `INSERT INTO payment_refunds
+       (tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status, requested_by)
+     SELECT i.tenant_id, i.outlet_id, i.id, $3::bigint, 'Refund gateway uji 1145b', 'pending',
+            'refund-1145b-test'
+       FROM orders o JOIN payment_intents i ON i.tenant_id = o.tenant_id
+        AND (i.id = o.payment_intent_id
+             OR (o.payment_link_id IS NOT NULL AND i.payment_link_id = o.payment_link_id))
+      WHERE o.tenant_id = $1 AND o.id = $2`,
+    [tenantId(), toUuid(orderId), SO_PAID - roomIdr],
+  );
+}
+
 describe("1145b (c) line shares add up exactly to what was paid", () => {
   it("control, no swap: ORD-09 of A files exactly 11.550 (not cut to 11.549)", async () => {
     const so = await paidSoOrder();
@@ -810,5 +816,51 @@ describe("1145b (c) line shares add up exactly to what was paid", () => {
       "shares of all lines = paid",
     ).toBe(SO_PAID);
     expect(SO_A_SHARE + SO_B_SHARE).toBe(SO_PAID);
+  });
+
+  it("rounding: order room 11.547, ORD-09 of A computes 11.550 (3 over): passes the gate and is filed as 11.547, never refused", async () => {
+    const so = await paidSoOrder();
+    await shrinkOrderRoomTo(so.orderId, SO_A_SHARE - 3);
+
+    const attempt = await ord09Attempt(so.aLine, 10_000);
+
+    expect(attempt.resolveStatus, JSON.stringify(attempt)).toBe(200);
+    expect(attempt.consumerError).toBeNull();
+    expect(attempt.filedIdr, "filed at the room").toBe(SO_A_SHARE - 3);
+  });
+
+  it("order room 11.546 (what is paid is 11.546 now), ORD-09 of A computes 11.550: the gate bounds it by what is paid, the consumer files 11.546, total out never passes paid", async () => {
+    const so = await paidSoOrder();
+    await shrinkOrderRoomTo(so.orderId, SO_A_SHARE - 4);
+
+    const attempt = await ord09Attempt(so.aLine, 10_000);
+
+    expect(attempt.resolveStatus, JSON.stringify(attempt)).toBe(200);
+    expect(attempt.consumerError).toBeNull();
+    expect(attempt.filedIdr, "capped at the room").toBe(SO_A_SHARE - 4);
+  });
+
+  it("caps at min(line, order) room: line room 11.550, order room 11.549 (23.102 left the order meanwhile): filed 11.549, cut audited", async () => {
+    const so = await paidSoOrder();
+    const prepared = await p.prepareOrd09(so.aLine, 10_000);
+    const resolved = await p.resolveOrd09(prepared.issueId, prepared.approvalId);
+    expect(resolved.status, JSON.stringify(resolved.body)).toBe(200);
+    const event = await p.ord09Event(prepared.issueId);
+    expect(event).not.toBeNull();
+    await shrinkOrderRoomTo(so.orderId, SO_A_SHARE - 1);
+
+    await p.deliverOrd09(event!);
+
+    expect(await p.recoveryRefundTotal([prepared.issueId])).toBe(
+      SO_A_SHARE - 1,
+    );
+    const cut = await owner.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM audit_logs
+        WHERE tenant_id = $1 AND event::text LIKE $2
+          AND event::text LIKE '%refund_shortfall%'
+          AND event::text ~ '"roomCutIdr": ?1[^0-9]'`,
+      [tenantId(), `%${prepared.issueId}%`],
+    );
+    expect(cut.rows[0]!.n, "the cut is in the audit").toBeGreaterThan(0);
   });
 });

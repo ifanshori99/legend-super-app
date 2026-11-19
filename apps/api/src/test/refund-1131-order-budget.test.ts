@@ -374,7 +374,7 @@ describe("1131 P1-1 apology voucher and ORD-09 share one budget (both directions
     await expectTotalWithin([ord09, roti], ORDER_PAID);
   });
 
-  it("async consumer: ORD-09 resolved while the room was there, money leaves meanwhile (gateway refund 30.000): no refund filed, audited refund_blocked / over_order_room", async () => {
+  it("async consumer: ORD-09 resolved while the room was there, money leaves meanwhile (gateway refund 30.000): the refund is capped at the order room 19.665, cut audited, never blocked while room is left", async () => {
     const paid = await p.paidPlainOrder();
     const { issueId, approvalId } = await p.prepareOrd09(
       paid.rotiLine,
@@ -388,25 +388,28 @@ describe("1131 P1-1 apology voucher and ORD-09 share one budget (both directions
     const intent = await intentOf(paid.orderId);
     await gatewayRefund(intent.id, 30_000); // 49.665 - 30.000 = 19.665 < 20.790
 
-    let thrown: { status?: number } | null = null;
-    try {
-      await p.deliverOrd09(event!);
-    } catch (error) {
-      thrown = error as { status?: number };
-    }
-    if (thrown) expect([409, 422]).toContain(thrown.status);
-    expect(await p.ord09Rows([issueId]), "no refund filed").toEqual([]);
+    await p.deliverOrd09(event!);
+    // Like a system voucher: capped at min(line room, order room) = 19.665.
+    expect(await p.recoveryRefundTotal([issueId]), "capped refund").toBe(
+      49_665 - 30_000,
+    );
     const { rows } = await owner.query<{ n: number }>(
       `SELECT count(*)::int AS n FROM audit_logs
         WHERE tenant_id = $1 AND event::text LIKE $2
-          AND event::text LIKE '%refund_blocked%'
-          AND event::text LIKE '%over_order_room%'`,
+          AND event::text LIKE '%refund_shortfall%'
+          AND event::text ~ '"roomCutIdr": ?1125[^0-9]'`,
       [tenantId(), `%${issueId}%`],
     );
-    expect(
-      rows[0]!.n,
-      "audit refund_blocked / over_order_room",
-    ).toBeGreaterThan(0);
+    expect(rows[0]!.n, "audit names the cut 20.790 - 19.665").toBeGreaterThan(
+      0,
+    );
+    const blocked = await owner.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM audit_logs
+        WHERE tenant_id = $1 AND event::text LIKE $2
+          AND event::text LIKE '%refund_blocked%'`,
+      [tenantId(), `%${issueId}%`],
+    );
+    expect(blocked.rows[0]!.n, "not blocked").toBe(0);
   });
 
   it("race: a voucher for the kopi and an ORD-09 of the kopi at the same time never pay out 57.750 of 49.665", async () => {
@@ -1039,7 +1042,7 @@ describe("1131 per-line rule (Q25): the money of one line is given once, whichev
 });
 
 describe("1131 no over-refusal: a discounted order lets every line's ORD-09 through up to paid", () => {
-  it("promo order (discount 18.000, paid 42.735): the ORD-09 of the kopi is filed (8.085); the teh (promo recompute 13.860, far over its share 9.324) is blocked, nothing filed", async () => {
+  it("promo order (discount 18.000, paid 42.735): the ORD-09 of the kopi is filed (8.085); the teh (promo recompute 13.860) is capped at its share 9.324", async () => {
     const paid = await p.paidPromoOrder();
     const kopi = await ord09Attempt(paid.kopiLine, KOPI_PRICE);
     const teh = await ord09Attempt(paid.tehLine, PRICES.teh);
@@ -1050,26 +1053,26 @@ describe("1131 no over-refusal: a discounted order lets every line's ORD-09 thro
     // Exact: a failed kopi withdraws the promo, so it refunds 8.085 (order-recovery-refund-promo H3).
     expect(kopi!.filedIdr, "kopi refund is its own paid share").toBe(8_085);
     // The resolve gate bounds the teh by its pro-rata 9.325, 1 IDR over its
-    // share 12.000 x 42.735 / 55.000 = 9.324: a rounding artifact, trimmed, so
-    // it passes. The consumer then prices it with the promo recompute (kopi
-    // already withdrew the promo: goods 12.000 -> ~13.860), far over the share:
-    // blocked, nothing filed, never cut (legend-wpn5v).
+    // share 12.000 x 42.735 / 55.000 = 9.324 (rounding): it passes. The
+    // consumer prices it with the promo recompute (kopi already withdrew the
+    // promo: goods 12.000 -> ~13.860) and CAPS it at the line room: the teh pays
+    // its room 9.324, like a system voucher (legend-wpn5v).
     expect(teh!.resolveStatus, "teh resolved").toBe(200);
     expect(teh!.consumerError, "teh consumer").toBeNull();
-    expect(teh!.filedIdr).toBe(0);
+    expect(teh!.filedIdr).toBe(9_324);
     expect(kopi!.filedIdr + teh!.filedIdr).toBeLessThanOrEqual(PROMO_PAID);
   });
 
-  it("promo order: the ORD-09 of the kopi (8.085) is filed; the roti (promo recompute 20.790 > its share 13.986) is blocked at the consumer, nothing filed (legend-wpn5v)", async () => {
+  it("promo order: the ORD-09 of the kopi (8.085) is filed; the roti (promo recompute 20.790) is capped at its share 13.986 (legend-wpn5v)", async () => {
     const paid = await p.paidPromoOrder();
     const kopi = await ord09Attempt(paid.kopiLine, KOPI_PRICE);
     const roti = await ord09Attempt(paid.rotiLine, ROTI_PRICE);
     expect(kopi?.resolveStatus, "kopi resolved").toBe(200);
     expect(roti?.resolveStatus, "roti resolved").toBe(200);
     expect(kopi!.filedIdr).toBe(8_085);
-    // roti share = 18.000 x 42.735 / 55.000 = 13.986 < 20.790: refused, never cut.
+    // roti share = 18.000 x 42.735 / 55.000 = 13.986 < 20.790: capped at the share.
     expect(roti!.consumerError).toBeNull();
-    expect(roti!.filedIdr).toBe(0);
+    expect(roti!.filedIdr).toBe(13_986);
     expect(kopi!.filedIdr + roti!.filedIdr).toBeLessThanOrEqual(PROMO_PAID);
   });
 });

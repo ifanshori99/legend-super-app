@@ -875,14 +875,14 @@ describe("1145 P1-2 controls: a normal swap chain and a discounted order still p
     expect(attempt!.filedIdr).toBe(ROTI_PAID);
   });
 
-  it("promo order (paid 42.735): ORD-09 of the kopi (8.085) is filed; the roti (20.790 > its share 13.986) is blocked, nothing filed (legend-wpn5v)", async () => {
+  it("promo order (paid 42.735): ORD-09 of the kopi (8.085) is filed; the roti (20.790) is capped at its share 13.986 (legend-wpn5v)", async () => {
     const paid = await p.paidPromoOrder();
     const kopi = await ord09Attempt(paid.kopiLine, KOPI_PRICE);
     const roti = await ord09Attempt(paid.rotiLine, ROTI_PRICE);
     expect(kopi?.resolveStatus, "kopi resolved").toBe(200);
     expect(roti?.resolveStatus, "roti resolved").toBe(200);
     expect(kopi!.filedIdr).toBe(8_085);
-    expect(roti!.filedIdr).toBe(0);
+    expect(roti!.filedIdr).toBe(13_986);
     expect(sum([kopi!.filedIdr, roti!.filedIdr])).toBeLessThanOrEqual(
       PROMO_PAID,
     );

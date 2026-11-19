@@ -57,7 +57,6 @@ import { HttpError } from "../lib/http-error.ts";
 import {
   assertLineFits,
   assertOrderBudget,
-  lineFitsIdr,
   lineRefundRoomIdr,
   orderGivenOf,
   orderRoomIdr,
@@ -99,6 +98,7 @@ const AUDIT_SAFE_FIELDS = [
   "wantedIdr",
   "amountIdr",
   "shortfallIdr",
+  "roomCutIdr",
   "status",
   "blockedReason",
   "failureReason",
@@ -112,8 +112,9 @@ const AUDIT_SAFE_FIELDS = [
  * the failed line still holds (Q25 per item, `assertLineFits`). The exact
  * amount is only known when the consumer splits it (promo recompute), so the
  * bound is the pro-rata amount (`recoveryRefundSplit` without promo) capped at
- * what the guest paid; the consumer re-checks the exact amount before anything
- * is filed. Never clamps. `orderItemId` names the failed line for the per-line
+ * what the guest paid. The consumer then CAPS the exact amount at min(line
+ * room, order room) like a system voucher; this gate only refuses an amount
+ * over that room by more than the rounding trim. `orderItemId` names the failed line for the per-line
  * check; without it only the order budget is checked.
  */
 export async function lockOrderAndAssertManualRefundFits(
@@ -161,14 +162,24 @@ export async function lockOrderAndAssertManualRefundFits(
       if (!(error instanceof OrderRevenueMismatch)) throw error;
     }
   }
-  if (given.givenIdr + wantedIdr > given.paidIdr)
+  // The consumer files min(line room, order room); an amount over it by a few
+  // IDR is rounding and passes (`trimToLineRoomIdr`), over by more is refused.
+  const orderRoomIdr = Math.max(0, given.paidIdr - given.givenIdr);
+  if (trimToLineRoomIdr(wantedIdr, orderRoomIdr) === null)
     throw new HttpError(
       422,
       "REFUND_OVER_ORDER_ROOM",
       "This would give back more than the guest paid for the order.",
     );
   if (orderItemId !== undefined)
-    await assertLineFits(tx, tenantId, orderId, orderItemId, wantedIdr);
+    await assertLineFits(
+      tx,
+      tenantId,
+      orderId,
+      orderItemId,
+      wantedIdr,
+      orderRoomIdr,
+    );
 }
 
 const REVERSAL_EVENT = "order_issue.refund_reversal_requested";
@@ -643,28 +654,40 @@ export async function deliverOrderRecoveryRefundEvent(
     }
     throw error;
   }
-  // 1145: an amount 1-3 IDR over the failed line's room is a rounding artifact
-  // (component half-up vs the line share): file exactly the room, as the
-  // resolve gate allowed. Over by more, the check below blocks it.
-  const lineRoomIdr = await lineRefundRoomIdr(
-    tx,
-    tenantId,
-    order.id,
-    issue.orderItemId,
-  );
-  if (lineRoomIdr !== null && split.amountIdr > lineRoomIdr) {
-    const trimmedIdr = trimToLineRoomIdr(split.amountIdr, lineRoomIdr);
-    if (trimmedIdr !== null)
+  // 1131/1145: the one money-out budget, like a system voucher: the amount is
+  // CAPPED at min(failed line's room, order room), read under the order lock
+  // (issue -> orders -> intent), never blocked while the room is above 0. The cut
+  // goes in the audit row (`roomCutIdr`). No room left is a business condition:
+  // no refund is filed and the audit row says why (a retry gives the same answer).
+  let roomCutIdr = 0;
+  if (split.amountIdr > 0) {
+    const lineRoomIdr = await lineRefundRoomIdr(
+      tx,
+      tenantId,
+      order.id,
+      issue.orderItemId,
+    );
+    const capIdr = Math.min(
+      lineRoomIdr ?? 0,
+      await orderRoomIdr(tx, tenantId, order.id),
+    );
+    if (capIdr <= 0) {
+      await blocked("over_order_room", { wantedIdr: split.amountIdr });
+      return;
+    }
+    if (split.amountIdr > capIdr) {
+      roomCutIdr = split.amountIdr - capIdr;
       split = recoveryRefundSplit({
         order,
         lineTotalIdr: line.lineTotalIdr,
         priorLinesIdr,
         releasedIdr: Math.max(
           releasedIdr,
-          order.totalIdr - order.depositAppliedIdr - trimmedIdr,
+          order.totalIdr - order.depositAppliedIdr - capIdr,
         ),
         ...(promo === undefined ? {} : { promo }),
       });
+    }
   }
   if (split.shortfallIdr > 0)
     await auditOnce(
@@ -676,6 +699,7 @@ export async function deliverOrderRecoveryRefundEvent(
         wantedIdr: split.wantedIdr,
         amountIdr: split.amountIdr,
         shortfallIdr: split.shortfallIdr,
+        ...(roomCutIdr > 0 ? { roomCutIdr } : {}),
       },
       "Refund item gagal dipotong sisa yang bisa dikembalikan",
     );
@@ -683,25 +707,6 @@ export async function deliverOrderRecoveryRefundEvent(
   // promo recompute above stays, the item really failed.
   if (split.amountIdr <= 0) {
     await blocked("nothing_left");
-    return;
-  }
-
-  // 1131: the order's one money-out budget. Read under the order lock (issue ->
-  // orders -> intent). A refund that does not fit is a business condition: no
-  // refund is filed and the audit row says why (a retry gives the same answer).
-  // Per item too (Q25): the line may not hold more than its share of the bill
-  // less what was given for it.
-  if (
-    split.amountIdr > (await orderRoomIdr(tx, tenantId, order.id)) ||
-    !(await lineFitsIdr(
-      tx,
-      tenantId,
-      order.id,
-      issue.orderItemId,
-      split.amountIdr,
-    ))
-  ) {
-    await blocked("over_order_room", { wantedIdr: split.amountIdr });
     return;
   }
 

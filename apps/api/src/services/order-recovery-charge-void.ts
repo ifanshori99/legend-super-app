@@ -30,6 +30,9 @@
 //   charge fully refunded by hand.
 // - A cash charge is also refused (422 REFUND_OVER_ORDER_ROOM, void rolled back)
 //   once ORD-09 or a voucher paid on its swap chain (assertChargeChainBudget).
+//   That chain check is a backstop only: the void already refuses a live ORD-09
+//   with 409 and cancels vouchers first, so it is reached only by money that
+//   slipped past both.
 // - Charge paid through an intent (gateway, QRIS at the till): the nsvu0 refund
 //   (`refundPaidChargeInTx`) of what is still refundable.
 // - EDC charge (no intent, no cash) with a part refunded by hand: the till

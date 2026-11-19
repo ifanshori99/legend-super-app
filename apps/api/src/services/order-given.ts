@@ -399,7 +399,8 @@ export function lineRoomIdr(
  * the lines with the biggest remainders (ties: the smaller line id first, so
  * every caller gets the same split). Replacement lines of a swap are not
  * original lines and get no share. When the original lines do not add up to
- * the subtotal the split is not trusted: plain floor, never more than paid.
+ * the subtotal the split is not trusted: plain floor, which is never more per
+ * line than the largest-remainder share, so never more than paid.
  */
 function lineSharesIdr(
   order: { totalIdr: number; subtotalIdr: number },
@@ -568,9 +569,9 @@ export async function assertOrderBudget(
 // 1145: the most IDR an ORD-09 amount may be over its line's room and still
 // count as a rounding artifact: each component (goods, discount, service,
 // PBJT) is rounded half up while the line share is split by largest remainder.
-// Within it the refund is trimmed to exactly the room (`trimToLineRoomIdr`),
-// never refused; the fit itself (`lineFitsIdr`) is exact. A typed charge refund
-// and a voucher get no trim (architect 1145 P3).
+// The resolve gate lets it through (`trimToLineRoomIdr`); the consumer files
+// min(line room, order room), never more. A typed charge refund and a voucher
+// get no trim (architect 1145 P3).
 export const LINE_ROUNDING_TRIM_IDR = 3;
 
 type ChainBalance = {
@@ -749,10 +750,11 @@ export async function lineRefundRoomIdr(
 }
 
 /**
- * 1145: the amount an ORD-09 may file against a line holding `roomIdr`: itself
- * when it fits, exactly the room when it is over by 1 to
- * `LINE_ROUNDING_TRIM_IDR` IDR (a rounding artifact), `null` (refuse) when it
- * is over by more or the line holds nothing.
+ * 1145: the amount the resolve gate lets an ORD-09 through against a room
+ * (min of line and order room): itself when it fits, exactly the room when it
+ * is over by 1 to `LINE_ROUNDING_TRIM_IDR` IDR (a rounding artifact), `null`
+ * (refuse) when it is over by more or nothing is left. The consumer does not
+ * refuse: it caps what it files at the room.
  */
 export function trimToLineRoomIdr(
   wantedIdr: number,
@@ -764,21 +766,10 @@ export function trimToLineRoomIdr(
   return null;
 }
 
-/** Exact fit: does `wantedIdr` fit what the failed line still holds, no slack? */
-export async function lineFitsIdr(
-  tx: Tx,
-  tenantId: ScopedTenantContext["tenant"]["tenantId"],
-  orderId: string,
-  orderItemId: string,
-  wantedIdr: number,
-): Promise<boolean> {
-  const room = await lineRefundRoomIdr(tx, tenantId, orderId, orderItemId);
-  return room !== null && wantedIdr <= room;
-}
-
 /**
- * Resolve gate: throws 422 `REFUND_OVER_ORDER_ROOM` when `wantedIdr` is over the
- * line by more than the rounding trim (the consumer files the trimmed amount).
+ * Resolve gate: throws 422 `REFUND_OVER_ORDER_ROOM` when `wantedIdr` is over
+ * min(line room, `orderRoomIdr`) by more than the rounding trim. The consumer
+ * caps what it files at that same room, like a system voucher.
  */
 export async function assertLineFits(
   tx: Tx,
@@ -786,9 +777,13 @@ export async function assertLineFits(
   orderId: string,
   orderItemId: string,
   wantedIdr: number,
+  orderRoomIdr = Number.MAX_SAFE_INTEGER,
 ): Promise<void> {
-  const room = await lineRefundRoomIdr(tx, tenantId, orderId, orderItemId);
-  if (room === null || trimToLineRoomIdr(wantedIdr, room) === null)
+  const lineRoom = await lineRefundRoomIdr(tx, tenantId, orderId, orderItemId);
+  if (
+    lineRoom === null ||
+    trimToLineRoomIdr(wantedIdr, Math.min(lineRoom, orderRoomIdr)) === null
+  )
     throw new HttpError(
       422,
       "REFUND_OVER_ORDER_ROOM",
