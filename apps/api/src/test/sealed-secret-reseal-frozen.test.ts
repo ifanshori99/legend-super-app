@@ -39,7 +39,24 @@
 //
 // Cases that already pass before the change are regression guards of the
 // brief's "do not loosen" rule: the (c) refusals and the app-role part of (d).
+//
+// Fix 1198 (card legend-qwm9r, docs/briefs/sub-1198-reseal-so1196.md), written
+// from the brief and the second opinion, not from the implementation:
+//   - P1: the app login (pool `appPool`) can neither SET ROLE legend_sealed_reseal
+//     nor EXECUTE the function, whatever tenant GUC it sets; no login of the app
+//     is a member of the group. Only a dedicated login legend_reseal_<16 hex>
+//     (member INHERIT TRUE, SET FALSE, no ADMIN) runs the function, without any
+//     SET ROLE. The function reads the tenant from the target row: a p_tenant that
+//     does not match the row raises 42501, an absent row returns 0. The GUC
+//     app.tenant_id plays no part. The tests create that login by hand (the shared
+//     test database is provisioned without it); provisioning of the real login is
+//     covered in src/db/provision-roles-audit.test.ts.
+//   - P2 row lock: a row held by another transaction makes the function return -1
+//     (SELECT ... FOR NO KEY UPDATE SKIP LOCKED) at once instead of waiting.
+// Assumption: "hung" is detected by a 15 s bound on the call; the correct
+// behaviour answers in milliseconds, so the bound never decides a green test.
 import { randomBytes, randomUUID } from "node:crypto";
+import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool, type PoolClient } from "pg";
 import {
   afterAll,
@@ -82,8 +99,90 @@ const tenants = [tenantA, tenantB];
 
 const owner = new Pool({
   connectionString: process.env.STARTER_TEST_DATABASE_URL,
-  max: 3,
+  max: 4,
 });
+
+// The dedicated reseal login (brief 1198, P1). Created by hand here with the
+// shape the brief fixes: member of the group INHERIT TRUE, SET FALSE, no ADMIN,
+// no other right.
+const resealLogin = `legend_reseal_${randomBytes(8).toString("hex")}`;
+const resealPassword = randomBytes(24).toString("hex");
+let resealPool: Pool;
+
+async function createResealLogin() {
+  const database = decodeURIComponent(
+    new URL(process.env.STARTER_TEST_DATABASE_URL as string).pathname.slice(1),
+  );
+  await owner.query(
+    `CREATE ROLE "${resealLogin}" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS PASSWORD '${resealPassword}'`,
+  );
+  await owner.query(
+    `GRANT legend_sealed_reseal TO "${resealLogin}" WITH INHERIT TRUE, SET FALSE, ADMIN FALSE`,
+  );
+  await owner.query(
+    `GRANT CONNECT ON DATABASE "${database}" TO "${resealLogin}"`,
+  );
+  const url = new URL(process.env.STARTER_TEST_DATABASE_URL as string);
+  url.username = resealLogin;
+  url.password = resealPassword;
+  resealPool = new Pool({ connectionString: url.toString(), max: 3 });
+}
+
+async function dropResealLogin() {
+  await resealPool?.end();
+  const database = decodeURIComponent(
+    new URL(process.env.STARTER_TEST_DATABASE_URL as string).pathname.slice(1),
+  );
+  await owner
+    .query(`REVOKE CONNECT ON DATABASE "${database}" FROM "${resealLogin}"`)
+    .catch(() => undefined);
+  await owner
+    .query(`REVOKE legend_sealed_reseal FROM "${resealLogin}"`)
+    .catch(() => undefined);
+  await owner
+    .query(`DROP ROLE IF EXISTS "${resealLogin}"`)
+    .catch(() => undefined);
+}
+
+type Settled<T> = { done: true; value: T } | { done: false };
+
+/** Resolves with the value, or with `{ done: false }` when it is still pending after `ms`. */
+async function settles<T>(
+  promise: Promise<T>,
+  ms = 15_000,
+): Promise<Settled<T>> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise.then((value) => ({ done: true as const, value })),
+      new Promise<{ done: false }>((resolve) => {
+        timer = setTimeout(() => resolve({ done: false }), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** Holds `SELECT ... FOR UPDATE` on one row in a second connection until released. */
+async function lockRow(row: { kind: Kind; tenant: string; id: string }) {
+  const client = await owner.connect();
+  await client.query("BEGIN");
+  await client.query(
+    "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+    [row.tenant],
+  );
+  await client.query(
+    `SELECT id FROM public."${KINDS[row.kind].table}" WHERE id = $1 FOR UPDATE`,
+    [row.id],
+  );
+  return {
+    release: async () => {
+      await client.query("ROLLBACK").catch(() => undefined);
+      client.release();
+    },
+  };
+}
 
 // --- the four frozen columns ------------------------------------------------
 
@@ -286,8 +385,8 @@ type SeedOptions = {
   current?: boolean;
   /** Seal under this AAD instead of the writer's (a row that cannot open). */
   aadOverride?: string;
-  /** Parent order status for orders and tenders; default "completed". */
-  status?: "completed" | "voided";
+  /** Parent order status for orders and tenders; default "completed". "sent" is not frozen. */
+  status?: "completed" | "voided" | "sent";
 };
 
 async function insertRow(
@@ -412,15 +511,25 @@ async function run(
     tenantIds?: string[];
     batchSize?: number;
     reportOnly?: boolean;
+    /** Default: the reseal login's pool. `false` = no resealDatabase at all. */
+    resealDatabase?: false;
+    log?: {
+      error: (m: string) => void;
+      warn?: (m: string) => void;
+      info?: (m: string) => void;
+    };
   } = {},
 ): Promise<SealedSecretResealResult> {
   return runSealedSecretReseal({
     columns: columnsFor(kinds),
     listTenantIds: async () => options.tenantIds ?? [tenantA],
     batchSize: options.batchSize ?? 2,
-    log: { error: () => {} },
+    log: options.log ?? { error: () => {} },
+    ...(options.resealDatabase === false
+      ? {}
+      : { resealDatabase: drizzle(resealPool) }),
     ...(options.reportOnly ? { reportOnly: true } : {}),
-  });
+  } as Parameters<typeof runSealedSecretReseal>[0]);
 }
 
 async function clearState() {
@@ -444,27 +553,35 @@ type Call = {
 };
 
 /**
- * One transaction on the application login. `guc` is the tenant the session
- * runs under (default: the call's own tenant; null = not set). `setRole`
- * switches to legend_sealed_reseal first (default). A failing SET ROLE throws:
- * that is a setup problem (missing role), not a refusal by the function.
+ * One transaction. `as` = "reseal" (default) is the dedicated reseal login, which
+ * calls the function directly; `as` = "app" is the application login (appPool).
+ * `guc` is the tenant the session runs under (default: the call's own tenant for
+ * the app login, none for the reseal login; null = not set). `setRole` runs
+ * SET LOCAL ROLE legend_sealed_reseal first. A refused SET ROLE is an outcome
+ * (it is what the app login must get), not a setup error.
  */
 async function callReseal(
   call: Call,
-  options: { guc?: string | null; setRole?: boolean } = {},
+  options: {
+    as?: "reseal" | "app";
+    guc?: string | null;
+    setRole?: boolean;
+  } = {},
 ): Promise<Outcome> {
-  const client = await appPool.connect();
+  const as = options.as ?? "reseal";
+  const client = await (as === "reseal" ? resealPool : appPool).connect();
   try {
     await client.query("BEGIN");
-    const guc = "guc" in options ? options.guc : call.tenant;
+    const guc =
+      "guc" in options ? options.guc : as === "app" ? call.tenant : null;
     if (guc !== null && guc !== undefined)
       await client.query(
         "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
         [guc],
       );
-    if (options.setRole !== false)
-      await client.query("SET LOCAL ROLE legend_sealed_reseal");
     try {
+      if (options.setRole)
+        await client.query("SET LOCAL ROLE legend_sealed_reseal");
       const { rows } = await client.query(
         "SELECT app.reseal_frozen_sealed($1::text, $2::text, $3::uuid, $4::uuid, $5::text, $6::text) AS n",
         [
@@ -569,6 +686,7 @@ const update = (
 beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
+  await createResealLogin();
   for (const tenant of tenants)
     await owner.query(
       `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
@@ -595,6 +713,7 @@ afterAll(async () => {
     await asOwner(tenant, (client) =>
       client.query("DELETE FROM tenants WHERE id = $1", [tenant]),
     );
+  await dropResealLogin();
   await owner.end();
 });
 
@@ -804,7 +923,7 @@ describe("[legend-4vfmn] (d) who may run the function", () => {
     expect(String(fn.config)).toMatch(/search_path=pg_catalog, pg_temp/);
   });
 
-  it("legend_sealed_reseal: NOLOGIN, no superuser, no BYPASSRLS, NOINHERIT; legend_app may SET ROLE to it but does not inherit it", async () => {
+  it("legend_sealed_reseal: NOLOGIN, no superuser, no BYPASSRLS, NOINHERIT; legend_app is NOT a member and cannot SET ROLE to it", async () => {
     const role = await owner.query(
       `SELECT rolcanlogin, rolsuper, rolbypassrls, rolinherit FROM pg_roles WHERE rolname = 'legend_sealed_reseal'`,
     );
@@ -816,12 +935,23 @@ describe("[legend-4vfmn] (d) who may run the function", () => {
         rolinherit: false,
       },
     ]);
-    const member = await owner.query(
-      `SELECT inherit_option AS inherit, set_option AS set
-         FROM pg_auth_members
-        WHERE roleid = 'legend_sealed_reseal'::regrole AND member = 'legend_app'::regrole`,
+    const app = await owner.query(
+      `SELECT pg_has_role('legend_app', 'legend_sealed_reseal', 'MEMBER') AS member,
+              pg_has_role('legend_app', 'legend_sealed_reseal', 'USAGE') AS usage,
+              pg_has_role('legend_app', 'legend_sealed_reseal', 'SET') AS can_set`,
     );
-    expect(member.rows).toEqual([{ inherit: false, set: true }]);
+    expect(app.rows).toEqual([{ member: false, usage: false, can_set: false }]);
+  });
+
+  it("the dedicated reseal login is a member INHERIT TRUE, SET FALSE, without ADMIN", async () => {
+    const member = await owner.query(
+      `SELECT inherit_option AS inherit, set_option AS set, admin_option AS admin
+         FROM pg_auth_members
+        WHERE roleid = 'legend_sealed_reseal'::regrole AND member = $1::regrole`,
+      [resealLogin],
+    );
+    expect(member.rows).toEqual([{ inherit: true, set: false, admin: false }]);
+    expect(resealLogin).toMatch(/^legend_reseal_[a-f0-9]{16}$/);
   });
 
   it("the group holds the schema USAGE and no table rights at all", async () => {
@@ -837,7 +967,7 @@ describe("[legend-4vfmn] (d) who may run the function", () => {
   it("the plain application login (no SET ROLE) cannot EXECUTE it", async () => {
     const row = await seedFrozen("orderClaim");
     const outcome = await callReseal(callFor(row, resealed(row)), {
-      setRole: false,
+      as: "app",
     });
     expect(outcome).toMatchObject({ ok: false, code: "42501" });
     expect((outcome as { message: string }).message).toMatch(
@@ -854,7 +984,7 @@ describe("[legend-4vfmn] (d) who may run the function", () => {
     expect(rows[0]).toEqual({ voucher_update: false, voucher_delete: false });
   });
 
-  it("through SET ROLE the call works for every frozen column, once (compare-and-set)", async () => {
+  it("the reseal login calls it directly (no SET ROLE) for every frozen column, once (compare-and-set)", async () => {
     for (const kind of KIND_NAMES) {
       const row = await seedFrozen(kind);
       const next = resealed(row);
@@ -1031,41 +1161,159 @@ describe("[legend-4vfmn] (b) what the function refuses", () => {
   });
 });
 
-describe("[legend-4vfmn] (f) the function keeps tenants apart", () => {
-  it("refuses a call whose p_tenant does not match the session tenant (42501) and changes nothing", async () => {
-    const row = await seedFrozen("orderClaim");
-    const outcome = await callReseal(callFor(row, resealed(row)), {
-      guc: tenantB,
-    });
-    expect(outcome).toMatchObject({ ok: false, code: "42501" });
-    expect((outcome as { message: string }).message).not.toMatch(
-      /permission denied for function/i,
-    );
-    expect(await storedSealed(row)).toBe(row.sealed);
-  });
-
-  it("refuses a call when the session has no tenant at all (42501)", async () => {
-    const row = await seedFrozen("voucher");
-    const outcome = await callReseal(callFor(row, resealed(row)), {
-      guc: null,
-    });
-    expect(outcome).toMatchObject({ ok: false, code: "42501" });
-    expect((outcome as { message: string }).message).not.toMatch(
-      /permission denied for function/i,
-    );
-    expect(await storedSealed(row)).toBe(row.sealed);
-  });
-
-  it("a matching tenant cannot reach another tenant's row: nothing is updated, 0 is returned", async () => {
+describe("[legend-4vfmn][legend-qwm9r] (f) the function keeps tenants apart by the row's own tenant", () => {
+  it("refuses a p_tenant that is not the row's tenant (42501), for every frozen column, and changes nothing", async () => {
     for (const kind of KIND_NAMES) {
       const theirs = await seedFrozen(kind, { tenant: tenantB });
+      // The session claims tenant A, which equals p_tenant: only the row's own
+      // tenant (B) can make this fail. (The old function trusted the session GUC
+      // and would have answered 0 here.)
       const outcome = await callReseal(
         callFor(theirs, resealed(theirs), { tenant: tenantA }),
         { guc: tenantA },
       );
-      expect(outcome, kind).toEqual({ ok: true, n: 0 });
+      expect(outcome, kind).toMatchObject({ ok: false, code: "42501" });
+      expect((outcome as { message: string }).message, kind).not.toMatch(
+        /permission denied for function/i,
+      );
       expect(await storedSealed(theirs), kind).toBe(theirs.sealed);
     }
+  });
+
+  it("the transaction tenant GUC plays no part: a session that claims another tenant, or none, still reseals a row whose p_tenant is right", async () => {
+    const mine = await seedFrozen("voucher", { tenant: tenantB });
+    const other = await seedFrozen("orderClaim", { tenant: tenantB });
+    const next = resealed(mine);
+    expect(await callReseal(callFor(mine, next), { guc: tenantA })).toEqual({
+      ok: true,
+      n: 1,
+    });
+    expect(await storedSealed(mine)).toBe(next);
+    const nextOther = resealed(other);
+    expect(await callReseal(callFor(other, nextOther), { guc: null })).toEqual({
+      ok: true,
+      n: 1,
+    });
+    expect(await storedSealed(other)).toBe(nextOther);
+  });
+
+  it("an absent row id returns 0 even for a p_tenant that no row of that id has", async () => {
+    const row = await seedFrozen("tender");
+    const outcome = await callReseal(
+      callFor(row, resealed(row), { id: randomUUID(), tenant: tenantB }),
+    );
+    expect(outcome).toEqual({ ok: true, n: 0 });
+    expect(await storedSealed(row)).toBe(row.sealed);
+  });
+});
+
+// --- P1 (second opinion 1196): a compromised app login cannot reach the door --
+
+describe("[legend-qwm9r] P1 the application login cannot reach the reseal door", () => {
+  // Attack from the second opinion: the app login sets app.tenant_id to tenant B
+  // and outlet_ids '*', reads B's ciphertext, then SET ROLE legend_sealed_reseal
+  // and calls the function with B and a junk envelope of the same length and a
+  // version that does not go down. It must be refused, for every frozen column.
+  const junkFor = (sealed: string) => {
+    const bytes = Buffer.from(sealed, "base64");
+    bytes[0] = 9;
+    return bytes.toString("base64");
+  };
+
+  for (const kind of KIND_NAMES)
+    it(`${keyOf(kind)}: SET ROLE legend_sealed_reseal is refused for the app login claiming tenant B, and the junk envelope is not written`, async () => {
+      const theirs = await seedFrozen(kind, { tenant: tenantB });
+      const outcome = await callReseal(
+        callFor(theirs, junkFor(theirs.sealed)),
+        { as: "app", guc: tenantB, setRole: true },
+      );
+      expect(outcome).toMatchObject({ ok: false, code: "42501" });
+      expect((outcome as { message: string }).message).toMatch(
+        /permission denied to set role/i,
+      );
+      expect(await storedSealed(theirs)).toBe(theirs.sealed);
+    });
+
+  it("EXECUTE on the function is refused for the app login claiming tenant B (no SET ROLE)", async () => {
+    const theirs = await seedFrozen("voucher", { tenant: tenantB });
+    const outcome = await callReseal(callFor(theirs, junkFor(theirs.sealed)), {
+      as: "app",
+      guc: tenantB,
+    });
+    expect(outcome).toMatchObject({ ok: false, code: "42501" });
+    expect((outcome as { message: string }).message).toMatch(
+      /permission denied for function/i,
+    );
+    expect(await storedSealed(theirs)).toBe(theirs.sealed);
+  });
+
+  it("the reseal login itself cannot SET ROLE to the group either (SET FALSE)", async () => {
+    const row = await seedFrozen("orderLink");
+    const outcome = await callReseal(callFor(row, resealed(row)), {
+      setRole: true,
+    });
+    expect(outcome).toMatchObject({ ok: false, code: "42501" });
+    expect(await storedSealed(row)).toBe(row.sealed);
+  });
+
+  for (const kind of KIND_NAMES)
+    it(`${keyOf(kind)}: the reseal login reseals tenant B's row without changing the plaintext or any other column`, async () => {
+      const theirs = await seedFrozen(kind, { tenant: tenantB });
+      const before = await others(theirs);
+      const next = resealed(theirs);
+      expect(await callReseal(callFor(theirs, next))).toEqual({
+        ok: true,
+        n: 1,
+      });
+      const after = await storedSealed(theirs);
+      expect(after).toBe(next);
+      expect(sealedVersion(after)).toBe(2);
+      expect(openSecret(after, theirs.aad)).toBe(theirs.plain);
+      expect(await others(theirs)).toEqual(before);
+    });
+});
+
+// --- P2 row lock ------------------------------------------------------------
+
+describe("[legend-qwm9r] P2 a row held by another transaction is skipped, not waited for", () => {
+  it("the function returns -1 at once for a locked row, leaves it as written, and works after the lock is gone", async () => {
+    const row = await seedFrozen("orderClaim");
+    const next = resealed(row);
+    const lock = await lockRow(row);
+    let pending: Promise<Outcome> | undefined;
+    let snapshot: string | undefined;
+    let settled: Settled<Outcome> = { done: false };
+    try {
+      // The session GUC is set to the row's tenant so that the old function, which
+      // checked it, reached its UPDATE and waited for the lock (red for the lock).
+      pending = callReseal(callFor(row, next), { guc: row.tenant });
+      settled = await settles(pending);
+      snapshot = await storedSealed(row);
+    } finally {
+      await lock.release();
+      await pending?.catch(() => undefined);
+    }
+    expect(settled.done, "the call must not wait for the lock").toBe(true);
+    expect(settled.done && settled.value).toEqual({ ok: true, n: -1 });
+    expect(snapshot).toBe(row.sealed);
+
+    expect(await callReseal(callFor(row, next), { guc: row.tenant })).toEqual({
+      ok: true,
+      n: 1,
+    });
+    expect(await storedSealed(row)).toBe(next);
+  });
+
+  it("0 still means the compare-and-set lost, not busy: an unlocked row with another stored value", async () => {
+    const row = await seedFrozen("voucher");
+    const stale = sealSecretBaseKey(row.plain, row.aad);
+    expect(stale).not.toBe(row.sealed);
+    expect(
+      await callReseal(callFor(row, resealed(row), { expected: stale }), {
+        guc: row.tenant,
+      }),
+    ).toEqual({ ok: true, n: 0 });
+    expect(await storedSealed(row)).toBe(row.sealed);
   });
 });
 
@@ -1121,21 +1369,27 @@ describe("[legend-4vfmn] (c) other columns of a frozen row stay frozen", () => {
       expect(await storedSealed(row)).toBe(row.sealed);
     });
 
-    it(`${keyOf(kind)}: SET ROLE legend_sealed_reseal alone gives no table right`, async () => {
+    it(`${keyOf(kind)}: the reseal login has no table right: neither UPDATE nor SELECT, GUC set by hand or not`, async () => {
       const row = await seedFrozen(kind);
-      const client = await appPool.connect();
+      const client = await resealPool.connect();
       try {
         await client.query("BEGIN");
         await client.query(
           "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true), set_config('app.sealed_reseal_column', $2, true)",
           [row.tenant, spec.guc],
         );
-        await client.query("SET LOCAL ROLE legend_sealed_reseal");
         await expect(
           client.query(
             `UPDATE public."${spec.table}" SET "${spec.column}" = $1 WHERE id = $2`,
             [resealed(row), row.id],
           ),
+        ).rejects.toMatchObject({ code: "42501" });
+        await client.query("ROLLBACK");
+        await client.query("BEGIN");
+        await expect(
+          client.query(`SELECT id FROM public."${spec.table}" WHERE id = $1`, [
+            row.id,
+          ]),
         ).rejects.toMatchObject({ code: "42501" });
       } finally {
         await client.query("ROLLBACK").catch(() => undefined);

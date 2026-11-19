@@ -10,13 +10,17 @@
 --
 -- One narrow door: app.reseal_frozen_sealed. It is owned by the migrator,
 -- SECURITY DEFINER, and executable only by legend_sealed_reseal (NOLOGIN,
--- NOINHERIT; legend_app is a member INHERIT FALSE, SET TRUE, so the job must
--- SET LOCAL ROLE to reach it). The final-row triggers allow an UPDATE only when
--- ALL hold: current_user owns that function (a login of the app can never be its
--- owner, whatever GUC it sets), app.sealed_reseal_column names exactly that
--- column, and every other column is unchanged. The function never changes the
--- plaintext: the compare-and-set is on the old ciphertext, and the envelope
--- version byte can only go up.
+-- NOINHERIT). No application, worker, maintenance or grantor login is a member of
+-- that group or can SET ROLE to it (legend_app is explicitly revoked; fix 1198,
+-- legend-qwm9r): only the dedicated login legend_reseal_<16 hex> is a member
+-- (INHERIT TRUE, SET FALSE, no ADMIN; provisioned by provision-roles.ts), so the
+-- caller cannot widen the door by setting a session GUC. The function reads the
+-- tenant from the target row itself, never from a GUC. The final-row triggers
+-- allow an UPDATE only when ALL hold: current_user owns that function (a login of
+-- the app can never be its owner, whatever GUC it sets), app.sealed_reseal_column
+-- names exactly that column, and every other column is unchanged. The function
+-- never changes the plaintext: the compare-and-set is on the old ciphertext, and
+-- the envelope version byte can only go up.
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'legend_sealed_reseal') THEN
@@ -26,17 +30,12 @@ BEGIN
                  OR rolcanlogin OR rolinherit)) THEN
     RAISE EXCEPTION 'legend_sealed_reseal exists with unsafe privileges';
   END IF;
+  -- legend_app must not reach the group (fix 1198, legend-qwm9r): a compromised
+  -- app login could otherwise SET ROLE and call the function. Idempotent.
   IF EXISTS (
     SELECT 1 FROM pg_auth_members m
      WHERE m.roleid = 'legend_sealed_reseal'::regrole AND m.member = 'legend_app'::regrole) THEN
-    IF EXISTS (
-      SELECT 1 FROM pg_auth_members m
-       WHERE m.roleid = 'legend_sealed_reseal'::regrole AND m.member = 'legend_app'::regrole
-         AND (m.inherit_option OR m.admin_option OR NOT m.set_option)) THEN
-      RAISE EXCEPTION 'legend_app is a member of legend_sealed_reseal with INHERIT, ADMIN or without SET; it must be INHERIT FALSE, SET TRUE, no ADMIN';
-    END IF;
-  ELSE
-    GRANT legend_sealed_reseal TO legend_app WITH INHERIT FALSE, SET TRUE;
+    REVOKE legend_sealed_reseal FROM legend_app;
   END IF;
 END $$;
 --> statement-breakpoint
@@ -49,6 +48,8 @@ LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
 DECLARE
   v_key text := p_table || '.' || p_column;
   v_rows integer;
+  v_row_tenant uuid;
+  v_locked integer;
 BEGIN
   IF v_key IS NULL OR v_key NOT IN (
     'orders.payment_link_token_sealed',
@@ -63,8 +64,16 @@ BEGIN
     RAISE EXCEPTION 'reseal_frozen_sealed: tenant, id and both sealed values are required'
       USING ERRCODE = '22023';
   END IF;
-  IF lower(current_setting('app.tenant_id', true)) IS DISTINCT FROM p_tenant::text THEN
-    RAISE EXCEPTION 'reseal_frozen_sealed: tenant does not match the transaction tenant'
+  -- The tenant comes from the target row, not from a GUC. The migrator owner
+  -- bypasses RLS. p_table is whitelisted above, so %I cannot be abused.
+  EXECUTE format('SELECT tenant_id FROM public.%I WHERE id = $1', p_table)
+    INTO v_row_tenant USING p_id;
+  -- EXECUTE does not set FOUND; tenant_id is NOT NULL, so NULL means no such row.
+  IF v_row_tenant IS NULL THEN
+    RETURN 0;
+  END IF;
+  IF v_row_tenant <> p_tenant THEN
+    RAISE EXCEPTION 'reseal_frozen_sealed: tenant does not match the row'
       USING ERRCODE = '42501';
   END IF;
   IF p_new = p_expected
@@ -85,6 +94,14 @@ BEGIN
   THEN
     RAISE EXCEPTION 'reseal_frozen_sealed: new envelope must have the old length and an envelope version that does not go down'
       USING ERRCODE = '22023';
+  END IF;
+
+  -- Never wait for a row another transaction holds: -1 = busy, the job leaves it
+  -- for the next pass. 0 = compare-and-set lost or row gone, > 0 = resealed.
+  EXECUTE format('SELECT 1 FROM public.%I WHERE id = $1 FOR NO KEY UPDATE SKIP LOCKED', p_table)
+    INTO v_locked USING p_id;
+  IF v_locked IS NULL THEN
+    RETURN -1;
   END IF;
 
   PERFORM set_config('app.sealed_reseal_column', v_key, true);

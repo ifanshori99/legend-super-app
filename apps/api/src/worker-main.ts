@@ -13,6 +13,7 @@ import {
   resolveMaintenanceDatabaseUrl,
 } from "./worker/production-config.ts";
 import { sql } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/node-postgres";
 import {
   assertTrustedScopedContext,
   tenantIdSchema,
@@ -20,7 +21,11 @@ import {
   uuidToUlid,
 } from "@starter/shared/core";
 import { databaseUrl } from "./db/connection";
-import { verifyMaintenanceConnection, verifyQueueConnection } from "./db/role";
+import {
+  verifyMaintenanceConnection,
+  verifyQueueConnection,
+  verifyResealConnection,
+} from "./db/role";
 import { withTenant } from "./db/tenant.ts";
 import { db, pool } from "./db";
 import {
@@ -294,6 +299,21 @@ const boss = createPgBoss(workerUrl);
 const maintenancePool = maintenanceUrl
   ? createMaintenancePool(maintenanceUrl, verifyMaintenanceConnection)
   : null;
+// legend-qwm9r: the frozen pass of the sealed-secret re-seal calls
+// app.reseal_frozen_sealed as its own login (legend_reseal_*, RESEAL_DATABASE_URL).
+// Optional: without it the pass is skipped with a warn and frozen rows stay in remaining.
+const resealPool = env.RESEAL_DATABASE_URL
+  ? new Pool({
+      connectionString: env.RESEAL_DATABASE_URL,
+      max: 1,
+      statement_timeout: 60_000,
+      lock_timeout: 5_000,
+      verify: verifyResealConnection,
+    })
+  : null;
+resealPool?.on("error", () =>
+  console.error("Sealed secret reseal connection error"),
+);
 const runtime = createWorkerRuntime({
   boss,
   resolveContext,
@@ -1062,7 +1082,11 @@ try {
   await registerSealedSecretResealJob({
     boss,
     database: db,
-    log: consoleLikeLog(logger),
+    ...(resealPool ? { resealDatabase: drizzle(resealPool) } : {}),
+    log: {
+      ...consoleLikeLog(logger),
+      warn: (message?: unknown) => logger.warn({}, String(message)),
+    },
   });
   // w8dfz.2: WhatsApp messages (90 days) and finished challenges (30 days);
   // service-scoped tables, so it runs on the app connection, not the maintenance login.
@@ -1138,6 +1162,7 @@ try {
   await menuPrintSweep?.stop().catch(() => {});
   await runtime.stop().catch(() => {});
   await maintenancePool?.end().catch(() => {});
+  await resealPool?.end().catch(() => {});
   await registry.end();
   throw error;
 }
@@ -1150,6 +1175,7 @@ async function stop() {
   await relay.stop();
   await runtime.stop();
   await maintenancePool?.end();
+  await resealPool?.end();
   await registry.end();
   await pool.end();
 }

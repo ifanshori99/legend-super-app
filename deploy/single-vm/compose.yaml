@@ -57,7 +57,7 @@ services:
   # First-boot job (legend-zoqc): creates the restricted application and queue
   # logins with the migration credentials. Run only through provision-roles.sh,
   # which passes the restricted URLs (and the optional maintenance login, legend-usyi,
-  # and payout grantor login, legend-911) from api.env/worker.env via the shell.
+  # payout grantor login, legend-911, and frozen re-seal login) from api.env/worker.env via the shell.
   provision-roles:
     image: ${MIGRATOR_IMAGE:?Set MIGRATOR_IMAGE}
     profiles: ["provisioning"]
@@ -67,6 +67,7 @@ services:
       - WORKER_DATABASE_URL
       - MAINTENANCE_DATABASE_URL
       - PAYOUT_GRANTOR_DATABASE_URL
+      - RESEAL_DATABASE_URL
     command: ["node", "dist/provision-roles.js"]
     depends_on:
       postgres: { condition: service_healthy }

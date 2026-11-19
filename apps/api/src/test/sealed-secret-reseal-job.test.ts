@@ -27,11 +27,24 @@
 //   - Global-scope runs are narrowed to the test's own rows through the
 //     registry's `where` hook (the `columns` option), so rows other test files
 //     leave in the shared database do not change the counts.
+//   - Fix 1198 (card legend-qwm9r, docs/briefs/sub-1198-reseal-so1196.md): the
+//     frozen pass calls app.reseal_frozen_sealed through the job option
+//     `resealDatabase` (pool of the dedicated login legend_reseal_<16 hex>), not
+//     through `database` with SET ROLE. Without `resealDatabase` the frozen pass
+//     is skipped: not a failure, `remaining` still counts the frozen rows, one
+//     warn line per run. A frozen row held by another transaction is skipped
+//     (the function answers -1 at once): not `failed`, still in `remaining`, the
+//     other rows move, and a rerun takes it once the lock is gone. The tests
+//     create the login by hand (the shared test database is provisioned without
+//     it). Log shape assumed `{ error, warn?, info? }`; "warn once" is read as
+//     once per run, however many tenants and columns are skipped. A 15 s bound
+//     detects a hung job; a correct job answers in milliseconds.
 //   - `sealedSecretUnresolved` counts every row still below the active version,
 //     frozen rows included (the old key cannot retire while any is left); after a
 //     successful job it is 0.
 import { randomBytes, randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool, type PoolClient } from "pg";
 import {
   afterAll,
@@ -77,8 +90,89 @@ const tenants = [tenantA, tenantB];
 
 const owner = new Pool({
   connectionString: process.env.STARTER_TEST_DATABASE_URL,
-  max: 3,
+  max: 4,
 });
+
+// The dedicated reseal login (brief 1198): member of legend_sealed_reseal
+// INHERIT TRUE, SET FALSE, no ADMIN, no other right.
+const resealLogin = `legend_reseal_${randomBytes(8).toString("hex")}`;
+const resealPassword = randomBytes(24).toString("hex");
+let resealPool: Pool;
+const databaseName = () =>
+  decodeURIComponent(
+    new URL(process.env.STARTER_TEST_DATABASE_URL as string).pathname.slice(1),
+  );
+
+async function createResealLogin() {
+  await owner.query(
+    `CREATE ROLE "${resealLogin}" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS PASSWORD '${resealPassword}'`,
+  );
+  await owner.query(
+    `GRANT legend_sealed_reseal TO "${resealLogin}" WITH INHERIT TRUE, SET FALSE, ADMIN FALSE`,
+  );
+  await owner.query(
+    `GRANT CONNECT ON DATABASE "${databaseName()}" TO "${resealLogin}"`,
+  );
+  const url = new URL(process.env.STARTER_TEST_DATABASE_URL as string);
+  url.username = resealLogin;
+  url.password = resealPassword;
+  resealPool = new Pool({ connectionString: url.toString(), max: 3 });
+}
+
+async function dropResealLogin() {
+  await resealPool?.end();
+  await owner
+    .query(
+      `REVOKE CONNECT ON DATABASE "${databaseName()}" FROM "${resealLogin}"`,
+    )
+    .catch(() => undefined);
+  await owner
+    .query(`REVOKE legend_sealed_reseal FROM "${resealLogin}"`)
+    .catch(() => undefined);
+  await owner
+    .query(`DROP ROLE IF EXISTS "${resealLogin}"`)
+    .catch(() => undefined);
+}
+
+type Settled<T> = { done: true; value: T } | { done: false };
+
+/** Resolves with the value, or with `{ done: false }` when still pending after `ms`. */
+async function settles<T>(
+  promise: Promise<T>,
+  ms = 15_000,
+): Promise<Settled<T>> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise.then((value) => ({ done: true as const, value })),
+      new Promise<{ done: false }>((resolve) => {
+        timer = setTimeout(() => resolve({ done: false }), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** Holds `SELECT ... FOR UPDATE` on one row in a second connection until released. */
+async function lockRow(row: Seeded) {
+  const client = await owner.connect();
+  await client.query("BEGIN");
+  await client.query(
+    "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+    [row.tenant],
+  );
+  await client.query(
+    `SELECT id FROM public."${row.spec.table}" WHERE id = $1 FOR UPDATE`,
+    [row.id],
+  );
+  return {
+    release: async () => {
+      await client.query("ROLLBACK").catch(() => undefined);
+      client.release();
+    },
+  };
+}
 
 type Extra = Record<string, string | number>;
 type Ctx = { tenant: string; id: string; ulid: string; extra: Extra };
@@ -527,7 +621,13 @@ async function run(
     signal?: AbortSignal;
     afterBatch?: () => void | Promise<void>;
     reportOnly?: boolean;
-    log?: { error: (m: string) => void };
+    /** Default: the reseal login's pool. `false` = no resealDatabase at all. */
+    resealDatabase?: false;
+    log?: {
+      error: (m: string) => void;
+      warn?: (m: string) => void;
+      info?: (m: string) => void;
+    };
   } = {},
 ): Promise<SealedSecretResealResult> {
   return runSealedSecretReseal({
@@ -535,10 +635,13 @@ async function run(
     listTenantIds: async () => options.tenantIds ?? [tenantA],
     batchSize: options.batchSize ?? 2,
     log: options.log ?? { error: () => {} },
+    ...(options.resealDatabase === false
+      ? {}
+      : { resealDatabase: drizzle(resealPool) }),
     ...(options.signal ? { signal: options.signal } : {}),
     ...(options.afterBatch ? { afterBatch: options.afterBatch } : {}),
     ...(options.reportOnly ? { reportOnly: true } : {}),
-  });
+  } as Parameters<typeof runSealedSecretReseal>[0]);
 }
 
 async function clearState() {
@@ -556,6 +659,7 @@ let progressTable = { role: "", select: false, insert: false, update: false };
 beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
+  await createResealLogin();
   expect(currentSealVersion()).toBe(2);
   const probe = await db.execute(sql`
     SELECT current_user::text AS role,
@@ -599,6 +703,7 @@ afterAll(async () => {
     await asOwner(tenant, (client) =>
       client.query("DELETE FROM tenants WHERE id = $1", [tenant]),
     );
+  await dropResealLogin();
   await owner.end();
 });
 
@@ -1032,6 +1137,156 @@ describe("[legend-tetyr][legend-4vfmn] completed and voided orders are frozen, a
       expect(openSecret(after, row.aad)).toBe(row.plain);
     }
   });
+});
+
+// --- 1198: frozen pass needs resealDatabase; locked rows are skipped ----------
+
+describe("[legend-qwm9r] P1 the frozen pass runs through resealDatabase only", () => {
+  const claim = specOf("orders", "claim_token_sealed");
+  const link = specOf("orders", "payment_link_token_sealed");
+  const tender = specOf("pos_order_tenders", "payment_link_token_sealed");
+  const voucher = specOf("apology_vouchers", "code_sealed");
+
+  it("without resealDatabase: the frozen rows stay as written, nothing fails, remaining counts them, and one warn line is logged; normal rows still move", async () => {
+    const open = await seed(claim, { set: { status: "sent" } });
+    const frozenClaim = await seed(claim, { set: { status: "completed" } });
+    const frozenLink = await seed(link, { set: { status: "voided" } });
+    const parent = await seed(claim, { set: { status: "completed" } });
+    const frozenTender = await seed(tender, { set: { order_id: parent.id } });
+    const frozenVoucher = await seed(voucher);
+    const frozen = [frozenClaim, frozenLink, frozenTender, frozenVoucher];
+
+    const warnings: string[] = [];
+    const result = await run(
+      [keyOf(claim), keyOf(link), keyOf(tender), keyOf(voucher)],
+      {
+        tenantIds: [tenantA, tenantB],
+        resealDatabase: false,
+        log: { error: () => {}, warn: (m) => void warnings.push(String(m)) },
+      },
+    );
+
+    expect(result).toMatchObject({ failedTenants: 0, aborted: false });
+    for (const key of [
+      keyOf(claim),
+      keyOf(link),
+      keyOf(tender),
+      keyOf(voucher),
+    ])
+      expect(result.tables[key]?.failed, key).toBe(0);
+    // The open order (and the parent, which is frozen too) -> claim column.
+    expect(result.tables[keyOf(claim)]).toMatchObject({
+      resealed: 1,
+      failed: 0,
+      remaining: 2,
+    });
+    expect(result.tables[keyOf(link)]).toMatchObject({
+      resealed: 0,
+      remaining: 1,
+    });
+    expect(result.tables[keyOf(tender)]).toMatchObject({
+      resealed: 0,
+      remaining: 1,
+    });
+    expect(result.tables[keyOf(voucher)]).toMatchObject({
+      resealed: 0,
+      remaining: 1,
+    });
+    // Honest: the old key cannot retire while a frozen row is below the version.
+    // parent order claim + frozenClaim + link + tender + voucher.
+    expect(sealedSecretUnresolved(result)).toBe(5);
+
+    expect(sealedVersion(await storedSealed(open))).toBe(2);
+    expect(openSecret(await storedSealed(open), open.aad)).toBe(open.plain);
+    for (const row of [...frozen, parent])
+      expect(await storedSealed(row)).toBe(row.sealed);
+
+    expect(warnings).toHaveLength(1);
+    for (const row of [...frozen, open])
+      for (const secret of [row.plain, row.sealed, row.aad])
+        expect(warnings.join("\n")).not.toContain(secret);
+  });
+
+  it("with resealDatabase the same rows move and remaining is 0", async () => {
+    const frozenClaim = await seed(claim, { set: { status: "completed" } });
+    const frozenVoucher = await seed(voucher);
+    const warnings: string[] = [];
+    const result = await run([keyOf(claim), keyOf(voucher)], {
+      log: { error: () => {}, warn: (m) => void warnings.push(String(m)) },
+    });
+    expect(result).toMatchObject({ failedTenants: 0, aborted: false });
+    expect(sealedSecretUnresolved(result)).toBe(0);
+    expect(warnings).toHaveLength(0);
+    for (const row of [frozenClaim, frozenVoucher]) {
+      const after = await storedSealed(row);
+      expect(sealedVersion(after)).toBe(2);
+      expect(openSecret(after, row.aad)).toBe(row.plain);
+    }
+  });
+});
+
+describe("[legend-qwm9r] P2 a locked frozen row does not stop the sweep", () => {
+  const claim = specOf("orders", "claim_token_sealed");
+  const voucher = specOf("apology_vouchers", "code_sealed");
+
+  for (const [spec, set] of [
+    [claim, { status: "completed" }],
+    [voucher, undefined],
+  ] as const)
+    it(`${keyOf(spec)}: the free rows move, the locked row stays in remaining (not failed), and a rerun after the lock is gone finishes`, async () => {
+      const options = set ? { set } : {};
+      const before = await seed(spec, options);
+      const locked = await seed(spec, options);
+      const after = await seed(spec, options);
+
+      const lock = await lockRow(locked);
+      let job: Promise<SealedSecretResealResult> | undefined;
+      let settled: Settled<SealedSecretResealResult> = { done: false };
+      let stored: string[] = [];
+      try {
+        job = run([keyOf(spec)], { batchSize: 3 });
+        settled = await settles(job);
+        if (settled.done)
+          stored = await Promise.all([before, locked, after].map(storedSealed));
+      } finally {
+        await lock.release();
+        await job?.catch(() => undefined);
+      }
+
+      expect(settled.done, "the job must not wait for the locked row").toBe(
+        true,
+      );
+      const result = settled.done ? settled.value : undefined;
+      expect(result).toMatchObject({ failedTenants: 0, aborted: false });
+      expect(result?.tables[keyOf(spec)]).toMatchObject({
+        resealed: 2,
+        failed: 0,
+        remaining: 1,
+      });
+      expect(sealedSecretUnresolved(result!)).toBe(1);
+      for (const [row, value] of [
+        [before, stored[0]],
+        [after, stored[2]],
+      ] as const) {
+        expect(sealedVersion(value!)).toBe(2);
+        expect(openSecret(value!, row.aad)).toBe(row.plain);
+      }
+      expect(stored[1]).toBe(locked.sealed);
+
+      // The lock is gone: a rerun (fresh progress, as the other rerun tests do)
+      // takes the row that was skipped.
+      await clearState();
+      const rerun = await run([keyOf(spec)], { batchSize: 3 });
+      expect(rerun.tables[keyOf(spec)]).toMatchObject({
+        resealed: 1,
+        failed: 0,
+        remaining: 0,
+      });
+      expect(sealedSecretUnresolved(rerun)).toBe(0);
+      const moved = await storedSealed(locked);
+      expect(sealedVersion(moved)).toBe(2);
+      expect(openSecret(moved, locked.aad)).toBe(locked.plain);
+    }, 60_000);
 });
 
 // --- no secrets in output ---------------------------------------------------

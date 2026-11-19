@@ -60,13 +60,18 @@
 // completed or voided order and to its tenders; the app login has no UPDATE on
 // apology_vouchers at all). The normal pass never touches them. A second,
 // frozen pass (state column `<column>#frozen`) moves them through the one
-// database function `app.reseal_frozen_sealed`, called after
-// `SET LOCAL ROLE legend_sealed_reseal` inside a savepoint per row: the function
-// rewrites only that sealed column, compare-and-set, never to a lower version.
-// The job opens the new envelope with the same AAD and compares the plaintext
-// before it sends it. A row that fails is counted `failed`; the rest still run.
-// Frozen rows stay in `remaining` (and `frozen`) until moved, so they cannot
-// pass as done.
+// database function `app.reseal_frozen_sealed`, called on `resealDatabase`: the
+// pool of the dedicated login `legend_reseal_<16 hex>` (RESEAL_DATABASE_URL),
+// which inherits the narrow `legend_sealed_reseal` group. There is no SET ROLE
+// and no other login can reach the group. The function rewrites only that
+// sealed column, compare-and-set, never to a lower version. The job opens the
+// new envelope with the same AAD and compares the plaintext before it sends it.
+// A row that fails is counted `failed`; the rest still run. The function answers
+// 1 = moved, 0 = compare-and-set lost or row gone, -1 = row locked by someone
+// else (skipped at once): 0 and -1 are neither `failed` nor `resealed`, and the
+// next run takes the row. Without `resealDatabase` the frozen pass is skipped
+// (one warn line per run, not a failure). Frozen rows stay in `remaining` (and
+// `frozen`) until moved, so they cannot pass as done.
 
 import { sql, type SQL } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
@@ -93,7 +98,9 @@ import { listAllTenantIds } from "./hris-pii-reseal.job.ts";
 
 type Database = NodePgDatabase<typeof schema>;
 type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
-type Log = Pick<Console, "error" | "info">;
+type Log = Pick<Console, "error" | "info"> & Partial<Pick<Console, "warn">>;
+/** Pool of the reseal login: it only needs to run one statement. */
+type ResealDatabase = Pick<Database, "execute">;
 
 export const SEALED_SECRET_RESEAL_QUEUE = "sealed-secret-reseal";
 export const SEALED_SECRET_RESEAL_BATCH = 200;
@@ -427,7 +434,13 @@ export type SealedSecretResealResult = {
 
 export type SealedSecretResealOptions = {
   database?: Database;
-  log?: Pick<Console, "error">;
+  log?: Pick<Console, "error"> & Partial<Pick<Console, "warn">>;
+  /**
+   * Pool of the reseal login (`legend_reseal_<16 hex>`), the only caller of
+   * `app.reseal_frozen_sealed`. Absent: the frozen pass is skipped with one warn
+   * line, `remaining` still counts the frozen rows.
+   */
+  resealDatabase?: ResealDatabase;
   batchSize?: number;
   /** Version to move rows to; defaults to the ring's active version. */
   activeKeyVersion?: number;
@@ -648,12 +661,13 @@ async function resealBatch(
 
 /**
  * One batch of the frozen pass: stale frozen rows after the cursor (no row
- * lock; the database function does the compare-and-set), each moved by
- * `app.reseal_frozen_sealed` as the narrow `legend_sealed_reseal` role inside
- * its own savepoint (a failure rolls the role switch back with it).
+ * lock here; the database function locks the row with SKIP LOCKED and does the
+ * compare-and-set), each moved by `app.reseal_frozen_sealed` on `resealDatabase`
+ * (its own login, its own connection, no SET ROLE).
  */
 async function resealFrozenBatch(
   tx: Transaction,
+  resealDatabase: ResealDatabase,
   c: SealedSecretColumn,
   scope: string,
   active: number,
@@ -687,15 +701,12 @@ async function resealFrozenBatch(
         extra: (c.extra ?? []).map((_, i) => String(row[`x${i}`])),
       };
       const next = resealValue(sealed, c.aad(sealedRow), true);
-      const updated = await tx.transaction(async (savepoint) => {
-        await savepoint.execute(sql`SET LOCAL ROLE legend_sealed_reseal`);
-        const out = (await savepoint.execute(
-          sql`SELECT app.reseal_frozen_sealed(${c.table}::text, ${c.column}::text, ${scope}::uuid, ${uuid}::uuid, ${sealed}::text, ${next}::text) AS n`,
-        )) as unknown as ResultRows;
-        await savepoint.execute(sql`RESET ROLE`);
-        return Number(out.rows[0]?.n ?? 0);
-      });
-      // 0: the value changed under us (compare-and-set); next pass sees it.
+      const out = (await resealDatabase.execute(
+        sql`SELECT app.reseal_frozen_sealed(${c.table}::text, ${c.column}::text, ${scope}::uuid, ${uuid}::uuid, ${sealed}::text, ${next}::text) AS n`,
+      )) as unknown as ResultRows;
+      const updated = Number(out.rows[0]?.n ?? 0);
+      // 0: the value changed under us (compare-and-set); -1: the row is locked
+      // by someone else. Neither is a failure; the next pass sees the row again.
       if (updated > 0) resealed += 1;
     } catch {
       state.failed += 1;
@@ -715,6 +726,7 @@ async function runScope(
   batchSize: number,
   options: SealedSecretResealOptions,
   result: { aborted: boolean },
+  skipped: { warn(): void },
 ): Promise<ScopeRun> {
   const inScope = <T>(run: (tx: Transaction) => Promise<T>): Promise<T> =>
     c.scope === "tenant"
@@ -722,6 +734,7 @@ async function runScope(
       : database.transaction(run);
   let resealedTotal = 0;
   let failedTotal = 0;
+  const { resealDatabase } = options;
 
   // The normal pass skips frozen rows (and a fully frozen column, where even
   // SELECT ... FOR UPDATE would need the UPDATE privilege the login lacks);
@@ -737,14 +750,17 @@ async function runScope(
         break;
       }
       const batch = await inScope(async (tx) => {
-        const outcome = await (frozenPass ? resealFrozenBatch : resealBatch)(
-          tx,
-          c,
-          scope,
-          active,
-          batchSize,
-          state,
-        );
+        const outcome = await (resealDatabase && frozenPass
+          ? resealFrozenBatch(
+              tx,
+              resealDatabase,
+              c,
+              scope,
+              active,
+              batchSize,
+              state,
+            )
+          : resealBatch(tx, c, scope, active, batchSize, state));
         if (outcome.handled === 0) state.lastId = null;
         await saveState(
           tx,
@@ -771,7 +787,10 @@ async function runScope(
 
   if (!options.reportOnly) {
     if (c.frozenWhere !== "true") await runPass(false);
-    if (c.frozenWhere && !result.aborted) await runPass(true);
+    if (c.frozenWhere && !result.aborted) {
+      if (resealDatabase) await runPass(true);
+      else skipped.warn();
+    }
   }
 
   // Counted without SKIP LOCKED: a row locked by someone else still counts.
@@ -946,6 +965,17 @@ export async function runSealedSecretReseal(
       frozen: 0,
     };
   const failedTenants = new Set<string>();
+  // One warn line per run, however many columns and tenants skip the frozen pass.
+  let warnedSkip = false;
+  const skipped = {
+    warn() {
+      if (warnedSkip) return;
+      warnedSkip = true;
+      log.warn?.(
+        "Sealed secret re-seal: frozen pass skipped, no reseal login configured (set RESEAL_DATABASE_URL); frozen rows stay in remaining",
+      );
+    },
+  };
 
   for (const c of columns) {
     const total = result.tables[keyOf(c)];
@@ -965,6 +995,7 @@ export async function runSealedSecretReseal(
           batchSize,
           options,
           result,
+          skipped,
         );
         total.resealed += run.resealed;
         total.failed += run.failed;
@@ -1138,6 +1169,8 @@ type SealedSecretResealBoss = {
 export async function registerSealedSecretResealJob(options: {
   boss: SealedSecretResealBoss;
   database?: Database;
+  /** Pool of the reseal login; absent: the frozen pass is skipped (warn). */
+  resealDatabase?: ResealDatabase;
   log?: Log;
   /** Test hook; defaults to every tenant. */
   listTenantIds?: () => Promise<string[]>;
@@ -1170,6 +1203,9 @@ export async function registerSealedSecretResealJob(options: {
         log,
         signal: AbortSignal.any(signals),
         ...(options.database ? { database: options.database } : {}),
+        ...(options.resealDatabase
+          ? { resealDatabase: options.resealDatabase }
+          : {}),
         ...(options.listTenantIds
           ? { listTenantIds: options.listTenantIds }
           : {}),
