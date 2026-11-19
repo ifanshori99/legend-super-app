@@ -1992,6 +1992,64 @@ export const payrollPayoutReconEvidenceObservations = pgTable(
 );
 
 /**
+ * A hold per item for a reconciliation flag that could not be written (legend-t1ufu
+ * round 3, migration 0709): when the write of a flag or of its lock episode is
+ * refused, `app.payout_recon_hold_unwritten` records one row per item here, so the
+ * slip stays held (`app.payout_payslip_held_by_recon`) although no exception row
+ * exists. Not an observation, no operation lock. Taken over by an exception with the
+ * same (kind, operation, item, reason) flagged at or after `created_at`, or not
+ * cleared before it; a good read does not release it. Insert-only, written by the
+ * payout role only.
+ */
+export const payrollPayoutReconUnwrittenHolds = pgTable(
+  "payroll_payout_recon_unwritten_holds",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    kind: varchar("kind", { length: 16 })
+      .$type<PayoutAttestationKind>()
+      .notNull(),
+    operationId: uuid("operation_id").notNull(),
+    itemId: uuid("item_id").notNull(),
+    payslipId: uuid("payslip_id").notNull().$type<PayslipId>(),
+    /** Base reason of the flag; empty matches an exception of any reason. */
+    reason: text("reason"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("payroll_payout_recon_unwritten_holds_payslip_idx").on(
+      table.tenantId,
+      table.payslipId,
+    ),
+    index("payroll_payout_recon_unwritten_holds_key_idx").on(
+      table.tenantId,
+      table.kind,
+      table.operationId,
+      table.itemId,
+    ),
+    foreignKey({
+      name: "payroll_payout_recon_unwritten_holds_item_fk",
+      columns: [table.tenantId, table.itemId],
+      foreignColumns: [
+        payrollDisbursementItems.tenantId,
+        payrollDisbursementItems.id,
+      ],
+    }),
+    foreignKey({
+      name: "payroll_payout_recon_unwritten_holds_payslip_fk",
+      columns: [table.tenantId, table.payslipId],
+      foreignColumns: [payslips.tenantId, payslips.id],
+    }),
+    check(
+      "payroll_payout_recon_unwritten_holds_kind_check",
+      sql`${table.kind} IN (${inList(PAYOUT_ATTESTATION_KINDS)})`,
+    ),
+  ],
+);
+
+/**
  * Two-person clearance of a false reconciliation flag (legend-xbagc). The flag
  * row stays (insert-only); an approved clearance stops it holding the payslip
  * back. Written only by the trusted payout functions: a finance person proposes

@@ -1028,13 +1028,12 @@ type PlannedItem = {
 };
 
 /**
- * Slip ids with an open row in `payroll_payout_recon_exceptions` (migration
- * 0410, insert-only) on one of their items. A row is open until it has an
- * approved two-person clearance (`payroll_payout_recon_clearances`, migration
- * 0461, same test as `app.payout_payslip_held_by_recon`) bound to the flag's
- * LIVE fingerprint (`app.payout_recon_flag_fingerprint`, migration 0464): a
- * clearance of other flagged data, or a proposal alone (`approved_at` null),
- * still holds the slip, also when the data changed after the approval.
+ * Slip ids held back by the reconciliation: an open row in
+ * `payroll_payout_recon_exceptions` (migration 0410, insert-only) with no approved
+ * two-person clearance bound to its LIVE fingerprint, or a hold for a flag that
+ * could not be written (migration 0709). One test, the one of the insert guard:
+ * `app.payout_payslip_held_by_recon`, so a slip the guard would refuse never fails
+ * the batch (legend-t1ufu round 3).
  */
 async function slipsHeldByReconException(
   tx: Tx,
@@ -1043,22 +1042,14 @@ async function slipsHeldByReconException(
 ): Promise<Set<string>> {
   if (payslipIds.length === 0) return new Set();
   const rows = await tx.execute<{ payslip_id: string }>(
-    sql`SELECT DISTINCT i.payslip_id
-          FROM payroll_payout_recon_exceptions e
-          JOIN payroll_disbursement_items i
-            ON i.tenant_id = e.tenant_id AND i.id = e.item_id
-         WHERE e.tenant_id = ${tenantId}
-           AND NOT EXISTS (
-             SELECT 1
-               FROM payroll_payout_recon_clearances c
-              WHERE c.tenant_id = e.tenant_id AND c.exception_id = e.id
-                AND c.approved_at IS NOT NULL
-                AND c.flag_sha256 =
-                  app.payout_recon_flag_fingerprint(e.tenant_id, e.id))
-           AND i.payslip_id IN (${sql.join(
+    sql`SELECT p.id AS payslip_id
+          FROM payslips p
+         WHERE p.tenant_id = ${tenantId}
+           AND p.id IN (${sql.join(
              payslipIds.map((id) => sql`${id}`),
              sql`, `,
-           )})`,
+           )})
+           AND app.payout_payslip_held_by_recon(p.tenant_id, p.id)`,
   );
   return new Set(rows.rows.map((row) => row.payslip_id));
 }

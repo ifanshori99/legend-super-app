@@ -117,6 +117,7 @@ export async function runPayoutTrustedReconSweep(
       flagged: 0,
       reraised: 0,
       reraiseFailed: 0,
+      held: 0,
       unreadable: 0,
       last: cycle.after,
       exhausted: true,
@@ -143,9 +144,14 @@ export async function runPayoutTrustedReconSweep(
         `PAYOUT-RECON-ALERT unreadable proof: tenant ${tenantId}, ${cycle.unreadable} proof file(s) unreadable, ${streak.cycles} cycle(s) in a row, ${Math.floor(streak.sinceMs / 3_600_000)} hour(s) since the first (a read that failed or timed out, or was not tried after an earlier storage timeout in the same page, is recorded and holds the slips of its flags; a file skipped because another run held its lock raises a flag for that day and holds the slips until two people close it: check the storage and that run)`,
       );
   }
-  if (result.flagged > 0 || result.unreadable > 0 || result.reraiseFailed > 0)
+  if (
+    result.flagged > 0 ||
+    result.unreadable > 0 ||
+    result.reraiseFailed > 0 ||
+    result.held > 0
+  )
     console.error(
-      `Payout trusted recon: operations ${result.operations}, new flags ${result.flagged}, flags raised again ${result.reraised}, raising again failed ${result.reraiseFailed}, proof files unreadable ${result.unreadable}`,
+      `Payout trusted recon: operations ${result.operations}, new flags ${result.flagged}, flags raised again ${result.reraised}, raising again failed ${result.reraiseFailed}, flags held without being written ${result.held}, proof files unreadable ${result.unreadable}`,
     );
   return result;
 }

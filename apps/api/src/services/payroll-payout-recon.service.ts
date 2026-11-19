@@ -136,6 +136,11 @@ export type PayoutReconPageResult = {
   readonly reraised: number;
   /** Known flags whose chunk failed to be raised again; logged, page not failed. */
   readonly reraiseFailed: number;
+  /**
+   * Flags that could not be written and hold their slips through a committed hold
+   * instead (legend-t1ufu); the page still moved on. 0 when every flag was written.
+   */
+  readonly held: number;
   /** Proof files that could not be read for a reason other than "not found". */
   readonly unreadable: number;
   /** Sort key of the last operation of the page; null when the page was empty. */
@@ -2185,9 +2190,128 @@ function isLockNotAvailable(error: unknown): boolean {
 /** Known flags raised again per transaction (each call keeps an advisory lock). */
 export const PAYOUT_RECON_RERAISE_CHUNK = 100;
 
+/** First pg error code in an error's cause chain (name and code only are ever logged). */
+function pgCodeOf(error: unknown): string | undefined {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current; depth += 1) {
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === "string") return code;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return undefined;
+}
+
+type FlagFailure = { name: string; code: string | undefined };
+
 /**
- * Raises known flags again, `chunkSize` per `withTenant`. A failed chunk is
- * logged (no personal data) and counted; the other chunks still run.
+ * Raises each flag in its own savepoint (nested transaction), so a row that
+ * fails rolls back alone and the other rows of the transaction stay. Returns the
+ * number of rows that failed (logged without personal data), the flags that
+ * failed, and the name and code of the first error (never the error itself: its
+ * cause can carry query parameters).
+ */
+async function raiseFlagsPerRow(
+  tx: Tx,
+  tenantId: string,
+  flags: readonly Flag[],
+): Promise<{
+  failed: number;
+  failedFlags: Flag[];
+  firstError: FlagFailure | undefined;
+}> {
+  const failedFlags: Flag[] = [];
+  let firstError: FlagFailure | undefined;
+  for (const flag of flags) {
+    try {
+      await tx.transaction(async (row) => {
+        await row.execute(
+          sql`SELECT app.payout_recon_flag(${tenantId}::uuid, ${flag.kind}, ${flag.operationId}::uuid, ${flag.itemId}::uuid, ${flag.reason})`,
+        );
+      });
+    } catch (error) {
+      const name = error instanceof Error ? error.name : "unknown";
+      const code = pgCodeOf(error);
+      if (failedFlags.length === 0) firstError = { name, code };
+      failedFlags.push(flag);
+      logger.error(
+        { errorName: name, errorCode: code, kind: flag.kind },
+        "payout recon: raising a flag failed, the row was rolled back alone",
+      );
+    }
+  }
+  return { failed: failedFlags.length, failedFlags, firstError };
+}
+
+/**
+ * The error of a page whose flags could not be written. No `cause`: it can carry
+ * the query and its parameters into any log that prints the error. Name and pg
+ * code only.
+ */
+function flagWriteError(failure: FlagFailure | undefined): Error {
+  const error = new Error(
+    `Payout recon flags could not be written (${failure?.name ?? "unknown"}${failure?.code ? ` ${failure.code}` : ""})`,
+  );
+  return Object.assign(error, { code: failure?.code });
+}
+
+/**
+ * The flags that could not be written hold their slips anyway (legend-t1ufu round
+ * 3, migration 0709): once the transaction of the flags is committed,
+ * app.payout_recon_hold_unwritten records one hold per item, per (kind,
+ * operation), in a transaction of its own. A failure here is logged (name and code
+ * only). Returns true only when every hold is committed: then the slips stay held
+ * and the page may move on; otherwise the page must fail (the cursor stays).
+ */
+async function holdUnwrittenFlags(
+  context: ScopedTenantContext,
+  failedFlags: readonly Flag[],
+): Promise<boolean> {
+  const tenantId = context.tenant.tenantId;
+  let allHeld = true;
+  const groups = new Map<
+    string,
+    { kind: string; operationId: string; reason: string; itemIds: Set<string> }
+  >();
+  for (const flag of failedFlags) {
+    const key = `${flag.kind}|${flag.operationId}|${flag.reason}`;
+    const group = groups.get(key) ?? {
+      kind: flag.kind,
+      operationId: flag.operationId,
+      reason: String(flag.reason),
+      itemIds: new Set<string>(),
+    };
+    group.itemIds.add(flag.itemId);
+    groups.set(key, group);
+  }
+  for (const group of groups.values()) {
+    try {
+      await withTenant(db, context, async (tx) => {
+        // Only the role legend_payout_recon may record a hold (like observe_ok).
+        await asReconRole(tx, () =>
+          tx.execute(
+            sql`SELECT app.payout_recon_hold_unwritten(${tenantId}::uuid, ${group.kind}::text, ${group.operationId}::uuid, ARRAY[${uuidList([...group.itemIds])}]::uuid[], ${group.reason}::text)`,
+          ),
+        );
+      });
+    } catch (error) {
+      allHeld = false;
+      logger.error(
+        {
+          errorName: error instanceof Error ? error.name : "unknown",
+          errorCode: pgCodeOf(error),
+          kind: group.kind,
+        },
+        "payout recon: holding the slips of an unwritten flag failed",
+      );
+    }
+  }
+  return allHeld;
+}
+
+/**
+ * Raises known flags again, `chunkSize` per `withTenant`, one savepoint per row.
+ * A failed row is logged (no personal data) and counted; the other rows and
+ * chunks still run. A chunk that fails as a whole counts all its rows.
  */
 export async function reraiseKnownFlags(
   context: ScopedTenantContext,
@@ -2200,13 +2324,13 @@ export async function reraiseKnownFlags(
   for (let at = 0; at < flags.length; at += chunkSize) {
     const chunk = flags.slice(at, at + chunkSize);
     try {
-      await withTenant(db, context, async (tx) => {
-        for (const flag of chunk)
-          await tx.execute(
-            sql`SELECT app.payout_recon_flag(${tenantId}::uuid, ${flag.kind}, ${flag.operationId}::uuid, ${flag.itemId}::uuid, ${flag.reason})`,
-          );
-      });
-      reraised += chunk.length;
+      const rowsFailed = await withTenant(
+        db,
+        context,
+        async (tx) => (await raiseFlagsPerRow(tx, tenantId, chunk)).failed,
+      );
+      reraised += chunk.length - rowsFailed;
+      failed += rowsFailed;
     } catch (error) {
       failed += chunk.length;
       logger.error(
@@ -2289,6 +2413,7 @@ export async function reconcileTrustedPayouts(
       flagged: 0,
       reraised: 0,
       reraiseFailed: 0,
+      held: 0,
       unreadable: 0,
       last,
       exhausted,
@@ -2481,36 +2606,71 @@ export async function reconcileTrustedPayouts(
         flagKey(flag.kind, flag.operationId, flag.itemId, flag.reason),
       ),
   );
-  // New flags first, in their own transaction: a failure fails the page, as before.
-  if (fresh.length > 0)
-    await withTenant(db, context, async (tx) => {
-      for (const flag of fresh)
-        await tx.execute(
-          sql`SELECT app.payout_recon_flag(${tenantId}::uuid, ${flag.kind}, ${flag.operationId}::uuid, ${flag.itemId}::uuid, ${flag.reason})`,
-        );
-    });
-  // Known flags are raised again in small chunks of their own (each call holds
-  // an advisory lock until its transaction ends). A failed chunk is logged and
-  // never fails the page or holds the cursor (legend-hklnq).
-  const freshKeys = new Set(
-    fresh.map((flag) =>
-      flagKey(flag.kind, flag.operationId, flag.itemId, flag.reason),
-    ),
+  // New flags first, in their own transaction, one savepoint per row. A known
+  // lock flag (`evidence_read_locked`) goes this way too (legend-t1ufu): a new
+  // episode of it must be written or the page must fail, never be lost in the
+  // best-effort re-raise below. A row that fails rolls back alone, the others are
+  // committed, and the failed ones are held through app.payout_recon_hold_unwritten:
+  // when every hold is committed the page moves on (the slips stay held), otherwise
+  // the page fails (fail closed, the cursor does not advance).
+  const keyOf = (flag: Flag) =>
+    flagKey(flag.kind, flag.operationId, flag.itemId, flag.reason);
+  const freshKeys = new Set(fresh.map(keyOf));
+  const knownLocked = raised.filter(
+    (flag) =>
+      !freshKeys.has(keyOf(flag)) &&
+      String(flag.reason).includes("evidence_read_locked"),
   );
+  const firstWrite = [...fresh, ...knownLocked];
+  let heldFlags: readonly Flag[] = [];
+  if (firstWrite.length > 0) {
+    let written: Awaited<ReturnType<typeof raiseFlagsPerRow>> | undefined;
+    try {
+      written = await withTenant(db, context, (tx) =>
+        raiseFlagsPerRow(tx, tenantId, firstWrite),
+      );
+    } catch (error) {
+      // The transaction of the flags itself failed (connection lost, COMMIT
+      // refused): none of its flags is known to be written, so hold them all.
+      // Every hold committed: the slips stay held and the page moves on. A hold
+      // that cannot be written fails the page (the cursor does not advance).
+      const failure = {
+        name: error instanceof Error ? error.name : "unknown",
+        code: pgCodeOf(error),
+      };
+      logger.error(
+        { errorName: failure.name, errorCode: failure.code },
+        "payout recon: the transaction of the flags failed, holding their slips",
+      );
+      if (!(await holdUnwrittenFlags(context, firstWrite)))
+        throw flagWriteError(failure);
+      heldFlags = firstWrite;
+    }
+    if (written && written.failed > 0) {
+      if (!(await holdUnwrittenFlags(context, written.failedFlags)))
+        throw flagWriteError(written.firstError);
+      heldFlags = written.failedFlags;
+    }
+  }
+  // The other known flags are raised again in small chunks of their own (each
+  // call holds an advisory lock until its transaction ends). A failed row is
+  // logged and counted, never fails the page or holds the cursor (legend-hklnq).
+  const writtenKeys = new Set(firstWrite.map(keyOf));
   const again = await reraiseKnownFlags(
     context,
-    raised.filter(
-      (flag) =>
-        !freshKeys.has(
-          flagKey(flag.kind, flag.operationId, flag.itemId, flag.reason),
-        ),
-    ),
+    raised.filter((flag) => !writtenKeys.has(keyOf(flag))),
   );
+  // A flag that was held instead of written counts as held only.
+  const heldKeys = new Set(heldFlags.map(keyOf));
   return {
     operations: operations.length,
-    flagged: fresh.length,
-    reraised: again.reraised,
+    flagged: fresh.filter((flag) => !heldKeys.has(keyOf(flag))).length,
+    // Known lock flags written on the first path count as raised again.
+    reraised:
+      again.reraised +
+      knownLocked.filter((flag) => !heldKeys.has(keyOf(flag))).length,
     reraiseFailed: again.failed,
+    held: heldFlags.length,
     unreadable,
     last,
     exhausted,

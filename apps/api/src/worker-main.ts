@@ -652,8 +652,12 @@ const relay = createRelayRuntime({
         await runPayoutTrustedReconSweep(context, new Date(), {
           storage: payoutEvidenceStorage,
         });
-      } catch {
-        console.error("Payout trusted recon sweep failed");
+      } catch (error) {
+        // Name and pg code only: the cause of a failed write can carry query parameters.
+        const code = (error as { code?: unknown } | null)?.code;
+        console.error(
+          `Payout trusted recon sweep failed (${error instanceof Error ? error.name : "unknown"}${typeof code === "string" ? ` ${code}` : ""})`,
+        );
       }
       // Receipts of attested payout steps (legend-7gghu): each row of the
       // append-only approval log becomes one notification to the person whose

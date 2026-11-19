@@ -660,6 +660,11 @@ describe("1e9py T2: the guard function is scoped to the current database", () =>
           WHERE n.nspname = 'app' AND p.proname = 'payout_recon_clear_approve'`,
     );
     expect(rows, "exactly one function of that name").toHaveLength(1);
-    expect(String(rows[0]!.prosrc)).toMatch(/current_database\s*\(\s*\)/i);
+    // legend-1hpqt (0708): the guard no longer scans pg_locks (which needed the
+    // current_database() filter). It takes pg_try_advisory_xact_lock, which is
+    // scoped to the current database by PostgreSQL itself.
+    const src = String(rows[0]!.prosrc);
+    expect(src).not.toMatch(/pg_locks/i);
+    expect(src).toMatch(/pg_try_advisory_xact_lock/i);
   });
 });

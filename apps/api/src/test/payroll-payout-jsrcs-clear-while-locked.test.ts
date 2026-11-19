@@ -765,3 +765,150 @@ describe("jsrcs T3: only the lock flag of the operation's own lock is held back"
     TEST_TIMEOUT_MS,
   );
 });
+
+// =========================================================================
+// T4 (legend-1hpqt, SO 1173 P1): a holder that appears WHILE the approval waits
+// =========================================================================
+//
+// Three connections: the approval (HTTP), connection B (holds the flag's own
+// advisory lock so the approval has to wait), connection C (a new operation holder
+// that starts while the approval waits). Written fail-first from the card
+// (docs/briefs/sub-1179-payout-so1173.md, kartu 3) and the hold-the-slip rule, not
+// from the implementation.
+//
+// Assumptions (stated so they can be contested):
+// - The advisory keys are the documented hashtextextended keys
+//   `payout_recon_flag_see:<tenant>:<exception>` (the flag's lock, B) and
+//   `payout_recon_evidence_observe:<tenant>:<operation>` (the operation's lock, C).
+// - The invariant is "an approved clearance never exists while a backend holds the
+//   operation lock". A fix that takes the operation lock BEFORE it waits for B keeps
+//   C out (C's try-lock fails, the approval later succeeds with no holder): also safe,
+//   so that branch expects 200 and a free lock afterwards. A fix that checks late (or
+//   the old code) lets C in, and then the approval must be refused (409).
+// - C uses pg_try_advisory_lock so the outcome never depends on timing.
+
+const flagKeySql = `hashtextextended('payout_recon_flag_see:' || $1::text || ':' || $2::text, 0)`;
+const operationKeySql = `hashtextextended('payout_recon_evidence_observe:' || $1::text || ':' || $2::text, 0)`;
+
+/** Settles when the approval is parked on the flag lock held by B. */
+async function approvalWaitsOnFlagLock(exceptionId: string) {
+  await expect
+    .poll(
+      async () =>
+        (
+          await W.rowsOf(
+            `SELECT count(*)::int AS n
+               FROM pg_catalog.pg_locks l, ${flagKeySql} AS k
+              WHERE l.locktype = 'advisory' AND NOT l.granted
+                AND l.objsubid = 1
+                AND l.classid::bigint = ((k >> 32) & 4294967295)
+                AND l.objid::bigint = (k & 4294967295)`,
+            [W.tenantId, exceptionId],
+          )
+        )[0]!.n as number,
+      { timeout: 15_000 },
+    )
+    .toBeGreaterThan(0);
+}
+
+describe("jsrcs T4: an operation holder that appears while the approval waits", () => {
+  it(
+    "[jsrcs-holder-appears-during-approve-wait] approve waits on the flag lock (B), a new holder (C) takes the operation lock, B lets go: the clearance is not approved while C still runs (409, approved_at null, slip held, C still holding), and once C is gone the same clearance is approved (200)",
+    async () => {
+      const w = await lockedFlagWorld();
+      await endHolder(w.a);
+      await lockHolderGone();
+      const before = await moneySnapshot(w.itemId);
+      const clearanceId = await propose(w.flagId);
+      const operationId = (await lockedFlags(w.itemId))[0]!
+        .operation_id as string;
+      const clientB = await W.owner.connect();
+      const clientC = await W.owner.connect();
+      try {
+        await clientB.query(`SELECT pg_advisory_lock(${flagKeySql})`, [
+          W.tenantId,
+          w.flagId,
+        ]);
+        const approval = new Promise<Res>((resolve, reject) => {
+          approveHttp(approverA, clearanceId).then(
+            resolve as (r: unknown) => void,
+            reject,
+          );
+        });
+        await approvalWaitsOnFlagLock(w.flagId);
+
+        // The new holder starts now, after the approval began.
+        const got = (
+          await clientC.query<{ got: boolean }>(
+            `SELECT pg_try_advisory_lock(${operationKeySql}) AS got`,
+            [W.tenantId, operationId],
+          )
+        ).rows[0]!.got;
+        await clientB.query(`SELECT pg_advisory_unlock_all()`);
+        const res = await approval;
+
+        const [row] = await W.rowsOf(
+          `SELECT approved_at FROM ${CLEARANCE_TABLE} WHERE tenant_id = $1 AND id = $2`,
+          [W.tenantId, clearanceId],
+        );
+        if (got) {
+          expect(
+            res.status,
+            `a holder runs now: the approval is refused ${detail(res)}`,
+          ).toBe(409);
+          expect(
+            row!.approved_at,
+            "the clearance is not approved while the holder runs",
+          ).toBeNull();
+          expect(await heldBySql(w.payslipId), "the slip stays held").toBe(
+            true,
+          );
+          expect(
+            (
+              await W.rowsOf(
+                `SELECT count(*)::int AS n
+                   FROM pg_catalog.pg_locks l, ${operationKeySql} AS k
+                  WHERE l.locktype = 'advisory' AND l.granted
+                    AND l.objsubid = 1
+                    AND l.classid::bigint = ((k >> 32) & 4294967295)
+                    AND l.objid::bigint = (k & 4294967295)`,
+                [W.tenantId, operationId],
+              )
+            )[0]!.n,
+            "the holder is still running at the assertion",
+          ).toBeGreaterThan(0);
+          expect(
+            await moneySnapshot(w.itemId),
+            "the refused clearance pays nothing",
+          ).toEqual(before);
+
+          // The holder ends: the old rule applies again to the same clearance.
+          await clientC.query(`SELECT pg_advisory_unlock_all()`);
+          await lockHolderGone();
+          const again = await approveHttp(approverA, clearanceId);
+          expect(
+            again.status,
+            `the holder is gone: approved ${detail(again)}`,
+          ).toBe(200);
+          expect(await heldBySql(w.payslipId), "the slip is free").toBe(false);
+        } else {
+          // The approval already holds the operation lock, so no holder can run
+          // beside it: safe by construction, the approval goes through.
+          expect(res.status, `no holder could start: ${detail(res)}`).toBe(200);
+          expect(await heldBySql(w.payslipId), "the slip is free").toBe(false);
+        }
+        expect(await moneySnapshot(w.itemId), "nobody is paid").toEqual(before);
+      } finally {
+        await clientB
+          .query("SELECT pg_advisory_unlock_all()")
+          .catch(() => undefined);
+        await clientC
+          .query("SELECT pg_advisory_unlock_all()")
+          .catch(() => undefined);
+        clientB.release();
+        clientC.release();
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+});
