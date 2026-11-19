@@ -15,6 +15,21 @@
 //  - Absence is never inferred from one incremental page (a pull that starts
 //    from a valid cursor), nor from a snapshot that did not finish.
 //
+// Ronde 2 (A4, protocol): the cloud exports only rows below its oldest open
+// transaction, so a short last page after a replay can hide an item that still
+// exists. Therefore deactivation needs TWO complete pulls:
+//  - Cloud pages carry optional `visibleBelow` (pg_snapshot_xmin) and `horizon`
+//    (pg_snapshot_xmax), decimal strings from the same snapshot as the page.
+//  - Pull 1 (replay, last page): marker `catalog:replay:<stream>` goes from
+//    "1" to `h:<horizon>`. Nothing is deactivated.
+//  - A later last page with visibleBelow >= that horizon: deactivate what the
+//    replay never saw, then remove the marker. visibleBelow < horizon (a
+//    transaction held open in the cloud): do nothing, keep the marker.
+//  - Pages without the fields (an older cloud): never deactivate, marker stays.
+// B (money): a promotion missing from the restored cloud must stop applying
+// offline. It is switched off through `status` (any value that makes
+// promotionAvailability() non-null), never deleted.
+//
 // Assumptions (the brief is silent), each easy to change:
 //  - The stream is `menu_items`; it has an `isActive` flag in the sync record
 //    and `is_active` / `deleted_at` columns on the edge. "Deactivated" means
@@ -44,6 +59,7 @@ import {
 } from "@starter/shared/edge";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { cafeLegendAccessFixtures } from "@starter/shared/access";
+import { promotionAvailability } from "@starter/shared/crm";
 import { db } from "../db/index.ts";
 import { pullCatalog } from "../edge/catalog-puller.ts";
 import { EdgeCloudHttpError } from "../edge/cloud-http.ts";
@@ -74,6 +90,7 @@ const actor = randomUUID();
 const id = () => randomUUID();
 const CATEGORIES = "menu_categories";
 const ITEMS = "menu_items";
+const PROMOS = "promotions";
 const ITEMS_CHECKPOINT = `catalog:${ITEMS}`;
 const MARKER = "CATALOG_CURSOR_REJECTED";
 
@@ -103,6 +120,7 @@ const scopeOf = (
 async function pull(
   cloud: { fetchPage: FetchPage },
   maxPages?: number,
+  streams?: string[],
 ): Promise<PullResult> {
   try {
     return (await pullCatalog({
@@ -111,6 +129,7 @@ async function pull(
       edgeNodeId: node.id,
       fetchPage: cloud.fetchPage,
       ...(maxPages === undefined ? {} : { maxPages }),
+      ...(streams === undefined ? {} : { streams }),
     } as never)) as PullResult;
   } catch (error) {
     // A pull that aborts is a legitimate outcome in the unfinished-snapshot
@@ -127,6 +146,37 @@ const itemsCheckpoint = async (): Promise<string | null | undefined> =>
     )
   )[0]?.watermark as string | null | undefined;
 
+type Visibility = { visibleBelow: string; horizon: string };
+/** A snapshot with nothing in flight: everything below the horizon is visible. */
+const SETTLED: Visibility = { visibleBelow: "1000", horizon: "1000" };
+
+/**
+ * Adds the optional cloud fields to every page, as the real cloud service
+ * does. `current()` is read per page, so a test can change it between pulls;
+ * null serves pages without the fields (an older cloud).
+ */
+const withVisibility =
+  (inner: FetchPage, current: () => Visibility | null): FetchPage =>
+  async (stream, since) => {
+    const page = (await inner(stream, since)) as Rec;
+    const view = current();
+    return view ? { ...page, ...view } : page;
+  };
+
+const replayMarker = async (stream: string): Promise<string | null> =>
+  ((
+    await edge.rows(
+      "SELECT watermark FROM edge_pull_checkpoints WHERE edge_node_id = $1 AND stream = $2",
+      [node.id, `catalog:replay:${stream}`],
+    )
+  )[0]?.watermark ?? null) as string | null;
+
+const rewind = (stream: string) =>
+  edge.rows(
+    "UPDATE edge_pull_checkpoints SET watermark = 'rewind' WHERE edge_node_id = $1 AND stream = $2",
+    [node.id, `catalog:${stream}`],
+  );
+
 type Local = {
   name: string;
   active: boolean;
@@ -142,6 +192,11 @@ const localItem = async (rowId: string): Promise<Local | undefined> =>
       [rowId],
     )
   )[0] as Local | undefined;
+
+const isSoftRemoved = async (rowId: string) => {
+  const row = await localItem(rowId);
+  return row !== undefined && (row.active === false || row.deleted);
+};
 
 /** Soft removal: the row still exists, but it is switched off (is_active false or deleted_at set). */
 async function expectSoftRemoved(rowId: string, why: string) {
@@ -336,18 +391,26 @@ const restoredItems = () => [
   item(W, "Item W", 601),
 ];
 
-describe("7r7q6 R2: an item missing from the restored cloud is deactivated on the edge", () => {
-  it("restore recovery (watermark set to the 'rewind' sentinel): the full multi-page snapshot deactivates X, keeps the row, and applies Y and W", async () => {
+const expectXStillActive = async (why: string) =>
+  expect(await localItem(X), why).toMatchObject({
+    name: "Item X",
+    active: true,
+    deleted: false,
+  });
+
+describe("7r7q6 R2: an item missing from the restored cloud is deactivated on the edge after TWO complete pulls", () => {
+  it("restore recovery (watermark set to the 'rewind' sentinel): pull 1 applies Y and W and deactivates nothing; pull 2 deactivates X, keeps the row, and clears the marker", async () => {
     await seedBeforeRestore();
-    await edge.rows(
-      "UPDATE edge_pull_checkpoints SET watermark = 'rewind' WHERE edge_node_id = $1 AND stream = $2",
-      [node.id, ITEMS_CHECKPOINT],
-    );
+    await rewind(ITEMS);
     const restored = cloudWith(restoredItems());
+    const view: Visibility | null = SETTLED;
+    const served = {
+      fetchPage: withVisibility(restored.fetchPage, () => view),
+    };
 
-    const result = await pull(restored);
+    const first = await pull(served);
 
-    expect(result.streams[ITEMS]?.error, "restore pull").toBeFalsy();
+    expect(first.streams[ITEMS]?.error, "restore pull").toBeFalsy();
     expect(
       restored.calls.filter((c) => c.stream === ITEMS && c.since === null),
       "the replay started from the beginning",
@@ -356,7 +419,6 @@ describe("7r7q6 R2: an item missing from the restored cloud is deactivated on th
       restored.calls.filter((c) => c.stream === ITEMS).length,
       "the snapshot had more than one page",
     ).toBeGreaterThan(1);
-    await expectSoftRemoved(X, "X is deactivated, not deleted");
     expect(await localItem(Y)).toMatchObject({
       name: "Item Y setelah restore",
       active: true,
@@ -365,24 +427,43 @@ describe("7r7q6 R2: an item missing from the restored cloud is deactivated on th
       name: "Item W",
       active: true,
     });
+    await expectXStillActive(
+      "one complete pull is not enough: the last page may hide an item that is still in the cloud",
+    );
+    expect(
+      await replayMarker(ITEMS),
+      "the horizon of the replay is remembered",
+    ).toBe(`h:${SETTLED.horizon}`);
+
+    const second = await pull(served);
+
+    expect(second.streams[ITEMS]?.error, "second pull").toBeFalsy();
+    await expectSoftRemoved(X, "X is deactivated, not deleted");
+    expect(await localItem(Y)).toMatchObject({ active: true, deleted: false });
+    expect(await localItem(W)).toMatchObject({ active: true, deleted: false });
+    expect(await replayMarker(ITEMS), "the marker is cleared").toBeNull();
   }, 120_000);
 
-  it("cloud refuses the stored cursor (restore detected): the replay deactivates X the same way", async () => {
+  it("cloud refuses the stored cursor (restore detected): the replay deactivates X the same way after the next complete pull", async () => {
     await seedBeforeRestore();
     const restored = cloudWith(restoredItems());
+    const view = withVisibility(restored.fetchPage, () => SETTLED);
     const asked: (string | null)[] = [];
     const fetchPage = async (stream: string, since: string | null) => {
       if (stream === ITEMS) asked.push(since);
-      // The restored cloud's counter is below the edge's cursor: it refuses
-      // every cursor and serves only the full snapshot.
-      if (stream === ITEMS && since !== null)
+      // The restored cloud's counter is below the edge's old cursor: it
+      // refuses that cursor until the edge has asked for the full snapshot.
+      // Cursors it issues itself afterwards are valid (a real cloud accepts
+      // its own page cursors).
+      if (stream === ITEMS && since !== null && !asked.includes(null))
         throw new EdgeCloudHttpError("HTTP_400", MARKER);
-      return restored.fetchPage(stream, since);
+      return view(stream, since);
     };
 
-    await pull({ fetchPage });
-    // Recovery may need a second pull (like edge-catalog-rewind.test.ts).
-    if ((await localItem(W)) === undefined) await pull({ fetchPage });
+    // Recovery takes a few pulls (rewind, replay, then the confirming pull);
+    // the bound only keeps a broken implementation from looping forever.
+    for (let n = 0; n < 5 && !(await isSoftRemoved(X)); n += 1)
+      await pull({ fetchPage });
 
     expect(asked, "a full pull from the start happened").toContain(null);
     await expectSoftRemoved(X, "X is deactivated, not deleted");
@@ -390,18 +471,23 @@ describe("7r7q6 R2: an item missing from the restored cloud is deactivated on th
       name: "Item Y setelah restore",
       active: true,
     });
+    expect(await localItem(W)).toMatchObject({ name: "Item W", active: true });
   }, 120_000);
 
   it("another tenant's item on the same edge database stays active while X is deactivated", async () => {
     await seedBeforeRestore();
     const neighbour = await cloneItemToOtherTenant(X);
     expect((await localItem(neighbour))?.active, "neighbour seeded").toBe(true);
-    await edge.rows(
-      "UPDATE edge_pull_checkpoints SET watermark = 'rewind' WHERE edge_node_id = $1 AND stream = $2",
-      [node.id, ITEMS_CHECKPOINT],
-    );
+    await rewind(ITEMS);
+    const served = {
+      fetchPage: withVisibility(
+        cloudWith(restoredItems()).fetchPage,
+        () => SETTLED,
+      ),
+    };
 
-    await pull(cloudWith(restoredItems()));
+    await pull(served);
+    await pull(served);
 
     // Guard against a vacuous pass: the restore did reach X.
     await expectSoftRemoved(X, "X deactivated");
@@ -409,6 +495,62 @@ describe("7r7q6 R2: an item missing from the restored cloud is deactivated on th
       await localItem(neighbour),
       "the other tenant's item is untouched",
     ).toMatchObject({ name: "Item X", active: true, deleted: false });
+  }, 120_000);
+
+  it("pages without visibleBelow/horizon (an older cloud) never deactivate anything, however many pulls complete, and the marker stays", async () => {
+    await seedBeforeRestore();
+    await rewind(ITEMS);
+    const restored = cloudWith(restoredItems());
+
+    await pull(restored);
+    await pull(restored);
+    await pull(restored);
+
+    expect(await localItem(Y)).toMatchObject({
+      name: "Item Y setelah restore",
+      active: true,
+    });
+    expect(await localItem(W)).toMatchObject({ name: "Item W", active: true });
+    await expectXStillActive(
+      "without the cloud's proof of visibility absence is never inferred",
+    );
+    expect(
+      await replayMarker(ITEMS),
+      "the marker survives until a cloud that sends the fields completes it",
+    ).not.toBeNull();
+  }, 120_000);
+
+  it("a cloud transaction held open (visibleBelow < horizon) blocks deactivation until it ends", async () => {
+    await seedBeforeRestore();
+    await rewind(ITEMS);
+    const restored = cloudWith(restoredItems());
+    let view: Visibility | null = { visibleBelow: "1000", horizon: "1000" };
+    const served = {
+      fetchPage: withVisibility(restored.fetchPage, () => view),
+    };
+
+    await pull(served); // replay completes; horizon 1000 is remembered
+    expect(await replayMarker(ITEMS)).toBe("h:1000");
+
+    // A cloud transaction that began before the horizon is still open: the
+    // oldest open one (1000 - 1) keeps rows around the horizon invisible.
+    view = { visibleBelow: "999", horizon: "1010" };
+    await pull(served);
+    await pull(served);
+    await expectXStillActive("a hidden row may still be in the cloud");
+    expect(
+      await replayMarker(ITEMS),
+      "the marker keeps its original horizon while the transaction is open",
+    ).toBe("h:1000");
+
+    // The transaction ends: everything below the remembered horizon is visible.
+    view = { visibleBelow: "1000", horizon: "1010" };
+    await pull(served);
+
+    await expectSoftRemoved(X, "X deactivated once the cloud proves absence");
+    expect(await localItem(Y)).toMatchObject({ active: true, deleted: false });
+    expect(await localItem(W)).toMatchObject({ active: true, deleted: false });
+    expect(await replayMarker(ITEMS)).toBeNull();
   }, 120_000);
 });
 
@@ -432,10 +574,12 @@ describe("7r7q6 R2: absence is not inferred from partial information", () => {
         records: [item(Y, "Item Y diubah", 700)],
         nextCursor: incremental.cursorAfter(ITEMS, 3),
         hasMore: false,
-      } satisfies ScriptedPage;
+        ...SETTLED,
+      } satisfies ScriptedPage & Visibility;
     };
 
     const result = await pull({ fetchPage });
+    await pull({ fetchPage });
 
     expect(result.streams[ITEMS]?.error, "incremental pull").toBeFalsy();
     expect(stored, "pull started from a stored cursor").toBeTruthy();
@@ -447,6 +591,10 @@ describe("7r7q6 R2: absence is not inferred from partial information", () => {
       await localItem(X),
       "X was not in the incremental page and stays active",
     ).toMatchObject({ name: "Item X", active: true, deleted: false });
+    expect(
+      await replayMarker(ITEMS),
+      "no replay was running, so no marker exists",
+    ).toBeNull();
   }, 120_000);
 
   it("an incremental pull over several pages that omit X still keeps X active", async () => {
@@ -462,7 +610,8 @@ describe("7r7q6 R2: absence is not inferred from partial information", () => {
         records: [changed[index]],
         nextCursor: catCursor(710 + index, ITEMS),
         hasMore: index === 0,
-      } satisfies ScriptedPage;
+        ...SETTLED,
+      } satisfies ScriptedPage & Visibility;
     };
 
     await pull({ fetchPage });
@@ -470,18 +619,19 @@ describe("7r7q6 R2: absence is not inferred from partial information", () => {
     expect(await localItem(X)).toMatchObject({ active: true, deleted: false });
   }, 120_000);
 
-  it("a replay that did not finish (network error before the last page) deactivates nothing", async () => {
+  it("a replay that did not finish (network error before the last page) deactivates nothing, even after more pulls", async () => {
     await seedBeforeRestore();
-    await edge.rows(
-      "UPDATE edge_pull_checkpoints SET watermark = 'rewind' WHERE edge_node_id = $1 AND stream = $2",
-      [node.id, ITEMS_CHECKPOINT],
-    );
+    await rewind(ITEMS);
     const restored = cloudWith(restoredItems());
     // Page 1 (Y) arrives, page 2 (W) never does: X is absent from what the
     // edge has seen so far, but the snapshot is not complete.
     restored.breakAt(ITEMS, 2);
+    const served = {
+      fetchPage: withVisibility(restored.fetchPage, () => SETTLED),
+    };
 
-    await pull(restored);
+    await pull(served);
+    await pull(served);
 
     expect(
       await localItem(X),
@@ -489,29 +639,190 @@ describe("7r7q6 R2: absence is not inferred from partial information", () => {
     ).toMatchObject({ name: "Item X", active: true, deleted: false });
   }, 120_000);
 
-  it("a rewound pull that stops at maxPages deactivates nothing until a later pull completes the snapshot", async () => {
+  it("a rewound pull that stops at maxPages deactivates nothing until later pulls complete the snapshot and confirm it", async () => {
     await seedBeforeRestore();
-    await edge.rows(
-      "UPDATE edge_pull_checkpoints SET watermark = 'rewind' WHERE edge_node_id = $1 AND stream = $2",
-      [node.id, ITEMS_CHECKPOINT],
-    );
+    await rewind(ITEMS);
     const V = id();
     const restored = cloudWith([...restoredItems(), item(V, "Item V", 602)]);
+    const served = {
+      fetchPage: withVisibility(restored.fetchPage, () => SETTLED),
+    };
 
     // Three pages of one item; the pull is allowed one page per stream.
-    await pull(restored, 1);
+    await pull(served, 1);
     expect(
       await localItem(X),
       "backlog: the snapshot is not complete yet, X stays active",
     ).toMatchObject({ name: "Item X", active: true, deleted: false });
 
-    // Later pulls (no page limit) reach the last page.
-    await pull(restored);
-    if ((await localItem(V)) === undefined) await pull(restored);
+    // Later pulls (no page limit) reach the last page; then one more confirms.
+    for (let n = 0; n < 5 && !(await isSoftRemoved(X)); n += 1)
+      await pull(served);
 
     expect(await localItem(V), "snapshot completed").toMatchObject({
       active: true,
     });
-    await expectSoftRemoved(X, "X deactivated once the snapshot completes");
+    await expectSoftRemoved(X, "X deactivated once the snapshot is confirmed");
+  }, 120_000);
+});
+
+describe("7r7q6 B: a promotion missing from the restored cloud stops applying offline", () => {
+  const SRC = id();
+  const P = id(); // promotion deleted in the cloud after the backup
+  const Q = id(); // promotion that survives the restore
+  let template: Rec;
+
+  const promoRecord = (rowId: string, name: string, txid: bigint): Rec => ({
+    ...template,
+    id: rowId,
+    name,
+    status: "active",
+    syncTxid: String(txid),
+  });
+  const localPromo = async (rowId: string) =>
+    (
+      await edge.rows(
+        `SELECT name, status, starts_at, ends_at FROM promotions WHERE id = $1`,
+        [rowId],
+      )
+    )[0] as
+      | { name: string; status: string; starts_at: Date; ends_at: Date | null }
+      | undefined;
+  /** Why the promotion does not apply now (null = it applies). */
+  const availability = async (rowId: string) => {
+    const row = await localPromo(rowId);
+    expect(row, "promotion row exists (never DELETE)").toBeDefined();
+    return promotionAvailability(
+      {
+        status: row!.status as never,
+        startsAt: row!.starts_at.toISOString() as never,
+        endsAt: row!.ends_at ? (row!.ends_at.toISOString() as never) : null,
+      },
+      new Date().toISOString() as never,
+    );
+  };
+
+  beforeAll(async () => {
+    await q(
+      `INSERT INTO promotions
+         (id, tenant_id, name, description, status, voucher_required, starts_at,
+          ends_at, conditions, benefit, stack_group, stackable, priority)
+       VALUES ($1,$2,'Sumber promo keanggotaan','','active',false,'2026-01-01T00:00:00Z',
+               '2099-01-01T00:00:00Z',$3,$4,'membershipsrc',false,0)`,
+      [
+        SRC,
+        tenantId,
+        JSON.stringify([
+          { kind: "item_quantity", menuItemIds: [id()], minQuantity: 1 },
+        ]),
+        JSON.stringify({ kind: "nominal_off", amountIdr: 1000 }),
+      ],
+    );
+    await settleCloud(mainOwner);
+    let found: Rec | undefined;
+    let since: string | undefined;
+    for (let n = 0; n < 2000 && !found; n += 1) {
+      const page = (await listCatalogRecordsSince(db, {
+        tenantId: tenantId as never,
+        outletId: O1 as never,
+        query: catalogSyncQuerySchema.parse({
+          stream: PROMOS,
+          limit: 100,
+          ...(since === undefined ? {} : { since }),
+        }),
+      })) as unknown as ScriptedPage;
+      found = page.records.find((r) => r.id === SRC);
+      if (!page.hasMore || !page.nextCursor) break;
+      since = page.nextCursor;
+    }
+    expect(found, "template promotion exported by the cloud").toBeTruthy();
+    template = found!;
+  }, 120_000);
+
+  beforeEach(async () => {
+    const client = await edge.owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SET LOCAL session_replication_role = replica");
+      await client.query("DELETE FROM promotion_outlets");
+      await client.query("DELETE FROM promotions");
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  });
+
+  afterAll(async () => {
+    await q("DELETE FROM promotions WHERE id = $1", [SRC]).catch(
+      () => undefined,
+    );
+  });
+
+  it("after the restore pulls, P is no longer applicable but still exists; Q keeps applying", async () => {
+    const base = BigInt(String(template.syncTxid));
+    const before = scriptedCatalogCloud(
+      {
+        [PROMOS]: [
+          promoRecord(P, "Promo P", base + 10n),
+          promoRecord(Q, "Promo Q", base + 11n),
+        ],
+      },
+      1,
+    );
+    const seeded = await pull(before, undefined, [PROMOS]);
+    expect(seeded.streams[PROMOS]?.error, "seed pull").toBeFalsy();
+    expect(await availability(P), "seed: P applies").toBeNull();
+    expect(await availability(Q), "seed: Q applies").toBeNull();
+
+    await rewind(PROMOS);
+    // Restored cloud: P is gone, Q is back restamped higher.
+    const restored = scriptedCatalogCloud(
+      { [PROMOS]: [promoRecord(Q, "Promo Q setelah restore", base + 500n)] },
+      1,
+    );
+    const served = {
+      fetchPage: withVisibility(restored.fetchPage, () => SETTLED),
+    };
+
+    await pull(served, undefined, [PROMOS]);
+    expect(
+      await availability(P),
+      "pull 1 alone deactivates nothing",
+    ).toBeNull();
+    await pull(served, undefined, [PROMOS]);
+
+    expect(
+      await availability(P),
+      "P must not give discounts offline any more",
+    ).not.toBeNull();
+    expect(await localPromo(P), "P is kept, not deleted").toBeDefined();
+    expect(await localPromo(Q)).toMatchObject({
+      name: "Promo Q setelah restore",
+      status: "active",
+    });
+    expect(await availability(Q), "Q still applies").toBeNull();
+  }, 120_000);
+
+  it("without the cloud's visibility fields P keeps applying (never inferred from an older cloud)", async () => {
+    const base = BigInt(String(template.syncTxid));
+    const before = scriptedCatalogCloud(
+      { [PROMOS]: [promoRecord(P, "Promo P", base + 10n)] },
+      1,
+    );
+    await pull(before, undefined, [PROMOS]);
+    await rewind(PROMOS);
+    const restored = scriptedCatalogCloud(
+      { [PROMOS]: [promoRecord(Q, "Promo Q", base + 500n)] },
+      1,
+    );
+
+    await pull(restored, undefined, [PROMOS]);
+    await pull(restored, undefined, [PROMOS]);
+    await pull(restored, undefined, [PROMOS]);
+
+    expect(await availability(P)).toBeNull();
   }, 120_000);
 });

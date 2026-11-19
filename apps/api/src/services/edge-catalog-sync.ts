@@ -176,6 +176,14 @@ async function readSnapshotXmax(tx: CatalogTx): Promise<bigint> {
   return BigInt(result.rows[0]!.xmax);
 }
 
+/** Current `pg_snapshot_xmin`: every transaction below it is finished. */
+async function readSnapshotXmin(tx: CatalogTx): Promise<bigint> {
+  const result = await tx.execute<{ xmin: string }>(
+    sql`SELECT pg_snapshot_xmin(pg_current_snapshot())::text AS xmin`,
+  );
+  return BigInt(result.rows[0]!.xmin);
+}
+
 let snapshotXmaxProvider: (tx: CatalogTx) => Promise<bigint> = readSnapshotXmax;
 
 /** Test seam (legend-y9y8y): force the xmax a cursor is compared with. */
@@ -969,6 +977,11 @@ export async function listCatalogRecordsSinceTx(
   const since = parseCursor(stream, input.query.since);
   if (input.checkCursorHorizon === true)
     await assertCursorNotFromFuture(tx, since);
+  // legend-7r7q6 A4: the transaction runs READ COMMITTED, so each statement
+  // has its own snapshot. xmin is read before the page query (never above the
+  // page's own bound, so `visibleBelow` only under-claims) and xmax after it
+  // (never below the page's, so `horizon` only over-claims).
+  const visibleBelow = await readSnapshotXmin(tx);
   const rows = await (async () => {
     // Fail closed: an inactive tenant or a closed / unknown outlet syncs nothing.
     const [tenantRow] = await tx
@@ -1004,6 +1017,7 @@ export async function listCatalogRecordsSinceTx(
     });
   })();
 
+  const horizon = await snapshotXmaxProvider(tx);
   const page = rows.slice(0, limit);
   const last = page.at(-1);
   const lastMark =
@@ -1024,6 +1038,8 @@ export async function listCatalogRecordsSinceTx(
     ),
     nextCursor: lastMark ?? input.query.since ?? null,
     hasMore: rows.length > limit,
+    visibleBelow: visibleBelow.toString(),
+    horizon: horizon.toString(),
   });
   // Versioned HTTP readers tolerate optional station additions. Preserve the
   // legacy unversioned shape used by the strict catalog event publisher.

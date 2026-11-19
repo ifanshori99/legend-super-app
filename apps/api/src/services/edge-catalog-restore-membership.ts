@@ -20,21 +20,31 @@ import {
   priceLists,
   stations,
 } from "../db/schema/menu.ts";
+import { promotions } from "../db/schema/crm-promo.ts";
 import { recipes } from "../db/schema/recipe.ts";
 import type { Tx } from "./menu-internals.ts";
 
 type Switch = {
   readonly table: PgTable;
-  /** `is_active = false` when the table has the flag, else `deleted_at = at`. */
-  readonly mode: "flag" | "tombstone";
+  /**
+   * `is_active = false` when the table has the flag, `deleted_at = at` for a
+   * tombstone, `status = 'paused'` for promotions.
+   */
+  readonly mode: "flag" | "tombstone" | "status";
   readonly hasUpdatedAt: boolean;
 };
 
 /**
  * Streams with a safe off-switch column. Skipped on purpose: printers
- * (removal is a versioned tombstone table), promotions and vouchers (no
- * is_active/deleted_at pair safe to flip locally) and
- * menu_item_modifier_groups (a link row without either column).
+ * (removal is a versioned tombstone table), vouchers (a voucher only applies
+ * through its promotion) and menu_item_modifier_groups (a link row without
+ * either column).
+ *
+ * promotions: the promo engine only applies `status = 'active'` rows, so a
+ * promotion the restored cloud no longer has must leave `active` or it keeps
+ * giving discounts offline (money rule: limit discounts). `paused` is used, not
+ * `ended` (final in the cloud lifecycle) and never DELETE; a later cloud record
+ * for the same id overwrites it.
  */
 const SWITCHES: Readonly<Partial<Record<CatalogSyncStream, Switch>>> = {
   menu_items: { table: menuItems, mode: "flag", hasUpdatedAt: true },
@@ -58,6 +68,7 @@ const SWITCHES: Readonly<Partial<Record<CatalogSyncStream, Switch>>> = {
   modifiers: { table: modifiers, mode: "tombstone", hasUpdatedAt: true },
   price_lists: { table: priceLists, mode: "tombstone", hasUpdatedAt: true },
   recipes: { table: recipes, mode: "flag", hasUpdatedAt: false },
+  promotions: { table: promotions, mode: "status", hasUpdatedAt: true },
 };
 
 /**
@@ -80,10 +91,16 @@ export async function deactivateAbsentCatalogRows(
   const assignments: SQL[] =
     rule.mode === "flag"
       ? [sql`is_active = false`]
-      : [sql`deleted_at = ${at}::timestamptz`];
+      : rule.mode === "status"
+        ? [sql`status = 'paused'`]
+        : [sql`deleted_at = ${at}::timestamptz`];
   if (rule.hasUpdatedAt) assignments.push(sql`updated_at = ${at}::timestamptz`);
   const stillOn =
-    rule.mode === "flag" ? sql`is_active = true` : sql`deleted_at IS NULL`;
+    rule.mode === "flag"
+      ? sql`is_active = true`
+      : rule.mode === "status"
+        ? sql`status = 'active'`
+        : sql`deleted_at IS NULL`;
   // Keep sync_txid = 0 (the stamp trigger would write a local id that hides a
   // later cloud record for the same row).
   await tx.execute(sql`SELECT set_config('legend.skip_sync_txid', 'on', true)`);

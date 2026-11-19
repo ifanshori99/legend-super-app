@@ -469,6 +469,8 @@ export type CatalogSyncRecordOf<S extends CatalogSyncStream> = z.infer<
   (typeof catalogSyncRecordSchemas)[S]
 >;
 
+const txidTextSchema = z.string().regex(/^\d{1,20}$/);
+
 function pageOf<S extends CatalogSyncStream>(stream: S) {
   return z.object({
     /**
@@ -481,6 +483,13 @@ function pageOf<S extends CatalogSyncStream>(stream: S) {
     /** Position after the last record; the checkpoint once the page is applied. */
     nextCursor: cursorSchema.nullable(),
     hasMore: z.boolean(),
+    /**
+     * legend-7r7q6 A4: `pg_snapshot_xmin` / `pg_snapshot_xmax` (decimal text)
+     * the page was cut with. Absent from an older cloud; an edge that sees no
+     * field never deactivates on a replay marker.
+     */
+    visibleBelow: txidTextSchema.optional(),
+    horizon: txidTextSchema.optional(),
   });
 }
 
@@ -543,6 +552,13 @@ function cloudPageOf<S extends CatalogSyncStream>(stream: S) {
     records: z.array(catalogSyncCloudRecordSchemas[stream]),
     nextCursor: cursorSchema.nullable(),
     hasMore: z.boolean(),
+    /**
+     * legend-7r7q6 A4: `pg_snapshot_xmin` / `pg_snapshot_xmax` (decimal text)
+     * the page was cut with. Absent from an older cloud; an edge that sees no
+     * field never deactivates on a replay marker.
+     */
+    visibleBelow: txidTextSchema.optional(),
+    horizon: txidTextSchema.optional(),
   });
 }
 

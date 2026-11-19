@@ -15,12 +15,24 @@ import { sql, type SQL } from "drizzle-orm";
 export const CATALOG_RECEIPT_FLOOR_CHECKPOINT = "catalog:receipt-floor";
 
 /**
+ * Strict ISO UTC shape the floor is written in. Anything else (a hand-edited or
+ * corrupt value) is no floor: a bad cast must never break the apply path.
+ */
+const FLOOR_ISO_PATTERN =
+  "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,6})?Z$";
+
+/** SQL scalar: the node's floor as timestamptz, NULL when absent or unreadable. */
+export function catalogReceiptFloorValue(edgeNodeId: string): SQL {
+  return sql`(SELECT CASE WHEN f.watermark ~ ${FLOOR_ISO_PATTERN} THEN f.watermark::timestamptz END FROM edge_pull_checkpoints f WHERE f.edge_node_id = ${edgeNodeId}::uuid AND f.stream = ${CATALOG_RECEIPT_FLOOR_CHECKPOINT})`;
+}
+
+/**
  * SQL predicate: the receipt `receipt` (an alias of edge_inbound_events) was
- * received after the node's floor, or the node has no floor.
+ * received after the node's floor, or the node has no (readable) floor.
  */
 export function receiptAfterCatalogFloor(
   receipt: string,
   edgeNodeId: string,
 ): SQL {
-  return sql`COALESCE(${sql.raw(receipt)}.received_at > (SELECT f.watermark::timestamptz FROM edge_pull_checkpoints f WHERE f.edge_node_id = ${edgeNodeId}::uuid AND f.stream = ${CATALOG_RECEIPT_FLOOR_CHECKPOINT}), true)`;
+  return sql`COALESCE(${sql.raw(receipt)}.received_at > ${catalogReceiptFloorValue(edgeNodeId)}, true)`;
 }

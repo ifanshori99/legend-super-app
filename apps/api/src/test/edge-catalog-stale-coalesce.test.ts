@@ -559,9 +559,9 @@ describe("7r7q6 R3 cloud: alerts dedupe per episode, durable across restart and 
         outletId,
       ]);
       const origin = Date.parse("2027-01-01T00:00:00.000Z");
-      const extra: Array<{ id: string; credential: string; outlet: string }> =
-        [];
-      for (let i = 0; i < EDGES; i += 1) {
+      // Setup is independent per edge, so it runs in parallel batches: the
+      // serial version spent most of its time registering 64 edges one by one.
+      const makeEdge = async (i: number) => {
         const extraOutlet = randomUUID();
         await owner.query(
           `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, opening_hours, status)
@@ -587,11 +587,20 @@ describe("7r7q6 R3 cloud: alerts dedupe per episode, durable across restart and 
           role: "primary",
           label: `Mini PC eviction ${i}`,
         });
-        extra.push({
+        return {
           id: reg.edgeNode.id,
           credential: reg.credential,
           outlet: extraOutlet,
-        });
+        };
+      };
+      const extra: Array<{ id: string; credential: string; outlet: string }> =
+        [];
+      for (let from = 0; from < EDGES; from += 8) {
+        const batch = Array.from(
+          { length: Math.min(8, EDGES - from) },
+          (_, k) => makeEdge(from + k),
+        );
+        extra.push(...(await Promise.all(batch)));
       }
       extra.forEach((edge, i) => {
         const batch = Array.from({ length: 16 }, (_, j) =>
