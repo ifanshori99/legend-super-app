@@ -7846,3 +7846,10 @@ Cabang `ghostex/ai-layar-approval-waktu-1137`, tanpa migrasi.
 - legend-b2kq3 (S web): Cabut/Batalkan aktif saat kunci platform, penjelasan polling berhenti, satu tombol utama, badge `Dikunci platform` satu aturan (`lock-status.ts`) untuk badge dan baris urutan, `type-eyebrow`, teks baru di katalog. Hydration div-in-p tidak bisa direproduksi (sudah diperbaiki di `4e8347327`).
 - Bukti: test ijy8u gagal 5/5 di service lama, lulus 5/5; regresi approval 38/38 dan inventory/hris 151/151; web e2e mock gagal 5 sebelum perbaikan, 41/41 sesudah; contract test, eslint, prettier, typecheck api (heap 8 GB; 6 GB abort dua kali) dan web hijau.
 - Belum: `tsc -p tsconfig.json` root, suite penuh `pnpm test`/`pnpm check`.
+
+## 1164 payout recon, guard recurring, reload peran approval (19 Nov, cabang `ws/1164-payout-recurring-approval`)
+- legend-q2nkl: waiter recon yang kena 55P03 menaikkan flag `evidence_read_locked:<tanggal Jakarta>` (state file `locked`) sehingga slip tertahan; tanpa migrasi. Listener error per koneksi di `db/index.ts`. Alert worker diperbaiki. Sisa risiko (penutupan dua-orang di hari yang sama saat pemegang lock masih macet) butuh migrasi: bead legend-jsrcs.
+- legend-ww562: flag `DOIT_RECURRING_ENABLED` dicek di `defaultClientFor` (service). Flag dan rute dibawa dari m1 lewat cherry-pick 64d5d345e (base belum memuatnya); dua tes sandbox/preflight dari commit itu dibuang karena parent-nya belum di base.
+- legend-k8g62: `decideApprovalRequest` memuat ulang akses approver di dalam tx sesudah `lockChain`.
+- Bukti: tes gagal-dulu per kartu; 26 berkas / 447 tes terarah lulus; tsc api 0 error; eslint + prettier berkas berubah hijau; `db:generate` kosong. Architect xhigh: B dan C bersih, A satu celah (sudah dibetulkan) + sisa risiko di atas.
+- Catatan founder: saat flag DOIT mati, pause/cancel langganan DOIT juga diblokir (arsitek: komentar service bilang tenant harus selalu bisa stop).
