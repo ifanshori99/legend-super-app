@@ -2242,3 +2242,4 @@ Langkah berikut CTO baru:
 - 14:31 CTO: SO 1173 selesai (G6uo2 resolve): 3 P1 area payout recon/DOIT recurring -> legend-qqsw8 (episode timeout di fingerprint), x2jzq (CANCEL_PENDING bertahan), 1hpqt (try-lock atomik approve 0706). Fix 1179 mulai Claude #5 (G8u3h) base ws/1175, migrasi kerja 0708. Batch96 tetap jalan (m1 bukan rilis); gerbang rilis payout/recurring ditahan sampai 1179 landing.
 - 14:33 CTO: 1162 selesai (3498ca634), G36xz resolve, worktree legend-886bcee4 dihapus, vet9d ditutup. Kartu UI DP rekap legend-lcxmc (P3). ubt6n (indeks sweep) menunggu nomor migrasi sesudah batch97.
 - 14:35 CTO: 1176 selesai (4fdcaaec1), G77hg resolve, worktree legend-e33b6cfc dihapus, dhzqb/nxqrw ditutup.
+- 14:35 CTO: SO 1180 (webhook claim/secret + opname buta, ws/1167+1176) mulai Codex #2 xhigh (5h 31%, 7d 65%).
