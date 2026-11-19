@@ -3340,6 +3340,13 @@
       "when": 1795000000707,
       "tag": "0707_payout_attest_clock_and_lock_database",
       "breakpoints": true
+    },
+    {
+      "idx": 708,
+      "version": "7",
+      "when": 1795000000708,
+      "tag": "0708_payout_so1173_lock_episode_and_approve_guard",
+      "breakpoints": true
     }
   ]
 }

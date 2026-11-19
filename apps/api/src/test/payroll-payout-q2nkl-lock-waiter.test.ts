@@ -691,6 +691,138 @@ describe("q2nkl T1b: a lock timeout after the flag was closed raises a new flag"
   );
 });
 
+// legend-qqsw8 (SO 1173 P1, tier K: money). The day in the reason is not enough to
+// tell two lock timeouts apart: a second timeout on the SAME Jakarta day, after
+// two people closed the first flag, must be a new episode with its own flag, and
+// the old clearance must not free the slip. A concurrent waiter inside the same
+// episode stays one flag (idempotent). Written from the card text (CTO decision:
+// "episode timeout masuk identitas flag/fingerprint"), not from the implementation.
+// Assumptions: the new flag is a second row whose reason contains
+// `evidence_read_locked` (no format of the episode marker is assumed, only that the
+// two rows are different rows); both timeouts run with the same `options.now`.
+describe("q2nkl T1c: a second lock timeout on the same day is a new episode", () => {
+  it(
+    "[qqsw8-same-day-second-timeout-holds-slip] the lock flag is cleared by two people; a second timeout on the SAME Jakarta day raises a new flag, the slip is held again and the first clearance does not free it; clearing the new flag frees it; nobody is paid",
+    async () => {
+      const w = await freeWithOldOkWorld();
+      const before = await moneySnapshot(w.itemId);
+      const day = new Date("2031-03-10T05:00:00Z"); // 12:00 Jakarta, 10 Mar
+      let a = await startStuckHolder(w.key);
+      try {
+        const first = await within(
+          runRecon(makeStorage(w.key), { lockTimeoutMs: 300, now: day }),
+        );
+        expect(first.kind, "first waiter finishes").toBe("done");
+        const firstFlags = await lockedFlags(w.itemId);
+        expect(firstFlags, "premise: one lock flag").toHaveLength(1);
+        const firstFlagId = firstFlags[0]!.id as string;
+        expect(
+          await heldBySql(w.payslipId),
+          "premise: the first timeout holds the slip",
+        ).toBe(true);
+        // legend-jsrcs: a two-person clearance is refused while the holder still
+        // holds the lock, so the first holder ends before the flag is closed.
+        a.gate.end("return");
+        await a.outcome;
+        await clearFlag(firstFlagId);
+        expect(
+          await heldBySql(w.payslipId),
+          "premise: the cleared flag frees the slip",
+        ).toBe(false);
+
+        // A new holder gets stuck; the waiter times out again, SAME day.
+        a = await startStuckHolder(w.key);
+        const second = await within(
+          runRecon(makeStorage(w.key), { lockTimeoutMs: 300, now: day }),
+        );
+        expect(second.kind, "second waiter finishes").toBe("done");
+        if (second.kind === "done")
+          expect(
+            second.value.unreadable,
+            "the operation the second waiter could not lock counts as unreadable",
+          ).toBeGreaterThanOrEqual(1);
+
+        expect(
+          await heldBySql(w.payslipId),
+          "the second timeout holds the slip again: the old clearance does not cover it",
+        ).toBe(true);
+        const flags = await lockedFlags(w.itemId);
+        expect(
+          flags,
+          "the second episode is its own flag, next to the cleared one",
+        ).toHaveLength(2);
+        const newFlag = flags.find((f) => f.id !== firstFlagId);
+        expect(newFlag, "a flag that is not the cleared one").toBeDefined();
+        expect(newFlag!.operation_id, "flag of that operation").toBe(
+          w.operationId,
+        );
+        expect(newFlag!.payslip_id, "flag of that slip").toBe(w.payslipId);
+
+        // The holder ends; a good read later does not close the new flag.
+        a.gate.end("return");
+        await a.outcome;
+        const good = await within(runRecon(makeStorage(w.key), { now: day }));
+        expect(good.kind, "the next run finishes").toBe("done");
+        expect(
+          await heldBySql(w.payslipId),
+          "a good read does not close the new flag: held until two people clear it",
+        ).toBe(true);
+
+        await clearFlag(newFlag!.id as string);
+        expect(
+          await heldBySql(w.payslipId),
+          "the two-person clearance of the new flag frees the slip",
+        ).toBe(false);
+        expect(
+          await moneySnapshot(w.itemId),
+          "two timeouts and two clearances pay nobody",
+        ).toEqual(before);
+      } finally {
+        if (!a.gate.isEnded()) a.gate.end("return");
+        await a.outcome;
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "[qqsw8-concurrent-waiters-one-episode-one-flag] two waiters that time out at the same time on the same stuck holder raise ONE flag between them, and the slip is held",
+    async () => {
+      const w = await freeWithOldOkWorld();
+      const day = new Date("2031-03-10T05:00:00Z");
+      const a = await startStuckHolder(w.key);
+      try {
+        const [one, two] = await Promise.all([
+          within(
+            runRecon(makeStorage(w.key), { lockTimeoutMs: 300, now: day }),
+          ),
+          within(
+            runRecon(makeStorage(w.key), { lockTimeoutMs: 300, now: day }),
+          ),
+        ]);
+        expect(one.kind, `waiter one finishes (${JSON.stringify(one)})`).toBe(
+          "done",
+        );
+        expect(two.kind, `waiter two finishes (${JSON.stringify(two)})`).toBe(
+          "done",
+        );
+        expect(
+          await lockedFlags(w.itemId),
+          "concurrent waiters of one episode do not pile up flags",
+        ).toHaveLength(1);
+        expect(
+          await heldBySql(w.payslipId),
+          "the slip is held while the holder is stuck",
+        ).toBe(true);
+      } finally {
+        if (!a.gate.isEnded()) a.gate.end("return");
+        await a.outcome;
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+});
+
 // =========================================================================
 // T2: the lock holder dies (pg_terminate_backend)
 // =========================================================================

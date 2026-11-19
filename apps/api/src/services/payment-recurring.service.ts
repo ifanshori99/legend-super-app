@@ -1338,7 +1338,9 @@ async function changeSubscription(
           .update(paymentRecurringSubscriptions)
           .set({
             status: "needs_reconcile",
-            reconcileReason: "RESPONSE_MISMATCH",
+            // A parked failed stop keeps its marker: an unconfirmed answer is
+            // no proof that the stop happened (money rule: stay parked).
+            reconcileReason: sql`CASE WHEN ${paymentRecurringSubscriptions.reconcileReason} = ${CANCEL_PENDING} THEN ${paymentRecurringSubscriptions.reconcileReason} ELSE 'RESPONSE_MISMATCH' END`,
             updatedAt: now,
           })
           .where(
@@ -1386,6 +1388,14 @@ async function changeSubscription(
       .for("update");
     if (!locked) throw notFound("Langganan");
     assertOutletInScope(context.outletScope, locked.outletId);
+
+    // A parked failed stop (possibly written after this call started) only
+    // leaves through a confirmed cancel: pause and resume never clear it.
+    if (action !== "cancel" && locked.reconcileReason === CANCEL_PENDING)
+      throw new CoreError(
+        "CONFLICT",
+        "Penghentian langganan di gateway belum terkonfirmasi. Batalkan langganan atau periksa di gateway.",
+      );
 
     if (action === "resume") {
       // The decision was made on this status; anything else moved it.
@@ -1623,7 +1633,12 @@ export async function resolveNeedsReconcileSubscription(
     if (locked.reconcileReason === CANCEL_PENDING && kind !== "cancelled")
       return stay;
     if (answer.plan_id !== providerPlanId) {
-      if (locked.reconcileReason === "PLAN_MISMATCH") return stay;
+      // The marker of a parked stop is never overwritten.
+      if (
+        locked.reconcileReason === "PLAN_MISMATCH" ||
+        locked.reconcileReason === CANCEL_PENDING
+      )
+        return stay;
       const [marked] = await tx
         .update(paymentRecurringSubscriptions)
         .set({ reconcileReason: "PLAN_MISMATCH", updatedAt: now })
