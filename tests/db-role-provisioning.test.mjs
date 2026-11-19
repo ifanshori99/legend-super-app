@@ -20,6 +20,10 @@ import { join, resolve } from "node:path";
 import { Pool } from "pg";
 import { pnpmCommand, root } from "../scripts/lib.mjs";
 import { useRoleAuditLock } from "./helpers/role-audit-lock.mjs";
+import {
+  dropTestDatabase,
+  endTestPool,
+} from "../apps/api/src/test/helpers/database-cleanup.ts";
 
 useRoleAuditLock();
 
@@ -77,7 +81,7 @@ test.after(async () => {
     decodeURIComponent(new URL(url).username),
   );
   if (!names.length || !process.env.STARTER_TEST_DATABASE_URL) return;
-  const cluster = quietPool({
+  const cluster = new Pool({
     connectionString: process.env.STARTER_TEST_DATABASE_URL,
     max: 1,
   });
@@ -85,7 +89,7 @@ test.after(async () => {
     for (const name of names)
       await cluster.query(`DROP ROLE IF EXISTS "${name}"`);
   } finally {
-    await cluster.end();
+    await endTestPool(cluster);
   }
 });
 const jobEnv = (env) =>
@@ -168,15 +172,6 @@ async function snapshot(pool, roles) {
   return rows[0].snapshot;
 }
 
-// DROP DATABASE ... WITH (FORCE) in teardown terminates any idle connection
-// still open to the scratch database; without a listener that surfaces as
-// an unhandled "error" event and fails the test after it already passed.
-function quietPool(options) {
-  const pool = new Pool(options);
-  pool.on("error", () => undefined);
-  return pool;
-}
-
 function withDatabase(url, database) {
   const next = new URL(url);
   next.pathname = `/${database}`;
@@ -209,7 +204,7 @@ test("role provisioning runs on the PostgreSQL major requested by CI", async (t)
       Number(expected),
     );
   } finally {
-    await pool.end();
+    await endTestPool(pool);
   }
 });
 
@@ -231,22 +226,22 @@ test("legend-zoqc job provisions restricted roles on a fresh database, idempoten
   const roles = [appUrl, workerUrl].map((url) =>
     decodeURIComponent(new URL(url).username),
   );
-  const cluster = quietPool({ connectionString: shared, max: 1 });
+  const cluster = new Pool({ connectionString: shared, max: 1 });
   await cluster.query(`CREATE DATABASE ${database}`);
-  const admin = quietPool({ connectionString: adminUrl, max: 1 });
+  const admin = new Pool({ connectionString: adminUrl, max: 1 });
   const pools = [];
   const open = (url) => {
-    const pool = quietPool({ connectionString: url, max: 1 });
+    const pool = new Pool({ connectionString: url, max: 1 });
     pools.push(pool);
     return pool;
   };
   t.after(async () => {
-    for (const pool of pools) await pool.end();
-    await admin.end();
-    await cluster.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
+    for (const pool of pools) await endTestPool(pool);
+    await endTestPool(admin);
+    await dropTestDatabase(cluster, database);
     for (const role of [...roles, unsafeUser, grantor, ...extraRoles])
       await cluster.query(`DROP ROLE IF EXISTS "${role}"`);
-    await cluster.end();
+    await endTestPool(cluster);
   });
 
   const migrated = spawnSync(pnpmCommand(), ["run", "db:migrate"], {
@@ -1163,11 +1158,11 @@ test("legend-zoqc job provisions restricted roles on a fresh database, idempoten
     const result = job({ APP_DATABASE_URL: rotated });
     assert.equal(result.status, 0, result.stderr);
     liveAppUrl = rotated;
-    const old = quietPool({ connectionString: appUrl, max: 1 });
+    const old = new Pool({ connectionString: appUrl, max: 1 });
     try {
       await assert.rejects(old.query("SELECT 1"), { code: "28P01" });
     } finally {
-      await old.end();
+      await endTestPool(old);
     }
     const fresh = open(rotated);
     assert.equal(
@@ -1229,12 +1224,12 @@ test("legend-zoqc job provisions restricted roles on a fresh database, idempoten
     "changing the queue login: the documented rename keeps the queue's tables",
     async () => {
       // pg-boss state lives in tables the queue login owns.
-      const old = quietPool({ connectionString: workerUrl, max: 1 });
+      const old = new Pool({ connectionString: workerUrl, max: 1 });
       try {
         await old.query("CREATE TABLE pgboss.zoqc_queue (id integer)");
         await old.query("INSERT INTO pgboss.zoqc_queue VALUES (1)");
       } finally {
-        await old.end();
+        await endTestPool(old);
       }
       const renamed = `legend_worker_${hex(8)}`;
       extraRoles.push(renamed);
@@ -1297,20 +1292,20 @@ test("legend-zoqc job works with a non-superuser CREATEROLE migration owner", as
   const roles = [appUrl, workerUrl].map((url) =>
     decodeURIComponent(new URL(url).username),
   );
-  const cluster = quietPool({ connectionString: shared, max: 1 });
+  const cluster = new Pool({ connectionString: shared, max: 1 });
   // legend_app is cluster-wide; pnpm test migrates the shared database (and
   // so creates it) before any test file runs.
   const group = await cluster.query(
     "SELECT 1 FROM pg_roles WHERE rolname = 'legend_app'",
   );
   if (!group.rows.length) {
-    await cluster.end();
+    await endTestPool(cluster);
     assert.fail(
       "legend_app does not exist: run this file through pnpm test, which migrates the shared test database first.",
     );
   }
   t.after(async () => {
-    await cluster.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
+    await dropTestDatabase(cluster, database);
     // The default grantor login (legend-786te) holds a grant made by the owner,
     // so it must go first.
     const grantorLogin = decodeURIComponent(
@@ -1318,7 +1313,7 @@ test("legend-zoqc job works with a non-superuser CREATEROLE migration owner", as
     );
     for (const role of [...roles, grantorLogin, owner])
       await cluster.query(`DROP ROLE IF EXISTS "${role}"`);
-    await cluster.end();
+    await endTestPool(cluster);
   });
   // legend-fwx7l: the owner is the real migrator login, created by the real
   // `--migrator` job (bootstrap superuser = the shared test login), not by a
@@ -1392,11 +1387,11 @@ test("legend-zoqc job works with a non-superuser CREATEROLE migration owner", as
   assert.equal(stuck.status, 1);
   assert.match(stuck.stderr, /settings this login cannot reset/);
   await cluster.query(`ALTER ROLE "${roles[0]}" RESET ALL`);
-  const worker = quietPool({ connectionString: workerUrl, max: 1 });
+  const worker = new Pool({ connectionString: workerUrl, max: 1 });
   try {
     await worker.query("CREATE TABLE pgboss.zoqc_probe (id integer)");
   } finally {
-    await worker.end();
+    await endTestPool(worker);
   }
   // The owner may act as the queue login (SET) but never inherits its rights.
   const membership = await cluster.query(
@@ -1437,12 +1432,12 @@ test("legend-fwx7l the real migrator stays ADMIN of a grantor login and group a 
   const grantorName = names[2];
   const bootstrapUser = decodeURIComponent(new URL(shared).username);
   const bootstrapPassword = decodeURIComponent(new URL(shared).password);
-  const cluster = quietPool({ connectionString: shared, max: 1 });
+  const cluster = new Pool({ connectionString: shared, max: 1 });
   t.after(async () => {
-    await cluster.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
+    await dropTestDatabase(cluster, database);
     for (const role of [...names, unrelated, migrator])
       await cluster.query(`DROP ROLE IF EXISTS "${role}"`);
-    await cluster.end();
+    await endTestPool(cluster);
   });
   const group = await cluster.query(
     "SELECT 1 FROM pg_roles WHERE rolname = 'legend_payout_grantor'",
@@ -2389,17 +2384,17 @@ test("legend-usyi job provisions the audit retention login: group only, no table
     decodeURIComponent(new URL(url).username),
   );
   const maintUser = roles[2];
-  const cluster = quietPool({ connectionString: shared, max: 1 });
+  const cluster = new Pool({ connectionString: shared, max: 1 });
   await cluster.query(`CREATE DATABASE ${database}`);
-  const admin = quietPool({ connectionString: adminUrl, max: 1 });
+  const admin = new Pool({ connectionString: adminUrl, max: 1 });
   const pools = [];
   t.after(async () => {
-    for (const pool of pools) await pool.end();
-    await admin.end();
-    await cluster.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
+    for (const pool of pools) await endTestPool(pool);
+    await endTestPool(admin);
+    await dropTestDatabase(cluster, database);
     for (const role of roles)
       await cluster.query(`DROP ROLE IF EXISTS "${role}"`);
-    await cluster.end();
+    await endTestPool(cluster);
   });
   const migrated = spawnSync(pnpmCommand(), ["run", "db:migrate"], {
     cwd: root,
@@ -2461,7 +2456,7 @@ test("legend-usyi job provisions the audit retention login: group only, no table
   await t.test(
     "the login reads no table but can run the retention functions",
     async () => {
-      const pool = quietPool({ connectionString: maintUrl, max: 1 });
+      const pool = new Pool({ connectionString: maintUrl, max: 1 });
       pools.push(pool);
       for (const table of ["audit_logs", "tenants"])
         await assert.rejects(pool.query(`SELECT 1 FROM public.${table}`), {
@@ -2618,17 +2613,17 @@ test("legend-911 job provisions the payout grantor login: group only, no table r
   const grantUser = roles[2];
   const issueSignature =
     "app.payout_grant_issue(text, text, uuid, uuid[], varchar, uuid, uuid, varchar, text, text, text)";
-  const cluster = quietPool({ connectionString: shared, max: 1 });
+  const cluster = new Pool({ connectionString: shared, max: 1 });
   await cluster.query(`CREATE DATABASE ${database}`);
-  const admin = quietPool({ connectionString: adminUrl, max: 1 });
+  const admin = new Pool({ connectionString: adminUrl, max: 1 });
   const pools = [];
   t.after(async () => {
-    for (const pool of pools) await pool.end();
-    await admin.end();
-    await cluster.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
+    for (const pool of pools) await endTestPool(pool);
+    await endTestPool(admin);
+    await dropTestDatabase(cluster, database);
     for (const role of roles)
       await cluster.query(`DROP ROLE IF EXISTS "${role}"`);
-    await cluster.end();
+    await endTestPool(cluster);
   });
   const migrated = spawnSync(pnpmCommand(), ["run", "db:migrate"], {
     cwd: root,
@@ -2690,7 +2685,7 @@ test("legend-911 job provisions the payout grantor login: group only, no table r
   await t.test(
     "the login reads no table and can run no payout function but the issue function",
     async () => {
-      const pool = quietPool({ connectionString: grantUrl, max: 1 });
+      const pool = new Pool({ connectionString: grantUrl, max: 1 });
       pools.push(pool);
       for (const table of [
         "payroll_payout_grants",

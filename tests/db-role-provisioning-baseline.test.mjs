@@ -15,6 +15,10 @@ import { randomBytes } from "node:crypto";
 import { Pool } from "pg";
 import { pnpmCommand, root } from "../scripts/lib.mjs";
 import { useRoleAuditLock } from "./helpers/role-audit-lock.mjs";
+import {
+  dropTestDatabase,
+  endTestPool,
+} from "../apps/api/src/test/helpers/database-cleanup.ts";
 
 useRoleAuditLock();
 
@@ -71,20 +75,15 @@ test("legend-2ywn role audit refuses PUBLIC EXECUTE on administrative built-ins 
   const grantorName = `legend_grant_${hex(8)}`;
   const appUrl = login(adminUrl, appName);
   const workerUrl = login(adminUrl, workerName);
-  const quiet = (url) => {
-    const pool = new Pool({ connectionString: url, max: 1 });
-    pool.on("error", () => undefined);
-    return pool;
-  };
-  const cluster = quiet(shared);
+  const cluster = new Pool({ connectionString: shared, max: 1 });
   await cluster.query(`CREATE DATABASE ${database}`);
-  const admin = quiet(adminUrl);
+  const admin = new Pool({ connectionString: adminUrl, max: 1 });
   t.after(async () => {
-    await admin.end();
-    await cluster.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
+    await endTestPool(admin);
+    await dropTestDatabase(cluster, database);
     for (const role of [appName, workerName, grantorName])
       await cluster.query(`DROP ROLE IF EXISTS "${role}"`);
-    await cluster.end();
+    await endTestPool(cluster);
   });
 
   const migrated = spawnSync(pnpmCommand(), ["run", "db:migrate"], {
@@ -289,20 +288,15 @@ test("legend-2ywn an empty pg_init_privs baseline fails closed", async (t) => {
     WORKER_DATABASE_URL: login(adminUrl, workerName),
     PAYOUT_GRANTOR_DATABASE_URL: login(adminUrl, grantorName),
   };
-  const quiet = (url) => {
-    const pool = new Pool({ connectionString: url, max: 1 });
-    pool.on("error", () => undefined);
-    return pool;
-  };
-  const cluster = quiet(shared);
+  const cluster = new Pool({ connectionString: shared, max: 1 });
   await cluster.query(`CREATE DATABASE ${database}`);
-  const admin = quiet(adminUrl);
+  const admin = new Pool({ connectionString: adminUrl, max: 1 });
   t.after(async () => {
-    await admin.end();
-    await cluster.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
+    await endTestPool(admin);
+    await dropTestDatabase(cluster, database);
     for (const role of [appName, workerName, grantorName])
       await cluster.query(`DROP ROLE IF EXISTS "${role}"`);
-    await cluster.end();
+    await endTestPool(cluster);
   });
 
   const migrated = spawnSync(pnpmCommand(), ["run", "db:migrate"], {
