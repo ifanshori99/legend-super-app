@@ -2190,3 +2190,13 @@ Langkah berikut CTO baru:
 - 10:39 CTO: 1158 selesai 840ff2eeb (G40mk resolved).
 - 10:42 CTO: 1144 d217d439d SIAP batch96, G2yc3 resolved. SO 1161 dijadwalkan 11:48.
 - 10:45 CTO: 1159 selesai 1265a4d12 (G0fw9 resolved).
+
+## Serah terima CTO 19 Nov 10:50 (G1ozv, compact 2x)
+- Thread berjalan: G1kc6 merge train batch95 (brief 1155; full run sendirian ~70 menit, mulai ~10:45; sesudah lapor: verifikasi, update antrean, bersihkan, lalu merge train batch96). G95kw refund kasir 1095 (wpn5v batas ketat pro-rata, 4yez0 void kas sama, 422 finance, pembulatan largest remainder; sesudah lapor: architect xhigh, lalu putuskan SO). G21nj tidur (gerbang edge MCP, sudah landing).
+- SIAP batch96: kas ghostex/d158b041 14e34d887 (daftarkan gerbang 1118 / legend-gwqjp; 1tke7 ke mode info), approval ghostex/fix-so-approval-waktu e1020c77e, refund ws/1144-refund-hold-echo d217d439d, edge ghostex/eb4d9add 840ff2eeb, member QR ghostex/member-qr-token-klien-1150 3ad22a061, hygiene ghostex/1159-web-test-hygiene 1265a4d12, 1095 sesudah fix + architect.
+- SO terjadwal (cron CTO lama ikut hilang, CTO baru jalankan sendiri saat Codex reset 11:43): 1160 SO approval r2 di Codex #4 (brief docs/briefs/1160-second-opinion-approval-waktu-r2.md), 1161 SO refund r17 di Codex #5 (docs/briefs/1161-second-opinion-refund-ronde17.md). Model gpt-6.1-sol effort xhigh, tanpa worktree.
+- Sesudah batch95 landing: byws7 + glu4e (butuh 1072 landing); hapus worktree legend-d158b041 dan legend-769735ff bila bersih (TANPA --force, cek untracked dulu).
+- Founder belum jawab Q51 (marketplace/EDC/kurir rilis 1: manual disarankan) dan Q52 (tukar poin member A vs B; A disarankan). Sesudah Q52: endpoint tagihan terbuka member + UI pilih poin (legend-0ne0z). Tag berikut Q53.
+- Tenggat founder: kode selesai 21 Nov; akhir tinggal isi credential prod (docs/production-credentials.md).
+- Slot sekarang: Claude 4/8 kosong, Codex 3/3 (kuota habis sampai 11:43), RAM kuning. 333 kartu bd siap tapi sisanya menunggu batch95, Q52, atau credential.
+- Akhir gelombang (belum): session-usage.py + parallel-report, catat di sini.
