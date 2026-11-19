@@ -20,6 +20,7 @@ import {
   grantRoleSchema,
   roleIdSchema,
 } from "@starter/shared/access";
+import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import {
   establishScopedTenantContext,
   establishTenantContext,
