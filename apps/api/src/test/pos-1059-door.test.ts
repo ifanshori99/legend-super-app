@@ -27,7 +27,9 @@
 //     fresh app instance (module state reset), i.e. it lives in the database.
 //   - R2-05: the acting-staff token is issued on a shared-mode device of
 //     outlet A for a staff member whose role covers the whole tenant. A ticket
-//     of outlet B is refused with the same uniform 403 and stays unopened.
+//     of outlet B stays unopened: unknown or wrong credentials answer the
+//     uniform 403, a matching QR/PIN answers ACTING_STAFF_OUTLET_MISMATCH
+//     (1128, CTO 19 Nov: after the credential matched, no ticket data).
 //   - R2-06: the sale is stalled at the insert of the ticket row (a temporary
 //     trigger waits on an advisory lock the test holds), the device is switched
 //     to training in the meantime. Either outcome is accepted: the sale is
@@ -746,6 +748,14 @@ function expectDoorRefused(response: {
   expect(errorCode(response.body)).toBe("DOOR_CREDENTIAL_INVALID");
 }
 
+function expectOutletMismatch(response: {
+  status: number;
+  body: { error?: { code?: string }; code?: string };
+}) {
+  expect(response.status, JSON.stringify(response.body)).toBe(403);
+  expect(errorCode(response.body)).toBe("ACTING_STAFF_OUTLET_MISMATCH");
+}
+
 function expectDoorOpened(
   response: {
     status: number;
@@ -1050,19 +1060,32 @@ describe("R2-05 door check respects the outlet of the acting-staff token", () =>
       .send({ facilityId, ...body });
   }
 
-  it("R2-05-a with a token and device of outlet A, the QR and PIN of a ticket of outlet B are refused (uniform 403) and the ticket stays unopened; a ticket of outlet A opens", async () => {
+  it("R2-05-a with a token and device of outlet A, the right QR and PIN of a ticket of outlet B answer 403 ACTING_STAFF_OUTLET_MISMATCH (1128) with no ticket data, and the ticket stays unopened; a ticket of outlet A opens", async () => {
     const token = await actingToken();
     const ticketA = await paidTicket(siteA);
     const credentialA = await mintOk(ticketA, siteA);
     const ticketB = await paidTicket(siteB);
     const credentialB = await mintOk(ticketB, siteB);
 
-    expectDoorRefused(
-      await actingDoorCheck(token, byQr(credentialB), ids.facilityOB),
+    const byQrB = await actingDoorCheck(
+      token,
+      byQr(credentialB),
+      ids.facilityOB,
     );
-    expectDoorRefused(
-      await actingDoorCheck(token, byPin(ticketB, credentialB), ids.facilityOB),
+    const byPinB = await actingDoorCheck(
+      token,
+      byPin(ticketB, credentialB),
+      ids.facilityOB,
     );
+    for (const response of [byQrB, byPinB]) {
+      expectOutletMismatch(response);
+      // The 403 carries no data of the ticket of the other outlet.
+      expect(response.body.data).toBeUndefined();
+      const raw = JSON.stringify(response.body);
+      expect(raw).not.toContain(ticketB.ticketId);
+      expect(raw).not.toContain(credentialB.qrToken);
+      expect(raw).not.toContain(credentialB.pin);
+    }
     await expectUnopened(ticketB.ticketId);
 
     // Control: the same staff, token and device open the ticket of outlet A.
@@ -1072,24 +1095,30 @@ describe("R2-05 door check respects the outlet of the acting-staff token", () =>
     );
   });
 
-  it("R2-05-b the refusal for the other outlet is identical to the refusal of an unknown token", async () => {
+  it("R2-05-b the mismatch answer comes only AFTER the credential matched: an unknown QR, a wrong PIN or an unknown ticket of the other outlet stay the uniform DOOR_CREDENTIAL_INVALID (no oracle)", async () => {
     const token = await actingToken();
     const ticketB = await paidTicket(siteB);
     const credentialB = await mintOk(ticketB, siteB);
 
-    const otherOutlet = await actingDoorCheck(
-      token,
-      byQr(credentialB),
-      ids.facilityOB,
-    );
     const unknown = await actingDoorCheck(
       token,
       { qrToken: `guess-${short()}` },
       ids.facility,
     );
-    expectDoorRefused(otherOutlet);
+    const wrongPinOtherOutlet = await actingDoorCheck(
+      token,
+      { ticketId: ticketB.ticketId, pin: wrongPinFor(credentialB, 1) },
+      ids.facilityOB,
+    );
     expectDoorRefused(unknown);
-    expect(otherOutlet.body.error.message).toBe(unknown.body.error.message);
+    expectDoorRefused(wrongPinOtherOutlet);
+    expect(wrongPinOtherOutlet.body.error.message).toBe(
+      unknown.body.error.message,
+    );
+    // The ticket of the other outlet was never opened and never named.
+    expect(JSON.stringify(wrongPinOtherOutlet.body)).not.toContain(
+      ticketB.ticketId,
+    );
     await expectUnopened(ticketB.ticketId);
   });
 

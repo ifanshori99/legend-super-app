@@ -91,10 +91,12 @@ const doorRefused = () =>
   );
 
 /**
- * R2-05: with an acting-staff token the permission reach is cut to the token's
- * outlet BEFORE any credential lookup, so RLS hides tickets of other outlets
- * (the path carries no outlet for resolveActingStaff to compare). A token whose
- * outlet is outside the staff's reach gets the uniform refusal.
+ * R2-05 + 1128: a token whose outlet is outside the staff's reach gets the
+ * uniform refusal BEFORE any credential lookup. The reach is NOT cut to the
+ * token's outlet: the service compares the outlet of the ticket with the token
+ * only AFTER the QR or PIN matched (ACTING_STAFF_OUTLET_MISMATCH, the PIN slot
+ * stays used, no ticket data in the 403), so an unknown or wrong credential is
+ * still the uniform DOOR_CREDENTIAL_INVALID (no oracle).
  * g7l20: a training-mode device never opens the door, same uniform refusal and
  * before the service, so it neither opens a ticket nor counts as a PIN guess.
  */
@@ -104,7 +106,6 @@ async function sliceDoorScope(
   next: (error?: unknown) => void,
 ): Promise<void> {
   const reach = getScopedTenantContext(req);
-  let context = reach;
   const actingOutlet = req.actingStaff?.outletId;
   if (actingOutlet !== undefined) {
     const scope = reach.outletScope;
@@ -115,10 +116,6 @@ async function sliceDoorScope(
       )
     )
       throw doorRefused();
-    context = establishScopedTenantContext(reach.tenant, {
-      kind: "outlets",
-      outletIds: [outletIdSchema.parse(actingOutlet)],
-    });
   }
   const deviceId = await currentDeviceIdOf(req);
   if (deviceId !== null) {
@@ -137,7 +134,7 @@ async function sliceDoorScope(
     );
     if (!device || device.trainingMode === true) throw doorRefused();
   }
-  doorContexts.set(req, context);
+  doorContexts.set(req, reach);
   doorDevices.set(req, deviceId);
   next();
 }
