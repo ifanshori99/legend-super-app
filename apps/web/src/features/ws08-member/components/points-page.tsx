@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { QrCode } from "lucide-react";
+import { Link } from "@tanstack/react-router";
+import { Coins, QrCode } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
@@ -57,6 +58,14 @@ export function MemberPointsPage() {
           </Button>
         }
       />
+
+      {/* legend-0ne0z: spend points on the open bill at the till. */}
+      <Button asChild variant="outline" className="min-h-11 w-full sm:w-fit">
+        <Link to="/member/tukar-poin">
+          <Coins aria-hidden="true" />
+          {t("member.tukarPoin.page.linkFromPoints")}
+        </Link>
+      </Button>
 
       <section className="grid gap-3">
         <h2 className="font-brand type-title">

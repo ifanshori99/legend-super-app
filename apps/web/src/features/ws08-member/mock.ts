@@ -33,6 +33,10 @@ import { paginateFixture } from "@/lib/mock/paginate";
 import { registerMock } from "@/lib/mock/registry";
 import { createMockStore } from "@/lib/mock/store";
 import { newIdempotencyKey } from "../../lib/idempotency.ts";
+import {
+  mintRedeemMockToken,
+  redeemedPointsTotal,
+} from "../member-tukar-poin/mock";
 
 const fixtures = cafeLegendCrmFixtures;
 const memberId = fixtures.memberOverview.profile.id;
@@ -109,7 +113,22 @@ const redemptionsByKey = createMockStore(
   () => new Map<string, RewardRedemption>(),
 );
 
-registerMock(getMemberOverview, () => ({ data: overview.get() }));
+// legend-0ne0z: points spent through the cashier QR (tukar-poin mock store) come
+// off the balance here, so the overview matches the quote after a redemption.
+registerMock(getMemberOverview, ({ scenario }) => {
+  const current = overview.get();
+  const spent = redeemedPointsTotal(scenario);
+  if (spent === 0) return { data: current };
+  return {
+    data: {
+      ...current,
+      profile: {
+        ...current.profile,
+        pointsBalance: Math.max(0, current.profile.pointsBalance - spent),
+      },
+    },
+  };
+});
 
 registerMock(listMemberPoints, ({ query, scenario }) =>
   paginateFixture(points.get(), query, (entry) => entry.id, scenario),
@@ -328,7 +347,15 @@ registerMock(updateMemberConsent, ({ body }) => {
 // string that expires after 120 s. Error, offline and slow scenarios are
 // applied centrally (lib/mock/control.ts).
 let qrTokenCounter = 0;
-registerMock(issueMemberQrToken, () => {
+registerMock(issueMemberQrToken, ({ body, scenario }) => {
+  // legend-0ne0z: a token bound to a bill and points is the points-redeem QR;
+  // the tukar-poin mock tracks it so the status endpoint can answer for it.
+  // The contract sends orderId and points together or neither.
+  if (body.orderId !== undefined && body.points !== undefined)
+    return mintRedeemMockToken(
+      { orderId: body.orderId, points: body.points },
+      scenario,
+    );
   qrTokenCounter += 1;
   return {
     data: {

@@ -24,6 +24,11 @@ import {
 import { defineEndpoint } from "../api/index.ts";
 import { memberQrTokenMintInputSchema } from "../validators/member-qr-token.ts";
 import {
+  getMemberPointsQuote,
+  getMemberPointsRedeemStatus,
+  listMemberOpenBills,
+} from "./member-points-redeem.ts";
+import {
   consentPurposeSchema,
   customerProfileDtoSchema,
   loyaltyProgramSchema,
@@ -792,6 +797,10 @@ export const crmEndpoints = [
   // legend-111j
   listMemberConsentPolicies,
   issueMemberQrToken,
+  // legend-0ne0z
+  listMemberOpenBills,
+  getMemberPointsQuote,
+  getMemberPointsRedeemStatus,
   setOrderCustomer,
   listLoyaltyAnomalies,
   listCustomers,
@@ -848,6 +857,10 @@ export const memberEndpoints = {
   // legend-111j
   listMemberConsentPolicies,
   issueMemberQrToken,
+  // legend-0ne0z
+  listMemberOpenBills,
+  getMemberPointsQuote,
+  getMemberPointsRedeemStatus,
 } as const;
 
 export const crmAdminEndpoints = {

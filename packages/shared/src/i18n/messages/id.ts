@@ -133,6 +133,10 @@ import { posCaptainTablesMessages } from "./pos-captain-tables.ts";
 import { posCaptainOrderMessages } from "./pos-captain-order.ts";
 import { openBillConvertMessages } from "./open-bill-convert.ts";
 import { openBillPolicyMessages } from "./open-bill-policy.ts";
+import { memberTukarPoinBillMessages } from "./member-tukar-poin-bill.ts";
+import { memberTukarPoinPickerMessages } from "./member-tukar-poin-picker.ts";
+import { memberTukarPoinQrMessages } from "./member-tukar-poin-qr.ts";
+import { memberTukarPoinPageMessages } from "./member-tukar-poin-page.ts";
 
 export const id = {
   designV2: designV2Messages,
@@ -2072,6 +2076,14 @@ export const id = {
     common: {
       pointsUnit: "poin",
     },
+    // Tukar poin di kasir (legend-0ne0z, brief 1165): one catalog file per
+    // slice so parallel edits never touch these lines.
+    tukarPoin: {
+      ...memberTukarPoinBillMessages,
+      picker: memberTukarPoinPickerMessages,
+      ...memberTukarPoinQrMessages,
+      ...memberTukarPoinPageMessages,
+    },
     nav: {
       points: "Poin",
       rewards: "Hadiah",
@@ -2079,6 +2091,7 @@ export const id = {
       vouchers: "Voucher",
     },
     page: {
+      tukarPoin: "Tukar poin di kasir",
       overview: "Ringkasan member",
       signup: "Keanggotaan",
       points: "Poin saya",
