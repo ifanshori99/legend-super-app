@@ -45,7 +45,11 @@ const VIEWPORTS = [
 /** Screenshots show the settled state, not a frame mid-transition. */
 async function capture(page: Page, name: string) {
   await page.evaluate(() =>
-    document.getAnimations().forEach((animation) => animation.finish()),
+    document.getAnimations().forEach((animation) => {
+      // Infinite animations cannot be finished (Web Animations InvalidStateError).
+      if (animation.effect?.getComputedTiming().endTime !== Infinity)
+        animation.finish();
+    }),
   );
   await captureScreenshot(page, name);
 }
