@@ -1455,6 +1455,12 @@ export const endOfDayRecapSchema = z
     totalExpiredCashOutIdr: nonnegativeIdr.default(idr(0)),
     /** F8: "pemotongan stok akhir hari bila dipilih". */
     inventoryDeductionApplied: z.boolean(),
+    /**
+     * legend-21c8n: receipt numbers the cloud sequence head says were issued
+     * but pos_receipts lacks (the RECEIPT_SEQUENCE_GAP numbers, outlet-wide).
+     * 0 on a gap-free day and on recaps frozen before this field existed.
+     */
+    unsyncedReceiptCount: z.number().int().nonnegative().default(0),
     accountingSync: z.strictObject({
       status: z.enum(["pending", "posted"]),
       journalCount: z.number().int().nonnegative(),
@@ -1615,6 +1621,8 @@ export const endOfDayBlindRecapSchema = z
     totalVarianceIdr: z.null(),
     totalExpiredCashOutIdr: z.null(),
     inventoryDeductionApplied: z.boolean(),
+    /** Same count as the full recap (legend-21c8n); not a drawer figure. */
+    unsyncedReceiptCount: z.number().int().nonnegative().default(0),
     accountingSync: z.strictObject({
       status: z.enum(["pending", "posted"]),
       journalCount: z.number().int().nonnegative(),

@@ -39,10 +39,12 @@ import { paymentIntents, paymentLinks } from "../db/schema/index.ts";
 import { accessTickets, facilityLinkedOrders } from "../db/schema/facility.ts";
 import { orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
+import { HttpError } from "../lib/http-error.ts";
 import { logger } from "../lib/logger.ts";
 import { auditFacility } from "./facility-shared.ts";
 import {
   assertBreakfastLinkHoldsNoMoney,
+  BreakfastProviderProofNeeded,
   BREAKFAST_PAID_INTENT_STATUSES,
   cancelBreakfastOrderTx,
   confirmBreakfastLinkUnpaid,
@@ -58,6 +60,7 @@ import type { Tx } from "./menu-internals.ts";
 import { refundableBalance } from "./payment-admin.service.ts";
 import { netAllocatedIdrSql } from "./payment-net-allocated-sql.ts";
 import { providerRefundedForeignIdrSql } from "./payment-provider-refunded-foreign-sql.ts";
+import { confirmLinkUnpaidAtProvider } from "./payment-provider-proof.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 import { requestQrDoublePaymentRefund } from "./qr-order-late-payment.ts";
 
@@ -171,6 +174,48 @@ async function refundDoublePayment(
   return ids.length > 0;
 }
 
+/**
+ * Asks the provider about the other open codes of the link of an order that is
+ * still `awaiting_payment` (the only state in which the handler can cancel it),
+ * on its own connections and before the order locks. Money found is settled
+ * once. An unclear answer (409 `PAYMENT_PROVIDER_UNCONFIRMED`) is returned as
+ * "unclear", not thrown: a payment that marks the order paid must not wait on
+ * the provider; only the refuse path holds (`handleBreakfastPaymentPaid`). A
+ * paid, fired or cancelled order cancels nothing here and needs no proof. Any
+ * other error still throws.
+ */
+async function confirmOtherCodesBeforeRefuse(
+  context: ScopedTenantContext,
+  orderId: string,
+  paymentLinkId: string,
+  now: Date,
+): Promise<"proven" | "unclear"> {
+  const [row] = await withTenant(db, context, (own) =>
+    own
+      .select({ status: facilityLinkedOrders.status })
+      .from(facilityLinkedOrders)
+      .where(
+        and(
+          eq(facilityLinkedOrders.tenantId, context.tenant.tenantId),
+          eq(facilityLinkedOrders.orderId, orderId),
+        ),
+      ),
+  );
+  if (row?.status !== "awaiting_payment") return "proven";
+  try {
+    await confirmLinkUnpaidAtProvider(context, paymentLinkId, now);
+  } catch (error) {
+    if (
+      error instanceof HttpError &&
+      error.status === 409 &&
+      error.code === "PAYMENT_PROVIDER_UNCONFIRMED"
+    )
+      return "unclear";
+    throw error;
+  }
+  return "proven";
+}
+
 /** ORD-02 for breakfast: marks a pay-first breakfast order paid. Replay safe. */
 export async function handleBreakfastPaymentPaid(
   context: ScopedTenantContext,
@@ -186,6 +231,17 @@ export async function handleBreakfastPaymentPaid(
   const { intentId, paymentLinkId, currency } = payload.data;
   const orderId = await orderIdOfLink(tx, context, paymentLinkId);
   if (orderId === null) return "ignored";
+  // Provider proof before any lock of the order (legend-9sw2w): this payment
+  // may be refused below and cancel the order locally while another open code
+  // already holds money at the provider. Unclear answer: only the refuse path
+  // below holds (409, the event is retried, nothing cancelled or refunded); a
+  // payment that marks the order paid goes ahead.
+  const proof = await confirmOtherCodesBeforeRefuse(
+    context,
+    orderId,
+    paymentLinkId,
+    now,
+  );
   // Lock order: orders -> facility_linked_orders -> payment_intents.
   const locked = await lockBreakfastOrder(tx, context, orderId);
   if (!locked) return "ignored";
@@ -355,6 +411,12 @@ export async function handleBreakfastPaymentPaid(
   }
 
   if (refuse !== null) {
+    if (proof === "unclear")
+      throw new HttpError(
+        409,
+        "PAYMENT_PROVIDER_UNCONFIRMED",
+        "The payment provider could not confirm the payment status. Try again shortly.",
+      );
     await cancelBreakfastOrderTx(tx, context, locked, {
       reason: `payment_${refuse}`,
       actorUserId: null,
@@ -612,7 +674,7 @@ export async function fireDueBreakfastOrders(
     orderId: string,
     act: (tx: Tx, locked: LockedBreakfast) => Promise<boolean>,
     expected: "paid" | "awaiting_payment",
-  ): Promise<boolean> => {
+  ): Promise<boolean | "proof"> => {
     try {
       return await withTenant(db, context, async (tx) => {
         const locked = await lockBreakfastOrder(tx, context, orderId);
@@ -620,6 +682,9 @@ export async function fireDueBreakfastOrders(
         return act(tx, locked);
       });
     } catch (error) {
+      // legend-9sw2w: a local cancel needs the provider's word first; nothing
+      // was written, the caller asks outside the lock and runs again.
+      if (error instanceof BreakfastProviderProofNeeded) return "proof";
       failed += 1;
       logger.error(
         { orderId, err: error instanceof Error ? error.message : "unknown" },
@@ -630,20 +695,36 @@ export async function fireDueBreakfastOrders(
     }
   };
   for (const orderId of await dueOrderIds(context, "paid", now, limit)) {
-    const done = await run(
-      orderId,
-      async (tx, locked) => {
+    const fire =
+      (providerProven: boolean) => async (tx: Tx, locked: LockedBreakfast) => {
         const result = await fireBreakfastOrderTx(tx, context, locked, {
           actorUserId: null,
           now,
+          providerProven,
         });
         if (result.outcome === "cancelled" || result.outcome === "ended")
           cancelled += 1;
         return result.outcome === "fired";
-      },
-      "paid",
-    );
-    if (done) fired += 1;
+      };
+    let done = await run(orderId, fire(false), "paid");
+    if (done === "proof") {
+      // The order would be cancelled locally: ask the provider about its other
+      // open codes outside any lock first (legend-9sw2w). Unclear answer: this
+      // order waits for the next tick.
+      try {
+        await confirmBreakfastLinkUnpaid(context, orderId, now);
+      } catch (error) {
+        failed += 1;
+        logger.warn(
+          { orderId, err: error instanceof Error ? error.message : "unknown" },
+          "Breakfast sweep: provider could not confirm the pay link; retried on the next tick",
+        );
+        await markSweepFailure(context, orderId, "paid", now);
+        continue;
+      }
+      done = await run(orderId, fire(true), "paid");
+    }
+    if (done === true) fired += 1;
   }
   for (const orderId of await dueOrderIds(
     context,
@@ -705,7 +786,7 @@ export async function fireDueBreakfastOrders(
       },
       "awaiting_payment",
     );
-    if (done) cancelled += 1;
+    if (done === true) cancelled += 1;
   }
   return { fired, cancelled, failed };
 }

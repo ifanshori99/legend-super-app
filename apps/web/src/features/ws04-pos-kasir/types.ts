@@ -383,6 +383,8 @@ export type DayCloseRecap = {
   settlement: { bank: string; amountIdr: number }[] | null;
   /** Standalone EDC transactions that still need reconciliation. */
   standaloneUnmatched: number | null;
+  /** Receipt numbers the cloud sequence issued but has not received (legend-21c8n). */
+  unsyncedReceiptCount?: number;
   stockDeduction: { available: boolean; applied: boolean };
   /** Present once the day is closed. */
   result?: DayCloseResult;
