@@ -31,7 +31,11 @@ import type { EventEnvelope } from "@starter/shared/events";
 import { reservationConfirmedPayloadSchema } from "@starter/shared/reservation";
 import { z } from "zod";
 import { db } from "../db/index.ts";
-import { paymentIntents } from "../db/schema/index.ts";
+import {
+  paymentEvidence,
+  paymentIntents,
+  paymentUnallocatedFunds,
+} from "../db/schema/index.ts";
 import { reservations } from "../db/schema/reservation.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
@@ -105,6 +109,46 @@ async function refundLateDeposit(
         ),
       );
     if (!intent) return null;
+    // legend-3dfri: skip the DP refund only when the transaction that settled
+    // this code is itself parked as unallocated funds (a second, double payment
+    // on the DP link): its money is refunded through that fund, once, by the
+    // staff flow, and refunding it here too would return it twice (the fund
+    // refund is not counted by `loadHeldDeposit`). Another transaction parked
+    // on this code (paid twice) is separate money and does not stop the refund
+    // of the settling one. Funds without evidence (old rows) also skip: the
+    // rule that limits payment. Idempotent per code, whatever order the events
+    // of two late codes are consumed in.
+    const [settlingEvidence] =
+      intent.providerRef === null
+        ? []
+        : await tx
+            .select({ id: paymentEvidence.id })
+            .from(paymentEvidence)
+            .where(
+              and(
+                eq(paymentEvidence.tenantId, context.tenant.tenantId),
+                eq(paymentEvidence.provider, intent.provider),
+                eq(paymentEvidence.providerRef, intent.providerRef),
+              ),
+            )
+            .limit(1);
+    const [parkedFund] = await tx
+      .select({ id: paymentUnallocatedFunds.id })
+      .from(paymentUnallocatedFunds)
+      .where(
+        and(
+          eq(paymentUnallocatedFunds.tenantId, context.tenant.tenantId),
+          eq(paymentUnallocatedFunds.paymentIntentId, intent.id),
+          or(
+            isNull(paymentUnallocatedFunds.evidenceId),
+            settlingEvidence
+              ? eq(paymentUnallocatedFunds.evidenceId, settlingEvidence.id)
+              : undefined,
+          ),
+        ),
+      )
+      .limit(1);
+    if (parkedFund) return null;
     // RSV-03: a DP refund is only owed for what the intent still holds; a
     // fully refunded intent was already returned and a partly refunded one is
     // refunded only for its remainder, never twice.
