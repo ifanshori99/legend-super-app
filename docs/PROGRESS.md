@@ -2275,3 +2275,4 @@ Langkah berikut CTO baru:
 - 17:59 CTO: 1187 (G05dq) SIAP 23701452f, resolve. s4ou8 dibuktikan nanti di full run 2 worker (bersama h2wvx), bukan run terarah (jalur ringan padat).
 - 18:27 CTO: Retro 53 (G27dj) resolve. Keputusan: (1) thread Claude baru dipindah ke #5 via switch-account (flag --account diabaikan); (2) landing batch hanya dengan full run lulus di kode final atau catatan eksplisit per berkas; (3) jalur tsc saat full run = Q56 founder; (4) thread tunggu job background tanpa Monitor/loop, tanpa laporan antara.
 - 18:37 CTO: 1190 (G16op) SIAP acf1edca3, resolve.
+- 18:40 CTO cek akun: Claude #1 5h 71% (reset 20:30), 7d 71%. G8u3h/G77kw bekerja (tidak dipindah, restart memutus giliran); G1kc6/G02j3 punya job background. Pindah ke #5 saat masing-masing selesai. Claude #2 needs sign-in (tidak dipakai).
