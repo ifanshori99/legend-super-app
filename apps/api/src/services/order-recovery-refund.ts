@@ -58,8 +58,10 @@ import {
   assertLineFits,
   assertOrderBudget,
   lineFitsIdr,
+  lineRefundRoomIdr,
   orderGivenOf,
   orderRoomIdr,
+  trimToLineRoomIdr,
 } from "./order-given.ts";
 import { orderPromoPartialRefundPort } from "./order-promo-refund.ts";
 import { orderMoneyBackLaneOf } from "./order-refund-lane.ts";
@@ -640,6 +642,29 @@ export async function deliverOrderRecoveryRefundEvent(
       return;
     }
     throw error;
+  }
+  // 1145: an amount 1-3 IDR over the failed line's room is a rounding artifact
+  // (component half-up vs the line share): file exactly the room, as the
+  // resolve gate allowed. Over by more, the check below blocks it.
+  const lineRoomIdr = await lineRefundRoomIdr(
+    tx,
+    tenantId,
+    order.id,
+    issue.orderItemId,
+  );
+  if (lineRoomIdr !== null && split.amountIdr > lineRoomIdr) {
+    const trimmedIdr = trimToLineRoomIdr(split.amountIdr, lineRoomIdr);
+    if (trimmedIdr !== null)
+      split = recoveryRefundSplit({
+        order,
+        lineTotalIdr: line.lineTotalIdr,
+        priorLinesIdr,
+        releasedIdr: Math.max(
+          releasedIdr,
+          order.totalIdr - order.depositAppliedIdr - trimmedIdr,
+        ),
+        ...(promo === undefined ? {} : { promo }),
+      });
   }
   if (split.shortfallIdr > 0)
     await auditOnce(

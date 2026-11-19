@@ -1039,7 +1039,7 @@ describe("1131 per-line rule (Q25): the money of one line is given once, whichev
 });
 
 describe("1131 no over-refusal: a discounted order lets every line's ORD-09 through up to paid", () => {
-  it("promo order (discount 18.000, paid 42.735): the ORD-09 of the kopi is filed (8.085); the teh (9.325 by component rounding) is refused over its line share 9.324 (legend-wpn5v)", async () => {
+  it("promo order (discount 18.000, paid 42.735): the ORD-09 of the kopi is filed (8.085); the teh (promo recompute 13.860, far over its share 9.324) is blocked, nothing filed", async () => {
     const paid = await p.paidPromoOrder();
     const kopi = await ord09Attempt(paid.kopiLine, KOPI_PRICE);
     const teh = await ord09Attempt(paid.tehLine, PRICES.teh);
@@ -1049,11 +1049,13 @@ describe("1131 no over-refusal: a discounted order lets every line's ORD-09 thro
     expect(kopi!.consumerError, "kopi consumer").toBeNull();
     // Exact: a failed kopi withdraws the promo, so it refunds 8.085 (order-recovery-refund-promo H3).
     expect(kopi!.filedIdr, "kopi refund is its own paid share").toBe(8_085);
-    // Strict plain line (legend-wpn5v): teh share = 12.000 x 42.735 / 55.000 =
-    // 9.324; its pro-rata refund rounds to 9.325, over the share: refused at
-    // the resolve gate, nothing filed.
-    expect(teh!.resolveStatus, "teh refused").toBe(422);
-    expect(teh!.resolveCode).toBe(ROOM_CODE);
+    // The resolve gate bounds the teh by its pro-rata 9.325, 1 IDR over its
+    // share 12.000 x 42.735 / 55.000 = 9.324: a rounding artifact, trimmed, so
+    // it passes. The consumer then prices it with the promo recompute (kopi
+    // already withdrew the promo: goods 12.000 -> ~13.860), far over the share:
+    // blocked, nothing filed, never cut (legend-wpn5v).
+    expect(teh!.resolveStatus, "teh resolved").toBe(200);
+    expect(teh!.consumerError, "teh consumer").toBeNull();
     expect(teh!.filedIdr).toBe(0);
     expect(kopi!.filedIdr + teh!.filedIdr).toBeLessThanOrEqual(PROMO_PAID);
   });

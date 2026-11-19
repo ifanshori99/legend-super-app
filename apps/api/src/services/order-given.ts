@@ -565,12 +565,13 @@ export async function assertOrderBudget(
     );
 }
 
-// 1145: the rounding the pro-rata refund may carry over a floored line share:
-// each component (goods, discount, service, PBJT) is rounded half up while the
-// share is floored (under 3 IDR in practice). Applies to an ORD-09 on a swap
-// chain only, never past what the chain paid; a typed charge refund gets none
-// (architect 1145 P3).
-const CHAIN_ROUNDING_IDR = 3;
+// 1145: the most IDR an ORD-09 amount may be over its line's room and still
+// count as a rounding artifact: each component (goods, discount, service,
+// PBJT) is rounded half up while the line share is split by largest remainder.
+// Within it the refund is trimmed to exactly the room (`trimToLineRoomIdr`),
+// never refused; the fit itself (`lineFitsIdr`) is exact. A typed charge refund
+// and a voucher get no trim (architect 1145 P3).
+export const LINE_ROUNDING_TRIM_IDR = 3;
 
 type ChainBalance = {
   /** Original line of the chain. */
@@ -727,17 +728,43 @@ export async function assertChargeChainBudget(
 }
 
 /**
- * 1131 (Q25 per item, architect P1) + 1145: does `wantedIdr` fit what the
- * failed line still holds? A line of a swap chain holds what the whole chain
- * paid (original share + live charge money) less what went out for the chain
- * (vouchers, live ORD-09 refunds, cashier refunds that named it, charge
- * refunds), plus at most a few IDR of rounding, never past what the chain paid.
- * It never borrows the share of another item the guest keeps. A line outside a
- * swap chain holds its share of the bill less what was given for it (same rule
- * as `voucherRoomIdr`, order-voucher-room.ts); no escape when nothing was given
- * yet: a refund above the line's share is refused (legend-wpn5v).
- * The caller holds the order lock.
+ * 1131 (Q25 per item, architect P1) + 1145: what the failed line still holds.
+ * A line of a swap chain holds what the whole chain paid (original share + live
+ * charge money) less what went out for the chain (vouchers, live ORD-09
+ * refunds, cashier refunds that named it, charge refunds), never past what the
+ * chain paid. It never borrows the share of another item the guest keeps. A
+ * line outside a swap chain holds its share of the bill less what was given for
+ * it (same rule as `voucherRoomIdr`, order-voucher-room.ts). `null`: no such
+ * order. The caller holds the order lock.
  */
+export async function lineRefundRoomIdr(
+  tx: Tx,
+  tenantId: ScopedTenantContext["tenant"]["tenantId"],
+  orderId: string,
+  orderItemId: string,
+): Promise<number | null> {
+  const chain = await chainBalanceOf(tx, tenantId, orderId, orderItemId);
+  if (!chain) return null;
+  return Math.max(0, Math.min(chain.paidIdr, chain.balanceIdr));
+}
+
+/**
+ * 1145: the amount an ORD-09 may file against a line holding `roomIdr`: itself
+ * when it fits, exactly the room when it is over by 1 to
+ * `LINE_ROUNDING_TRIM_IDR` IDR (a rounding artifact), `null` (refuse) when it
+ * is over by more or the line holds nothing.
+ */
+export function trimToLineRoomIdr(
+  wantedIdr: number,
+  roomIdr: number,
+): number | null {
+  if (wantedIdr <= roomIdr) return wantedIdr;
+  if (roomIdr > 0 && wantedIdr - roomIdr <= LINE_ROUNDING_TRIM_IDR)
+    return roomIdr;
+  return null;
+}
+
+/** Exact fit: does `wantedIdr` fit what the failed line still holds, no slack? */
 export async function lineFitsIdr(
   tx: Tx,
   tenantId: ScopedTenantContext["tenant"]["tenantId"],
@@ -745,18 +772,14 @@ export async function lineFitsIdr(
   orderItemId: string,
   wantedIdr: number,
 ): Promise<boolean> {
-  const chain = await chainBalanceOf(tx, tenantId, orderId, orderItemId);
-  if (!chain) return false;
-  if (chain.swapped)
-    return (
-      wantedIdr <=
-      Math.min(chain.paidIdr, chain.balanceIdr + CHAIN_ROUNDING_IDR)
-    );
-  // Outside a swap the chain paid only the line's share, no slack (legend-wpn5v).
-  return wantedIdr <= Math.max(0, chain.balanceIdr);
+  const room = await lineRefundRoomIdr(tx, tenantId, orderId, orderItemId);
+  return room !== null && wantedIdr <= room;
 }
 
-/** Throws 422 `REFUND_OVER_ORDER_ROOM` when `wantedIdr` does not fit the line. */
+/**
+ * Resolve gate: throws 422 `REFUND_OVER_ORDER_ROOM` when `wantedIdr` is over the
+ * line by more than the rounding trim (the consumer files the trimmed amount).
+ */
 export async function assertLineFits(
   tx: Tx,
   tenantId: ScopedTenantContext["tenant"]["tenantId"],
@@ -764,7 +787,8 @@ export async function assertLineFits(
   orderItemId: string,
   wantedIdr: number,
 ): Promise<void> {
-  if (!(await lineFitsIdr(tx, tenantId, orderId, orderItemId, wantedIdr)))
+  const room = await lineRefundRoomIdr(tx, tenantId, orderId, orderItemId);
+  if (room === null || trimToLineRoomIdr(wantedIdr, room) === null)
     throw new HttpError(
       422,
       "REFUND_OVER_ORDER_ROOM",
