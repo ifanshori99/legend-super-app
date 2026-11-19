@@ -2089,6 +2089,8 @@ const documentTotalsShape = {
   taxIdr: nonnegativeIdr,
   roundingIdr: idrSchema,
   totalIdr: nonnegativeIdr,
+  /** legend-j772n: DP applied to the order; printed as DP, never as a tender. */
+  depositAppliedIdr: nonnegativeIdr.default(idr(0)),
   /**
    * legend-npnh: inclusive prices. `subtotalIdr` then holds service and tax,
    * which the document shows as included. Absent (legacy) means exclusive.
@@ -2103,6 +2105,7 @@ function checkDocumentTotals(
     serviceCharge: { amountIdr: Idr } | null;
     taxLines: readonly { amountIdr: Idr }[];
     tenders: readonly { amountIdr: Idr }[];
+    depositAppliedIdr: Idr;
     subtotalIdr: Idr;
     discountIdr: Idr;
     serviceChargeIdr: Idr;
@@ -2190,14 +2193,29 @@ function checkDocumentTotals(
           "totalIdr must equal subtotal - discount + service + tax + rounding",
       });
   }
+  // A document without any tender must be settled by DP (fail closed).
+  if (document.tenders.length === 0 && Number(document.depositAppliedIdr) <= 0)
+    ctx.addIssue({
+      code: "custom",
+      path: ["tenders"],
+      message: "A document needs at least one tender or a DP bucket",
+    });
+  // DP is a prepaid bucket, not a tender: tenders plus DP must cover the total.
+  if (Number(document.depositAppliedIdr) > Number(document.totalIdr))
+    ctx.addIssue({
+      code: "custom",
+      path: ["depositAppliedIdr"],
+      message: "depositAppliedIdr cannot exceed the total",
+    });
   if (
-    sum(document.tenders.map((row) => row.amountIdr)) !==
+    sum(document.tenders.map((row) => row.amountIdr)) +
+      Number(document.depositAppliedIdr) !==
     Number(document.totalIdr)
   )
     ctx.addIssue({
       code: "custom",
       path: ["tenders"],
-      message: "Tender methods must sum to the total (POS-07)",
+      message: "Tender methods plus DP must sum to the total (POS-07)",
     });
 }
 
@@ -2221,7 +2239,9 @@ export const receiptDocumentBaseShape = {
   // Empty for a tax-free order: the receipt prints no tax rows.
   taxLines: z.array(taxLineSchema),
   ...documentTotalsShape,
-  tenders: z.array(posDocumentTenderSchema).min(1),
+  // legend-j772n: empty only for a DP-only sale (checkDocumentTotals enforces
+  // that DP then covers the total); every other document keeps a tender.
+  tenders: z.array(posDocumentTenderSchema),
   cashierName: z.string().min(1).max(150).nullable(),
   customerName: z.string().min(1).max(150).nullable(),
 };
