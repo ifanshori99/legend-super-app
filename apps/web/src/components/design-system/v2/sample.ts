@@ -3,12 +3,15 @@
 // counts, badges, and order codes are illustrative, not Cafe Legend data;
 // every frame carries the "Contoh data" label. Photos: Unsplash License
 // sample images in apps/web/demo/sample/menu (see DESIGN.md §4 Media).
-import { createTranslator } from "@starter/shared/i18n";
+import { createTranslator } from "@starter/shared/i18n/runtime";
+import { messages as platformMessages } from "virtual:i18n/platform";
 import { demoMenuPhoto } from "@/lib/demo-media";
 import type { LucideIcon } from "lucide-react";
 import { Coffee, CupSoda, Soup, UtensilsCrossed } from "lucide-react";
 
-const t = createTranslator();
+// This data is built when the module loads, before any chunk can be fetched, so
+// it reads the platform chunk (designV2.*) directly instead of the live store.
+const t = createTranslator(platformMessages);
 
 export type SampleItem = {
   id: string;

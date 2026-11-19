@@ -82,6 +82,7 @@ import {
 import { outletIdSchema } from "@starter/shared/core";
 import type { OutletId, ScopedTenantContext } from "@starter/shared/core";
 import { createApp } from "../app";
+import { env } from "../config/env";
 import { resetPaymentWebhookRateLimits } from "../routes/payment-webhook.routes";
 import { createDoitGateway } from "../services/payment-doit";
 import { setPaymentGateway } from "../services/payment-gateway";
@@ -99,6 +100,7 @@ import {
   reprocessStoredWebhookEvents,
 } from "../services/payment-webhook.service";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers";
+import { HOLD_TRANSACTION_CONFLICT_REASON } from "../services/refund-hold-reasons";
 import { paymentTestScope } from "./payment-test-scope";
 import { FakeRefundGateway } from "./refund-fake-gateway";
 
@@ -339,7 +341,13 @@ async function assign(
   );
 }
 
+// 1108: these suites exercise the ACTIVE refund webhook path; with the switch off
+// every matched refund event is hold-only (1101/1108 P1-1), so turn it on here.
+const flags = env as unknown as { DOIT_REFUNDS_ENABLED: boolean };
+const flagBefore = flags.DOIT_REFUNDS_ENABLED;
+
 beforeAll(async () => {
+  flags.DOIT_REFUNDS_ENABLED = true;
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
   await scope.seed(owner);
@@ -411,6 +419,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  flags.DOIT_REFUNDS_ENABLED = flagBefore;
   setPaymentGateway(null);
   setPaymentRefundGateway(null);
   await owner.query("DELETE FROM gateway_webhook_events WHERE tenant_id = $1", [
@@ -450,6 +459,10 @@ afterAll(async () => {
     );
     await owner.query(
       `DELETE FROM payment_unallocated_funds WHERE tenant_id = $1 AND payment_intent_id IN (${intents})`,
+      [tenantId, createdLinkIds],
+    );
+    await owner.query(
+      `DELETE FROM refund_recon_holds WHERE tenant_id = $1 AND payment_intent_id IN (${intents})`,
       [tenantId, createdLinkIds],
     );
     await owner.query(
@@ -1054,6 +1067,38 @@ describe("legend-30hfs staff refunds, approvals, payouts and allocation after a 
     const filedId = await fileRefund(code, 20_000);
     await deliverPartial(code, refundId(), 40_000);
 
+    // 1077 I9 (K1): a provider report that arrives while our refund is still
+    // unsent could be an echo of that refund, so the intent holds the reported
+    // amount until finance looks. Approving is refused until then.
+    const { rows: openHolds } = await owner.query<{
+      id: string;
+      reason: string;
+      amount_idr: string;
+    }>(
+      `SELECT id, reason, amount_idr::text AS amount_idr
+         FROM refund_recon_holds
+        WHERE tenant_id = $1 AND payment_intent_id = $2 AND resolved_at IS NULL`,
+      [tenantId, code.id],
+    );
+    expect(openHolds, "one open K1 hold on the intent").toHaveLength(1);
+    expect(openHolds[0]!.reason).toBe(HOLD_TRANSACTION_CONFLICT_REASON);
+    expect(Number(openHolds[0]!.amount_idr)).toBe(40_000);
+    const blocked = await approveRefund(filedId);
+    expect(blocked.status, JSON.stringify(blocked.body)).toBe(409);
+    expect(fake.calls, "nothing sent while the hold is open").toHaveLength(0);
+
+    // Finance checks the provider dashboard: the 40.000 is another refund, not
+    // ours. A conflict hold only closes as not_this_intent (never counted).
+    const resolved = await staff
+      .post(`${ADMIN}/refund-recon-holds/${openHolds[0]!.id}/resolve`)
+      .set(originHeader)
+      .send({
+        idempotencyKey: key("hold"),
+        resolution: "not_this_intent",
+        note: "Dicek di dashboard provider: refund 40.000 bukan milik refund ini.",
+      });
+    expect(resolved.status, JSON.stringify(resolved.body)).toBe(200);
+
     const approved = await approveRefund(filedId);
     expect(approved.status, JSON.stringify(approved.body)).toBe(200);
     expect(fake.calls, "one provider refund").toHaveLength(1);
@@ -1625,7 +1670,7 @@ describe("legend-30hfs refunds of an additional transaction and of a split trans
     );
   });
 
-  it("967-r3d the refunded payment event of an extra transaction first, then refund.succeeded with a real refund id for the same payment after the window: no new row, no extra alert", async () => {
+  it("967-r3d the refunded payment event of an extra transaction first, then refund.succeeded with a real refund id for the same payment after the window: no new row, one open hold, two alerts in total", async () => {
     const code = await paidCode();
     const extraRef = await extraTxn(code);
     const before = await refundView(code.id);
@@ -1638,14 +1683,30 @@ describe("legend-30hfs refunds of an additional transaction and of a split trans
     const counted = await refundView(code.id);
     expect(counted.refundable).toBe(before.refundable - EXTRA);
 
+    const echoRefundId = refundId();
     await deliverExtra(
-      extraPartial(extraRef, refundId(), EXTRA, "refund"),
+      extraPartial(extraRef, echoRefundId, EXTRA, "refund"),
       "refund",
     );
 
     expect(await partialAudit(code.id), "no new row").toBe(auditBefore + 1);
-    expect((await supervisorAlerts()) - alertsBefore, "no extra alert").toBe(1);
     expect(await refundView(code.id), "not counted twice").toEqual(counted);
+    // 1139 decision: a refund.succeeded that maps to a Legend payment but
+    // matches no known refund R is held on its FIRST pass (it no longer waits
+    // for the retry window). The hold only restricts: it adds no fact/refund
+    // row and pays nothing out. It is announced by one finance alert, so the
+    // total is two: one from the 'refunded' event, one from the hold.
+    const { rows: openHolds } = await owner.query<{ reason: string }>(
+      `SELECT reason FROM refund_recon_holds
+        WHERE tenant_id = $1 AND provider_refund_id = $2 AND resolved_at IS NULL`,
+      [tenantId, echoRefundId],
+    );
+    expect(openHolds, "one open hold for that refund id").toHaveLength(1);
+    expect(openHolds[0]!.reason).toBe(HOLD_TRANSACTION_CONFLICT_REASON);
+    expect(
+      (await supervisorAlerts()) - alertsBefore,
+      "refunded event alert + hold announcement",
+    ).toBe(2);
   });
 
   it("967-r3e split transaction: a small partial R1 alerts once; R2 pushing the total above what the intent kept newly flags the intent and alerts a second time", async () => {

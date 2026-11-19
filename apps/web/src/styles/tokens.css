@@ -207,14 +207,14 @@
   --radius-unit: 4px;
 
   --ff-brand:
-    "Plus Jakarta Sans Variable", "Plus Jakarta Sans", ui-sans-serif, system-ui,
-    sans-serif;
+    "Plus Jakarta Sans Variable", "Plus Jakarta Sans",
+    "Plus Jakarta Sans Fallback", ui-sans-serif, system-ui, sans-serif;
   /* v3: one family everywhere (Metoric). Fixed for operations and
    * management; tenants change only --ff-brand (customer surfaces). Inter
    * stays loadable as a tenant brand choice (BRAND_FONTS). */
   --ff-ui:
-    "Plus Jakarta Sans Variable", "Plus Jakarta Sans", ui-sans-serif, system-ui,
-    sans-serif;
+    "Plus Jakarta Sans Variable", "Plus Jakarta Sans",
+    "Plus Jakarta Sans Fallback", ui-sans-serif, system-ui, sans-serif;
   --ff-mono:
     ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, monospace;
 

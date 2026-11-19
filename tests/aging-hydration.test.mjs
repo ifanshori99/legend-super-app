@@ -3,6 +3,8 @@ import { test } from "node:test";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { i18nChunks } from "../apps/web/vite-i18n-chunks.ts";
+
 const webRoot = fileURLToPath(new URL("../apps/web/", import.meta.url));
 const webRequire = createRequire(
   new URL("../apps/web/package.json", import.meta.url),
@@ -25,6 +27,7 @@ const { createServer } = await import(
 test("aging SSR output does not depend on the server's current date", async (t) => {
   const vite = await createServer({
     configFile: false,
+    plugins: [i18nChunks({ split: false })],
     envFile: false,
     define: { __WEB_DEV_SERVER__: "true" },
     root: webRoot,

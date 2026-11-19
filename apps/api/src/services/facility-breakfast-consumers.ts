@@ -43,6 +43,7 @@ import { logger } from "../lib/logger.ts";
 import { auditFacility } from "./facility-shared.ts";
 import {
   assertBreakfastLinkHoldsNoMoney,
+  BreakfastProviderProofNeeded,
   BREAKFAST_PAID_INTENT_STATUSES,
   cancelBreakfastOrderTx,
   confirmBreakfastLinkUnpaid,
@@ -58,6 +59,7 @@ import type { Tx } from "./menu-internals.ts";
 import { refundableBalance } from "./payment-admin.service.ts";
 import { netAllocatedIdrSql } from "./payment-net-allocated-sql.ts";
 import { providerRefundedForeignIdrSql } from "./payment-provider-refunded-foreign-sql.ts";
+import { confirmLinkUnpaidAtProvider } from "./payment-provider-proof.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 import { requestQrDoublePaymentRefund } from "./qr-order-late-payment.ts";
 
@@ -171,12 +173,39 @@ async function refundDoublePayment(
   return ids.length > 0;
 }
 
+/**
+ * Runs `run` (a consumption of one breakfast payment event) without the
+ * provider's word first. A VALID payment never asks the provider. A payment
+ * the consumer must refuse (it would cancel the order and refund) throws
+ * `BreakfastProviderProofNeeded` before any write: the transaction rolls back
+ * and its outbox and offset locks go. Only then is the provider asked about
+ * the link's other open codes (`confirmLinkUnpaidAtProvider`, outside any
+ * transaction; money found is settled once; an unclear answer is 409
+ * `PAYMENT_PROVIDER_UNCONFIRMED`, propagated: nothing is cancelled or
+ * refunded and the job is retried), and `run(true)` locks again and decides
+ * from scratch (legend-1146, mirrors `providerProven` of the fire path).
+ */
+export async function withBreakfastProviderProof<T>(
+  context: ScopedTenantContext,
+  run: (providerProven: boolean) => Promise<T>,
+  now = new Date(),
+): Promise<T> {
+  try {
+    return await run(false);
+  } catch (error) {
+    if (!(error instanceof BreakfastProviderProofNeeded)) throw error;
+    await confirmLinkUnpaidAtProvider(context, error.paymentLinkId, now);
+    return run(true);
+  }
+}
+
 /** ORD-02 for breakfast: marks a pay-first breakfast order paid. Replay safe. */
 export async function handleBreakfastPaymentPaid(
   context: ScopedTenantContext,
   event: EventEnvelope,
   tx: Tx,
   now = new Date(),
+  providerProven = false,
 ): Promise<BreakfastPaidOutcome> {
   if (event.name !== "payment.paid") return "ignored";
   const tenantId = context.tenant.tenantId;
@@ -355,6 +384,10 @@ export async function handleBreakfastPaymentPaid(
   }
 
   if (refuse !== null) {
+    // This payment may cancel the order locally while another open code
+    // already holds money at the provider (legend-9sw2w): ask first, outside
+    // the consume transaction (`withBreakfastProviderProof`), nothing written.
+    if (!providerProven) throw new BreakfastProviderProofNeeded(paymentLinkId);
     await cancelBreakfastOrderTx(tx, context, locked, {
       reason: `payment_${refuse}`,
       actorUserId: null,
@@ -612,7 +645,7 @@ export async function fireDueBreakfastOrders(
     orderId: string,
     act: (tx: Tx, locked: LockedBreakfast) => Promise<boolean>,
     expected: "paid" | "awaiting_payment",
-  ): Promise<boolean> => {
+  ): Promise<boolean | "proof"> => {
     try {
       return await withTenant(db, context, async (tx) => {
         const locked = await lockBreakfastOrder(tx, context, orderId);
@@ -620,6 +653,9 @@ export async function fireDueBreakfastOrders(
         return act(tx, locked);
       });
     } catch (error) {
+      // legend-9sw2w: a local cancel needs the provider's word first; nothing
+      // was written, the caller asks outside the lock and runs again.
+      if (error instanceof BreakfastProviderProofNeeded) return "proof";
       failed += 1;
       logger.error(
         { orderId, err: error instanceof Error ? error.message : "unknown" },
@@ -630,20 +666,36 @@ export async function fireDueBreakfastOrders(
     }
   };
   for (const orderId of await dueOrderIds(context, "paid", now, limit)) {
-    const done = await run(
-      orderId,
-      async (tx, locked) => {
+    const fire =
+      (providerProven: boolean) => async (tx: Tx, locked: LockedBreakfast) => {
         const result = await fireBreakfastOrderTx(tx, context, locked, {
           actorUserId: null,
           now,
+          providerProven,
         });
         if (result.outcome === "cancelled" || result.outcome === "ended")
           cancelled += 1;
         return result.outcome === "fired";
-      },
-      "paid",
-    );
-    if (done) fired += 1;
+      };
+    let done = await run(orderId, fire(false), "paid");
+    if (done === "proof") {
+      // The order would be cancelled locally: ask the provider about its other
+      // open codes outside any lock first (legend-9sw2w). Unclear answer: this
+      // order waits for the next tick.
+      try {
+        await confirmBreakfastLinkUnpaid(context, orderId, now);
+      } catch (error) {
+        failed += 1;
+        logger.warn(
+          { orderId, err: error instanceof Error ? error.message : "unknown" },
+          "Breakfast sweep: provider could not confirm the pay link; retried on the next tick",
+        );
+        await markSweepFailure(context, orderId, "paid", now);
+        continue;
+      }
+      done = await run(orderId, fire(true), "paid");
+    }
+    if (done === true) fired += 1;
   }
   for (const orderId of await dueOrderIds(
     context,
@@ -705,7 +757,7 @@ export async function fireDueBreakfastOrders(
       },
       "awaiting_payment",
     );
-    if (done) cancelled += 1;
+    if (done === true) cancelled += 1;
   }
   return { fired, cancelled, failed };
 }

@@ -64,6 +64,7 @@ import {
 import { outletIdSchema } from "@starter/shared/core";
 import type { OutletId, ScopedTenantContext } from "@starter/shared/core";
 import { createApp } from "../app";
+import { env } from "../config/env";
 import { resetPaymentWebhookRateLimits } from "../routes/payment-webhook.routes";
 import { createDoitGateway } from "../services/payment-doit";
 import { setPaymentGateway } from "../services/payment-gateway";
@@ -319,7 +320,13 @@ async function assign(
   );
 }
 
+// 1108: these suites exercise the ACTIVE refund webhook path; with the switch off
+// every matched refund event is hold-only (1101/1108 P1-1), so turn it on here.
+const flags = env as unknown as { DOIT_REFUNDS_ENABLED: boolean };
+const flagBefore = flags.DOIT_REFUNDS_ENABLED;
+
 beforeAll(async () => {
+  flags.DOIT_REFUNDS_ENABLED = true;
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
   await scope.seed(owner);
@@ -400,6 +407,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  flags.DOIT_REFUNDS_ENABLED = flagBefore;
   setPaymentGateway(null);
   setPaymentRefundGateway(null);
   await owner.query("DELETE FROM gateway_webhook_events WHERE tenant_id = $1", [
@@ -415,6 +423,10 @@ afterAll(async () => {
     );
     await owner.query(
       `DELETE FROM payment_refunds WHERE tenant_id = $1 AND payment_intent_id IN (${intents})`,
+      [tenantId, createdLinkIds],
+    );
+    await owner.query(
+      `DELETE FROM refund_recon_holds WHERE tenant_id = $1 AND payment_intent_id IN (${intents})`,
       [tenantId, createdLinkIds],
     );
     await owner.query(
@@ -1005,7 +1017,7 @@ async function overpaidScenario(
 
 describe("legend-qbsbr variant: refund of A's own parked overpayment excess is not the provider echo of A's bill", () => {
   it.each(["completed", "in_flight"] as const)(
-    "1020-qbsbr-own-fund fund refund of the excess %s, then the provider refunds A: A is stamped, one audit row, one alert, no new payout, fund refund untouched",
+    "1020-qbsbr-own-fund fund refund of the excess %s, then the provider refunds A: A is stamped, one audit row, one alert (two in flight), no new payout, fund refund untouched",
     async (fundRefund) => {
       const { code, fundRefundId: fundRefundRowId } =
         await overpaidScenario(fundRefund);
@@ -1024,10 +1036,15 @@ describe("legend-qbsbr variant: refund of A's own parked overpayment excess is n
       const newAudit = (await auditActions(code.id)).slice(auditBefore.length);
       expect(newAudit, "exactly one new audit row about A").toHaveLength(1);
       expect(newAudit[0]).toMatch(/provider_refunded/);
+      // In flight: two alerts, not one. Replaying the same report with the
+      // auto-refund switch on raises the live-own hold to CONFLICT and sends
+      // a second alert (more restrictive, never pays more). The switch-on
+      // path is not used by release 1 (see bead legend-1nb85). Completed:
+      // no live refund, so one alert.
       expect(
         (await supervisorAlerts()) - alertsBefore,
-        "exactly one alert to the outlet supervisor",
-      ).toBe(1);
+        "alerts to the outlet supervisor",
+      ).toBe(fundRefund === "in_flight" ? 2 : 1);
       expect(fake.calls, "no new payout").toHaveLength(callsBefore);
       expect(await journals(), "no journal added").toBe(journalsBefore);
       const after = await refundRow(fundRefundRowId);

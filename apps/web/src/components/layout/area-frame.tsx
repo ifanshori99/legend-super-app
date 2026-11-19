@@ -153,7 +153,8 @@ export function AreaFrame(props: AreaFrameProps) {
   return (
     <TenantProvider config={config}>
       {/* Renews a push registration the server no longer lists (legend-xdlxa). */}
-      <PushAutoRegister userId={userId} />
+      {/* A shared tablet has no push registration (the API closes it). */}
+      <PushAutoRegister userId={props.access.sharedDevice ? null : userId} />
       <AreaFrameBody
         {...props}
         outlets={outlets}
@@ -320,7 +321,9 @@ function AreaFrameBody({
   const noOutletAction =
     noOutletNext(access) === "kelola" ? (
       <Button asChild>
-        <Link to="/kelola">{t("area.noOutletKelola")}</Link>
+        <Link to={access.sharedDevice ? "/pos" : "/kelola"}>
+          {t("area.noOutletKelola")}
+        </Link>
       </Button>
     ) : (
       <div className="flex flex-wrap justify-center gap-2">
@@ -356,7 +359,9 @@ function AreaFrameBody({
           description={t("area.noOutletAddHint")}
           action={
             <Button asChild>
-              <Link to="/kelola/pengaturan/outlet">
+              <Link
+                to={access.sharedDevice ? "/pos" : "/kelola/pengaturan/outlet"}
+              >
                 {t("area.noOutletAdd")}
               </Link>
             </Button>

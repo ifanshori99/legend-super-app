@@ -552,7 +552,15 @@ afterAll(async () => {
     [intentIds],
   );
   await owner.query(
+    "DELETE FROM payment_provider_refunds WHERE payment_intent_id = ANY($1::uuid[])",
+    [intentIds],
+  );
+  await owner.query(
     "DELETE FROM payment_evidence WHERE payment_intent_id = ANY($1::uuid[])",
+    [intentIds],
+  );
+  await owner.query(
+    "DELETE FROM refund_recon_holds WHERE payment_intent_id = ANY($1::uuid[])",
     [intentIds],
   );
   await owner.query("DELETE FROM payment_intents WHERE id = ANY($1::uuid[])", [
@@ -1739,7 +1747,7 @@ describe("legend-0ogy: no refund gateway installed claims nothing", () => {
     setPaymentRefundGateway(null);
 
     await expect(runRefundPayout(tenantWide, refundId)).rejects.toMatchObject({
-      code: "SERVICE_UNAVAILABLE",
+      code: "REFUND_PROVIDER_DISABLED",
     });
     expect(await refundRow(refundId)).toMatchObject({
       payout_attempts: 0,

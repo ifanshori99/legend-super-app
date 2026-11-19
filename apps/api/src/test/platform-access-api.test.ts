@@ -305,6 +305,8 @@ describe("legend-t4y7 GET /api/me/access", () => {
       canChangeEmployeeManager: false,
       // No assignment, so no menu.item.manage for the station rename hint (legend-huz8).
       canManageStationConfig: false,
+      // A browser session without a registered shared-device token (legend-9sw2w).
+      sharedDevice: false,
     });
 
     const ownerUser = await signedIn("Owner Access", { mfa: false });

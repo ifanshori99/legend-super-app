@@ -23,6 +23,7 @@ import { createTranslator, messagesId } from "@starter/shared/i18n";
 const state = vi.hoisted(() => ({
   permissions: [] as string[],
   routingProps: null as { onOpenTab?: unknown } | null,
+  holdsEnabled: null as boolean | null,
 }));
 
 vi.mock("@tanstack/react-router", async (original) => {
@@ -57,6 +58,16 @@ vi.mock(
     ReconciliationPanel: () => null,
   }),
 );
+vi.mock("@/features/ws05-payment-admin/components/refund-holds-panel", () => ({
+  RefundHoldsPanel: () => null,
+}));
+// The tab badge reads the open holds; the enabled flag is what the page owes.
+vi.mock("@/features/ws05-payment-admin/hooks", () => ({
+  useRefundReconHolds: (_status: string, enabled = true) => {
+    state.holdsEnabled = enabled;
+    return { data: undefined };
+  },
+}));
 vi.mock("@/features/ws05-payment-admin/components/refunds-panel", () => ({
   RefundsPanel: () => null,
 }));
@@ -82,7 +93,7 @@ function selectedTabs(html: string): string[] {
   return [...html.matchAll(/<button[^>]*role="tab"[^>]*>/g)]
     .map((match) => match[0])
     .filter((tag) => tag.includes('aria-selected="true"'))
-    .map((tag) => /id="[^"]*-trigger-([a-z]+)"/.exec(tag)?.[1] ?? "?");
+    .map((tag) => /id="[^"]*-trigger-([a-z-]+)"/.exec(tag)?.[1] ?? "?");
 }
 
 function render(
@@ -92,6 +103,7 @@ function render(
 ): string {
   state.permissions = permissions;
   state.routingProps = null;
+  state.holdsEnabled = null;
   return renderToString(createElement(PaymentAdminPage, { tab, onTabChange }));
 }
 
@@ -120,6 +132,16 @@ describe("ws05 payment tabs: synced to the URL", () => {
     expect(selectedTabs(render(ALL, "nonsense"))).toEqual(["routing"]);
     expect(selectedTabs(render(["payment.reconcile"]))).toEqual([
       "unallocated",
+    ]);
+  });
+
+  test("the refund-holds badge query runs only for payment.reconcile", () => {
+    render(["payment.transaction.view"]);
+    expect(state.holdsEnabled).toBe(false);
+    render(["payment.reconcile"]);
+    expect(state.holdsEnabled).toBe(true);
+    expect(selectedTabs(render(ALL, "refund-holds"))).toEqual([
+      "refund-holds",
     ]);
   });
 

@@ -387,6 +387,7 @@ async function recordProviderRefund(
         provider: "doit",
         providerRefundId:
           input.providerRefundId ?? `rf_${randomUUID().slice(0, 12)}`,
+        refundIdKind: "provider",
         providerPaymentRef: input.providerPaymentRef,
         amountIdr: input.amountIdr,
         source: "payment_webhook",

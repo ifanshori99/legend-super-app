@@ -50,7 +50,7 @@ describe("ws05 payment back office: tabs follow the API permissions", () => {
     expect(visiblePaymentAdminTabs(["payment.edc.manage"])[0]).toBe("edc");
     expect(
       visiblePaymentAdminTabs(["payment.reconcile", "org.settings.manage"]),
-    ).toEqual(["routing", "unallocated", "reconciliation"]);
+    ).toEqual(["routing", "unallocated", "reconciliation", "refund-holds"]);
   });
 
   test("each payment tab needs its own permission", () => {

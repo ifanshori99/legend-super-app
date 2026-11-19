@@ -376,6 +376,7 @@ function dayRecapFrom(recap: EndOfDayRecapView, cutoff: string): DayCloseRecap {
     // Settlement per bank and unmatched standalone are not in the contract yet.
     settlement: null,
     standaloneUnmatched: null,
+    unsyncedReceiptCount: recap.unsyncedReceiptCount,
     stockDeduction: {
       available: true,
       applied: recap.inventoryDeductionApplied,

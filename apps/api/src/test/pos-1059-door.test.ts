@@ -25,9 +25,11 @@
 //     map of the old counter), once from the same tenant and once from
 //     another tenant. Locked ticket T must stay 429. The lock must survive a
 //     fresh app instance (module state reset), i.e. it lives in the database.
-//   - R2-05: the acting-staff token is issued on a shared-mode device of
+//   - R2-05: the acting-staff token is issued on a registered device of
 //     outlet A for a staff member whose role covers the whole tenant. A ticket
-//     of outlet B is refused with the same uniform 403 and stays unopened.
+//     of outlet B stays unopened: unknown or wrong credentials answer the
+//     uniform 403, a matching QR/PIN answers ACTING_STAFF_OUTLET_MISMATCH
+//     (1128, CTO 19 Nov: after the credential matched, no ticket data).
 //   - R2-06: the sale is stalled at the insert of the ticket row (a temporary
 //     trigger waits on an advisory lock the test holds), the device is switched
 //     to training in the meantime. Either outcome is accepted: the sale is
@@ -738,12 +740,30 @@ const byPin = (bought: Bought, credential: Credential) => ({
   pin: credential.pin,
 });
 
+async function pinGuessRows(): Promise<number> {
+  const { rows } = await asOwnerTenant(tenant.tenantId, (db) =>
+    db.query<{ n: string }>(
+      "SELECT count(*)::text AS n FROM access_ticket_pin_guesses WHERE tenant_id = $1",
+      [tenant.tenantId],
+    ),
+  );
+  return Number(rows[0]?.n);
+}
+
 function expectDoorRefused(response: {
   status: number;
   body: { error?: { code?: string }; code?: string };
 }) {
   expect(response.status, JSON.stringify(response.body)).toBe(403);
   expect(errorCode(response.body)).toBe("DOOR_CREDENTIAL_INVALID");
+}
+
+function expectOutletMismatch(response: {
+  status: number;
+  body: { error?: { code?: string }; code?: string };
+}) {
+  expect(response.status, JSON.stringify(response.body)).toBe(403);
+  expect(errorCode(response.body)).toBe("ACTING_STAFF_OUTLET_MISMATCH");
 }
 
 function expectDoorOpened(
@@ -1028,10 +1048,19 @@ describe("R2-04 / legend-0xt77 the PIN guess limit cannot be reset", () => {
 // ---- R2-05: acting-staff token limits the door to its outlet -------------------------
 
 describe("R2-05 door check respects the outlet of the acting-staff token", () => {
+  // Since 1094 the door screens are closed on a SHARED tablet
+  // (SHARED_DEVICE_SCREEN_CLOSED, founder Q29), so the outlet-token checks run on
+  // a registered tablet of outlet A without shared_mode (as in the 1128 test).
+  let doorTabletA: string;
+  beforeAll(async () => {
+    doorTabletA = randomUUID();
+    await registerDevice(doorTabletA, tenant.outletId, "Tablet Pintu A");
+  });
+
   async function actingToken(): Promise<string> {
     const response = await authed(
       sharedSession.client.post("/api/staff-pins/pos-session"),
-      actingDeviceId,
+      doorTabletA,
     ).send({ userId: doorStaff.userId, pin: PIN });
     expect(response.status, JSON.stringify(response.body)).toBe(201);
     return response.body.data.token as string;
@@ -1044,25 +1073,38 @@ describe("R2-05 door check respects the outlet of the acting-staff token", () =>
   ) {
     return authed(
       sharedSession.client.post("/api/facility/tickets/door-check"),
-      actingDeviceId,
+      doorTabletA,
     )
       .set(ACTING_STAFF_HEADER, token)
       .send({ facilityId, ...body });
   }
 
-  it("R2-05-a with a token and device of outlet A, the QR and PIN of a ticket of outlet B are refused (uniform 403) and the ticket stays unopened; a ticket of outlet A opens", async () => {
+  it("R2-05-a with a token and device of outlet A, the right QR and PIN of a ticket of outlet B answer 403 ACTING_STAFF_OUTLET_MISMATCH (1128) with no ticket data, and the ticket stays unopened; a ticket of outlet A opens", async () => {
     const token = await actingToken();
     const ticketA = await paidTicket(siteA);
     const credentialA = await mintOk(ticketA, siteA);
     const ticketB = await paidTicket(siteB);
     const credentialB = await mintOk(ticketB, siteB);
 
-    expectDoorRefused(
-      await actingDoorCheck(token, byQr(credentialB), ids.facilityOB),
+    const byQrB = await actingDoorCheck(
+      token,
+      byQr(credentialB),
+      ids.facilityOB,
     );
-    expectDoorRefused(
-      await actingDoorCheck(token, byPin(ticketB, credentialB), ids.facilityOB),
+    const byPinB = await actingDoorCheck(
+      token,
+      byPin(ticketB, credentialB),
+      ids.facilityOB,
     );
+    for (const response of [byQrB, byPinB]) {
+      expectOutletMismatch(response);
+      // The 403 carries no data of the ticket of the other outlet.
+      expect(response.body.data).toBeUndefined();
+      const raw = JSON.stringify(response.body);
+      expect(raw).not.toContain(ticketB.ticketId);
+      expect(raw).not.toContain(credentialB.qrToken);
+      expect(raw).not.toContain(credentialB.pin);
+    }
     await expectUnopened(ticketB.ticketId);
 
     // Control: the same staff, token and device open the ticket of outlet A.
@@ -1072,28 +1114,85 @@ describe("R2-05 door check respects the outlet of the acting-staff token", () =>
     );
   });
 
-  it("R2-05-b the refusal for the other outlet is identical to the refusal of an unknown token", async () => {
+  it("R2-05-b the mismatch answer comes only AFTER the credential matched: an unknown QR, a wrong PIN or an unknown ticket of the other outlet stay the uniform DOOR_CREDENTIAL_INVALID (no oracle)", async () => {
     const token = await actingToken();
     const ticketB = await paidTicket(siteB);
     const credentialB = await mintOk(ticketB, siteB);
 
-    const otherOutlet = await actingDoorCheck(
-      token,
-      byQr(credentialB),
-      ids.facilityOB,
-    );
     const unknown = await actingDoorCheck(
       token,
       { qrToken: `guess-${short()}` },
       ids.facility,
     );
-    expectDoorRefused(otherOutlet);
+    const wrongPinOtherOutlet = await actingDoorCheck(
+      token,
+      { ticketId: ticketB.ticketId, pin: wrongPinFor(credentialB, 1) },
+      ids.facilityOB,
+    );
     expectDoorRefused(unknown);
-    expect(otherOutlet.body.error.message).toBe(unknown.body.error.message);
+    expectDoorRefused(wrongPinOtherOutlet);
+    expect(wrongPinOtherOutlet.body.error.message).toBe(
+      unknown.body.error.message,
+    );
+    // The ticket of the other outlet was never opened and never named.
+    expect(JSON.stringify(wrongPinOtherOutlet.body)).not.toContain(
+      ticketB.ticketId,
+    );
     await expectUnopened(ticketB.ticketId);
   });
 
-  it("R2-05-c without a token the tenant-wide staff still opens the ticket of outlet B (the cut applies only to the outlet token)", async () => {
+  it("R2-05-d a token whose outlet is outside the staff's reach is refused with the uniform 403 before any lookup (never the mismatch code), the ticket stays unopened and no PIN guess is stored", async () => {
+    const tabletB = randomUUID();
+    await registerDevice(tabletB, outletB, "Tablet Pintu B");
+    await setStaffPin(
+      sessionContext(),
+      doorStaff.userId,
+      { outletId: outletB, userId: doorStaff.userId },
+      { pin: PIN },
+    );
+    const issued = await authed(
+      sharedSession.client.post("/api/staff-pins/pos-session"),
+      tabletB,
+    ).send({ userId: doorStaff.userId, pin: PIN });
+    expect(issued.status, JSON.stringify(issued.body)).toBe(201);
+    const tokenB = issued.body.data.token as string;
+
+    const ticketA = await paidTicket(siteA);
+    const credentialA = await mintOk(ticketA, siteA);
+    const guessesBefore = await pinGuessRows();
+    // The staff reach shrinks to outlet A after the token of outlet B was issued.
+    await owner.query(
+      `UPDATE role_assignments SET scope_type = 'outlet', scope_id = $3
+        WHERE tenant_id = $1 AND user_id = $2`,
+      [tenant.tenantId, doorStaff.userId, tenant.outletId],
+    );
+    try {
+      const response = await authed(
+        sharedSession.client.post("/api/facility/tickets/door-check"),
+        tabletB,
+      )
+        .set(ACTING_STAFF_HEADER, tokenB)
+        .send({ facilityId: ids.facility, ...byQr(credentialA) });
+      expect(
+        response.status,
+        JSON.stringify(response.body),
+      ).toBeGreaterThanOrEqual(400);
+      expect(response.status, JSON.stringify(response.body)).toBeLessThan(500);
+      expect(errorCode(response.body)).not.toBe("ACTING_STAFF_OUTLET_MISMATCH");
+      expect(response.body.data).toBeUndefined();
+      expect(JSON.stringify(response.body)).not.toContain(ticketA.ticketId);
+    } finally {
+      await owner.query(
+        `UPDATE role_assignments SET scope_type = 'tenant', scope_id = NULL
+          WHERE tenant_id = $1 AND user_id = $2`,
+        [tenant.tenantId, doorStaff.userId],
+      );
+    }
+    await expectUnopened(ticketA.ticketId);
+    expect(await pinGuessRows()).toBe(guessesBefore);
+  });
+
+  it("R2-05-c without a token the tenant-wide staff still opens the ticket of outlet B (the outlet check applies only to the outlet token)", async () => {
     const ticketB = await paidTicket(siteB);
     const credentialB = await mintOk(ticketB, siteB);
     expectDoorOpened(

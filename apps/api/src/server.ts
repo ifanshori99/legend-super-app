@@ -29,6 +29,7 @@ import {
   attachKdsRealtime,
   listenKdsWakeups,
 } from "./services/kds-realtime.ts";
+import { isUpgradeOnSharedDevice } from "./middleware/shared-device-allowlist.ts";
 import { resolveKdsStaffConnection } from "./services/kds-realtime-auth.ts";
 import { createDeviceOutletResolver } from "./services/device-outlet-resolver.ts";
 import { setDeviceOutletResolver } from "./services/device-pin.service.ts";
@@ -58,6 +59,10 @@ logger.info(
   { doitRefundsEnabled: env.DOIT_REFUNDS_ENABLED },
   "DOIT_REFUNDS_ENABLED",
 );
+if (env.DOIT_REFUNDS_ENABLED)
+  logger.warn(
+    "Refund otomatis penyedia AKTIF; rilis 1 wajib false (DOIT_REFUNDS_ENABLED)",
+  );
 // Sub-302 D3: Duitku joins the registry when its public callback origin and
 // return page are configured; without them no Duitku intent could be paid,
 // so the provider stays unregistered (fail closed, cannot be enabled on the
@@ -115,6 +120,8 @@ guardEdgeUpgrades(server, { edgeMode: env.EDGE_MODE });
 // subscriptions deny by default. Wakeups contain IDs only and follow commit.
 const realtime = attachNotificationRealtime(server, {
   trustedOrigins: env.trustedOrigins,
+  // Shared tablets get no notifications (legend-iq0jz, founder Q29).
+  isSharedDevice: isUpgradeOnSharedDevice,
 });
 const stopWakeups = listenNotificationWakeups(pool, realtime.dispatch).catch(
   (error: unknown) => {

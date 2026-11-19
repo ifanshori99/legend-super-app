@@ -1,7 +1,9 @@
 // Payment back office (PRD §3 F13): gateway routing, EDC terminals and the
 // cashier default tender, refunds with approval, unallocated funds (PAY-04)
 // and settlement reconciliation cases (EDC-06). Each tab loads its own data,
-// so opening the page never fires six requests at once.
+// so opening the page never fires six requests at once (only the open-hold
+// count for the tab badge loads up front, and only for accounts that see that
+// tab).
 import { useEffect, useRef, useState } from "react";
 import {
   Banknote,
@@ -9,6 +11,7 @@ import {
   KeyRound,
   Route,
   Scale,
+  ShieldAlert,
   Undo2,
 } from "lucide-react";
 import { useT } from "@/components/i18n";
@@ -18,10 +21,12 @@ import { useRouteContext } from "@tanstack/react-router";
 import { cn } from "cn";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { ANONYMOUS_ACCESS, type AreaAccess } from "@/lib/areas/access";
+import { useRefundReconHolds } from "../hooks";
 import { visiblePaymentAdminTabs, type PaymentAdminTab } from "../lib";
 import { DuitkuCredentialsPanel } from "./duitku-credentials-panel";
 import { EdcPanel } from "./edc-panel";
 import { ReconciliationPanel } from "./reconciliation-panel";
+import { RefundHoldsPanel } from "./refund-holds-panel";
 import { RefundsPanel } from "./refunds-panel";
 import { RoutingPanel } from "./routing-panel";
 import { UnallocatedPanel } from "./unallocated-panel";
@@ -108,6 +113,12 @@ export function PaymentAdminPage({
   const show = (id: PaymentAdminTab) => tabs.includes(id);
   const active = resolvePaymentAdminTab(tab, tabs);
   const { listRef, more } = useTabStrip(active);
+  // Same query (and cache entry) the tab opens with, so the badge is free. Only
+  // fetched when the account may see the tab (the API needs payment.reconcile
+  // and would answer 403 otherwise).
+  const openHolds = useRefundReconHolds("open", show("refund-holds"));
+  const openHoldCount = openHolds.data?.data.length ?? 0;
+  const moreHolds = Boolean(openHolds.data?.meta.nextCursor);
   return (
     <section
       aria-labelledby="payment-admin-title"
@@ -170,6 +181,22 @@ export function PaymentAdminPage({
                 {t("paymentAdmin.tabs.reconciliation")}
               </TabsTrigger>
             )}
+            {show("refund-holds") && (
+              <TabsTrigger value="refund-holds">
+                <ShieldAlert aria-hidden="true" />
+                {t("paymentAdmin.tabs.refundHolds")}
+                {openHoldCount > 0 && (
+                  <Badge tone="warning">
+                    {openHoldCount}
+                    {moreHolds ? "+" : ""}
+                    <span className="sr-only">
+                      {" "}
+                      {t("paymentAdmin.refundHolds.openCount")}
+                    </span>
+                  </Badge>
+                )}
+              </TabsTrigger>
+            )}
           </TabsList>
           <div
             aria-hidden="true"
@@ -218,6 +245,11 @@ export function PaymentAdminPage({
         {show("reconciliation") && (
           <TabsContent value="reconciliation">
             <ReconciliationPanel />
+          </TabsContent>
+        )}
+        {show("refund-holds") && (
+          <TabsContent value="refund-holds">
+            <RefundHoldsPanel />
           </TabsContent>
         )}
       </Tabs>

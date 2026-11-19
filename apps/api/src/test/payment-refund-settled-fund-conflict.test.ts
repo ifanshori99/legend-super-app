@@ -25,6 +25,7 @@ import {
 } from "@starter/shared/core/server";
 import type { ScopedTenantContext } from "@starter/shared/core";
 import { createApp } from "../app";
+import { env } from "../config/env";
 import { resetPaymentWebhookRateLimits } from "../routes/payment-webhook.routes";
 import { createDoitGateway } from "../services/payment-doit";
 import { setPaymentGateway } from "../services/payment-gateway";
@@ -81,7 +82,13 @@ let doitBaseUrl = "";
 
 const hex = (bytes = 6) => randomBytes(bytes).toString("hex");
 
+// 1108: these suites exercise the ACTIVE refund webhook path; with the switch off
+// every matched refund event is hold-only (1101/1108 P1-1), so turn it on here.
+const flags = env as unknown as { DOIT_REFUNDS_ENABLED: boolean };
+const flagBefore = flags.DOIT_REFUNDS_ENABLED;
+
 beforeAll(async () => {
+  flags.DOIT_REFUNDS_ENABLED = true;
   await scope.seed(owner);
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
@@ -130,6 +137,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  flags.DOIT_REFUNDS_ENABLED = flagBefore;
   setPaymentGateway(null);
   setPaymentRefundGateway(null);
   await cleanupRows();
@@ -156,6 +164,11 @@ afterAll(async () => {
 });
 
 async function cleanupRows() {
+  // 1075 I8: a success on a refund settled outside the provider is held.
+  await owner.query(
+    "DELETE FROM refund_recon_holds WHERE payment_intent_id = ANY($1::uuid[])",
+    [intentIds],
+  );
   await owner.query(
     "DELETE FROM payment_refunds WHERE payment_intent_id = ANY($1::uuid[])",
     [intentIds],
@@ -398,6 +411,12 @@ describe("legend-kl46s DOIT reports a fund refund that finance settled by hand",
     ]);
     expect((await conflictAudits(refundId)).length).toBeGreaterThanOrEqual(1);
     expect(await refundRow(refundId)).toEqual(before);
+    // 1075 I8: paying twice is possible, so the intent stays held.
+    const { rows: holds } = await owner.query<{ n: string }>(
+      "SELECT count(*)::text AS n FROM refund_recon_holds WHERE payment_intent_id = (SELECT payment_intent_id FROM payment_refunds WHERE id = $1) AND resolved_at IS NULL",
+      [refundId],
+    );
+    expect(Number(holds[0]?.n)).toBeGreaterThanOrEqual(1);
   });
 
   it("two live refunds on p2 are ambiguous: no conflict, nothing changes", async () => {

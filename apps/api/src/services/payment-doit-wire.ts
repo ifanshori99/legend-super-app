@@ -520,6 +520,10 @@ const REFUND_SUCCEEDED_STATUSES = [
   "completed",
   "refunded",
 ];
+/** True when a refund object's `status` is any wire spelling of success. */
+export function isDoitRefundSuccessStatus(status: string): boolean {
+  return REFUND_SUCCEEDED_STATUSES.includes(status);
+}
 const REFUND_PENDING_STATUSES = ["pending", "processing", "requested"];
 
 const CANONICAL_INTEGER = /^(0|[1-9][0-9]{0,15})$/;

@@ -28,6 +28,10 @@ async function dispatch(
     platform: "darwin",
     execPath: "/test/node",
     once() {},
+    exit(code) {
+      this.exitCode = code;
+      throw new Error(`exit:${code}`);
+    },
   };
   const dependencies = {
     process: fakeProcess,
@@ -176,23 +180,27 @@ test("Default selection still runs API and every root suite", async () => {
   ]);
 });
 
-test("Empty and whitespace-only selections preserve the default suites", async () => {
-  for (const selection of ["", " ", "\t\n"]) {
-    const calls = await dispatch({ LEGEND_TEST_FILES: selection });
-    assert.ok(apiCall(calls));
-    assert.deepEqual(rootCall(calls)?.args, [
-      "--test",
-      "tests/one.test.mjs",
-      "tests/two.test.mjs",
-    ]);
-  }
+test("An absent selection preserves the default suites", async () => {
+  const calls = await dispatch({});
+  assert.ok(apiCall(calls));
+  assert.deepEqual(rootCall(calls)?.args, [
+    "--test",
+    "tests/one.test.mjs",
+    "tests/two.test.mjs",
+  ]);
 });
 
-test("Full unit suites keep the 1536m PostgreSQL budget for absent or blank selections", async () => {
-  for (const selection of [undefined, "", " ", "\t\n"]) {
-    const env = selection === undefined ? {} : { LEGEND_TEST_FILES: selection };
-    const calls = await dispatch(env);
-    assert.equal(postgresCall(calls).env.STARTER_TEST_PG_MEM, "1536m");
+test("Full unit suites keep the 1536m PostgreSQL budget for an absent selection", async () => {
+  const calls = await dispatch({});
+  assert.equal(postgresCall(calls).env.STARTER_TEST_PG_MEM, "1536m");
+});
+
+test("A blank LEGEND_TEST_FILES is refused instead of running the full suite", async () => {
+  for (const selection of ["", " ", "\t\n"]) {
+    await assert.rejects(
+      () => dispatch({ LEGEND_TEST_FILES: selection }),
+      /exit:1/,
+    );
   }
 });
 
@@ -233,7 +241,6 @@ test("Production browser suites keep the 1536m PostgreSQL budget even with unit 
 test("Explicit PostgreSQL memory budgets are preserved for full, targeted, and browser suites", async () => {
   for (const { mode, selection } of [
     { mode: "unit" },
-    { mode: "unit", selection: "" },
     { mode: "unit", selection: "src/test/example.test.ts" },
     { mode: "e2e" },
     { mode: "e2e", selection: "src/test/example.test.ts" },

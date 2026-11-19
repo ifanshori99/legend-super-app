@@ -572,19 +572,26 @@ register(closeFiscalPeriod, ({ params, body }) => {
 
 register(getPeriodSnapshot, ({ params }) => {
   const period = findPeriod(params.fiscalPeriodId);
-  if (period.status !== "closed")
+  const stored = state.get().snapshots.get(period.id);
+  // September's close predates the fixture's stored snapshot; rebuild the row
+  // the close would have written. An open period keeps its last snapshot
+  // (history after a reopen); never closed means no snapshot.
+  if (!stored && period.status !== "closed")
     throw new ApiError(
       404,
       "NOT_FOUND",
-      "Snapshot hanya tersedia untuk periode yang sudah ditutup.",
+      "Snapshot hanya tersedia untuk periode yang pernah ditutup.",
     );
-  const existing = state.get().snapshots.get(period.id);
-  if (existing) return { data: existing };
-  // September's close predates the fixture's stored snapshot; rebuild the row
-  // the close would have written.
-  const snapshot = snapshotFor(period);
-  state.get().snapshots.set(period.id, snapshot);
-  return { data: snapshot };
+  const snapshot = stored ?? snapshotFor(period);
+  if (!stored) state.get().snapshots.set(period.id, snapshot);
+  // Like the API: the period's current status and version ride along.
+  return {
+    data: periodCloseSnapshotSchema.parse({
+      ...snapshot,
+      periodStatus: period.status,
+      periodVersion: period.version,
+    }),
+  };
 });
 
 register(requestPeriodReopen, ({ params, body }) => {

@@ -351,6 +351,13 @@ export function decodeConfigBundle(
  * a stored template can always be imported. A bundle without a `roles`
  * section may reference roles of the target tenant: those keys are only
  * checked at import (`decodeConfigBundle` with `existingRoleKeys`).
+ *
+ * TEMPLATE VALIDATION ONLY (legend-srfud): this assumes every tax rule that a
+ * facility references is tenant-wide and the point value is unlocked. It must
+ * never be used as import validation. An importer calls `decodeConfigBundle`
+ * with the target's real tax-rule owners (`existingTaxRuleOutletKeyByKey`) and
+ * its real point-value lock (`lockedPointValueIdr`); both fail closed when
+ * missing.
  */
 export function configBundleReferenceIssues(
   bundle: ConfigBundle,

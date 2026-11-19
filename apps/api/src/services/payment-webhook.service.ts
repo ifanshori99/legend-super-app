@@ -25,6 +25,7 @@ import { createHash } from "node:crypto";
 import {
   CoreError,
   createUlid,
+  idr,
   isoDateTimeSchema,
   tenantIdSchema,
   uuidSchema,
@@ -52,9 +53,11 @@ import {
   gatewayWebhookEvents,
   paymentIntents,
   paymentEvidence,
+  paymentProviderRefunds,
   paymentRecurringSubscriptions,
   paymentRefunds,
   paymentUnallocatedFunds,
+  refundReconHolds,
   tenants,
   type GatewayWebhookEvent,
 } from "../db/schema";
@@ -85,7 +88,24 @@ import {
   applyRefundProviderUpdate,
   SETTLED_OUTSIDE_PROVIDER,
 } from "./payment-refund.service";
-import { recordProviderRefundInTx } from "./payment-provider-partial-refund";
+import { refundProviderSwitchedOff } from "./payment-refund-gateway";
+import { holdFactCoversSql } from "./refund-hold-coverage";
+import { HOLD_TRANSACTION_CONFLICT_REASON } from "./refund-hold-reasons";
+import {
+  fileOwnRefundSurplusHoldInTx,
+  fileTransactionConflictHoldInTx,
+  recordProviderRefundInTx,
+  type ProviderRefundIdKind,
+} from "./payment-provider-partial-refund";
+import { lockDepositIntentsExclusive } from "./reservation-deposit-credit";
+import {
+  alertProviderRefundSwitchedOff,
+  alertProviderRefundTransactionConflict,
+  alertProviderRefundUnbound,
+  alertProviderRefundUnmatched,
+  alertProviderRefundUnmatchedUnmapped,
+  alertRefundReferenceMismatch,
+} from "./payment-provider-refunded-alert";
 import { gatewayWebhookTolerance } from "./platform-payment-gateway.service";
 import { processDoitInvoiceEvent } from "./payment-recurring.service";
 import {
@@ -98,6 +118,7 @@ import {
   doitWebhookEnvelopeSchema,
   doitWebhookEventSchema,
   isDoitPaymentEvent,
+  isDoitRefundSuccessStatus,
   readDoitRefundedStatusFacts,
   verifyDoitSignature,
   type DoitRefundedStatusFacts,
@@ -827,6 +848,1081 @@ async function findRefundCandidate(
   });
 }
 
+/** 1077 R1: the hold key of an unreadable matched success. `refund_recon_holds
+ * .provider_refund_id` is varchar(100) and the parser accepts ids up to 100
+ * characters, so `invalid:<id>` can overflow and roll the hold back (the
+ * webhook then fails and nothing stops the money). Up to the column limit the
+ * key stays `invalid:<id>` (keys already stored keep their identity); a longer
+ * one is `invalid-h:` plus the SHA-256 of the full id (74 characters, never
+ * truncated, so different ids stay different). The prefixes differ at the
+ * eighth character, so a hashed key never equals a plain one. */
+const REFUND_HOLD_ID_MAX = 100;
+function invalidReportHoldRefundId(rawId: string): string {
+  const plain = `invalid:${rawId}`;
+  if (plain.length <= REFUND_HOLD_ID_MAX) return plain;
+  return `invalid-h:${createHash("sha256").update(rawId).digest("hex")}`;
+}
+
+const REFERENCE_MISMATCH_HOLD_REASON =
+  "Refund penyedia menyebut pembayaran lain dari pembayaran yang dikembalikan (REFERENCE_MISMATCH)";
+
+/** legend-9s33i (1025 C): a signed refund event whose reference names another
+ * intent than the one owning its payment id is not dropped without a trace:
+ * an open recon hold on the intent that owns the payment id (blocks its
+ * refunds and payouts until finance matches it) and one supervisor alert,
+ * sent by the winner of the insert (unique per stored event, so a replay, a
+ * worker retry and a concurrent delivery add neither). Still no refund row, no
+ * stamp, no journal. */
+async function holdRefundReferenceMismatch(
+  context: ScopedTenantContext,
+  row: GatewayWebhookEvent,
+  intent: PaymentIntentRow,
+  refund: {
+    providerRefundId: string | null;
+    amountIdr: number;
+    /** The provider payment id the event names (stored on the hold, so
+     * finance counts the refund against that transaction). */
+    providerPaymentRef?: string | null;
+    /** Status the refund carries: only a succeeded one (or one that names no
+     * status, on a `refund.succeeded` event) is held. */
+    refundStatus?: string;
+    /** Our refund whose key the event matched (R). Used when the event names
+     * no refund id: the hold then has a fixed key (R, the owner intent and the
+     * named payment id), not the stored event id, so two envelopes of the same
+     * report make one hold (1101 F6). */
+    matchedRefundId?: string;
+  },
+  now: Date,
+): Promise<void> {
+  if (
+    refund.refundStatus !== undefined &&
+    !isDoitRefundSuccessStatus(refund.refundStatus)
+  )
+    return;
+  // 1101 F6: own domain, so it never meets an event id or another hold key.
+  // Generation 1 is the key itself; generation g >= 2 adds "\0gen\0<g>" (I7,
+  // below). A hash stands for the whole family of the key.
+  const fixedKeyDomain =
+    refund.providerRefundId === null && refund.matchedRefundId
+      ? `refund_recon_hold.mismatch_no_refund_id\0${context.tenant.tenantId}\0${intent.id.toLowerCase()}\0${refund.providerPaymentRef ?? ""}\0${refund.matchedRefundId.toLowerCase()}`
+      : null;
+  const hashedEventId = (input: string): string => {
+    const hex = createHash("sha256").update(input).digest("hex");
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+  };
+  // 1108 P2: a hold an earlier build stored for THIS stored event (key = the
+  // event id) is the first generation of the family: the retry of that event
+  // raises it and never files a second, countable hold under the new key.
+  // Found under the locks below.
+  let legacyFirst = false;
+  let legacyHeldAmount: number | null = null;
+  const generationEventId = (generation: number): string =>
+    fixedKeyDomain === null || (legacyFirst && generation === 1)
+      ? row.id
+      : hashedEventId(
+          generation === 1
+            ? fixedKeyDomain
+            : `${fixedKeyDomain}\0gen\0${generation}`,
+        );
+  let eventKey = generationEventId(1);
+  await withTenant(db, context, async (tx) => {
+    // legend-xmtih: the hold limits the DP credit of the intent, so it is made
+    // under the same locks as a provider refund (the intent row, then the
+    // deposit-intent locks exclusive): a credit apply holding them shared
+    // commits first, or the hold is already visible to the apply that follows.
+    await tx
+      .select({ id: paymentIntents.id })
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, context.tenant.tenantId),
+          eq(paymentIntents.id, intent.id),
+        ),
+      )
+      .for("update");
+    await lockDepositIntentsExclusive(tx, context.tenant.tenantId, intent.id);
+    if (fixedKeyDomain !== null) {
+      const [legacy] = await tx
+        .select({ id: refundReconHolds.id })
+        .from(refundReconHolds)
+        .where(
+          and(
+            eq(refundReconHolds.tenantId, context.tenant.tenantId),
+            eq(refundReconHolds.paymentIntentId, intent.id),
+            eq(refundReconHolds.webhookEventId, row.id),
+            isNull(refundReconHolds.providerRefundId),
+          ),
+        )
+        .limit(1);
+      legacyFirst = legacy !== undefined;
+      eventKey = generationEventId(1);
+      if (!legacyFirst) {
+        // 1108 P2: another envelope (E') of the same report, after an upgrade:
+        // an earlier build already holds the report under ITS event id (a stored
+        // event of this tenant, not a hash key). A second countable mismatch
+        // hold would let finance book one report twice, so the new first
+        // generation is filed as a CONFLICT hold (finance cannot count it) for
+        // the larger of the two amounts. A retry of E itself found its own old
+        // hold above.
+        const legacyHolds = await tx
+          .select({ amountIdr: refundReconHolds.amountIdr })
+          .from(refundReconHolds)
+          .where(
+            and(
+              eq(refundReconHolds.tenantId, context.tenant.tenantId),
+              eq(refundReconHolds.paymentIntentId, intent.id),
+              isNull(refundReconHolds.providerRefundId),
+              isNull(refundReconHolds.providerRefundIdKind),
+              eq(refundReconHolds.reason, REFERENCE_MISMATCH_HOLD_REASON),
+              sql`coalesce(${refundReconHolds.providerPaymentRef}, '') = ${refund.providerPaymentRef ?? ""}`,
+              inArray(
+                refundReconHolds.webhookEventId,
+                tx
+                  .select({ id: gatewayWebhookEvents.id })
+                  .from(gatewayWebhookEvents)
+                  .where(
+                    eq(gatewayWebhookEvents.tenantId, context.tenant.tenantId),
+                  ),
+              ),
+            ),
+          )
+          .for("update");
+        if (legacyHolds.length > 0)
+          legacyHeldAmount = Math.max(
+            ...legacyHolds.map((hold) => Number(hold.amountIdr)),
+          );
+      }
+    }
+    const [held] = await tx
+      .insert(refundReconHolds)
+      .values({
+        tenantId: context.tenant.tenantId,
+        paymentIntentId: intent.id,
+        webhookEventId: eventKey,
+        providerRefundId: refund.providerRefundId,
+        // The id a refund event names is the provider's own (1035).
+        providerRefundIdKind:
+          refund.providerRefundId === null ? null : "provider",
+        amountIdr: idr(Math.max(refund.amountIdr, legacyHeldAmount ?? 0)),
+        providerPaymentRef: refund.providerPaymentRef ?? null,
+        reason:
+          legacyHeldAmount === null
+            ? REFERENCE_MISMATCH_HOLD_REASON
+            : HOLD_TRANSACTION_CONFLICT_REASON,
+        flaggedAt: now,
+      })
+      // Per stored event, and per provider refund id of the intent: a replay,
+      // a worker retry or the provider resending the refund adds no second hold.
+      .onConflictDoNothing()
+      .returning({ id: refundReconHolds.id });
+    if (!held) {
+      // 1090 P1-1: the same report again (same stored event) or another report
+      // of the same provider refund id and transaction. An OPEN hold of that
+      // identity is never lowered, and it is raised to the larger amount: a
+      // later report that names the whole payment (amount unreadable, 1077 R2)
+      // must not be swallowed by a smaller hold, or the deposit credit (which
+      // is limited by the open hold amount) would still spend the difference.
+      // Done under the intent row and deposit-intent locks taken above. A
+      // hold finance already resolved is not touched.
+      const raised = await tx
+        .update(refundReconHolds)
+        .set({
+          amountIdr: sql`greatest(${refundReconHolds.amountIdr}, ${refund.amountIdr})`,
+        })
+        .where(
+          and(
+            eq(refundReconHolds.tenantId, context.tenant.tenantId),
+            eq(refundReconHolds.paymentIntentId, intent.id),
+            isNull(refundReconHolds.resolvedAt),
+            sql`${refundReconHolds.amountIdr} < ${refund.amountIdr}`,
+            refund.providerRefundId === null
+              ? eq(refundReconHolds.webhookEventId, eventKey)
+              : or(
+                  eq(refundReconHolds.webhookEventId, eventKey),
+                  and(
+                    eq(refundReconHolds.providerRefundIdKind, "provider"),
+                    eq(
+                      refundReconHolds.providerRefundId,
+                      refund.providerRefundId,
+                    ),
+                    sql`coalesce(${refundReconHolds.providerPaymentRef}, '') = ${refund.providerPaymentRef ?? ""}`,
+                  ),
+                ),
+          ),
+        )
+        .returning({ id: refundReconHolds.id });
+      if (raised.length === 0) {
+        // Nothing open to raise. A hold of this provider refund id that finance
+        // already resolved is not reopened, but a larger report of the same
+        // identity is new evidence (the deposit credit and refunds of the
+        // transaction were open again): it goes through the one rule of the
+        // conflict door (1072 I7), which opens a hold for the full reported
+        // amount when it is above the largest ever held for the key.
+        if (refund.providerRefundId === null) {
+          // 1101 I7: a no-id hold with the fixed key. A hold finance already
+          // resolved is not reopened, but a report above the largest amount
+          // ever held for the key (every generation, open or resolved) is new
+          // evidence: an open generation is raised, else a new generation is
+          // filed (CONFLICT reason, full amount: finance cannot count it, so
+          // it never books twice). A replay (same or smaller) adds nothing.
+          if (fixedKeyDomain === null) return;
+          const family = await tx
+            .select({
+              id: refundReconHolds.id,
+              webhookEventId: refundReconHolds.webhookEventId,
+              amountIdr: refundReconHolds.amountIdr,
+              resolvedAt: refundReconHolds.resolvedAt,
+            })
+            .from(refundReconHolds)
+            .where(
+              and(
+                eq(refundReconHolds.tenantId, context.tenant.tenantId),
+                eq(refundReconHolds.paymentIntentId, intent.id),
+                isNull(refundReconHolds.providerRefundId),
+                sql`coalesce(${refundReconHolds.providerPaymentRef}, '') = ${refund.providerPaymentRef ?? ""}`,
+              ),
+            )
+            .for("update");
+          const generationOf = new Map<string, number>();
+          for (
+            let generation = 1;
+            generation <= family.length + 1;
+            generation++
+          )
+            generationOf.set(generationEventId(generation), generation);
+          const mine = family.filter((hold) =>
+            generationOf.has(hold.webhookEventId),
+          );
+          const maxHeld = Math.max(
+            0,
+            ...mine.map((hold) => Number(hold.amountIdr)),
+          );
+          if (refund.amountIdr <= maxHeld) return;
+          const alertGeneration = (generation: number) =>
+            alertProviderRefundTransactionConflict(
+              tx,
+              context,
+              {
+                intentId: intent.id,
+                outletId: intent.outletId,
+                dedupKey: `${refund.providerPaymentRef ?? ""}\0${eventKey}\0${generation}`,
+                amountIdr: refund.amountIdr,
+              },
+              now,
+            );
+          const openHold = mine.find((hold) => hold.resolvedAt === null);
+          if (openHold) {
+            const raisedOpen = await tx
+              .update(refundReconHolds)
+              .set({
+                amountIdr: sql`greatest(${refundReconHolds.amountIdr}, ${refund.amountIdr})`,
+                reason: HOLD_TRANSACTION_CONFLICT_REASON,
+              })
+              .where(
+                and(
+                  eq(refundReconHolds.id, openHold.id),
+                  isNull(refundReconHolds.resolvedAt),
+                ),
+              )
+              .returning({ id: refundReconHolds.id });
+            if (raisedOpen.length > 0)
+              await alertGeneration(
+                generationOf.get(openHold.webhookEventId) ?? 1,
+              );
+            return;
+          }
+          const used = new Set(mine.map((hold) => hold.webhookEventId));
+          let generation = 1;
+          while (used.has(generationEventId(generation))) generation++;
+          const [added] = await tx
+            .insert(refundReconHolds)
+            .values({
+              tenantId: context.tenant.tenantId,
+              paymentIntentId: intent.id,
+              webhookEventId: generationEventId(generation),
+              providerRefundId: null,
+              providerRefundIdKind: null,
+              amountIdr: idr(refund.amountIdr),
+              providerPaymentRef: refund.providerPaymentRef ?? null,
+              reason: HOLD_TRANSACTION_CONFLICT_REASON,
+              flaggedAt: now,
+            })
+            .onConflictDoNothing()
+            .returning({ id: refundReconHolds.id });
+          if (added) await alertGeneration(generation);
+          return;
+        }
+        const sameKey = and(
+          eq(refundReconHolds.tenantId, context.tenant.tenantId),
+          eq(refundReconHolds.paymentIntentId, intent.id),
+          eq(refundReconHolds.providerRefundIdKind, "provider"),
+          eq(refundReconHolds.providerRefundId, refund.providerRefundId),
+          sql`coalesce(${refundReconHolds.providerPaymentRef}, '') = ${refund.providerPaymentRef ?? ""}`,
+        );
+        const [open] = await tx
+          .select({ id: refundReconHolds.id })
+          .from(refundReconHolds)
+          .where(and(sameKey, isNull(refundReconHolds.resolvedAt)))
+          .limit(1);
+        if (open) return;
+        const [resolved] = await tx
+          .select({ id: refundReconHolds.id })
+          .from(refundReconHolds)
+          .where(and(sameKey, isNotNull(refundReconHolds.resolvedAt)))
+          .limit(1);
+        if (!resolved) return;
+        await fileTransactionConflictHoldInTx(
+          tx,
+          context,
+          {
+            intentId: intent.id,
+            outletId: intent.outletId,
+            providerRefundId: refund.providerRefundId,
+            providerRefundIdKind: "provider",
+            providerPaymentRef: refund.providerPaymentRef ?? null,
+            amountIdr: refund.amountIdr,
+          },
+          now,
+        );
+        return;
+      }
+    }
+    await alertRefundReferenceMismatch(
+      tx,
+      context,
+      {
+        intentId: intent.id,
+        outletId: intent.outletId,
+        providerRefundId: refund.providerRefundId,
+        amountIdr: refund.amountIdr,
+      },
+      eventKey,
+      now,
+    );
+  });
+}
+
+/** 1101 (CTO decision 1, Q45; 1108 P1-1 covers every kind and outcome):
+ * while the DOIT refund switch is off, a signed success or failure on a
+ * matched refund (its key, its refund id, one finance settled by hand, or the
+ * payment object; valid or invalid payload) is not told apart from an echo,
+ * and no made-up or alias id is guessed. One CONFLICT hold per stored event,
+ * with no refund id, for the full value (`amountIdr`): only finance's
+ * `not_this_intent` closes it. No fact, no journal, no refund, no stamp. The
+ * stored event id is the key: a replay or a worker retry adds none (an open
+ * hold of the event is only raised). Same locks as every hold that limits the
+ * deposit credit: the intent row, then the deposit-intent locks exclusive.
+ * 1126: the same hold (and key rule) serves a signed success no refund of ours
+ * matches (`variant: "unmatched"`); only the finance alert text differs. */
+async function holdSwitchedOffRefundSuccess(
+  context: ScopedTenantContext,
+  row: GatewayWebhookEvent,
+  intent: PaymentIntentRow,
+  hold: {
+    providerPaymentRef: string | null;
+    amountIdr: number;
+    /** 1126 (`unmatched` only): the provider refund id the event names. The
+     * hold then goes through the one conflict-hold helper
+     * (`fileTransactionConflictHoldInTx`): once per intent, refund id and
+     * payment, raised and surplus generations as for every other door. Without
+     * it the key is the stored event id. */
+    providerRefundId?: string | null;
+    /** 1126 (`unmatched` with a refund id): the amount the event reports
+     * readably. Only a fact of this very intent, refund id and transaction
+     * that covers it makes the report a replay (no hold). */
+    reportedAmountIdr?: number;
+    /** 1139 P1-2: the intent was mapped by the event's `reference` only. The
+     * mapping is read again under the intent lock: the intent must still be
+     * this provider's, with this provider ref and the integration that was
+     * checked against the signature. Else `stale`: no hold. */
+    mappedByReference?: boolean;
+    /** 1139 P1-1 (`unmatched` only): first processing, inside the retry
+     * window. The hold is filed now but finance is not told yet: the refund
+     * may still match one of ours and close it. The pass after the window
+     * tells finance (the alert id is stable, so a replay adds none). */
+    deferAlert?: boolean;
+  },
+  now: Date,
+  variant: "switched_off" | "unmatched" = "switched_off",
+): Promise<"filed" | "skipped" | "stale"> {
+  return await withTenant(db, context, async (tx) => {
+    const [locked] = await tx
+      .select({
+        provider: paymentIntents.provider,
+        providerRef: paymentIntents.providerRef,
+        gatewayIntegrationId: paymentIntents.gatewayIntegrationId,
+      })
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, context.tenant.tenantId),
+          eq(paymentIntents.id, intent.id),
+        ),
+      )
+      .for("update");
+    if (
+      hold.mappedByReference &&
+      (!locked ||
+        locked.provider !== PROVIDER ||
+        locked.providerRef === null ||
+        locked.providerRef !== hold.providerPaymentRef ||
+        locked.gatewayIntegrationId !== intent.gatewayIntegrationId)
+    )
+      return "stale";
+    await lockDepositIntentsExclusive(tx, context.tenant.tenantId, intent.id);
+    // 1126: an unmatched success that names a provider refund id. A fact of
+    // THIS intent, this refund id and this transaction that covers the readable
+    // reported amount is the replay of money booked once: no hold. Anything
+    // else (the id booked on another intent or transaction, a smaller fact, an
+    // unreadable amount) is held, through the one conflict-hold helper (1045
+    // A4, 1055 G2, 1108 P1-2): once per (intent, refund id, transaction), an
+    // open hold raised to the conflict reason and the larger amount, a
+    // resolved one opens a surplus generation. Finance is told here, only when
+    // a hold was filed or changed.
+    if (variant === "unmatched" && hold.providerRefundId) {
+      const refundId = hold.providerRefundId;
+      if (hold.reportedAmountIdr !== undefined) {
+        const [covering] = await tx
+          .select({ id: paymentProviderRefunds.id })
+          .from(paymentProviderRefunds)
+          .where(
+            and(
+              eq(paymentProviderRefunds.tenantId, context.tenant.tenantId),
+              eq(paymentProviderRefunds.paymentIntentId, intent.id),
+              eq(paymentProviderRefunds.provider, PROVIDER),
+              eq(paymentProviderRefunds.refundIdKind, "provider"),
+              eq(paymentProviderRefunds.providerRefundId, refundId),
+              eq(
+                paymentProviderRefunds.providerPaymentRef,
+                hold.providerPaymentRef ?? "",
+              ),
+              sql`${paymentProviderRefunds.amountIdr} >= ${hold.reportedAmountIdr}`,
+            ),
+          )
+          .limit(1);
+        if (covering) return "skipped";
+      }
+      await fileTransactionConflictHoldInTx(
+        tx,
+        context,
+        {
+          intentId: intent.id,
+          outletId: intent.outletId,
+          providerRefundId: refundId,
+          providerRefundIdKind: "provider",
+          providerPaymentRef: hold.providerPaymentRef,
+          amountIdr: hold.amountIdr,
+          silent: true,
+        },
+        now,
+      );
+      // Inside the retry window finance is not told yet (`deferAlert`); after
+      // it, every pass tells finance (a stable alert id: replays add none).
+      if (!hold.deferAlert)
+        await alertProviderRefundUnmatched(
+          tx,
+          context,
+          {
+            intentId: intent.id,
+            outletId: intent.outletId,
+            dedupKey: `${hold.providerPaymentRef ?? ""}\0unmatched\0${refundId}\0${hold.amountIdr}`,
+            amountIdr: hold.amountIdr,
+          },
+          now,
+        );
+      return "filed";
+    }
+    // Key of the hold: the stored event id. When that id is already used by a
+    // hold of another intent (the table is unique per tenant and event), a
+    // fixed fallback key of this event and intent is used: never a silent
+    // return without a hold of this intent (fail closed).
+    const fallbackKey = createHash("sha256")
+      .update(
+        `refund_recon_hold.${variant}\0${context.tenant.tenantId}\0${intent.id.toLowerCase()}\0${row.id}`,
+      )
+      .digest("hex");
+    const keys = [
+      row.id,
+      `${fallbackKey.slice(0, 8)}-${fallbackKey.slice(8, 12)}-${fallbackKey.slice(12, 16)}-${fallbackKey.slice(16, 20)}-${fallbackKey.slice(20, 32)}`,
+    ];
+    for (const key of keys) {
+      const [held] = await tx
+        .insert(refundReconHolds)
+        .values({
+          tenantId: context.tenant.tenantId,
+          paymentIntentId: intent.id,
+          webhookEventId: key,
+          providerRefundId: null,
+          providerRefundIdKind: null,
+          amountIdr: idr(hold.amountIdr),
+          providerPaymentRef: hold.providerPaymentRef,
+          reason: HOLD_TRANSACTION_CONFLICT_REASON,
+          flaggedAt: now,
+        })
+        .onConflictDoNothing()
+        .returning({ id: refundReconHolds.id });
+      const alertFiled = async () => {
+        if (hold.deferAlert) return;
+        await (
+          variant === "unmatched"
+            ? alertProviderRefundUnmatched
+            : alertProviderRefundSwitchedOff
+        )(
+          tx,
+          context,
+          {
+            intentId: intent.id,
+            outletId: intent.outletId,
+            dedupKey: `${hold.providerPaymentRef ?? ""}\0${variant}\0${key}`,
+            amountIdr: hold.amountIdr,
+          },
+          now,
+        );
+      };
+      if (held) {
+        await alertFiled();
+        return "filed";
+      }
+      // The key is taken. A hold of THIS intent under it is the hold of this
+      // event: never lowered, raised to the larger value and to the conflict
+      // reason; one finance already resolved is not reopened.
+      const [mine] = await tx
+        .select({ id: refundReconHolds.id })
+        .from(refundReconHolds)
+        .where(
+          and(
+            eq(refundReconHolds.tenantId, context.tenant.tenantId),
+            eq(refundReconHolds.paymentIntentId, intent.id),
+            eq(refundReconHolds.webhookEventId, key),
+          ),
+        )
+        .limit(1);
+      if (!mine) continue;
+      await tx
+        .update(refundReconHolds)
+        .set({
+          amountIdr: sql`greatest(${refundReconHolds.amountIdr}, ${hold.amountIdr})`,
+          reason: HOLD_TRANSACTION_CONFLICT_REASON,
+        })
+        .where(
+          and(
+            eq(refundReconHolds.id, mine.id),
+            isNull(refundReconHolds.resolvedAt),
+          ),
+        );
+      // 1139: the hold of an earlier pass (silent inside the retry window) is
+      // announced by the pass after it; the alert id is stable. Only for a hold
+      // still open: one finance already closed is not announced again.
+      if (variant === "unmatched") {
+        const [open] = await tx
+          .select({ id: refundReconHolds.id })
+          .from(refundReconHolds)
+          .where(
+            and(
+              eq(refundReconHolds.id, mine.id),
+              isNull(refundReconHolds.resolvedAt),
+            ),
+          )
+          .limit(1);
+        if (open) await alertFiled();
+      }
+      return "filed";
+    }
+    throw new Error("Refund hold of a switched-off provider was not filed");
+  });
+}
+
+const UNMATCHED_NO_MONEY_STATUSES = [
+  "pending",
+  "processing",
+  "requested",
+  "failed",
+];
+
+/** 1126: a signed refund success that matches no refund of Legend must not end
+ * without a hold (a refund made in the provider's dashboard otherwise leaves
+ * the refund room untouched and a manual refund pays twice). The payment the
+ * event names is mapped to ONE intent: by the intent the caller already proved
+ * (`known`: the refund's own intent whose updater said 404), else by
+ * `findRefundCandidate` on the named payment id (null on none or two intents,
+ * and a flat id that differs from the payment object's id is no mapping), and
+ * the signature must be that intent's own integration. Mapped: one CONFLICT
+ * hold (per stored event, or per intent, refund id and transaction when the
+ * event names a provider refund id) for the full reported value (an amount the event does
+ * not give readably holds the whole payment: restrictive). No fact, no
+ * journal, no refund. Not mapped: no hold, one finance alert per event and a
+ * structured warning (`unmatched_unmapped_payment`). Callers gate on a
+ * succeeded status and the end of the retry window where one applies. */
+async function holdUnmatchedRefundSuccess(
+  context: ScopedTenantContext,
+  row: GatewayWebhookEvent,
+  facts: DoitRefundFacts,
+  verifiedSecret: string | undefined,
+  now: Date,
+  known?: PaymentIntentRow,
+  /** 1139 P1-1: first processing, inside the retry window. A payment that
+   * cannot be mapped yet is only logged (the pass after the window alerts). */
+  inRetryWindow = false,
+  /** The readable provider-initiated refund of the event (refund id, payment
+   * id, amount), when `readProviderInitiatedRefund` reads one: after the
+   * window it is recorded as a fact (or held as a reference mismatch) by
+   * `recordRefundFor`. */
+  providerRefund: {
+    refundId: string;
+    paymentId: string;
+    amountIdr: number;
+  } | null = null,
+): Promise<"held" | "unmapped" | "skipped"> {
+  // Only a KNOWN pending or failed status moved no money and is skipped; a
+  // success status, no status, and any status we do not know are held
+  // (restrictive: an unknown spelling may still be money back to the payer).
+  if (
+    facts.refundStatus !== undefined &&
+    UNMATCHED_NO_MONEY_STATUSES.includes(facts.refundStatus)
+  )
+    return "skipped";
+  // 1126: `namedPaymentId` is the id of a payment object that could not be
+  // read as a whole; it maps the event for the hold only.
+  const readPaymentId = facts.payment?.id ?? facts.namedPaymentId;
+  const conflictingIds =
+    facts.paymentId !== undefined &&
+    readPaymentId !== undefined &&
+    facts.paymentId !== readPaymentId;
+  const namedPaymentId = conflictingIds
+    ? undefined
+    : (facts.paymentId ?? readPaymentId);
+  let candidate = namedPaymentId
+    ? await findRefundCandidate(context, namedPaymentId)
+    : null;
+  // 1139 P1-2: the `reference` (the Legend intent id) is a fallback mapping,
+  // only when the event names no payment id at all: a payment id always wins
+  // (a conflicting reference is only alerted below). The intent must be of the
+  // receiving tenant (found by the tenant-scoped read), this provider's, with an
+  // own provider ref (a payment exists, not checked as paid), and map back to
+  // itself by that ref (one intent).
+  let mappedByReference: string | undefined;
+  if (
+    !known &&
+    facts.paymentId === undefined &&
+    readPaymentId === undefined &&
+    facts.reference !== undefined
+  ) {
+    const reference = uuidSchema.safeParse(facts.reference);
+    const referenced = reference.success
+      ? await withTenant(db, context, async (tx) => {
+          const [found] = await tx
+            .select()
+            .from(paymentIntents)
+            .where(
+              and(
+                eq(paymentIntents.tenantId, context.tenant.tenantId),
+                eq(paymentIntents.id, reference.data),
+              ),
+            )
+            .limit(1);
+          return found ?? null;
+        })
+      : null;
+    if (
+      referenced &&
+      referenced.provider === PROVIDER &&
+      referenced.providerRef !== null
+    ) {
+      const viaRef = await findRefundCandidate(context, referenced.providerRef);
+      if (viaRef && viaRef.intent.id === referenced.id) {
+        candidate = viaRef;
+        mappedByReference = referenced.providerRef;
+      }
+    }
+  }
+  let owner: {
+    intent: PaymentIntentRow;
+    evidenceAmountIdr: number | null;
+  } | null = null;
+  if (known) {
+    owner = {
+      intent: known,
+      evidenceAmountIdr:
+        candidate && candidate.intent.id === known.id
+          ? candidate.evidenceAmountIdr
+          : null,
+    };
+  } else if (
+    candidate &&
+    candidate.intent.provider === PROVIDER &&
+    (await signedByIntentIntegration(
+      context,
+      candidate.intent,
+      row,
+      verifiedSecret,
+      now,
+    ))
+  ) {
+    owner = candidate;
+  }
+  // 1139: inside the window an event that `recordRefundFor` would hold as a
+  // reference mismatch after it (a readable refund whose reference names
+  // another intent than the payment id's) is held NOW by that very path: the
+  // same countable mismatch hold and alert, only earlier, never a second
+  // conflict hold next to it.
+  if (inRetryWindow && providerRefund && owner && !known) {
+    const references = [
+      ...(facts.reference !== undefined ? [facts.reference] : []),
+      ...(facts.payment ? [facts.payment.reference] : []),
+    ];
+    if (references.some((reference) => reference !== owner.intent.id)) {
+      await holdRefundReferenceMismatch(
+        context,
+        row,
+        owner.intent,
+        {
+          providerRefundId: providerRefund.refundId,
+          amountIdr: providerRefund.amountIdr,
+          providerPaymentRef: providerRefund.paymentId,
+          refundStatus: facts.refundStatus,
+        },
+        now,
+      );
+      return "held";
+    }
+  }
+  const full = owner
+    ? Math.max(Number(owner.intent.amountIdr), owner.evidenceAmountIdr ?? 0)
+    : 0;
+  const reported =
+    facts.amountIdr !== undefined &&
+    Number.isFinite(facts.amountIdr) &&
+    facts.amountIdr > 0
+      ? facts.amountIdr
+      : undefined;
+  // The reported value when readable, else the whole payment; a mapped owner
+  // whose whole payment reads as zero is still held for the reported value.
+  const heldAmount = reported ?? (Number.isFinite(full) ? full : 0);
+  if (!owner || heldAmount <= 0) {
+    logger.warn(
+      { webhookEventId: row.id, code: "unmatched_unmapped_payment" },
+      "Unmatched DOIT refund.succeeded names no single Legend payment; no hold, finance told",
+    );
+    if (inRetryWindow) return "unmapped";
+    await withTenant(db, context, (tx) =>
+      alertProviderRefundUnmatchedUnmapped(
+        tx,
+        context,
+        { webhookEventId: row.id },
+        now,
+      ),
+    );
+    return "unmapped";
+  }
+  const filed = await holdSwitchedOffRefundSuccess(
+    context,
+    row,
+    owner.intent,
+    {
+      providerPaymentRef:
+        namedPaymentId ?? mappedByReference ?? owner.intent.providerRef ?? null,
+      providerRefundId: facts.refundId ?? null,
+      ...(reported !== undefined ? { reportedAmountIdr: reported } : {}),
+      ...(mappedByReference !== undefined ? { mappedByReference: true } : {}),
+      ...(inRetryWindow ? { deferAlert: true } : {}),
+      amountIdr: heldAmount,
+    },
+    now,
+    "unmatched",
+  );
+  if (filed === "stale") {
+    // The reference mapping did not survive the recheck under the intent lock.
+    logger.warn(
+      { webhookEventId: row.id, code: "unmatched_reference_mapping_stale" },
+      "Unmatched DOIT refund.succeeded: the intent named by the reference changed; no hold",
+    );
+    if (!inRetryWindow)
+      await withTenant(db, context, (tx) =>
+        alertProviderRefundUnmatchedUnmapped(
+          tx,
+          context,
+          { webhookEventId: row.id },
+          now,
+        ),
+      );
+    return "unmapped";
+  }
+  // 1139 P1-2: the payment id won over a reference that names another intent:
+  // held on the payment's intent as always, and finance is told of the doubt.
+  if (
+    filed === "filed" &&
+    mappedByReference === undefined &&
+    facts.reference !== undefined &&
+    facts.reference.toLowerCase() !== owner.intent.id.toLowerCase()
+  )
+    await withTenant(db, context, (tx) =>
+      alertRefundReferenceMismatch(
+        tx,
+        context,
+        {
+          intentId: owner.intent.id,
+          outletId: owner.intent.outletId,
+          providerRefundId: facts.refundId ?? null,
+          amountIdr: heldAmount,
+        },
+        row.id,
+        now,
+      ),
+    );
+  if (filed === "skipped") {
+    logger.warn(
+      { webhookEventId: row.id, code: "unmatched_refund_id_already_recorded" },
+      "Unmatched DOIT refund.succeeded names a refund id already booked; no hold",
+    );
+    return "skipped";
+  }
+  return "held";
+}
+
+/** 1139: the hold of a first pass is silent (finance is told by the pass after
+ * the retry window). A pass that ends without filing the hold again (our refund
+ * matched but did not cover it, the refund booked no fact, or the recorder asked
+ * for a retry) must still announce a hold that is STILL OPEN: one finance alert,
+ * with the id the ordinary hold path uses (refund id and amount, else the hold
+ * key), so a later pass or the ordinary path adds none. Only open conflict holds
+ * of this payment that belong to this event (its stored id) or this provider
+ * refund id. Called under the caller's transaction and intent lock. */
+async function announceOpenFirstPassHolds(
+  tx: Parameters<Parameters<typeof withTenant>[2]>[0],
+  context: ScopedTenantContext,
+  intent: { id: string; outletId: string },
+  key: {
+    eventRowId: string | null;
+    providerRefundId: string | null;
+    paymentRef: string;
+  },
+  now: Date,
+): Promise<void> {
+  const owned = [
+    ...(key.eventRowId !== null
+      ? [eq(refundReconHolds.webhookEventId, key.eventRowId)]
+      : []),
+    ...(key.providerRefundId !== null
+      ? [
+          and(
+            eq(refundReconHolds.providerRefundIdKind, "provider"),
+            eq(refundReconHolds.providerRefundId, key.providerRefundId),
+          ),
+        ]
+      : []),
+  ];
+  if (owned.length === 0) return;
+  // A payment the provider refunded in full is flagged (958) and finance was
+  // told then: that flag already stops every refund and payout of it.
+  const [flag] = await tx
+    .select({
+      providerRefundedAt: paymentIntents.providerRefundedAt,
+      providerRefundedAfterPaidAt: paymentIntents.providerRefundedAfterPaidAt,
+    })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, context.tenant.tenantId),
+        eq(paymentIntents.id, intent.id),
+      ),
+    )
+    .limit(1);
+  if (flag?.providerRefundedAt || flag?.providerRefundedAfterPaidAt) return;
+  const open = await tx
+    .select({
+      amountIdr: refundReconHolds.amountIdr,
+      providerRefundId: refundReconHolds.providerRefundId,
+      webhookEventId: refundReconHolds.webhookEventId,
+    })
+    .from(refundReconHolds)
+    .where(
+      and(
+        eq(refundReconHolds.tenantId, context.tenant.tenantId),
+        eq(refundReconHolds.paymentIntentId, intent.id),
+        isNull(refundReconHolds.resolvedAt),
+        eq(refundReconHolds.reason, HOLD_TRANSACTION_CONFLICT_REASON),
+        eq(refundReconHolds.providerPaymentRef, key.paymentRef),
+        or(...owned),
+      ),
+    );
+  for (const hold of open)
+    await alertProviderRefundUnmatched(
+      tx,
+      context,
+      {
+        intentId: intent.id,
+        outletId: intent.outletId,
+        dedupKey:
+          hold.providerRefundId !== null
+            ? `${key.paymentRef}\0unmatched\0${hold.providerRefundId}\0${Number(hold.amountIdr)}`
+            : `${key.paymentRef}\0unmatched\0${hold.webhookEventId}`,
+        amountIdr: Number(hold.amountIdr),
+      },
+      now,
+    );
+}
+
+/** 1139: the recorder asked for a retry after the window: the hold of the first
+ * pass (if still open) is announced now, not on a later pass that may never
+ * come. */
+async function announceFirstPassHoldOfRefund(
+  context: ScopedTenantContext,
+  row: GatewayWebhookEvent,
+  refund: { refundId: string; paymentId: string },
+  now: Date,
+): Promise<void> {
+  const candidate = await findRefundCandidate(context, refund.paymentId);
+  if (!candidate) return;
+  await withTenant(db, context, (tx) =>
+    announceOpenFirstPassHolds(
+      tx,
+      context,
+      candidate.intent,
+      {
+        eventRowId: row.id,
+        providerRefundId: refund.refundId,
+        paymentRef: refund.paymentId,
+      },
+      now,
+    ),
+  );
+}
+
+/** 1139 P1-1: the event was held on first processing (no refund of ours
+ * matched yet) and a retry now matches our refund R, which counts the money on
+ * its own. The hold of this event (its stored event id, or its provider refund
+ * id on this intent) for THE SAME payment (`paymentRef`) is closed so the money
+ * is not counted twice. Closed as `not_this_intent`, with a note that says R
+ * counts it: a conflict hold is never counted as a provider refund (no
+ * `same_as_counted` identity, which would block later facts of the payment).
+ * Restrictive: only an open conflict hold of that payment worth no more than
+ * R's amount is closed; a larger one (an unreadable amount held the whole
+ * payment) stays for finance, and so does any hold when the payment is not
+ * known. */
+async function closeUnmatchedHoldOfMatchedRefund(
+  context: ScopedTenantContext,
+  row: GatewayWebhookEvent,
+  refund: { amountIdr: number | string },
+  intent: PaymentIntentRow,
+  providerRefundId: string | null,
+  paymentRef: string | null,
+  now: Date,
+): Promise<void> {
+  if (paymentRef === null) return;
+  await withTenant(db, context, async (tx) => {
+    await tx
+      .select({ id: paymentIntents.id })
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, context.tenant.tenantId),
+          eq(paymentIntents.id, intent.id),
+        ),
+      )
+      .for("update");
+    await lockDepositIntentsExclusive(tx, context.tenant.tenantId, intent.id);
+    await tx
+      .update(refundReconHolds)
+      .set({
+        resolvedAt: now,
+        resolution: "not_this_intent",
+        resolutionNote:
+          "Otomatis: laporan ini ternyata refund Legend yang sudah dihitung; bukan refund tambahan",
+      })
+      .where(
+        and(
+          eq(refundReconHolds.tenantId, context.tenant.tenantId),
+          eq(refundReconHolds.paymentIntentId, intent.id),
+          isNull(refundReconHolds.resolvedAt),
+          eq(refundReconHolds.reason, HOLD_TRANSACTION_CONFLICT_REASON),
+          sql`${refundReconHolds.amountIdr} <= ${Number(refund.amountIdr)}`,
+          eq(refundReconHolds.providerPaymentRef, paymentRef),
+          providerRefundId === null
+            ? eq(refundReconHolds.webhookEventId, row.id)
+            : or(
+                eq(refundReconHolds.webhookEventId, row.id),
+                and(
+                  eq(refundReconHolds.providerRefundIdKind, "provider"),
+                  eq(refundReconHolds.providerRefundId, providerRefundId),
+                ),
+              ),
+        ),
+      );
+    // Not closed (larger than R, or another transaction): finance is told.
+    await announceOpenFirstPassHolds(
+      tx,
+      context,
+      intent,
+      { eventRowId: row.id, providerRefundId, paymentRef },
+      now,
+    );
+  });
+}
+
+/** 1139 P2-1: a first-pass hold (conflict reason, key intent + refund id X +
+ * payment P) outlives the fact of X that `recordRefundFor` books after the
+ * retry window, though the fact limits later refunds on its own. Closed as
+ * `counted_against_intent` once the facts on record for that key cover the
+ * hold's value (`holdFactCoversSql`, one atomic statement under the intent
+ * and deposit-intent locks); a fact below the hold leaves it open. The intent
+ * is the one `recordRefundFor` bound (same candidate rule, signature checked
+ * there). */
+async function closeFirstPassHoldCoveredByFact(
+  context: ScopedTenantContext,
+  row: GatewayWebhookEvent,
+  refund: { refundId: string; paymentId: string },
+  now: Date,
+): Promise<void> {
+  const candidate = await findRefundCandidate(context, refund.paymentId);
+  if (!candidate) return;
+  const { intent } = candidate;
+  await withTenant(db, context, async (tx) => {
+    await tx
+      .select({ id: paymentIntents.id })
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, context.tenant.tenantId),
+          eq(paymentIntents.id, intent.id),
+        ),
+      )
+      .for("update");
+    await lockDepositIntentsExclusive(tx, context.tenant.tenantId, intent.id);
+    await tx
+      .update(refundReconHolds)
+      .set({
+        resolvedAt: now,
+        resolution: "counted_against_intent",
+        resolutionNote:
+          "Otomatis: refund penyedia sudah dicatat sebagai fakta dan membatasi refund berikutnya",
+      })
+      .where(
+        and(
+          eq(refundReconHolds.tenantId, context.tenant.tenantId),
+          eq(refundReconHolds.paymentIntentId, intent.id),
+          isNull(refundReconHolds.resolvedAt),
+          eq(refundReconHolds.reason, HOLD_TRANSACTION_CONFLICT_REASON),
+          eq(refundReconHolds.providerRefundIdKind, "provider"),
+          eq(refundReconHolds.providerRefundId, refund.refundId),
+          eq(refundReconHolds.providerPaymentRef, refund.paymentId),
+          holdFactCoversSql(context.tenant.tenantId, refundReconHolds.id),
+        ),
+      );
+    // Not covered (no fact booked, or a smaller one): still open, finance is told.
+    await announceOpenFirstPassHolds(
+      tx,
+      context,
+      intent,
+      {
+        eventRowId: row.id,
+        providerRefundId: refund.refundId,
+        paymentRef: refund.paymentId,
+      },
+      now,
+    );
+  });
+}
+
 /** Records a provider refund through the shared helper, in two phases: a
  * short read finds the candidate intent (`findRefundCandidate`), the integration
  * that verified the signature must be the one that minted it
@@ -843,6 +1939,7 @@ async function recordRefundFor(
   row: GatewayWebhookEvent,
   input: {
     providerRefundId: string;
+    refundIdKind: ProviderRefundIdKind;
     providerPaymentRef: string;
     amountIdr: number;
     source: "refund_webhook" | "payment_webhook";
@@ -850,11 +1947,14 @@ async function recordRefundFor(
      * object). Each must equal the candidate intent's id, else `mismatch`
      * before anything is recorded (legend-6jdy1). */
     expectedReferences?: readonly string[];
+    /** Status the event's refund carries (a mismatch is held only when it
+     * succeeded, legend-9s33i). */
+    refundStatus?: string;
   },
   now: Date,
   verifiedSecret?: string,
 ): Promise<RefundApplyResult> {
-  const { expectedReferences, ...recorded } = input;
+  const { expectedReferences, refundStatus, ...recorded } = input;
   const windowOver = () =>
     now.getTime() - row.receivedAt.getTime() >=
     WEBHOOK_UNKNOWN_REFERENCE_RETRY_MS;
@@ -878,8 +1978,22 @@ async function recordRefundFor(
       return "unbound";
     if (
       expectedReferences?.some((reference) => reference !== candidate.intent.id)
-    )
+    ) {
+      await holdRefundReferenceMismatch(
+        context,
+        row,
+        candidate.intent,
+        {
+          providerRefundId:
+            input.refundIdKind === "provider" ? input.providerRefundId : null,
+          amountIdr: input.amountIdr,
+          providerPaymentRef: input.providerPaymentRef,
+          refundStatus,
+        },
+        now,
+      );
       return "mismatch";
+    }
     const run = async (force: boolean) =>
       (
         await withTenant(db, context, async (tx) =>
@@ -936,15 +2050,25 @@ async function flagRefundInDoubt(
       ))
     )
       return "unbound";
-    await markProviderRefunded(context, candidate.intent.id, now);
-    return "bound";
+    // A refund of ours still in flight: not told apart yet, nothing recorded
+    // (`retry` only inside the window, after it `force` counts it).
+    const marked = await markProviderRefunded(
+      context,
+      candidate.intent.id,
+      now,
+      "payment_webhook",
+      now.getTime() - row.receivedAt.getTime() >=
+        WEBHOOK_UNKNOWN_REFERENCE_RETRY_MS,
+    );
+    return marked === "retry" ? "retry" : "bound";
   }
   if (candidate.evidenceAmountIdr !== null && candidate.evidenceAmountIdr > 0)
     return recordRefundFor(
       context,
       row,
       {
-        providerRefundId: `payment:${paymentId}`,
+        providerRefundId: paymentId,
+        refundIdKind: "synthetic_full",
         providerPaymentRef: paymentId,
         amountIdr: candidate.evidenceAmountIdr,
         source: "payment_webhook",
@@ -1025,7 +2149,8 @@ async function processPaymentEvent(
               context,
               row,
               {
-                providerRefundId: `payment:${event.data.id}`,
+                providerRefundId: event.data.id,
+                refundIdKind: "synthetic_full",
                 providerPaymentRef: event.data.id,
                 amountIdr: extra.amountIdr,
                 source: "payment_webhook",
@@ -1047,6 +2172,20 @@ async function processPaymentEvent(
         return "failed";
       }
       const recorded = applied === "bound";
+      // A refund of the extra the recorder could not write is never silent.
+      if (applied === "unbound" && status === "refunded" && extra.amountIdr > 0)
+        await withTenant(db, context, (tx) =>
+          alertProviderRefundUnbound(
+            tx,
+            context,
+            {
+              intentId: intent.id,
+              outletId: intent.outletId,
+              providerPaymentRef: event.data.id,
+            },
+            now,
+          ),
+        );
       await markRow(
         context,
         row.id,
@@ -1116,8 +2255,20 @@ async function processPaymentEvent(
       // automatically. legend-7uqbs: money we already recorded (parked funds, a
       // settled bill) is flagged, audited and alerted once inside this call, so
       // staff cannot refund it a second time; the row below still ends
-      // processed.
-      await markProviderRefunded(context, intent.id, now);
+      // processed. A refund of ours still in flight (nothing recorded yet)
+      // keeps the row `failed`, so the worker retries it.
+      const marked = await markProviderRefunded(
+        context,
+        intent.id,
+        now,
+        "payment_webhook",
+        now.getTime() - row.receivedAt.getTime() >=
+          WEBHOOK_UNKNOWN_REFERENCE_RETRY_MS,
+      );
+      if (marked === "retry") {
+        outcome = "failed";
+        code = "UNKNOWN_REFERENCE";
+      }
     }
     // `pending` changes nothing.
     await markRow(
@@ -1502,7 +2653,10 @@ async function processRefundEvent(
         : null;
     if (settledOutside?.kind === "found") target = settledOutside;
     const viaSettled = settledOutside?.kind === "found";
-    const unmatched = async (foreign = false): Promise<ProcessOutcome> => {
+    const unmatched = async (
+      foreign = false,
+      knownIntent?: PaymentIntentRow,
+    ): Promise<ProcessOutcome> => {
       const retryable =
         now.getTime() - row.receivedAt.getTime() <
         WEBHOOK_UNKNOWN_REFERENCE_RETRY_MS;
@@ -1510,6 +2664,11 @@ async function processRefundEvent(
       // is the provider's own (money went back to the payer): record it against
       // the payment it names. An unknown payment or the echo of our own refund
       // keeps the ignored answer below.
+      // CTO decision (1135), also with DOIT_REFUNDS_ENABLED off: a signed
+      // report that fully matches (refund id, amount, readable payment id,
+      // after the retry window) is still recorded as a fact. The money has
+      // already left at the provider, and the fact only limits later refunds.
+      // Anything that does not fully match is held, never booked.
       const providerRefund = foreign
         ? readProviderInitiatedRefund(event.type, facts)
         : null;
@@ -1519,9 +2678,11 @@ async function processRefundEvent(
           row,
           {
             providerRefundId: providerRefund.refundId,
+            refundIdKind: "provider",
             providerPaymentRef: providerRefund.paymentId,
             amountIdr: providerRefund.amountIdr,
             source: "refund_webhook",
+            refundStatus: facts.refundStatus,
             expectedReferences: [
               ...(facts.reference !== undefined ? [facts.reference] : []),
               ...(facts.payment ? [facts.payment.reference] : []),
@@ -1534,7 +2695,14 @@ async function processRefundEvent(
           return await ignoredWith("REFERENCE_MISMATCH");
         if (applied === "retry") {
           // Unresolved even with `force`: kept `failed` (the worker retries),
-          // never ignored.
+          // never ignored. A hold of the first pass still open is announced
+          // now (1139), not on a pass that may never come.
+          await announceFirstPassHoldOfRefund(
+            context,
+            row,
+            providerRefund,
+            now,
+          );
           await markRow(
             context,
             row.id,
@@ -1544,6 +2712,15 @@ async function processRefundEvent(
           return "failed";
         }
         if (applied === "bound") {
+          // 1139 P2-1: the fact of X now limits the refunds of the payment, so
+          // the hold of the first pass (same refund id and payment) is closed
+          // when that fact covers its value.
+          await closeFirstPassHoldCoveredByFact(
+            context,
+            row,
+            providerRefund,
+            now,
+          );
           await markRow(
             context,
             row.id,
@@ -1558,11 +2735,30 @@ async function processRefundEvent(
           return "processed";
         }
       }
-      if (!retryable && status === "succeeded")
-        logger.warn(
-          { webhookEventId: row.id },
-          "Unmatched DOIT refund.succeeded ignored; check the provider for a refund Legend does not know (paid twice?)",
+      if (status === "succeeded") {
+        // 1126: never ignored without a hold. 1139 P1-1: also on first
+        // processing, inside the retry window: the refund may still be storing
+        // its provider ref, but until it does the provider's money must already
+        // limit the refund room. The hold key is stable (refund id, else the
+        // stored event), so every retry only raises it, and a later match of
+        // our refund closes it (`closeUnmatchedHoldOfMatchedRefund`). The hold
+        // is filed before the row is marked (idempotent by event).
+        await holdUnmatchedRefundSuccess(
+          context,
+          row,
+          facts,
+          verifiedSecret,
+          now,
+          knownIntent,
+          retryable,
+          providerRefund,
         );
+        if (!retryable)
+          logger.warn(
+            { webhookEventId: row.id },
+            "Unmatched DOIT refund.succeeded ignored; check the provider for a refund Legend does not know (paid twice?)",
+          );
+      }
       await markRow(
         context,
         row.id,
@@ -1587,8 +2783,19 @@ async function processRefundEvent(
       return "ignored";
     };
     if (target.kind === "none") return await unmatched(true);
-    if (target.kind === "ambiguous")
+    if (target.kind === "ambiguous") {
+      // 1126: two refunds match: the event is a conflict, and a success that
+      // names a mappable payment is held too (restrictive).
+      if (status === "succeeded")
+        await holdUnmatchedRefundSuccess(
+          context,
+          row,
+          facts,
+          verifiedSecret,
+          now,
+        );
       return await ignoredWith("REJECTED_CONFLICT");
+    }
 
     const { refund, intent } = target;
     if (
@@ -1609,13 +2816,119 @@ async function processRefundEvent(
         intent.gatewayIntegrationId,
         now,
       );
+      // legend-9s33i: hold the intent that owns the payment id the event
+      // names (when the signature is that intent's own); nothing is refunded.
+      const namedPaymentId = facts.paymentId ?? facts.payment?.id;
+      const owner = namedPaymentId
+        ? await findRefundCandidate(context, namedPaymentId)
+        : null;
+      // Only a refund.succeeded event is held (refund.failed never is).
+      if (
+        status === "succeeded" &&
+        owner &&
+        (await signedByIntentIntegration(
+          context,
+          owner.intent,
+          row,
+          verifiedSecret,
+          now,
+        ))
+      )
+        await holdRefundReferenceMismatch(
+          context,
+          row,
+          owner.intent,
+          {
+            providerRefundId: facts.refundId ?? null,
+            // 1077 R2: an amount the event does not give readably holds the
+            // whole payment of the transaction that owns the named payment id
+            // (restrictive), never the amount of the refund another
+            // transaction's key matched.
+            amountIdr:
+              facts.amountIdr ??
+              Math.max(
+                Number(owner.intent.amountIdr),
+                owner.evidenceAmountIdr ?? 0,
+              ),
+            providerPaymentRef: namedPaymentId ?? null,
+            refundStatus: facts.refundStatus,
+            matchedRefundId: refund.id,
+          },
+          now,
+        );
       return await ignoredWith("REFERENCE_MISMATCH");
+    }
+
+    // 1101 (Q45), 1108 P1-1: automatic DOIT refunds are off, so a signed
+    // event on a matched refund (success or failure, every match kind, payment
+    // object included, valid or invalid payload) is never judged here: no
+    // echo, made-up id or alias logic, no updater, recorder or status change
+    // of the refund, only one conflict hold for the full value. One gate
+    // before the invalid, updater and recorder paths, no exemption per branch.
+    if (refundProviderSwitchedOff(PROVIDER)) {
+      const switchedOffPaymentRef =
+        facts.paymentId ??
+        facts.payment?.id ??
+        (await refundSourcePayment(context, refund, intent))?.providerRef ??
+        intent.providerRef ??
+        null;
+      const evidence = switchedOffPaymentRef
+        ? ((await findRefundCandidate(context, switchedOffPaymentRef))
+            ?.evidenceAmountIdr ?? 0)
+        : 0;
+      await holdSwitchedOffRefundSuccess(
+        context,
+        row,
+        intent,
+        {
+          providerPaymentRef: switchedOffPaymentRef,
+          amountIdr: Math.max(Number(intent.amountIdr), evidence),
+        },
+        now,
+      );
+      return await ignoredWith("REJECTED_CONFLICT");
     }
 
     // legend-2ol8g: an amount or payment_id that is there but unreadable (or
     // missing on the flat shape) must never settle: no amount or payment check
     // would run for it.
     if (facts.invalid) {
+      // 1072 I8: a signed success matched to this refund that is no proven
+      // echo (unreadable or missing amount or payment id) is held for the
+      // refund's full amount, before anything is audited or ignored. The
+      // payment id may be unreadable, so the transaction comes from the
+      // refund's own source payment. The payment-object fallback is exempt
+      // here (switch on only; with the switch off the gate above holds it).
+      if (status === "succeeded" && match.kind !== "payment_object") {
+        const paymentRef =
+          (await refundSourcePayment(context, refund, intent))?.providerRef ??
+          intent.providerRef;
+        await withTenant(db, context, async (tx) =>
+          fileOwnRefundSurplusHoldInTx(
+            tx,
+            context,
+            {
+              intentId: intent.id,
+              outletId: intent.outletId,
+              // Own key: the stand-in amount was never reported, so it must
+              // not count as evidence already held for the real key (I7
+              // `maxHeld`) and swallow a later readable report (1075 P1).
+              // 1090 P1-2: made-up id, own kind (never a provider id).
+              // 1090 P2: no refund id in the event: the identity is the
+              // refund's own key, fixed, not a `providerRef` that a later
+              // success fills in (a replay must find the same hold). Holds an
+              // earlier build stored under that `providerRef` still count.
+              providerRefundId: invalidReportHoldRefundId(
+                facts.refundId ?? `refund:${refund.id}`,
+              ),
+              invalidReport: true,
+              providerPaymentRef: paymentRef,
+              amountIdr: Number(intent.amountIdr),
+            },
+            now,
+          ),
+        );
+      }
       await recordRefundFactsInvalid(
         context,
         row,
@@ -1656,6 +2969,16 @@ async function processRefundEvent(
       match.kind === "payment_object"
         ? (refund.providerRef ?? match.payment.id)
         : facts.refundId;
+    // 1072 I6: a refused success that is no proven echo is held in the very
+    // transaction that holds the refund's locks (the updater commits it, then
+    // throws the 409). The payment ref is read before, on its own connection.
+    const holdPaymentRef =
+      status === "succeeded" && match.kind !== "payment_object"
+        ? (facts.paymentId ??
+          facts.payment?.id ??
+          (await refundSourcePayment(context, refund, intent))?.providerRef ??
+          intent.providerRef)
+        : null;
     try {
       await applyRefundProviderUpdate(
         context,
@@ -1673,6 +2996,34 @@ async function processRefundEvent(
             : {}),
         },
         now,
+        async (tx, refusal) => {
+          // One rule (I2, I9): a smaller reported amount stays an echo only of
+          // a refund already sent to the provider; anything else refused here
+          // is no echo of this refund.
+          if (
+            status !== "succeeded" ||
+            match.kind === "payment_object" ||
+            (refusal.kind === "amount_mismatch" &&
+              refusal.sentToProvider &&
+              facts.amountIdr !== undefined &&
+              facts.amountIdr < Number(refusal.refund.amountIdr))
+          )
+            return;
+          await fileOwnRefundSurplusHoldInTx(
+            tx,
+            context,
+            {
+              intentId: refusal.intent.id,
+              outletId: refusal.intent.outletId,
+              // 1090 P2: fixed identity when the event names no refund id
+              // (see the unreadable-report hold above).
+              providerRefundId: facts.refundId ?? `refund:${refusal.refund.id}`,
+              providerPaymentRef: holdPaymentRef,
+              amountIdr: facts.amountIdr ?? Number(refusal.intent.amountIdr),
+            },
+            now,
+          );
+        },
       );
     } catch (error) {
       if (error instanceof HttpError && error.status === 409) {
@@ -1692,9 +3043,22 @@ async function processRefundEvent(
         return await ignoredWith("REJECTED_CONFLICT");
       }
       if (error instanceof HttpError && error.status === 404)
-        return await unmatched();
+        return await unmatched(false, intent);
       throw error;
     }
+    if (status === "succeeded")
+      await closeUnmatchedHoldOfMatchedRefund(
+        context,
+        row,
+        refund,
+        intent,
+        facts.refundId ?? providerRef ?? null,
+        facts.paymentId ??
+          facts.payment?.id ??
+          (await refundSourcePayment(context, refund, intent))?.providerRef ??
+          intent.providerRef,
+        now,
+      );
     await markRow(
       context,
       row.id,
@@ -1788,6 +3152,7 @@ async function processRefundedStatusEvent(
         row,
         {
           providerRefundId: refundId,
+          refundIdKind: "provider",
           providerPaymentRef: paymentId,
           amountIdr,
           source: "payment_webhook",

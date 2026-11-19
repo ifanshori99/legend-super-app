@@ -31,6 +31,8 @@
 import type { TenantId } from "@starter/shared/core";
 import { sql, type SQL } from "drizzle-orm";
 import type { Tx } from "./permission-resolver.ts";
+import { holdFactCoveredIdrSql } from "./refund-hold-coverage.ts";
+import { HOLD_TRANSACTION_CONFLICT_REASON } from "./refund-hold-reasons.ts";
 import { providerRefundedForeignIdrSql } from "./payment-provider-refunded-foreign-sql.ts";
 
 /** Advisory key of one DP intent's refund-vs-credit lock. */
@@ -65,6 +67,119 @@ export function depositPrincipalReservedSql(tenant: SQL, intent: SQL): SQL {
   )`;
 }
 
+/**
+ * legend-6n4p3 (1033): DP an allocation (SQL alias `alloc`, e.g. `a`) has
+ * already spent: its session's non-voided `deposit_applied_idr`; for a CLOSED
+ * session the larger of that and the unpaid part of its bill (the close rule of
+ * finalize); less the session's POS DP returns; capped at the allocation. Spent
+ * money only, never a remainder. Counted per allocation, so a session paying
+ * from two DPs counts its spend on both: the safe side, a lower credit.
+ */
+export function allocationSpentSql(alloc: string): SQL {
+  const x = sql.raw(alloc);
+  return sql`least(${x}.amount_idr, greatest(${sessionSpendSql(alloc)}, 0))`;
+}
+
+/**
+ * The whole DP spend of the session of allocation `alloc` (not split between
+ * its DPs, not capped): see `allocationSpentSql`.
+ */
+export function sessionSpendSql(alloc: string): SQL {
+  const x = sql.raw(alloc);
+  return sql`coalesce((SELECT
+      greatest(coalesce(sum(lo.deposit_applied_idr),0),
+        CASE WHEN (SELECT lts.status FROM table_sessions lts
+                    WHERE lts.tenant_id=${x}.tenant_id AND lts.id=${x}.table_session_id)='closed'
+          THEN coalesce(sum(lo.total_idr),0)-coalesce(sum(ll.paid_idr),0)-coalesce(sum(lt.captured),0)
+          ELSE 0 END)
+      - coalesce((SELECT sum(lr.amount_idr) FROM pos_deposit_refunds lr
+          JOIN orders lro ON lro.tenant_id=lr.tenant_id AND lro.id=lr.order_id
+          WHERE lr.tenant_id=${x}.tenant_id AND lro.table_session_id=${x}.table_session_id),0)
+    FROM orders lo
+    LEFT JOIN payment_links ll ON ll.tenant_id=lo.tenant_id AND ll.id=lo.payment_link_id
+    LEFT JOIN LATERAL (SELECT coalesce(sum(pt.amount_idr),0) AS captured
+      FROM pos_order_tenders pt WHERE pt.tenant_id=lo.tenant_id AND pt.order_id=lo.id
+        AND pt.status='captured') lt ON true
+    WHERE lo.tenant_id=${x}.tenant_id AND lo.table_session_id=${x}.table_session_id
+      AND lo.status<>'voided'),0)`;
+}
+
+/**
+ * Lower bound of what allocation `alloc` itself spent, for the credit FLOOR
+ * (where a too high spend would raise credit, unlike in the claims): the
+ * session's spend less everything the session could have spent from its other
+ * allocations (full amount, only intents actually paid: DP of an unpaid,
+ * failed or expired intent was never received, legend-iz3ru) and from moved
+ * credit, capped at the allocation. A session paying from two DPs is never counted on both here.
+ */
+export function allocationSpentFloorSql(alloc: string): SQL {
+  const x = sql.raw(alloc);
+  return sql`least(${x}.amount_idr, greatest(${sessionSpendSql(alloc)}
+    - coalesce((SELECT sum(oa.amount_idr) FROM reservation_deposit_allocations oa
+        JOIN payment_intents oi ON oi.tenant_id=oa.tenant_id AND oi.id=oa.payment_intent_id
+        WHERE oa.tenant_id=${x}.tenant_id AND oa.table_session_id=${x}.table_session_id
+          AND oa.id<>${x}.id
+          AND oi.status IN ('paid','partially_refunded') AND oi.paid_at IS NOT NULL),0)
+    - coalesce((SELECT sum(cu.amount_idr-cu.returned_idr) FROM reservation_customer_credit_uses cu
+        WHERE cu.tenant_id=${x}.tenant_id AND cu.table_session_id=${x}.table_session_id),0), 0))`;
+}
+
+/**
+ * legend-6n4p3 (1033): what the OTHER allocations of the same intent claim of
+ * its net, so the sessions of one intent share a single pool and the total
+ * never passes it, whatever order they close or pay in: the DP every other
+ * allocation already spent (spent money is never taken back, whatever the
+ * order), plus, for the allocations earlier in the stable order
+ * (allocated_at, id), whatever they have not spent in full (it is still theirs
+ * as credit or remainder). Arguments are SQL expressions of the allocation row
+ * (tenant, intent, allocated_at, id) supplied by our callers; a credit is then
+ * `min(allocation, max(spent, net - this))`.
+ */
+export function otherAllocationClaimsSql(
+  tenant: SQL,
+  intent: SQL,
+  allocatedAt: SQL,
+  allocationId: SQL,
+): SQL {
+  return sql`(coalesce((SELECT sum(${allocationSpentSql("ea")})
+      FROM reservation_deposit_allocations ea
+      WHERE ea.tenant_id=${tenant} AND ea.payment_intent_id=${intent}
+        AND ea.id<>${allocationId}),0)
+    + coalesce((SELECT sum(ea.amount_idr-${allocationSpentSql("ea")})
+      FROM reservation_deposit_allocations ea
+      WHERE ea.tenant_id=${tenant} AND ea.payment_intent_id=${intent}
+        AND (ea.allocated_at,ea.id)<(${allocatedAt},${allocationId})),0))`;
+}
+
+/**
+ * legend-obgj5 (1033): provider refunds a recon hold recorded but finance has
+ * not matched yet (open = resolved_at IS NULL) count against the intent's net
+ * until resolved. `credit_used_before_provider_refund` is left out: that hold
+ * only marks a surplus of credit already spent (1025c), and the pool is net of
+ * it already. Resolved `not_this_intent` gives the credit back in full;
+ * `counted_against_intent` is a provider refund of the intent from then on.
+ */
+export function openReconHoldIdrSql(tenant: SQL, intent: SQL): SQL {
+  return sql`coalesce((SELECT sum(
+      CASE
+        -- 1072 I3 (A2): a transaction-conflict hold limits the credit in full
+        -- until finance resolves it, whatever fact is on record. The reason
+        -- comes from the leaf module refund-hold-reasons.ts (1072 F-P3).
+        WHEN h.reason = ${HOLD_TRANSACTION_CONFLICT_REASON}
+          THEN h.amount_idr
+        -- Otherwise the hold is covered only up to what a counted fact of the
+        -- SAME provider transaction already carries. A fact that is the echo of
+        -- our own refund is not counted here (the refund is already subtracted
+        -- from the pool), so it never hides the hold. A fact of the same id and
+        -- transaction that covers the hold gives 0: the money is not taken
+        -- twice. A hold that names no transaction is never covered.
+        ELSE greatest(h.amount_idr - ${holdFactCoveredIdrSql}, 0)
+      END) FROM refund_recon_holds h
+    WHERE h.tenant_id=${tenant} AND h.payment_intent_id=${intent}
+      AND h.resolved_at IS NULL
+      AND h.reason<>'credit_used_before_provider_refund'), 0)`;
+}
+
 type AllocationCredit = {
   tableSessionId: string;
   paymentIntentId: string;
@@ -97,9 +212,24 @@ async function allocationCredits(
            -- is not credit; a flagged refund-after-paid intent credits 0.
            CASE WHEN i.status IN ('paid', 'partially_refunded')
                   AND i.provider_refunded_after_paid_at IS NULL
-                THEN greatest(least(r.deposit_idr, i.amount_idr)
+                THEN greatest(least(a.amount_idr, greatest(
+                    -- Spent DP is never read below what was spent, but only up
+                    -- to the intent's own net (our refunds, the provider's
+                    -- refunds and open holds off): a single allocation is cut
+                    -- as before, only the sessions of a shared intent keep
+                    -- what they spent (a session paying from two DPs counts
+                    -- its spend on both).
+                    least(${allocationSpentFloorSql("a")}, greatest(
+                      least(r.deposit_idr, i.amount_idr)
+                      - ${depositPrincipalReservedSql(sql`a.tenant_id`, sql`a.payment_intent_id`)}
+                      - ${providerRefundedForeignIdrSql(sql`a.tenant_id`, sql`a.payment_intent_id`)}
+                      - ${openReconHoldIdrSql(sql`a.tenant_id`, sql`a.payment_intent_id`)}, 0)),
+                    least(r.deposit_idr, i.amount_idr)
                   - ${depositPrincipalReservedSql(sql`a.tenant_id`, sql`a.payment_intent_id`)}
-                  - ${providerRefundedForeignIdrSql(sql`a.tenant_id`, sql`a.payment_intent_id`)} - coalesce((
+                  - ${providerRefundedForeignIdrSql(sql`a.tenant_id`, sql`a.payment_intent_id`)}
+                  - ${openReconHoldIdrSql(sql`a.tenant_id`, sql`a.payment_intent_id`)}
+                  - ${otherAllocationClaimsSql(sql`a.tenant_id`, sql`a.payment_intent_id`, sql`a.allocated_at`, sql`a.id`)}))
+                  - coalesce((
                   SELECT sum(c.amount_idr) FROM reservation_deposit_remainders c
                    WHERE c.tenant_id = a.tenant_id
                      AND c.payment_intent_id = a.payment_intent_id
@@ -135,11 +265,15 @@ async function allocationCredits(
  * remainders (what the first sessions left over) minus the provider refunds
  * made AFTER those remainders: a remainder is already net of what the provider
  * had refunded when its session closed (`provider_refunded_snapshot_idr`), so
- * only the growth since then comes off again, measured from the smallest
- * snapshot (restrictive; created_at is not used, the refund recorder does not
- * hold the deposit-intent lock). With `liveOnly`, an intent that is not paid /
+ * only the growth since then comes off again. legend-6n4p3 (1033): the
+ * sessions of one intent share one pool in a fixed order, so each remainder
+ * absorbed a different slice of the refunds (earlier sessions none, the last
+ * the rest); the absorbed total is the SUM of the snapshots, not the smallest
+ * (created_at is not used, the refund recorder does not hold the
+ * deposit-intent lock). With `liveOnly`, an intent that is not paid /
  * partially refunded, or is flagged refunded after paid, holds nothing; the
  * refund guard passes false and keeps its stricter gross view. Floor 0.
+ * legend-obgj5: an open recon hold counts like a provider refund here.
  */
 async function transferredCreditPools(
   tx: Tx,
@@ -156,10 +290,11 @@ async function transferredCreditPools(
            coalesce((SELECT sum(x.amount_idr) FROM reservation_deposit_remainders x
              WHERE x.tenant_id = i.tenant_id AND x.payment_intent_id = i.id
                AND x.kind = 'customer_credit'), 0)::text AS credit,
-           coalesce((SELECT min(x.provider_refunded_snapshot_idr) FROM reservation_deposit_remainders x
+           coalesce((SELECT sum(x.provider_refunded_snapshot_idr) FROM reservation_deposit_remainders x
              WHERE x.tenant_id = i.tenant_id AND x.payment_intent_id = i.id
                AND x.kind = 'customer_credit'), 0)::text AS snapshot,
-           ${providerRefundedForeignIdrSql(sql`i.tenant_id`, sql`i.id`)}::text AS provider
+           (${providerRefundedForeignIdrSql(sql`i.tenant_id`, sql`i.id`)}
+             + ${openReconHoldIdrSql(sql`i.tenant_id`, sql`i.id`)})::text AS provider
       FROM payment_intents i
      WHERE i.tenant_id = ${tenantId}
        AND i.id IN (${sql.join(
@@ -176,6 +311,30 @@ async function transferredCreditPools(
     pools.set(String(row.intent_id), pool);
   }
   return pools;
+}
+
+/**
+ * legend-mez2n: how much of the intent's customer_credit remainders the
+ * provider's later refunds already took out of the transferred pool (counted
+ * once per intent, not per remainder): sum of the remainders minus the pool
+ * (transferredCreditPools, not liveOnly). 0 when nothing was refunded since.
+ */
+export async function creditProviderCutOfIntent(
+  tx: Tx,
+  tenantId: TenantId,
+  intentId: string,
+): Promise<bigint> {
+  const total = await tx.execute(sql`
+    SELECT coalesce(sum(amount_idr), 0)::text AS credit
+      FROM reservation_deposit_remainders
+     WHERE tenant_id = ${tenantId} AND payment_intent_id = ${intentId}::uuid
+       AND kind = 'customer_credit'`);
+  const credit = BigInt(String(total.rows[0]?.credit ?? "0"));
+  const pool =
+    (await transferredCreditPools(tx, tenantId, [intentId], false)).get(
+      intentId.toLowerCase(),
+    ) ?? credit;
+  return credit > pool ? credit - pool : 0n;
 }
 
 /**
@@ -313,6 +472,64 @@ export async function sessionDepositCredit(
 }
 
 /**
+ * Takes the deposit-intent lock EXCLUSIVE of `intentId` and of every DP on the
+ * sessions it backs, ascending (a refund of a second DP on the same table moves
+ * this one's share). The caller holds the intent row lock already: the order is
+ * intent row, then these locks, the same as a refund. A credit apply holds them
+ * SHARED and never locks an intent row afterwards, so there is no cycle. Used
+ * by `depositInUseOfIntent` and by the provider-refund recorder (legend-9uvvu).
+ */
+export async function lockDepositIntentsExclusive(
+  tx: Tx,
+  tenantId: TenantId,
+  intentId: string,
+): Promise<void> {
+  const intents = await tx.execute(sql`
+    SELECT DISTINCT payment_intent_id::text AS intent_id
+      FROM reservation_deposit_allocations
+     WHERE tenant_id = ${tenantId}
+       AND table_session_id IN (
+         SELECT table_session_id FROM reservation_deposit_allocations
+          WHERE tenant_id = ${tenantId} AND payment_intent_id = ${intentId}::uuid)
+  `);
+  const ids = [
+    ...new Set([
+      intentId.toLowerCase(),
+      ...intents.rows.map((row) => String(row.intent_id).toLowerCase()),
+    ]),
+  ].sort();
+  for (const id of ids)
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${depositIntentLockKey(tenantId, id)}, 0))`,
+    );
+}
+
+/**
+ * legend-ua9ja (1025c B): credit already moved to other sessions that the
+ * source intent's net (after the provider's refunds) no longer covers. Same
+ * pool and (created_at, id) order as `flagCreditReconForIntent`; 0 when the
+ * pool covers every use. Nothing is cut: finance gets a hold on the intent.
+ */
+export async function creditUsedSurplusForIntent(
+  tx: Tx,
+  tenantId: TenantId,
+  intentId: string,
+): Promise<bigint> {
+  const pool = (
+    await transferredCreditPools(tx, tenantId, [intentId], true)
+  ).get(intentId.toLowerCase());
+  if (pool === undefined) return 0n;
+  const uses = await tx.execute(sql`
+    SELECT coalesce(sum(u.amount_idr - u.returned_idr), 0)::text AS used
+      FROM reservation_customer_credit_uses u
+      JOIN reservation_deposit_remainders x
+        ON x.tenant_id = u.tenant_id AND x.id = u.remainder_id
+     WHERE u.tenant_id = ${tenantId} AND x.payment_intent_id = ${intentId}::uuid`);
+  const used = BigInt(String(uses.rows[0]?.used ?? "0"));
+  return used > pool ? used - pool : 0n;
+}
+
+/**
  * DP of `intentId` that already paid its sessions' bills (header: applied or
  * uncovered open bill, after the session's other DPs, capped at this
  * allocation's gross amount); 0 when the intent backs no seated session. With
@@ -324,30 +541,12 @@ export async function depositInUseOfIntent(
   tx: Tx,
   tenantId: TenantId,
   intentId: string,
-  { lock = true }: { lock?: boolean } = {},
+  {
+    lock = true,
+    netCreditProviderCut = false,
+  }: { lock?: boolean; netCreditProviderCut?: boolean } = {},
 ): Promise<bigint> {
-  if (lock) {
-    // Every DP of the sessions this intent backs, ascending: a refund of a
-    // second DP on the same table moves this one's share (see below).
-    const intents = await tx.execute(sql`
-      SELECT DISTINCT payment_intent_id::text AS intent_id
-        FROM reservation_deposit_allocations
-       WHERE tenant_id = ${tenantId}
-         AND table_session_id IN (
-           SELECT table_session_id FROM reservation_deposit_allocations
-            WHERE tenant_id = ${tenantId} AND payment_intent_id = ${intentId}::uuid)
-    `);
-    const ids = [
-      ...new Set([
-        intentId.toLowerCase(),
-        ...intents.rows.map((row) => String(row.intent_id).toLowerCase()),
-      ]),
-    ].sort();
-    for (const id of ids)
-      await tx.execute(
-        sql`SELECT pg_advisory_xact_lock(hashtextextended(${depositIntentLockKey(tenantId, id)}, 0))`,
-      );
-  }
+  if (lock) await lockDepositIntentsExclusive(tx, tenantId, intentId);
   const credits = await allocationCredits(tx, tenantId, {
     paymentIntentId: intentId,
   });
@@ -364,7 +563,15 @@ export async function depositInUseOfIntent(
   // Gross view, not capped by the pool: the caller's refund check already
   // subtracts the provider's refunds from what was paid, so capping here would
   // count them twice and raise the refund limit (legend-svwdz, 1020).
-  const heldCredit = BigInt(String(creditHeld.rows[0]?.amount ?? "0"));
+  // legend-mez2n: the credit-apply check compares this to a paid amount that is
+  // already net of the provider's refunds, so it asks for the held credit net of
+  // the provider cut (taken once per intent, see creditProviderCutOfIntent).
+  const heldGross = BigInt(String(creditHeld.rows[0]?.amount ?? "0"));
+  let heldCredit = heldGross;
+  if (netCreditProviderCut && heldGross > 0n) {
+    const cut = await creditProviderCutOfIntent(tx, tenantId, intentId);
+    heldCredit = heldGross - (cut < heldGross ? cut : heldGross);
+  }
   if (credits.length === 0) return heldCredit;
   const sessionIds = [...new Set(credits.map((row) => row.tableSessionId))];
   // What the DP paid on each session: the larger of what orders applied

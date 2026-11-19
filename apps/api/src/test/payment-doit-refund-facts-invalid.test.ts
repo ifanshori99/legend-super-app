@@ -31,6 +31,7 @@ import {
   readDoitRefundFacts,
 } from "../services/payment-doit-refund-webhook";
 import { createApp } from "../app";
+import { env } from "../config/env";
 import { resetPaymentWebhookRateLimits } from "../routes/payment-webhook.routes";
 import { createDoitGateway } from "../services/payment-doit";
 import { setPaymentGateway } from "../services/payment-gateway";
@@ -74,6 +75,17 @@ const webhookContext: ScopedTenantContext = establishScopedTenantContext(
   establishTenantContext({ tenantId, brandId: null, source: "webhook" }),
   { kind: "tenant" },
 );
+
+// These suites exercise the active provider-refund path: DOIT refunds are off
+// by default, so switch them on here and restore the value afterwards.
+const flags = env as unknown as { DOIT_REFUNDS_ENABLED: boolean };
+const flagBefore = flags.DOIT_REFUNDS_ENABLED;
+beforeAll(() => {
+  flags.DOIT_REFUNDS_ENABLED = true;
+});
+afterAll(() => {
+  flags.DOIT_REFUNDS_ENABLED = flagBefore;
+});
 
 const integrationIds: string[] = [];
 const linkIds: string[] = [];
@@ -137,7 +149,15 @@ afterAll(async () => {
   setPaymentRefundGateway(null);
   await cleanupRows();
   await owner.query(
+    "DELETE FROM payment_provider_refunds WHERE payment_intent_id = ANY($1::uuid[])",
+    [intentIds],
+  );
+  await owner.query(
     "DELETE FROM payment_evidence WHERE payment_intent_id = ANY($1::uuid[])",
+    [intentIds],
+  );
+  await owner.query(
+    "DELETE FROM refund_recon_holds WHERE payment_intent_id = ANY($1::uuid[])",
     [intentIds],
   );
   await owner.query("DELETE FROM payment_intents WHERE id = ANY($1::uuid[])", [

@@ -51,6 +51,9 @@ export const posKasirDaycloseMessages = {
     unmatched:
       "{count} transaksi standalone perlu dicocokkan saat rekonsiliasi.",
     noUnmatched: "Tidak ada transaksi standalone yang perlu dicocokkan.",
+    unsyncedTitle: "Struk belum sinkron",
+    unsyncedReceipts:
+      "{count} nomor struk sudah terbit tetapi belum diterima server. Pastikan kasir yang bersangkutan online agar struknya terkirim sebelum hari ditutup.",
     stockHeading: "Pemotongan stok",
     stockLabel: "Terapkan stok akhir hari",
     stockHint: "Opsional, sesuai pengaturan outlet.",

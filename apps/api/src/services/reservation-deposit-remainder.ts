@@ -8,7 +8,7 @@ import {
   type ScopedTenantContext,
   uuidToUlid,
 } from "@starter/shared/core";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { maskAuditChanges } from "@starter/shared/audit";
 import {
   reservationCustomerCreditUses,
@@ -30,7 +30,9 @@ import {
 } from "./reservation-core.ts";
 import { HttpError } from "../lib/http-error.ts";
 import {
+  creditProviderCutOfIntent,
   depositPrincipalReservedSql,
+  otherAllocationClaimsSql,
   listSessionDepositSources,
   sessionDepositCredit,
 } from "./reservation-deposit-credit.ts";
@@ -223,12 +225,27 @@ export async function finalizeReservationDepositRemainders(
   used = used > released ? used - released : 0n;
   // legend-30hfs: money the provider refunded outside our own refunds is not
   // free credit, so it is subtracted from what the deposit still holds.
-  const heldBaseSql = sql`least(r.deposit_idr,i.amount_idr,
+  // legend-6n4p3 (1033): the sessions of one intent share one net pool; the
+  // allocations that came earlier on the intent claim their full amount first.
+  // Spent DP of the other allocations comes off too (architect review).
+  const earlierSql = otherAllocationClaimsSql(
+    sql`a.tenant_id`,
+    sql`i.id`,
+    sql`a.allocated_at`,
+    sql`a.id`,
+  );
+  const heldBaseSql = sql`greatest(least(r.deposit_idr,i.amount_idr,
         greatest(coalesce((SELECT sum(e.amount_idr) FROM payment_evidence e
           WHERE e.tenant_id=a.tenant_id AND e.payment_intent_id=i.id),0)
           - coalesce((SELECT sum(f.amount_idr) FROM payment_unallocated_funds f
           WHERE f.tenant_id=a.tenant_id AND f.payment_intent_id=i.id),0),0))
-        - ${depositPrincipalReservedSql(sql`a.tenant_id`, sql`i.id`)}`;
+        - ${depositPrincipalReservedSql(sql`a.tenant_id`, sql`i.id`)}
+        - ${earlierSql},0)`;
+  // legend-obgj5: an open recon hold is NOT taken off the remainder here. The
+  // credit pool (transferredCreditPools) and the bill read (allocationCredits)
+  // subtract it while it is open, so the credit stays blocked, and a hold that
+  // finance dismisses (`not_this_intent`) gives the full credit back. Cutting
+  // the remainder at close would lose that money for good.
   const heldSql = sql`least(a.amount_idr,greatest(${heldBaseSql}
         - ${providerRefundedForeignIdrSql(sql`a.tenant_id`, sql`i.id`)},0))`;
   const allocations = await tx.execute(sql`
@@ -508,6 +525,9 @@ export async function applyReservationCustomerCredit(
       AND id=${input.customerProfileId}::uuid AND membership_status='active'
       AND whatsapp_verified_at IS NOT NULL AND merged_into_profile_id IS NULL FOR SHARE`);
     if (profile.rows.length !== 1) throw unavailable();
+    // legend-8cm5k: lock only the candidates whose intents were locked and are
+    // validated below. A remainder another session finalised since the first
+    // read has an unvalidated receipt and is ignored by this apply.
     const credits = await tx
       .select()
       .from(reservationDepositRemainders)
@@ -515,6 +535,10 @@ export async function applyReservationCustomerCredit(
         and(
           eq(reservationDepositRemainders.tenantId, tenantId),
           eq(reservationDepositRemainders.outletId, outletId),
+          inArray(
+            reservationDepositRemainders.id,
+            candidates.map((row) => row.id),
+          ),
           eq(
             reservationDepositRemainders.customerProfileId,
             input.customerProfileId,
@@ -562,6 +586,7 @@ export async function applyReservationCustomerCredit(
         throw unavailable();
       const balance = await refundableBalance(tx, source, {
         lockDeposit: false,
+        netCreditProviderCut: true,
       });
       const held =
         balance.depositInUse +
@@ -593,13 +618,27 @@ export async function applyReservationCustomerCredit(
       facts.profile !== input.customerProfileId
     )
       throw unavailable();
-    const available = credits.reduce(
-      (sum, row) => sum + Number(row.remainingIdr),
+    // legend-mez2n: the intent check above values the held credit net of the
+    // provider's refunds, so the amount a guest may take is bounded the same
+    // way, per intent: what is left of that intent minus its provider cut
+    // (counted once per intent). One intent's cut never locks another's credit.
+    const intentAvailable = new Map<string, number>();
+    for (const intentId of new Set(credits.map((row) => row.paymentIntentId))) {
+      const remaining = credits
+        .filter((row) => row.paymentIntentId === intentId)
+        .reduce((sum, row) => sum + Number(row.remainingIdr), 0);
+      const cut = Number(
+        await creditProviderCutOfIntent(tx, tenantId, intentId),
+      );
+      intentAvailable.set(intentId, Math.max(0, remaining - cut));
+    }
+    const availableNet = [...intentAvailable.values()].reduce(
+      (sum, value) => sum + value,
       0,
     );
     const assigned = await sessionDepositCredit(tx, tenantId, session.id);
     if (
-      input.amountIdr > available ||
+      input.amountIdr > availableNet ||
       input.amountIdr > Math.max(0, Number(facts.outstanding) - assigned)
     )
       throw unavailable();
@@ -607,8 +646,10 @@ export async function applyReservationCustomerCredit(
     let sourceReservationId: string | null = null;
     for (const credit of credits) {
       if (left <= 0) break;
-      const amount = Math.min(left, Number(credit.remainingIdr));
+      const intentLeft = intentAvailable.get(credit.paymentIntentId) ?? 0;
+      const amount = Math.min(left, Number(credit.remainingIdr), intentLeft);
       if (amount <= 0) continue;
+      intentAvailable.set(credit.paymentIntentId, intentLeft - amount);
       await tx
         .update(reservationDepositRemainders)
         .set({ remainingIdr: idr(Number(credit.remainingIdr) - amount) })

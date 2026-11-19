@@ -72,6 +72,6 @@ test("legend-it6p4: root makes one SSR call and hands overrides to Providers", (
   assert.doesNotMatch(root, /getTenantTextOverridesFn/);
   assert.doesNotMatch(root, /tenant-text-overrides-fn/);
   assert.match(root, /getTenantBrandFn\(\)/);
-  assert.match(root, /<Providers overrides=\{overrides\}>/);
+  assert.match(root, /<Providers overrides=\{overrides\}/);
   assert.match(read("router.tsx"), /textOverrides: \{\}/);
 });

@@ -192,6 +192,16 @@ export const NOTIFICATION_CATEGORY_CATALOG = {
     defaultChannels: ["web_push"],
     prd: "§3 Notifikasi Jadwal",
   },
+  // legend-z274: a checklist run that passed its deadline unfinished, or ended
+  // with failed items (OPS-01). Its own category so a supervisor can tune it
+  // apart from shift-schedule changes (`schedule_update`).
+  checklist_alert: {
+    audience: "staff",
+    realtime: false,
+    bypassQuietHours: false,
+    defaultChannels: ["web_push"],
+    prd: "§3 F27 Operasional Checklist; OPS-01; legend-z274",
+  },
   payslip: {
     audience: "staff",
     realtime: false,

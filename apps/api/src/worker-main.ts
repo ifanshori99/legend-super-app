@@ -69,6 +69,7 @@ import { runSegmentMaterializeSweep } from "./worker/segment-materialize.job.ts"
 import { runLoyaltyTierSweep } from "./worker/loyalty-tier.job.ts";
 import { runLoyaltyExpirySweep } from "./worker/loyalty-expiry.job.ts";
 import { parseEdgeRuntimeConfig } from "./edge/config.ts";
+import { withBreakfastProviderProof } from "./services/facility-breakfast-consumers.ts";
 import { deliverOrderPaymentEvent } from "./services/order-payment-consumers.ts";
 import { deliverOrderRecoveryRefundEvent } from "./services/order-recovery-refund.ts";
 import { deliverIssueChargeEvent } from "./services/order-recovery-charge.ts";
@@ -240,6 +241,10 @@ logger.info(
   { doitRefundsEnabled: env.DOIT_REFUNDS_ENABLED },
   "DOIT_REFUNDS_ENABLED",
 );
+if (env.DOIT_REFUNDS_ENABLED)
+  logger.warn(
+    "Refund otomatis penyedia AKTIF; rilis 1 wajib false (DOIT_REFUNDS_ENABLED)",
+  );
 // Sub-302 D3: Duitku joins the registry when its public callback origin and
 // return page are configured; without them no Duitku intent could be paid,
 // so the provider stays unregistered (fail closed, cannot be enabled on the
@@ -294,149 +299,160 @@ const runtime = createWorkerRuntime({
   resolveContext,
   authorize: handlers.authorize,
   deliver: async (context, job) => {
-    await consumeOutbox(db, context, {
-      outboxId: job.outboxId,
-      generation: job.generation,
-      authorize: (event) => handlers.authorizeEvent(context, event),
-      deliver: async (event, key, tx) => {
-        const result = await tx.execute(
-          sql`SELECT destination, direction, peer_id FROM domain_event_outbox WHERE id = ${ulidToUuid(job.outboxId)}::uuid`,
-        );
-        const row = result.rows[0];
-        if (!row) throw new Error("Outbox row not found");
-        const route = {
-          destination: String(row.destination),
-          direction: row.direction === null ? null : String(row.direction),
-          peerId: row.peer_id === null ? null : String(row.peer_id),
-        };
-        // 488 item 4: control-plane rows and the sentinel tenant belong together,
-        // both ways. A control row never reaches the transport or the cloud-sync
-        // consumers; a tenant row never reaches the control-plane consumer.
-        const controlTenant =
-          context.tenant.tenantId === CONTROL_PLANE_TENANT_ID;
-        if (controlTenant !== (route.destination === CONTROL_PLANE_DESTINATION))
-          throw new Error("Control-plane route does not match tenant");
-        if (controlTenant) {
-          await deliverControlPlaneEvent(context, event, tx);
-          return;
-        }
-        if (route.destination === "identity") {
-          // legend-83ll: session.revoked closes the session row (idempotent).
-          await deliverIdentityEvent(context, event, tx);
-          await handlers.deliverEvent(context, event, key, tx, route);
-        } else if (route.destination === "notification") {
-          await createNotificationConsumer(
-            context,
-            handlers.resolveNotificationRecipients,
-          )(event, key, tx);
-        } else {
-          // legend-fy5y: a new tenant's first admin is invited by email (cloud
-          // only, where email is sent). Replay safe: the consumer dedupes on
-          // (tenant, source event) and the notification dedupe key.
-          if (event.name === "tenant.created" && sendsReceiptEmails)
+    // legend-1146: a breakfast payment that must be refused asks the provider
+    // outside this transaction and its outbox/offset locks, then runs again.
+    await withBreakfastProviderProof(context, (breakfastProviderProven) =>
+      consumeOutbox(db, context, {
+        outboxId: job.outboxId,
+        generation: job.generation,
+        authorize: (event) => handlers.authorizeEvent(context, event),
+        deliver: async (event, key, tx) => {
+          const result = await tx.execute(
+            sql`SELECT destination, direction, peer_id FROM domain_event_outbox WHERE id = ${ulidToUuid(job.outboxId)}::uuid`,
+          );
+          const row = result.rows[0];
+          if (!row) throw new Error("Outbox row not found");
+          const route = {
+            destination: String(row.destination),
+            direction: row.direction === null ? null : String(row.direction),
+            peerId: row.peer_id === null ? null : String(row.peer_id),
+          };
+          // 488 item 4: control-plane rows and the sentinel tenant belong together,
+          // both ways. A control row never reaches the transport or the cloud-sync
+          // consumers; a tenant row never reaches the control-plane consumer.
+          const controlTenant =
+            context.tenant.tenantId === CONTROL_PLANE_TENANT_ID;
+          if (
+            controlTenant !==
+            (route.destination === CONTROL_PLANE_DESTINATION)
+          )
+            throw new Error("Control-plane route does not match tenant");
+          if (controlTenant) {
+            await deliverControlPlaneEvent(context, event, tx);
+            return;
+          }
+          if (route.destination === "identity") {
+            // legend-83ll: session.revoked closes the session row (idempotent).
+            await deliverIdentityEvent(context, event, tx);
+            await handlers.deliverEvent(context, event, key, tx, route);
+          } else if (route.destination === "notification") {
             await createNotificationConsumer(
               context,
               handlers.resolveNotificationRecipients,
             )(event, key, tx);
-          // RSV-02 (legend-t8bz): a paid DP confirms its reservation first
-          // (idempotent, replay safe), then the deployment consumer runs.
-          if (event.name === "payment.paid")
-            await handlePaymentPaid(context, event);
-          // RSV-03 (legend-lb3c): the guest's confirmation message, written
-          // only if the booking is still confirmed now. Cloud only, like the
-          // reminder: an edge must not message guests.
-          if (event.name === "reservation.confirmed" && sendsReceiptEmails)
-            await handleReservationConfirmed(context, event);
-          // ORD-02 (legend-x4qy/kk7): a verified payment fires its QR order
-          // (in this consumption transaction) or settles its POS bill; an
-          // expired/failed QR payment re-offers a code or voids the order.
-          // Each consumer re-reads its locked rows, so a replay is a no-op.
-          await deliverOrderPaymentEvent(context, event, tx);
-          // legend-zm1e6: a resolved swap issue becomes a replacement order
-          // line, the old line is voided and the new one routed to its KDS
-          // station. Idempotent (issue row lock), no extra charge, not gated.
-          await deliverSwapKitchenEvent(context, event, tx);
-          // legend-i83ls: a dearer swap that got its replacement line owes
-          // the price difference (+ service charge and PBJT): one charge row
-          // per issue, paid through its own link or routed to the cashier.
-          // Runs after the swap consumer (needs the replacement line).
-          await deliverIssueChargeEvent(context, event, tx);
-          // legend-94q2l: an approved manual refund of a failed item opens its
-          // payment refund request (not paid out; WS-05 approves). Idempotent.
-          // legend-iu91r: cloud only, like every refund (legend-jm5c): an
-          // edge worker must not file a refund the cloud also files.
-          if (sweepsRefunds)
-            await deliverOrderRecoveryRefundEvent(context, event, tx);
-          // PRD §3.19 Jurnal Otomatis (legend-9pz9, legend-o9q9), cloud only:
-          // sales, refunds, gateway receipts and payouts post their journal in
-          // a savepoint; expected accounting failures park for the sweep and
-          // never fail this delivery.
-          if (postsInventoryGl)
-            await deliverAutoJournalEvent(context, event, tx);
-          // legend-111j (WS-08 member loyalty), cloud only: a paid order earns
-          // points for its attached member, a refund or final-order void
-          // reverses them, in a savepoint under the profile lock.
-          if (postsInventoryGl)
-            await deliverLoyaltyEarnEvent(context, event, tx);
-          // legend-fjk5 (WS-09 F25), cloud only: a paid order issues package
-          // and min-spend facility entitlements, a refund cancels what is
-          // left of them (savepoint, replay is a no-op).
-          if (postsInventoryGl)
-            await deliverFacilityEntitlementEvent(context, event, tx);
-          // legend-kmd3 (WS-09 Wi-Fi quota), cloud only: paid money and
-          // refunds of a member's order move the daily Wi-Fi quota of the
-          // account (ledger row + recompute of its open sessions) in a savepoint.
-          if (postsInventoryGl) await deliverWifiQuotaEvent(context, event, tx);
-          // PRD §3.19 (legend-w1vo), cloud only: stock.moved of a count, waste
-          // or sale posts its GL journal in a savepoint; a closed period or a
-          // missing mapping parks the source for the sweep, never fails this.
-          if (postsInventoryGl)
-            await deliverInventoryGlEvent(context, event, tx);
-          // WS-07 (legend-4n3r), cloud only: payroll lock/paid/reversal, kasbon
-          // and cash reimbursement post their GL journals; errors retry.
-          if (postsInventoryGl) await deliverPayrollGlEvent(context, event, tx);
-          // WS-08 (legend-5bn3), cloud only: 86 and menu/price changes reach
-          // the open delivery channels through their adapters. A platform
-          // failure never fails this event: the channel is marked error/stale
-          // for the delivery sync sweep below.
-          if (postsInventoryGl)
-            await deliverDeliveryChannelEvent(context, event, tx);
-          // INV-02/KDS-07 (legend-db6): a paid order, a remake/comp and the
-          // day close deduct recipe stock in this consumption transaction.
-          await deliverRecipeDeductionEvent(context, event, tx);
-          // AUTH-06 (legend-obh5): a phone-approved POS override settles from
-          // the approval chain re-read under its row lock.
-          await handleApprovalResolved(context, event);
-          // PRD §3.18 (legend-9yz): a decided purchasing chain settles its PR/PO
-          // from the chain re-read under the row lock; replays are no-ops.
-          await handlePurchasingApprovalResolved(context, event);
-          // PAY-04 (legend-hvvn): an approved refund chain settles the refund;
-          // the payout itself runs from the approve call or the payout sweep.
-          await handleRefundApprovalResolved(context, event);
-          // PAY recon (PRD §3.7): an approved chain closes the reconciliation
-          // case; rejected/expired reopens it, re-read under the case row lock.
-          await handleReconciliationApprovalResolved(context, event);
-          // WS-10 (legend-hggk): approved/rejected leave and overtime settle
-          // from the chain outcome re-read under the request row lock.
-          await handleHrisApprovalResolved(context, event);
-          // Manual/recurring journals (legend-vmyg): settle from the chain.
-          await handleJournalApprovalResolved(context, event);
-          // Cash out held for approval (legend-4qowr, Q7): approved/rejected
-          // settles from the chain re-read under the entry row lock.
-          await handleCashBankApprovalResolved(context, event);
-          // Profit share (legend-33im6): distribution runs and recipient
-          // changes settle from the chain outcome re-read under the row lock.
-          await handleProfitShareApprovalResolved(context, event);
-          // WS-12 (legend-zw9r): approved AI/MCP action requests execute as the requester.
-          await handleAiActionApprovalResolved(context, event);
-          // legend-iuvq (F8), cloud only: a menu/price/availability change marks
-          // the outlet's printable menu dirty in this transaction; the sweep
-          // below renders it once, debounced. Other events touch no outlet.
-          if (postsInventoryGl) await menuPrintOutboxDeliver(event, key, tx);
-          await handlers.deliverEvent(context, event, key, tx, route);
-        }
-      },
-    });
+          } else {
+            // legend-fy5y: a new tenant's first admin is invited by email (cloud
+            // only, where email is sent). Replay safe: the consumer dedupes on
+            // (tenant, source event) and the notification dedupe key.
+            if (event.name === "tenant.created" && sendsReceiptEmails)
+              await createNotificationConsumer(
+                context,
+                handlers.resolveNotificationRecipients,
+              )(event, key, tx);
+            // RSV-02 (legend-t8bz): a paid DP confirms its reservation first
+            // (idempotent, replay safe), then the deployment consumer runs.
+            if (event.name === "payment.paid")
+              await handlePaymentPaid(context, event);
+            // RSV-03 (legend-lb3c): the guest's confirmation message, written
+            // only if the booking is still confirmed now. Cloud only, like the
+            // reminder: an edge must not message guests.
+            if (event.name === "reservation.confirmed" && sendsReceiptEmails)
+              await handleReservationConfirmed(context, event);
+            // ORD-02 (legend-x4qy/kk7): a verified payment fires its QR order
+            // (in this consumption transaction) or settles its POS bill; an
+            // expired/failed QR payment re-offers a code or voids the order.
+            // Each consumer re-reads its locked rows, so a replay is a no-op.
+            await deliverOrderPaymentEvent(context, event, tx, undefined, {
+              breakfastProviderProven,
+            });
+            // legend-zm1e6: a resolved swap issue becomes a replacement order
+            // line, the old line is voided and the new one routed to its KDS
+            // station. Idempotent (issue row lock), no extra charge, not gated.
+            await deliverSwapKitchenEvent(context, event, tx);
+            // legend-i83ls: a dearer swap that got its replacement line owes
+            // the price difference (+ service charge and PBJT): one charge row
+            // per issue, paid through its own link or routed to the cashier.
+            // Runs after the swap consumer (needs the replacement line).
+            await deliverIssueChargeEvent(context, event, tx);
+            // legend-94q2l: an approved manual refund of a failed item opens its
+            // payment refund request (not paid out; WS-05 approves). Idempotent.
+            // legend-iu91r: cloud only, like every refund (legend-jm5c): an
+            // edge worker must not file a refund the cloud also files.
+            if (sweepsRefunds)
+              await deliverOrderRecoveryRefundEvent(context, event, tx);
+            // PRD §3.19 Jurnal Otomatis (legend-9pz9, legend-o9q9), cloud only:
+            // sales, refunds, gateway receipts and payouts post their journal in
+            // a savepoint; expected accounting failures park for the sweep and
+            // never fail this delivery.
+            if (postsInventoryGl)
+              await deliverAutoJournalEvent(context, event, tx);
+            // legend-111j (WS-08 member loyalty), cloud only: a paid order earns
+            // points for its attached member, a refund or final-order void
+            // reverses them, in a savepoint under the profile lock.
+            if (postsInventoryGl)
+              await deliverLoyaltyEarnEvent(context, event, tx);
+            // legend-fjk5 (WS-09 F25), cloud only: a paid order issues package
+            // and min-spend facility entitlements, a refund cancels what is
+            // left of them (savepoint, replay is a no-op).
+            if (postsInventoryGl)
+              await deliverFacilityEntitlementEvent(context, event, tx);
+            // legend-kmd3 (WS-09 Wi-Fi quota), cloud only: paid money and
+            // refunds of a member's order move the daily Wi-Fi quota of the
+            // account (ledger row + recompute of its open sessions) in a savepoint.
+            if (postsInventoryGl)
+              await deliverWifiQuotaEvent(context, event, tx);
+            // PRD §3.19 (legend-w1vo), cloud only: stock.moved of a count, waste
+            // or sale posts its GL journal in a savepoint; a closed period or a
+            // missing mapping parks the source for the sweep, never fails this.
+            if (postsInventoryGl)
+              await deliverInventoryGlEvent(context, event, tx);
+            // WS-07 (legend-4n3r), cloud only: payroll lock/paid/reversal, kasbon
+            // and cash reimbursement post their GL journals; errors retry.
+            if (postsInventoryGl)
+              await deliverPayrollGlEvent(context, event, tx);
+            // WS-08 (legend-5bn3), cloud only: 86 and menu/price changes reach
+            // the open delivery channels through their adapters. A platform
+            // failure never fails this event: the channel is marked error/stale
+            // for the delivery sync sweep below.
+            if (postsInventoryGl)
+              await deliverDeliveryChannelEvent(context, event, tx);
+            // INV-02/KDS-07 (legend-db6): a paid order, a remake/comp and the
+            // day close deduct recipe stock in this consumption transaction.
+            await deliverRecipeDeductionEvent(context, event, tx);
+            // AUTH-06 (legend-obh5): a phone-approved POS override settles from
+            // the approval chain re-read under its row lock.
+            await handleApprovalResolved(context, event);
+            // PRD §3.18 (legend-9yz): a decided purchasing chain settles its PR/PO
+            // from the chain re-read under the row lock; replays are no-ops.
+            await handlePurchasingApprovalResolved(context, event);
+            // PAY-04 (legend-hvvn): an approved refund chain settles the refund;
+            // the payout itself runs from the approve call or the payout sweep.
+            await handleRefundApprovalResolved(context, event);
+            // PAY recon (PRD §3.7): an approved chain closes the reconciliation
+            // case; rejected/expired reopens it, re-read under the case row lock.
+            await handleReconciliationApprovalResolved(context, event);
+            // WS-10 (legend-hggk): approved/rejected leave and overtime settle
+            // from the chain outcome re-read under the request row lock.
+            await handleHrisApprovalResolved(context, event);
+            // Manual/recurring journals (legend-vmyg): settle from the chain.
+            await handleJournalApprovalResolved(context, event);
+            // Cash out held for approval (legend-4qowr, Q7): approved/rejected
+            // settles from the chain re-read under the entry row lock.
+            await handleCashBankApprovalResolved(context, event);
+            // Profit share (legend-33im6): distribution runs and recipient
+            // changes settle from the chain outcome re-read under the row lock.
+            await handleProfitShareApprovalResolved(context, event);
+            // WS-12 (legend-zw9r): approved AI/MCP action requests execute as the requester.
+            await handleAiActionApprovalResolved(context, event);
+            // legend-iuvq (F8), cloud only: a menu/price/availability change marks
+            // the outlet's printable menu dirty in this transaction; the sweep
+            // below renders it once, debounced. Other events touch no outlet.
+            if (postsInventoryGl) await menuPrintOutboxDeliver(event, key, tx);
+            await handlers.deliverEvent(context, event, key, tx, route);
+          }
+        },
+      }),
+    );
   },
   markDead: async (context, job) => {
     await markOutboxDead(db, context, job);

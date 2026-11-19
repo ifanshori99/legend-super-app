@@ -1,3 +1,54 @@
+## 1075b Refund I9: echo hanya dari refund yang sudah dikirim (18 Nov 2026)
+
+- Keputusan CTO: sukses penyedia atas refund yang di-settle manual jadi hold; sukses lebih kecil hanya echo bila R sudah dikirim ke penyedia. Invarian I9 di `docs/briefs/1072-invarian.md`, rincian K1-K3 dan L1-L3 di `docs/briefs/1072-refund-ronde6-q45.md` bagian Ronde 7b. Bead legend-3aign; r1-04 (race kredit DP) jadi legend-r7oi3 (P2).
+- Webhook: pengecualian "lebih kecil = echo" hanya bila R terkirim (`sentToProvider`). Recorder: fact penyedia pada transaksi dengan refund pending/approved yang belum dikirim tetap dibukukan dan memasang hold konflik (K1, L2); echo recorder melewati refund settle manual (K2); laporan full sesudah settle manual menahan max(nominal manual, nominal berisiko) (K3, L1). Satu alert per laporan (958).
+- Dua review architect xhigh: I9 (no P1, P2 recorder settle manual) dan K1-K3 (no P1, P2 hold K3 menelan hold live-own). Semua diperbaiki. Runbook `docs/deployment.md` memperbarui aturan penutupan hold.
+- Bukti: r4 merah di eb5f68966 (6 dari 11), r4-10/r4-11 merah di c7cff3804; typecheck dan db:generate bersih.
+
+## 1075 Refund ronde 7 (18 Nov 2026)
+
+- Cabang `ws/1072-refund-ronde6-q45`, lanjut dari 74172df44. Invarian I6-I8 di `docs/briefs/1072-invarian.md` (bagian "Ronde 7").
+- R7-1 legend-ertk0 (I6): hold konflik webhook matched kini ditulis di transaksi yang memegang kunci intent dan DP, lalu 409 dilempar sesudah commit. Settle manual dan kredit DP selalu melihat hold. Test race dua koneksi `refund-1075-r1-hold-atomic-race`.
+- R7-2 legend-fr2lk (I7): hold surplus bergenerasi. Laporan di atas nominal terbesar yang pernah ditahan untuk kunci bukti yang sama membuka hold baru walau hold sebelumnya resolved; replay <= nominal itu no-op. Test `refund-1075-r2-surplus-generation`.
+- R7-3 legend-55up0 (I8, keputusan CTO): sukses matched yang tidak terbukti echo (ref beda, nominal tak terbaca atau hilang, R failed/ditolak/settled-outside, tanpa id refund) selalu jadi hold konflik. Nominal tak terbaca ditahan sebesar intent dengan kunci `invalid:<id>`. Test `refund-1075-r3-matched-unproven-success`.
+- Review architect xhigh: 1 P1 (hold pengganti 100k menelan laporan sah sesudah resolve) dan 1 P3 (sukses tanpa id refund lolos tanpa hold), keduanya diperbaiki dengan test r3-09/r3-10. Runbook `docs/deployment.md` ditambah satu paragraf. Tanpa migrasi.
+- Bukti: test 1075 r1/r2/r3 merah di base 74172df44 (13 gagal, 6 kontrol hijau), hijau di HEAD; regresi refund 77 file 1398 lulus (satu file, `payment-refund-settled-fund-conflict`, hanya perlu cleanup hold dan kini menegaskan hold terbuka, 4/4 lulus); typecheck API exit 0; db:generate kosong; eslint dan prettier file berubah bersih.
+- Untuk CTO: settled-outside + sukses kini juga hold; nominal tak terbaca ditahan sebesar intent (cek sampel payload DOIT staging); laporan lebih kecil dari R tetap dianggap echo (I2).
+
+## 1072 Refund ronde 6 + refund otomatis mati Q45 (18 Nov 2026)
+
+- Cabang `ws/1072-refund-ronde6-q45` (base 1c9e3fcaa). Invarian uang: `docs/briefs/1072-invarian.md`; keputusan per temuan: `docs/briefs/1072-refund-ronde6-q45.md`.
+- A1 legend-qag4h: webhook matched dengan nominal sukses > refund kita (atau refund kita failed) kini memasang hold `HOLD_TRANSACTION_CONFLICT` dengan kunci dedup sama dengan recorder; hold live-own yang dieskalasi tidak ditutup otomatis; hold resolved + laporan lebih besar -> hold surplus kedua (nominal penuh, naik bila laporan naik).
+- A2 legend-xon8p: pengurang hold di kredit DP (asli + pindahan) tidak lagi dibuang oleh fact echo; hold konflik selalu mengurangi penuh.
+- A3 legend-bmk0h: counted (identity apa pun) ditolak 409 untuk hold konflik sebelum memilih fact.
+- A4 legend-sbh9j: picker menolak (422) bila ada hold same_as_counted legacy tanpa binding pada intent/T itu.
+- B legend-kmrto: flag mati -> 503 `REFUND_PROVIDER_DISABLED`, refund tetap approved (antrean manual), sweep warn tanpa retry; doit terdaftar tetap dianggap tak terpasang saat flag mati; shim test `setPaymentRefundGateway` melempar di production; settle manual cek ulang cap (tolak 409 bila tanpa jejak penyedia, catat `capExcessIdr` bila ada jejak); warn startup bila flag true; runbook di `docs/deployment.md`.
+- Bukti: test 1072 a1-a4 + b merah di base (24 gagal), hijau di HEAD; regresi 74 file refund 1379 lulus; typecheck API exit 0; db:generate kosong; eslint+prettier file berubah bersih. Tanpa migrasi.
+- Tindak lanjut: legend-55up0 (P3 laporan tanpa nominal/ref beda), legend-h6k7c (refund ber-jejak macet tak bisa dicatat manual saat flag mati), legend-l9ey4 (pool DP 0 bila ada refund + fact echo).
+## 1149: flake audit dan race proof payout (19 Nov 2026)
+
+Scope test saja, dasar `494228f7b`; brief `docs/briefs/1149-flake-full-run.md` di checkout coordinator. Tidak mengubah produksi atau migrasi; CTO mengurus status Beads.
+
+`legend-5voa6`/`legend-h4ary`: matrix audit membaca semua policy tenant fixture, termasuk action sementara di luar enum yang ditinggalkan suite kas. Reproduksi menyisipkan sentinel action di tenant bersama dan gagal pada Zod sebelum writer; setup audit sekarang memakai tenant sendiri (reuse patch `a289bc986`) sambil mempertahankan bukti rollback dan sentinel.
+
+`legend-c2z4x`: race mencampur HTTP password step-up dengan service langsung. Return sudah memegang batch lock ketika HTTP menerbitkan grant; FK grant terkena batas lock 5 detik. Reproduksi storage read di bawah lock menghasilkan 503 `PAYOUT_STEP_GRANT_UNAVAILABLE` dalam 5977 ms. Barrier test menunggu kedua issuer asli COMMIT sebelum berebut proof, tanpa mengganti HTTP atau mengurangi assertion satu pemenang/satu 409/tidak ada perubahan tambahan. Menambah variasi proof legacy.
+
+`legend-inflf` belum ditutup. Log asli batch90 menunjukkan timeout 20 detik pada legit-operations dan satu recon exception pada withdrawn-propose di rerun tiga file. Hipotesis timer MFA tidak menjelaskan resolve-only (jalur recon itu tidak memeriksa umur MFA); eksperimen sementara dibuang. Assertion kini mencetak isi exception untuk bukti kegagalan berikutnya.
+
+Bukti: `/tmp/1149-red.log` 67 lulus/2 gagal (audit+503 sesuai reproduksi); `/tmp/1149-green1.log` audit+897 27/27 lulus. Dua pengulangan tujuh file (`rbac-audit-writer`, `897-proof-binding`, `990-recon-attest/clear/reopen`, `tax-api`, `888-fingerprint`) masing-masing lulus 96/96, dalam 125,87 detik (`/tmp/1149-repeat1.log`) dan 83,01 detik (`/tmp/1149-repeat2.log`), termasuk 990-attest 14/14 pada keduanya; `inflf` belum tereproduksi. Semua proses dan cleanup database selesai, token heavy dilepas. ESLint dan Prettier tiga file test hijau setelah perubahan terakhir; review final tanpa temuan blocking. Prettier dokumen PROGRESS merah juga pada versi HEAD sebelum perubahan (dibuktikan `/tmp/1149-progress-base.md`); tidak memformat ulang seluruh dokumen. Tidak menjalankan full suite, build atau typecheck karena hanya test yang berubah dan brief melarang full run.
+
+Perintah verifikasi (dari root worktree, exit 0 untuk ESLint/Prettier tiga file TS dan run hijau):
+
+```sh
+pnpm exec eslint apps/api/src/test/rbac-audit-writer.test.ts apps/api/src/test/payroll-payout-897-proof-binding.test.ts apps/api/src/test/payroll-payout-990-recon-attest.test.ts
+pnpm exec prettier --check apps/api/src/test/rbac-audit-writer.test.ts apps/api/src/test/payroll-payout-897-proof-binding.test.ts apps/api/src/test/payroll-payout-990-recon-attest.test.ts
+LEGEND_TEST_FILES="src/test/rbac-audit-writer.test.ts src/test/payroll-payout-897-proof-binding.test.ts src/test/payroll-payout-990-recon-attest.test.ts src/test/payroll-payout-990-recon-clear.test.ts src/test/payroll-payout-990-recon-reopen.test.ts src/test/tax-api.test.ts src/test/payroll-payout-888-fingerprint.test.ts" heavy pnpm test
+```
+
+Log asli `inflf`: `/private/tmp/claude-501/-Users-ifanshori99-Projects-legend-super-app-legend-734d81c4/752891d2-434d-4630-913b-74b1f92b21de/scratchpad/full90.log:29420` (legit-operations timeout) dan `rerun90-2.log:81` di folder yang sama (withdrawn-propose mendapat satu exception tanpa detail alasan). Eksperimen timer yang ditolak tersimpan sementara di `/tmp/1149-990-timer-hypothesis.patch`, tidak masuk commit.
+
+Subagent: total 10, puncak 5 bersamaan; token heavy final dipegang test-runner. Skrip `session-usage.py` tidak menemukan transkrip Codex dan `parallel-report` hanya menghitung sesi Claude, jadi biaya/rata-rata Codex tidak tersedia dari kedua skrip itu.
+
 ## legend-e3k4p: pengirim digest reconciliation edge berkala (18 Nov 2026)
 
 - Dasar: `a915c9409` (`ghostex/bawa-kai-upsync-ke-m1`, ledger 0684), cabang kerja `ghostex/job-rekonsiliasi-edge-berkala`. Referensi runtime S1-S5 dibaca tanpa merge. Tidak merencanakan migrasi atau perubahan perhitungan ledger.
@@ -7435,6 +7486,22 @@ Cabang worktree `ghostex/980-refund-sisa-4-kartu` dari `9788dc422` (958 + 967). 
 - HIGH (architect delta): bendera refund provider di intent (`provider_refunded_after_paid_at` / `provider_refunded_at`) kini selalu menolak refund manual (409), berapa pun refund parsial yang tercatat, karena jawaban `refunded` penuh dan aturan melebihi batas menyetel bendera tanpa mencatat jumlah.
 - Bukti ronde 6: grup 106 berkas refund/order-issues/recovery: 1613 lulus, 0 gagal; typecheck api hijau.
 
+## 1020 SO recon ronde 2 (17 Nov 2026, cabang ghostex/1020-so-recon-ronde-2-fix, 88fd5d7c8)
+
+- F1 legend-qbsbr: refund dana parkir transaksi LAIN tidak lagi dihitung sebagai refund transaksi utama; refund dana milik transaksi sendiri dibandingkan dengan nilai transaksi (greatest evidence dan tagihan), bukan tagihan saja (temuan architect: tagihan 50k dibayar 150k).
+- F2 legend-svwdz: kredit DP pindahan dibatasi nilai bersih intent sumber (pool, alokasi created_at,id, floor 0), snapshot refund provider per remainder (migrasi 0636), flag recon tercatat `reservation_credit_recon_flags` (migrasi 0637) diperbarui saat refund provider dicatat. Guard refund tetap pandangan gross.
+- F3 legend-6jdy1: refund.succeeded dengan reference yang menyebut intent lain = ignored REFERENCE_MISMATCH, tanpa tulis refund/stamp/audit/alert.
+- Temuan di luar cabang: bead P2 (DP satu intent dua reservasi, apply kredit sah ditolak 409 setelah refund provider; perilaku lama, restriktif).
+- Bukti: 3 berkas test 1020 (38 test) + 13 berkas 958/967/980/1009/1016/registry (315 test) lulus; gagal-dulu di base 19 dari 24 (sisanya kontrol); typecheck api, eslint, prettier hijau; db:generate kosong. Review architect 3 putaran (6 temuan nyata dibetulkan).
+
+## 1028 Kredit DP satu intent dua reservasi setelah refund provider (18 Nov 2026, cabang ghostex/3d4eb7b8, legend-mez2n)
+
+- Akar masalah: bukan finalize (1020 sengaja mencetak remainder gross, test ronde 3 T2 mengharuskan 45k+45k). Cek apply kredit memakai `depositInUse` dengan kredit tertahan GROSS, sedangkan `paid` sudah net refund provider, sehingga kredit sah ditolak 409 CUSTOMER_CREDIT_NOT_AVAILABLE.
+- Perbaikan: helper `creditProviderCutOfIntent` (potongan refund provider sekali per intent = kredit - pool 1020); `depositInUseOfIntent` / `refundableBalance` opsi `netCreditProviderCut` (hanya jalur apply kredit, jalur refund payer tetap gross); `applyReservationCustomerCredit` dibatasi sisa bersih per intent (sisa intent - potongan intent itu), jadi potongan satu intent tidak mengunci kredit intent lain dan tidak bisa membayar lebih dari net. Tanpa migrasi (db:generate kosong).
+- Bukti: berkas baru `reservation-deposit-dp-shared-intent-refund.test.ts` 14 test; gagal-dulu di base 8 dari 14 (409 pada apply sah), 14/14 lulus setelah fix; 6 berkas 1020 + remainder + 958/967 (82 test) lulus; typecheck api 0 error; eslint dan prettier hijau. Review architect (xhigh): setuju setelah satu temuan (batas per intent), dibetulkan.
+- Risiko sisa (di luar cakupan): kredit yang sudah dipakai sebelum refund provider susulan bisa melebihi pool (hanya ditandai recon); pencatat refund provider tidak mengambil lock intent deposit; refund payer pending memblokir apply kredit sepenuhnya (restriktif).
+- Biaya sesi (session-usage, belum termasuk subagent baru setelah angka ini): total 7365k unit, subagent 8.
+  **1013 Jurnal otomatis dan breakfast memakai net setelah refund provider (legend-tlm3h, 17 Nov 2026, base daf8ace2a, tingkat K)**
 ### 982 charge tukar menu: refund, void, tagih POS non-tunai (17 Nov 2026)
 
 - Cabang `ghostex/982-charge-tukar-menu-refund-void-pos` dari m1 `1c185edc0`. Kartu: legend-nsvu0 (refund charge paid gateway, `POST /api/order-issue-charges/:chargeId/refund`, total tidak melebihi charge, refund berulang dijumlah lewat `recoveryChargeRefundSplit` kumulatif, jurnal balik `aj:order-charge-refund:<paymentRefundId>` hanya dibukukan saat refund `completed`), legend-s61sg (void order dengan charge paid: charge tunai dapat `cash_out` + jurnal balik, charge gateway direfund dalam transaksi yang sama, EDC atau yang tak bisa dikembalikan: 409; void ditahan memakai id turunan voidId+chargeId), legend-gt98h (`collect-at-pos` menerima QRIS dan EDC; QRIS memakai link `oic:<chargeId>`, EDC butuh `edc_transactions` approved sejumlah persis, satu persetujuan per charge; gagal/timeout tidak menandai paid).
@@ -7589,6 +7656,133 @@ Subagent: 1 test-runner (pemantau log, haiku) di batch87; sesi sejak awal 7. Bia
 - Belum: refund provider PENUH (jalur 958) tidak menulis `payment_provider_refunds` sehingga tidak dijurnal (bead baru). Refund fund double_payment tidak bisa parsial; di produksi diblokir `fundBlockedSql` bila refund provider membawa evidence_id.
 - Bukti: 72 berkas / 1451 test terarah lulus (akuntansi, refund, breakfast, 967, 980, 1009, qr-order); tes kontrak root text/events/accounting + data-import-registry lulus; typecheck api, eslint, prettier hijau.
 
+## 1025 Refund provider, sisa celah uang (18 Nov 2026, cabang ghostex/5e374ac9, base 1020 c15dd03aa + merge 1013 c07bf2ca3)
+
+- Merge 1013: konflik di payment-net-allocated-sql, payment-provider-partial-refund (import flagCreditReconForIntent + appendPaymentEvent keduanya dipakai), payment-provider-refunded-foreign-sql (predikat `onlyIf` 1013 ditambahkan ke SQL terkelompok 1016), PROGRESS.
+- A legend-ra4lu: refund provider tanpa evidence_id pada intent yang punya fund terbuka (resolution NULL) memblokir refund/kredit fund (`fundBlockedSql`).
+- B legend-gjt5q: refund provider penuh menulis `payment_provider_refunds` (`payment:<ref>`, sisa = bayar dikurangi refund kita yang selesai dikurangi baris tercatat) sekali, dijurnal sekali lewat `payment.provider_refunded`. Refund kita yang masih jalan: webhook gagal/retry sampai 15 menit lalu dipaksa dengan hold + alert finance. Jalur poller `markProviderAnswered` belum menulis baris (bead).
+- C legend-9s33i: REFERENCE_MISMATCH pada refund sukses mencatat `refund_recon_holds` (migrasi 0642, unik per event dan per provider_refund_id), alert supervisor, memblokir refund/payout/fund intent sampai `resolved_at` diisi. Tetap tanpa refund/stamp otomatis.
+- Review architect 4 putaran (xhigh): F1/F2 (sisa dihitung dobel, refund penuh terbuang saat refund kita jalan), hold hanya `succeeded`, hold bisa hilang saat refund kita menutup semua, sisa tanpa evidence dobel, teks alert refund_in_flight: semua dibetulkan. Sisa temuan jadi bead.
+- Belum (bead): jalur resolve finance untuk hold (hold memblokir selamanya, restriktif), jalur poller penuh, hold untuk refund fund kita yang menutup semua, alert refund_in_flight bisa berulang.
+- Bukti: 22 berkas test terarah (318 test) lulus, termasuk refund-1025-a/b/c dan kontrol 958/967/1013/1016/1020; prettier, eslint, typecheck API (heavy), db:generate kosong.
+
+**1025b Finance resolve hold refund (legend-vp4ta, 18 Nov 2026, cabang ghostex/5e374ac9, di atas d18b82fa8, tingkat K)**
+
+- Sudah: endpoint `GET /api/payments/admin/refund-recon-holds` dan `POST .../:holdId/resolve` (izin `payment.reconcile`, `requireTrustedOrigin`, kunci idempotensi, alasan wajib dan di-trim, audit `payment.refund_recon_hold_resolved`, tenant lain 404, resolve ganda 409). Migrasi 0649 (resolved_by, resolution, resolution_note) dan 0650 (provider_payment_ref). Tab ke-6 "Refund tertahan" di layar payment-admin yang ada (tanpa layar baru), diaudit ui-auditor.
+- Keputusan aturan uang (restriktif): resolve BUKAN sekadar membuka blokir. `not_this_intent` hanya menutup hold; `counted_against_intent` lebih dulu mencatat refund provider (pada transaksi yang disebut webhook, bukan transaksi utama) sehingga batas refund/payout dan jurnal 1013 tetap berlaku, lalu menutup hold hanya bila sisa transaksi tepat 0. Hold `payment:<ref>` menolak ditutup selagi refund kita masih jalan (pending/approved). Hold tanpa provider_refund_id dihitung sebagai `hold:<id>` sebesar min(nominal hold, sisa). Refund yang sudah karantina karena hold TETAP karantina (tidak dikirim ulang); refund baru dalam sisa net bisa dibuat.
+- Review architect xhigh 4 putaran: R1 (3 High: transaksi salah, hold payment:<ref> ditutup terlalu cepat/macet, hold tanpa id tak bisa dihitung), R2 (High nominal hold bukan nominal transaksi, Medium sisa NULL-id), R3 (3 Medium sisa tidak mengurangi refund fund, bypass prefix hold:, tutup tanpa catat), R4 tidak ada yang menghalangi rilis. Tidak ada jalur yang membayar dua kali.
+- Belum (bead): legend-03jjx P2 (cek refund kita sedang jalan untuk cabang tanpa id/id bernama; jurnal bisa menunjukkan 200k pada 100k, tidak ada uang tambahan keluar, plus 2 celah test), legend-sy98y P2 (baris tab tampilkan nomor pembayaran dan outlet), legend-t9g3i P2 (poller), legend-tiyce P2 (refund fund menutup semua). mock.ts dan fixture kontrak untuk `VITE_API_MOCK` belum.
+- Bukti: 12 berkas test terarah (241 test) lulus termasuk refund-1025-d (59 test, 25 gagal di base route belum ada), -a/-b/-c, 958, 967, 1013, 1016, 1020, payment-api; typecheck api/web/shared (heavy), eslint, prettier hijau; db:generate kosong.
+- Biaya sesi (session-usage, sejak awal sesi 1025 + 1025b): total biaya* 17.3M; 32 subagent, maks 3 bersamaan, rata-rata 0.78 berjalan per agent (parallel-report).
+
+**1025c Celah refund lanjutan (legend-03jjx, ua9ja, 9uvvu, tiyce, t9g3i, sy98y; 18 Nov 2026, cabang ghostex/1025-refund-provider-celah-uang, di atas c2682d24a, tingkat K)**
+
+- Sudah: 03jjx (resolve hold tanpa id / id bernama menolak 422 selama refund kita pending/approved, helper `assertNoRefundInFlight` dipakai bersama cabang `payment:<ref>`); sy98y (baris tab "Refund tertahan" menampilkan referensi pembayaran dan nama outlet, nama sampai 150 karakter); ua9ja (kredit DP sudah terpakai lalu refund provider susulan: hold `credit_used_before_provider_refund` nominal selisih + alert sekali, kunci dedup per event bukan per id refund sehingga tidak bertabrakan dengan hold mismatch/live-own; resolve hold kredit tidak mencatat refund apa pun); 9uvvu (pencatat refund provider mengambil lock deposit-intent EXCLUSIVE, urutan sama dengan `depositInUseOfIntent`, tidak ada siklus); tiyce (refund fund hidup tanpa ref provider saat transaksi sudah dikembalikan penuh: hold + alert sekali; alert `refund_in_flight` id stabil); t9g3i (poller menjawab `refunded` mencatat refund penuh sekali lewat `markProviderRefunded`, `retry` menjaga kode tetap di poll).
+- Review: architect xhigh sekali untuk seluruh area (2 Medium: hold kredit tabrakan kunci unik dengan hold lain, nama outlet >100 karakter merusak daftar; 3 Low), semua diperbaiki test-dulu; delta architect high: tidak ada penghalang, 2 Low + 1 Info dicatat sebagai bead.
+- Belum (bead): `not_this_intent` pada hold kredit tanpa cek refund berjalan (P3); `flagCreditReconForIntent` dipanggil sebelum langkah 7 (P3, tidak ada uang keluar karena hold memblokir); hold kredit tidak menampilkan id refund provider di daftar (P4).
+- Bukti: 11 berkas test terarah (184 test) lulus pada gerbang akhir, ditambah satu putaran 23 berkas (termasuk kontrol 958/1013/1016) oleh implementer sebelum commit terakhir; typecheck api/web/shared (heavy, satu-satu), prettier, eslint, db:generate kosong, tanpa migrasi baru. Tidak ada tes gagal-dulu untuk skenario B (live-own + kredit sekaligus) karena baru bisa dijalankan setelah perbaikan; webhook `hold:x` (-51/-52 lama) lulus di kode lama (kontrol).
+- Biaya sesi (session-usage kumulatif 1025 + 1025b + 1025c): total biaya* 24.5M (naik 7.2M untuk 1025c); 44 subagent total (12 untuk 1025c), maks 4 bersamaan, rata-rata 0.64 berjalan per agent (parallel-report), 257 menit sesi.
+
+**1025d Temuan second opinion 1032 (legend-9dzxc, legend-hpwpt; 18 Nov 2026, cabang ghostex/1025-refund-provider-celah-uang, di atas 9ca8d8935, tingkat K)**
+
+- Sudah: 9dzxc (refund tingkat intent dihitung sebagai echo hanya bila transaksi yang diperiksa = transaksi utama intent; status `refunded` transaksi tambahan kini tercatat penuh dan memblokir fund-nya, tidak ada payout kedua); hpwpt (id sintetis `payment:<ref>` bila muat 100 karakter, selain itu `payment:h:` + sha256 64 hex; ref asli tetap lewat `providerPaymentRef`; resolve hold id ber-hash memakai ref tersimpan dan memverifikasi hash; `unbound` pada refund transaksi memicu alert finance sekali, stempel tetap). Temuan 2 dan 3 = thread 1028 (tidak disentuh).
+- Review: architect xhigh delta sekali: tidak ada penghalang; 2 temuan P3/P4 jadi bead (legend-tmepz: alert unbound transaksi tambahan bilang fund ditandai padahal tidak ada stempel fund, nyaris tak terjangkau; legend-8q1gl: id 66 karakter berbentuk `h:<64hex>` salah dikenali, hold tak bisa di-resolve, gagal aman).
+- Bukti: gerbang akhir 15 berkas test terarah (238 test) lulus (refund-1025d-a/b, refund-1025/1025c, 1020, 967, 1013, 1016, so885-d, so889, so896); typecheck api/web/shared (heavy, satu-satu), prettier, eslint, db:generate kosong, tanpa migrasi. Gagal-dulu: 1025d-b 11 dari 17 gagal di base; 1025d-a hanya 1 dari 8 (sisanya penjaga/kontrol). Jalur alert `unbound` tidak punya test (tidak ada input publik yang memicunya setelah perbaikan id).
+- Biaya sesi (session-usage kumulatif): total biaya* 27.0M (naik 2.5M untuk 1025d); 51 subagent total (7 untuk 1025d), maks 4 bersamaan, rata-rata 0.66 per agent (parallel-report), 278 menit sesi.
+
+**1033 Kredit DP pool net bersama + blok saat hold terbuka (legend-6n4p3, legend-obgj5; 18 Nov 2026, cabang ghostex/da603934, di atas gabungan 1025 018ab5cab, tingkat K)**
+
+- Sudah: 6n4p3 (kredit DP satu intent yang dibagi ke beberapa sesi memakai satu pool net: DP intent dikurangi refund provider dikurangi klaim alokasi lain, urutan stabil (allocated_at, id); DP yang sudah terpakai sebuah sesi tidak pernah diambil kembali; batas bawah terpakai sesi dengan dua DP dihitung sekali, tidak di kedua DP; DP 100 alokasi 50/50 refund provider 40 maka total kredit paling banyak 60); obgj5 (hold terbuka mengurangi net pada pembacaan kredit dan transfer pool, tidak dipotong dari sisa saat sesi tutup sehingga resolve `not_this_intent` mengembalikan penuh; hold yang refund-nya sudah tercatat tidak dihitung dua kali; hold `credit_used_before_provider_refund` tetap jalur 1025c). Kode: reservation-deposit-credit.ts (allocationCredits, transferredCreditPools, helper klaim/terpakai/hold) dan reservation-deposit-remainder.ts (finalize). Tanpa migrasi.
+- Keputusan aturan uang (restriktif): bila refund provider lebih besar dari alokasi sesi belakangan (kasus 70/30, tiga alokasi) tamu bisa dikredit kurang, tidak pernah lebih; batas atas terpakai antar alokasi hanya membuat kredit lebih kecil. Test 1020-F2 diubah: jumlah snapshot 10.000 dan sisa 80.000 (nilai net sama, snapshot kini dijumlah bukan min).
+- Review architect 4 putaran: P1 DP terpakai alokasi belakangan diabaikan (140k pada DP 100k), tamu bayar dua kali, sesi dengan dua DP menggelembungkan kredit (outlet rugi 100k); semua diperbaiki test-dulu, putaran terakhir bersih. Catatan: lantai terpakai juga mengurangi alokasi intent yang belum dibayar, sehingga tamu dua-DP bisa dikredit kurang (bead).
+- Belum (bead): pembuatan hold di payment-webhook.service.ts tidak memegang lock deposit-intent sehingga apply kredit bersamaan berperilaku seperti hold setelah pemakaian (di luar berkas yang boleh disentuh, P2); r.deposit_idr per reservasi (Low).
+- Bukti: 13 berkas test terarah (283 test) lulus pada hasil gabungan (refund-1025-d, 1025d-a/b, 1025c-b, 1025-c, 1020, dp-shared-intent-refund, dp-pool-1033 55 test baru, refund-guard, remainder, deposit-db, resend-db, 967-deposit); typecheck API (heavy), prettier, eslint hijau; db:generate kosong.
+- Biaya sesi (session-usage): total biaya* 4.2M; 11 subagent, maks 3 bersamaan, rata-rata 0.22 berjalan per agent (parallel-report).
+
+**1033b Lock hold dan lantai terpakai (legend-xmtih, legend-iz3ru; 18 Nov 2026, cabang ghostex/1033-kredit-dp-pool-net-bersama, tingkat K)**
+
+- Sudah: xmtih (pembuat hold refund_recon_holds, yaitu hold mismatch di payment-webhook.service.ts dan hold live-own di payment-provider-partial-refund.ts, kini mengambil row lock intent lalu lock deposit-intent exclusive, urutan sama dengan pencatat refund; apply kredit yang sedang jalan selesai dulu atau hold sudah terlihat oleh apply berikutnya); iz3ru (lantai terpakai sesi dua-DP hanya mengurangi alokasi lain yang intent-nya paid atau partially_refunded dengan paid_at terisi; DP intent pending, failed, expired tidak pernah diterima sehingga tamu tidak lagi diminta bayar dua kali). Tanpa migrasi.
+- Keputusan aturan uang: tidak ada perubahan arah; lantai hanya naik sampai belanja sesi, kredit di atasnya tetap dibatasi net dikurangi klaim.
+- Review architect xhigh delta sekali: bersih (tidak ada siklus lock, tidak ada kelebihan kredit, tiga INSERT hold semuanya di bawah lock). Catatan: kredit gabungan pool bisa melebihi net setelah refund provider (belanja tidak diambil kembali), itu desain 6n4p3, kerugian berasal dari refund provider.
+- Bukti: 17 berkas test terarah (312 test) lulus, termasuk refund-1033-xmtih-hold-lock (7 test, 2 gagal di base) dan reservation-deposit-dp-floor-iz3ru-1033 (10 test, 4 gagal di base); typecheck API (heavy), prettier, eslint hijau; db:generate kosong.
+- Biaya sesi (session-usage kumulatif): total biaya* 5.95M (naik 1.7M untuk 1033b); 14 subagent total (3 untuk 1033b), maks 3 bersamaan.
+
+**1035 Perbaikan SO refund ronde 2 (legend-04izi, yn1of, uvjqq, 8cm5k, 2hl7y; 18 Nov 2026, cabang ghostex/1033-kredit-dp-pool-net-bersama di atas 6075e2bb6, tingkat K)**
+
+- Sudah: 04izi (refund kita yang masih berjalan, ber-ref atau tidak, tidak lagi dianggap sukses: status `refunded` dari provider membuat satu hold live_own, tidak ada fact, finance dan supervisor diberi tahu sekali; refund baru atas uang itu ditolak 409/422 selama hold terbuka; refund kita gagal lalu resolve `counted_against_intent` mencatat fact sekali; selesai tidak menambah fact. Retry hanya untuk refund tagihan yang belum terkirim/tanpa ref). yn1of + uvjqq (kolom `payment_provider_refunds.refund_id_kind` provider/synthetic_full/synthetic_hold dan `refund_recon_holds.provider_refund_id_kind`, unique key memuat jenis; synthetic_full menyimpan ref pembayaran mentah, synthetic_hold uuid hold; semua cek echo dibatasi jenis provider; migrasi 0656_provider_refund_id_kind dengan backfill). 8cm5k (SELECT kedua apply kredit dibatasi ke kandidat yang sudah dikunci+divalidasi). 2hl7y (guard jurnal refund split memakai total kumulatif kelompok evidence sampai baris itu; jurnal = nominal baris; dalam bagian dana parkir tetap ditahan untuk finance dengan pesan tersendiri).
+- Keputusan: temuan architect B1 (tunda hold refund tagihan ber-ref dalam jendela retry) dicoba lalu dibatalkan karena test 1035-04izi-25 membuktikan celah bayar ulang (R gagal sebelum replay webhook). Hold segera dipertahankan (aturan restriktif); kebisingan alert jadi bead. Test lama 958-a6 diubah: echo refund kita yang masih pending = satu hold + satu alert, bukan diabaikan (itu perilaku yang ditandai SO).
+- Konsisten dengan keputusan founder 18 Nov: Q32 (aturan kredit DP 1033 tidak berubah), W3a (berkas refund manual tidak disentuh, hold menambah blokir), W3b (refund kedua ditolak selama refund kita/hold terbuka).
+- Review: architect xhigh sekali (tanpa P0/P1; B3 test debug dihapus; B2 pesan split; B4/B5 bead legend-0ywbv); reviewer delta sesudahnya.
+- Belum (bead): legend-w2td5 poller tidak memeriksa transaksi paid, jadi bila provider me-refund tanpa webhook lalu refund kita gagal, sistem tidak tahu (test 1035-04izi-08 mengunci batas ini, P2, perlu architect); legend-xhpng pembagian akun refund split (total benar, akun selisih); legend-0ywbv jenis ID di layar hold + data lama hold hash.
+- Bukti: 4 berkas test baru (A 17, B 18, C 8, D 5 test; gagal di base: A 6, B 14, C 5, D 4) + 23 berkas lama, total 27 berkas 470 test lulus (958 diulang sesudah penyesuaian: 5 berkas 77 test lulus); typecheck API (heavy) hijau; prettier dan eslint bersih; db:generate kosong.
+- Biaya sesi (session-usage): total biaya* 15.5M; 17 subagent (4 Explore, 4 test-writer, 5 implementer, 1 architect, 2 reviewer, 1 test-runner), puncak sekitar 8 bersamaan.
+
+**1045 Perbaikan SO refund ronde 3 (legend-w2td5, legend-d7im9; 18 Nov 2026, cabang ghostex/1033-kredit-dp-pool-net-bersama di atas c118f02a5, tingkat K)**
+
+- Sudah:
+  - F1 w2td5: refund kita yang terkirim lalu gagal memasang hold `own_refund_failed_unverified` di transaksi yang sama, dengan ref provider refund kita dan alert sekali. Refund baru, approve, kirim dan dana parkir ditolak 409 sampai finance resolve. Poller juga menanyakan intent paid yang ber-hold: jawaban `refunded` mencatat fact sekali, hold tetap. Jawaban `paid` tidak menutup hold karena DOIT tidak punya status partial.
+  - F2 d7im9: setiap retry jalur perekam (in-flight, mustWait, settlement) memasang hold dulu; nominal = laporan provider. Hold ditutup otomatis hanya bila fact laporan yang sama tercatat atau duplikat milik intent sama tanpa refund kita berjalan.
+  - F3: backfill 0656 tidak menebak lagi; semua fact lama tetap `provider`, hold ber-id jadi `provider`.
+  - F4: docs/deployment.md "stop, migrate, start".
+  - Architect xhigh A1: hold nominal 0 tidak mungkin, synthetic_full 0 tetap bisa di-count. A2: laporan provider melebihi sisa transaksi jadi hold `REFUND_EXCEEDS_LEFT`, bukan fact; hold F1 menyimpan ref provider sehingga echo terlambat = duplikat. A3: alert hold F1. A4: penutupan hold pada duplikat hanya untuk intent sama.
+- Matriks race CTO Retro 46: refund-1045-d (M1, 11 test: webhook x poller x refund kita gagal/sukses x refund baru) dan refund-1045-e (M2, 13 test: resolve hold x kredit DP x refund baru). Semua lulus, uang keluar <= dibayar di tiap skenario; tidak ada skenario yang tidak bisa dibuat aman.
+- Keputusan:
+  - Hold F1 tidak ditutup poller.
+  - Hold retry = nominal laporan, bukan nominal refund kita.
+  - Hold F1 menahan juga refund yang provider menolak dengan tegas ("declined"), karena sesudah terkirim tidak ada bukti uang belum keluar. Akibatnya setiap refund gateway yang gagal sesudah terkirim butuh cek finance sebelum refund ulang.
+  - Test lama diubah ke perilaku ini: 958-a9, PAY-04, QR-LATE P4/P5, weuo2-F, 1025-B-F3, 1035-04izi-02/-08. Teardown 15 berkas menambah DELETE refund_recon_holds.
+- Belum (bead): legend-rdg29 (poller berhenti menanyakan ulang hold F1 sesudah 12 galat/jawaban paid; aman, finance wajib cek), legend-py4xe (data lama payment:<ref> + laporan refund ID transaksi sama, belum ada production), legend-ehn19 (label resolve hold duplikat + teks "booked").
+- Bukti:
+  - 6 berkas test baru 1045 (a 11, b 13, c 24, d 11, e 13, f 9). Gagal di base c118f02a5: 37 dari 89 (a 11, b 11, c 2, d 4, e 7, 1035-a 2); f merah 7 sebelum perbaikan architect.
+  - Regresi 139 berkas refund/hold/poller: 2157 lulus pada run pertama, 19 berkas gagal (teardown FK + perilaku hold) diperbaiki lalu lulus 432/432 + 958 29/29.
+  - Typecheck API (heavy) hijau; prettier dan eslint bersih; db:generate kosong.
+- Biaya sesi (session-usage, 1035+1045): total biaya* 27.2M; 32 subagent (ronde 3: 15), puncak 8 bersamaan, rata 1.0.
+
+**1055 Perbaikan SO refund ronde 4 (legend-818ap P1, legend-sccyj P2; 18 Nov 2026, cabang ghostex/1033-kredit-dp-pool-net-bersama di atas 5882b0d6b, tingkat K)**
+
+- Sudah:
+  - G1 (P1, refund parsial tanpa referensi dibukukan dua kali): laporan provider ber-nomor pada transaksi yang punya fact anonim belum terikat tidak jadi fact; jadi hold `REFUND_MAY_DUPLICATE_ANONYMOUS` + alert. Count hold anonim saat transaksi sudah punya fact: 409 `HOLD_IDENTITY_AMBIGUOUS` kecuali finance memberi `providerRefundId` (ikat ke fact yang ada atau catat dengan nomor itu) atau `identity`.
+  - `identity` (`same_as_counted` | `separate`, kolom baru `resolution_identity`, migrasi 0658): wajib untuk hold dup-anon dan hold ber-nomor yang transaksinya punya fact anonim belum terikat. `same_as_counted` mencatat hanya selisih di atas fact anonim terkecil (dibatasi sisa); `separate` mencatat seperti biasa (batas sisa A2).
+  - G2 (P2, fact transaksi pertama menutup hold transaksi kedua): penutupan otomatis dan resolve counted wajib cocok `provider_payment_ref`; konflik = 409 `HOLD_TRANSACTION_CONFLICT`; laporan ID sama di transaksi lain tanpa refund kita berjalan = hold konflik + alert. Unique index hold memuat `coalesce(provider_payment_ref,'')` (0658), kunci dedupe hold/alert memuat ref.
+  - View hold: flag `needsIdentity` dari server; panel menampilkan dua pilihan identity.
+- Keputusan engineer (restriktif): identitas ambigu tidak dipilih otomatis; fact kurang dihindari (selisih dicatat), fact lebih diterima hanya bila ragu atas fact mana yang diikat (fact anonim terkecil). 1045c-R1 kini mengharapkan 1 hold konflik (ID lama di transaksi lain), assert uang tetap. 6 test 1025-d diberi `identity: "separate"`, assert uang tetap.
+- Bukti: test baru refund-1055-a (21 test: G1-01..10, G2-01..05), semua merah dulu di kode lama kecuali G1-09c (penjaga); regresi 140 berkas refund/hold/poller 2189 lulus, 0 gagal, 8 skip; typecheck API, shared, web (heavy) hijau; prettier dan eslint bersih; db:generate kosong.
+- Review: architect xhigh (satu sesi, 3 putaran verifikasi): putaran 1 2 P1 + 2 P2, putaran 2 1 P1 baru + 1 P2 sisa, putaran 3 tidak ada P0/P1; P2 tampilan (needsIdentity pada hold konflik) diperbaiki.
+- Belum (bead): legend-qwma1 (panel belum bisa menghitung hold anonim), legend-ksypc (N+1 query needsIdentity). Merge train: 0657 dipakai cabang payout 911, journal 0658 perlu disusun ulang saat merge.
+
+**1063 Perbaikan SO refund ronde 5 (legend-9dh7x P1, legend-awdwd P1, legend-flj83 P2; 18 Nov 2026, cabang ghostex/1033-kredit-dp-pool-net-bersama di atas 2a525b3d3, tingkat K)**
+
+- Sudah:
+  - F1 9dh7x: refund id milik refund kita dianggap echo hanya bila intent sama dan transaksi sumber sama (intent-level = transaksi utama intent; fund = evidence fund; fund tanpa evidence = transaksi utama) dan nominal laporan <= nominal refund kita. Selain itu pasang hold `HOLD_TRANSACTION_CONFLICT` (kecuali hold resolve) sebelum keluar; fund T2 ikut terblokir guard hold terbuka (request/approve/payout 409, tidak ada panggilan ke provider).
+  - F2 awdwd: `openReconHoldIdrSql` mengecualikan hold hanya bila fact punya `provider_payment_ref` sama; hold konflik dan hold tanpa ref tetap mengurangi kredit DP asli dan pindahan. Resolve `not_this_intent` memulihkan kredit sekali; barrier dua urutan lock lulus.
+  - F3 flj83: migrasi 0679 menambah `refund_recon_holds.matched_fact_id` (FK ke fact, unique index per tenant); `same_as_counted` memilih fact belum terikat (nominal sama dulu, lalu terkecil) dan mengikatnya; `unmatchedAnonymousFacts` menghitung fact tak terikat dikurangi hold lama tanpa ikatan. Jalur kedua (hold anonim same_as_counted terhadap fact mana pun, `pickUnboundFact`) juga terikat (temuan architect P2-1).
+- Keputusan engineer (restriktif): laporan di atas nominal refund kita tidak dianggap echo (architect P2-2): hold konflik, bukan fact. Hold konflik F1 tidak bisa di-count (resolve 422), hanya `not_this_intent`, sama seperti hold konflik 1055.
+- Review: architect xhigh sekali: tidak ada P0/P1; P2-1 dan P2-2 diperbaiki + test (refund-1063-d); P2-3 (jumlah asing dan `transactionLeftIdr` mengenali refund kita lewat id tanpa transaksi sumber) jadi bead legend-9uz9n. Fail-first test d tidak dibuktikan (butuh revert kode).
+- Bukti: test baru refund-1063-a (2), b (8 termasuk barrier), c (4), d (10); fail-first a (F1-01 merah), b (6 dari 8 merah), c (3 dari 4 merah) di base 2a525b3d3; regresi 173 berkas refund/hold/poller/DP/1033: 2273 lulus, 8 skip, 0 gagal; typecheck API (heavy) hijau; prettier dan eslint file berubah bersih; db:generate kosong setelah migrasi.
+- Merge train: migrasi 0679 (journal idx 446) dan 0658 perlu disusun ulang saat merge (0657 dipakai cabang payout 911).
+- Biaya sesi (session-usage): total biaya* 3.64M; 7 subagent (2 Explore, 4 test-writer, 1 architect), puncak 5 bersamaan.
+
+**1063b legend-9uz9n: refund kita dikenali sebagai echo hanya bila intent + transaksi sumber cocok (18 Nov 2026, cabang ghostex/1033-kredit-dp-pool-net-bersama di atas 0317e7cec, tingkat K)**
+
+- Sudah: satu predikat SQL bersama `ownRefundEchoesFactSql` (payment-provider-refunded-foreign-sql.ts): refund kita r mengecho fact p hanya bila id provider sama, intent sama, nominal r >= p, dan transaksi sumber r = `p.provider_payment_ref` (intent-level atau fund tanpa evidence = `payment_intents.provider_ref`; fund dengan evidence = evidence-nya). Dipakai di jumlah uang asing (`providerRefundedForeignIdrSql`), `ownCompletedIdrSql` (sisa transaksi), dan dua sisi jurnal otomatis (`payment.refunded` dan `payment.provider_refunded`). Selain echo, fact tetap dihitung dan R juga: sisi restriktif (over-count, bukan uang keluar lebih).
+- Test: refund-1063-e (7 test, 4 merah di HEAD: e-02, e-03, e-05, e-07) dan refund-1063-f jurnal (3 test, 2 merah di HEAD: f-01, f-03); kontrol echo sah hijau di keduanya. Fixture accounting-provider-refund-net-1013 diberi `provider_ref` pada intent (intent terbayar selalu punya; assertion tidak berubah).
+- Review: architect xhigh sekali: tidak ada P0/P1; empat P2 kasus tepi lama jadi bead (A selisih nominal echo sebagian di sisa transaksi, B selisih R-P tak dijurnal, C hold saat ref datang belakangan, D dua refund satu ref).
+- Bukti: regresi 181 berkas refund/hold/poller/DP/jurnal: 2560 lulus, 8 skip, 1 gagal (fixture 1013, dibetulkan, 14/14 lulus); typecheck API (heavy) hijau; prettier dan eslint bersih; tanpa migrasi baru.
+
+**1084 refund ronde 8 (SO 1077): tiga temuan ditutup (18 Nov 2026, cabang ws/1072-refund-ronde6-q45, base 6c0055dcb, tingkat K uang)**
+
+- Sudah: R1 (P1) kunci hold `invalid:<id>` dibatasi: id <= 92 karakter tetap, lebih panjang menjadi `invalid-h:` + SHA-256 (74 karakter); R2 (P1) nominal tak terbaca pada transaksi beda menahan seluruh pembayaran intent pemilik (maks nominal intent dan evidence), bukan nominal R transaksi lain; R3 (P2) hold konflik `synthetic_full` (K3) bisa ditutup dengan `not_this_intent` (counted tetap 409). Invarian I10 di docs/briefs/1072-invarian.md, runbook di docs/deployment.md. Tanpa migrasi, flag refund otomatis penyedia (Q45) tidak disentuh.
+- Test: refund-1077-r1 (13), r2 (3), r3 (2 + 1 todo). Merah di 6c0055dcb: r1 9 dari 13, r2 3 dari 3, r3 2 dari 2.
+- Review: architect xhigh sekali: tidak ada P0-P2; dua usul P3 (runbook count R2, max evidence) sudah dikerjakan.
+- Langkah berikut: merge train; sebelum rilis, second opinion ronde 9 atas area ini.
+
+**1090 refund ronde 9 (SO 1088): tiga temuan ditutup (18 Nov 2026, cabang ws/1072-refund-ronde6-q45, base 306010aba, tingkat K uang)**
+
+- Sudah: R1 (P1) hold mismatch terbuka dengan identitas sama dinaikkan `greatest(lama, baru)` di bawah kunci intent dan DP (tidak pernah turun); R2 (P1) kind hold baru `invalid_report` (migrasi 0696 mengubah check constraint dan kind hold konflik lama berawalan `invalid:`/`invalid-h:`), jadi ID penyedia literal tidak pernah menyerap placeholder; R3 (P2) identitas fallback tanpa refund ID tetap `refund:<R>` (hold lama di bawah `invalid:<providerRef>` tetap dikenali lewat `legacyProviderRefundIds`). Invarian I11 di `docs/briefs/1072-invarian.md`.
+- Review architect xhigh: tidak ada P0/P1; satu P2 (hold mismatch yang sudah di-resolve menelan laporan sama-identitas yang lebih besar) diperbaiki lewat aturan I7 pintu konflik + test `refund-1088-r1b`; P3 (alert tidak dikirim ulang saat naik, hold kedua saat `providerRef` sudah ada pada callback refusal) tercatat, keduanya restriktif.
+- Test: refund-1088-r1 (16, termasuk kredit DP dan dua urutan kunci dengan barrier), r1b (3), r2 (9), r3 (7); `it.todo` DP di refund-1077-r2 diganti. Merah di 306010aba: r1 12, r2 3, r3 6, r1b 3 (perbaikan dimatikan).
+- Runbook: `docs/deployment.md` memuat aturan hold laporan lebih besar sesudah resolve dan hold laporan tak terbaca.
+- Langkah berikut: merge train; second opinion ronde 10 atas area ini sebelum rilis.
 ## 1042 W3b satu jalur refund per pesanan (legend-ggv6d, 18 Nov)
 
 Sudah: pesanan hanya boleh punya SATU dari refund kasir / void (cloud+edge) / refund manual. Celah yang ditutup (commit eab583b4f, cabang ghostex/d8e5216b): (G1) refund manual setelah void (cloud, edge, atau event edge `order.voided` yang diparkir di `edge_deferred_events`) ditolak 409; (G2) void edge ditolak `manual_refund_exists` bila ada refund manual hidup, dan mengunci baris `orders` FOR UPDATE agar serial dengan refund manual/kasir. Refund kasir dan void cloud sudah menolak refund manual (980).
@@ -7777,6 +7971,19 @@ Cabang `ghostex/4b06e171`, dasar 1018 (f854663f9). Tingkat K (akses). Tanpa migr
 - Screenshot 1280: `docs/review/img/ui1021-kds-connected.png`, `ui1021-kds-disconnected.png`.
 - Subagent: total 12, puncak 3 bersamaan, token heavy dipegang test-runner/implementer bergantian. Biaya sesi (session-usage): 3260k.
 
+## 1094 Akses perangkat bersama, sisa (legend-13vhb, legend-tlr6p, legend-ypwsp, legend-iq0jz), 19 Nov 2026
+
+Cabang `ws/1094-akses-perangkat-bersama-sisa`, dasar a20420a6f (pin-kasir-tablet-bersama). Tingkat K (akses + uang). Tanpa migrasi.
+
+- Voucher maaf dan delivery-orders: `resolveActingStaff` + `requireActingStaffOnSharedDevice` + `actorOf`. Voucher maaf menolak kasir outlet lain (403 `ACTING_STAFF_OUTLET_MISMATCH`). Delivery tetap tertutup di tablet bersama oleh allowlist, guard PIN jadi lapisan cadangan.
+- Service-request, order-issues, expo, menu availability: aktor `actorOf(req)`; route tanpa `:outletId` menolak token kasir outlet lain. Tes: kasir outlet A tidak bisa collect charge outlet B.
+- Lintas tenant (ypwsp): sudah tertutup, dikunci `shared-device-marks.test.ts`, tanpa kode baru.
+- Allowlist layar tablet bersama Q29 diport ulang (`lib/shared-device-allowlist.ts`, `middleware/shared-device-allowlist.ts`, dipasang di `requireAuth`), default tolak, upgrade websocket ditolak, guard web. Refund dan void tunai (POS corrections/refund dan corrections/void, resolve manual_refund) ditutup di tablet bersama; Tanya AI KDS belum jalan di tablet (router /api/ai/* masih requireAuth, bead legend-f7ybx).
+- Keputusan terbuka untuk founder lewat CTO: refund di tablet bersama (kini ditolak; bisa dibuka lagi dengan menghapus entri DENY dan blokir manual_refund).
+- Bead lanjutan: legend-cq0u7, legend-f7ybx, legend-5f6is.
+- Tes: 11 berkas plus void-982 (money, pos, allowlist-1043, router-decisions, shared-device, w2-floor, marks, device-shared-mode, auth-guard, backoffice-guard, w3-recovery) 670 lulus.
+- Subagent: total 27, puncak 6 bersamaan (perkiraan), token heavy dipegang induk dan test-runner bergantian.
+
 ## Merge train batch90 (18 Nov 2026, `int/batch90` -> `milestone/m1`)
 
 Dasar `origin/milestone/m1` 0b4fe006c (batch89). Cabang masuk (urut): `ghostex/a99498c8` (nbkvh), `ghostex/1053-kas-gaji-tunai-guard-lock-order`, `ghostex/legend-tiw2h-recon-clearance-restriktif` (menggantikan 1057 dan timeout-storage-dan-lock-recon), `ws/1073-edge-sweep-race` (memuat 1061), `ws/1073-edge-digest-cancel` (memuat bawa-kai), `ws/1069-worktree-hemat`, `ws/1078-kartu-kecil`. Tidak ada yang keluar.
@@ -7839,6 +8046,20 @@ Perbaikan di cabang batch: `tests/operations-screen-slot.test.mjs` mengikuti hea
 Gerbang (per tahap): links 0s; lint 2m49; typecheck 2m28 (heap 8 GB); fast gate 40 berkas API + 12 root, hijau 12m30; build 12 detik; e2e produksi 18 lulus, 1 skip. Full run percobaan 1 (05:01, 7m): 2 gagal di tes root `operations-screen-slot` (tes basi karena 1082), diperbaiki. Percobaan 2 (05:10-07:57, 2j47m, berjalan bersamaan dengan full run batch94): root 3632 lulus, web 420 lulus, API 24320 lulus, 3 gagal: `platform-access-api` TEN-03 (nyata: kunci baru 1087, tes diperbaiki, 34/34 lulus bersama tes 1087) dan `rbac-audit-writer` (2 tes, flake lama; lulus terisolasi; perbaikan ada di `ws/1104a-flake-api`, batch94). Aturan Retro 50: kegagalan nyata diperbaiki dan terbukti; sisanya flake terdokumentasi.
 
 Biaya sesi merge train sampai batch93: session-usage total biaya* 11728k (utama 10789k), puncak konteks 267k, compact 2, subagent 8. Subagent batch93: implementer 1 (konflik 1081), architect 1 (review 1081), implementer 1 (konflik 1096, untuk batch94); puncak 2 bersamaan, token heavy dipegang thread merge train ini.
+
+## Merge train batch95 (19 Nov 2026, `int/batch95` -> `milestone/m1`)
+
+Dasar `origin/milestone/m1` 6b3288bc2 (batch94). Cabang masuk (7 + 1): `ws/1094-akses-perangkat-bersama-sisa` (f3a6ced98) + `ws/1120-akses-outlet-order-recovery` (6680b56cd) + `ws/1128-door-check-outlet-token` (1fa7fddea) sebagai satu paket bertumpuk; `ws/1139-refund-ronde14-fix` (2c6dc862e, K uang + migrasi, gerbang rilis 26ro5 terdaftar); `ws/1130-p2-pajak-sarapan-rekap` (86ed0ec32); `ws/1136-p3-web-mock-e2e` (ed4e373c9); `ws/1123-perf-web-i18n` (67423264f); `ws/1149-flake-full-run` (a3aba228c, terakhir sebelum full run). Tidak ikut: kas, `ws/1095-*`, 1137, `ws/1144-*`, `ghostex/8b2dc0b1`, 1150 (batch96).
+
+Peta migrasi (ws -> m1): 0487->0493 refund_recon_holds, 0488->0494 refund_recon_hold_resolution, 0489->0495 refund_recon_hold_payment_ref, 0490->0496 provider_refund_id_kind, 0491->0497 refund_recon_hold_identity, 0492->0498 refund_recon_hold_matched_fact, 0493->0499 refund_hold_invalid_report. 0485/0486 ws sudah di m1 sebagai 0487/0488 (SQL identik). Registry dan referensi test ikut. Terakhir di m1: 0499. `db:generate` kosong, `check-journal` hijau.
+
+Keputusan CTO (door-check, legend-wpele): semantik ws/1128 menang. Token/QR/PIN tak dikenal atau salah tetap 403 `DOOR_CREDENTIAL_INVALID` seragam; mismatch outlet (403 `ACTING_STAFF_OUTLET_MISMATCH`) hanya sesudah kredensial cocok dan tanpa data tiket outlet lain; percobaan tetap dihitung ke `DOOR_PIN_LOCKED`. R2-05-a/b ditulis ulang, R2-05-d baru, dijalankan di tablet non-bersama (1094 menutup layar pintu di tablet bersama). Satu architect (high) atas hunk pintu: lolos.
+
+Penyesuaian merge: `paymentAdmin` dipindah ke chunk core (dialog bayar tamu memakainya, legend-mp44v); tab refund-holds digabung ke `PAYMENT_ADMIN_TABS` (izin `payment.reconcile`); impor `cafeLegendPlatformFixtures` di `rbac-audit-writer.test.ts` (m1 typecheck merah TS2304, diperbaiki 1149).
+
+Gerbang (durasi): links 0s; lint 1m07; typecheck 1m14 (ulang 0m51); build 0m44; e2e produksi 0m31. Full run 1 (10:42-10:45) berhenti di tahap root: 8 tes usang (5 vs modul virtual i18n 1123, 3 vs guard `LEGEND_TEST_FILES` kosong 1136), diperbaiki di test. Full run 2 (10:48-13:27, 2j38m): root 3655 lulus; API 25603 lulus, 5 gagal di 4 berkas: `platform-access-api` TEN-03 (kunci `sharedDevice` 1094, test dibetulkan); `order-charge-manual-refund-985` MRF-J1 (timeout 20 detik saat Mac dipakai agen lain, 9-13 detik sendirian, hijau 4x terarah: flake beban); `hris-overtime-collective-db` (QUOTA_EXCEEDED di suite penuh, hijau 4x terarah: flake isolasi kuota kartu P3, tidak menahan); `facility-breakfast-refile-hardening` BRK-REFILE-08/09/09b nyata: aturan hold 1139 (1045 F1, legend-w2td5) menahan intent sesudah refund kita gagal, sehingga refund re-file ditolak 409 `PROVIDER_REFUNDED` sampai finance menutup hold. Keputusan CTO: aturan hold menang; test ditulis ulang (re-file tepat sekali, total <= dibayar, approve 409 dan gateway tidak dipanggil selama hold terbuka, sesudah hold ditutup approve 200 dan tamu tidak dibayar lebih); architect high: OK. Tanpa full run kedua (hanya test berubah). Catatan architect: kasus provider benar-benar sudah me-refund R (finance menutup `counted_against_intent`) tidak dicakup berkas ini; cek `refund-1045-f-architect.test.ts`.
+
+Biaya sesi merge train batch95 (session-usage): total biaya* 5857k (utama 4372k), subagent 15 total (haiku 41 req, opus 24 req, sonnet 72 req), puncak 3 bersamaan, token heavy dipegang thread merge train ini.
 
 ## Merge train batch94 (19 Nov 2026, `int/batch94` -> `milestone/m1`)
 
@@ -7955,3 +8176,56 @@ Belum / keputusan untuk CTO:
 - Suite penuh dan `pnpm check` tidak dijalankan (tugas merge train). Printer fisik tidak diuji.
 
 Biaya sesi (session-usage, satuan k): kartu gdjpu+j772n 11051k, subagent 13, puncak 5 bersamaan. Sesudah rh1hk dan rzt8s: total 19034k (utama sonnet 14124k, subagent opus 1484k, sonnet 3270k, haiku 155k), subagent 21 sesi ini; rh1hk+rzt8s menambah 8 subagent (1 Explore, 2 architect rh1hk dan rzt8s, 2 implementer rh1hk, 1 implementer perbaikan rh1hk, 1 implementer rzt8s resume 1), puncak 2 bersamaan. Typecheck api+shared+web+root: lulus (heavy, sekali). Kartu lanjutan: legend-ubt6n (indeks parsial sweep, konflik replay-gagal).
+
+## 1113 Perbaikan second-opinion akses 1094 (19 Nov 2026)
+
+Cabang `ws/1094-akses-perangkat-bersama-sisa`, dasar 4f5e3cc08. Tingkat K (akses + uang). Tanpa migrasi.
+
+- P1 isu pesanan: POST pembuatan isu menolak resolusi apa pun yang bukan null (manual_refund, voucher, swap) di tablet bersama (403 `SHARED_DEVICE_SCREEN_CLOSED`) sebelum service jalan. Laporan tanpa resolusi tetap jalan.
+- Keputusan CTO: resolve di order-recovery juga menolak voucher dan swap di tablet bersama, sama seperti manual_refund. Hanya batal reservasi yang tetap buka (Q29).
+- P2 availability: GET `/api/menu/availability` dengan token kasir menolak outlet lain (403 `ACTING_STAFF_OUTLET_MISMATCH`) dan tanpa `outletId` dipersempit ke outlet token; pemulihan sold_out kedaluwarsa tidak menyentuh outlet lain.
+- P2 socket panic: perangkat bersama gagal recheck sesi receiver (`device_revoked`), dan saat shared mode menyala socket receiver perangkat itu diputus (4401). Upgrade baru dari perangkat bersama kini 401 (recheck lebih dulu), bukan 403.
+- Tes: gagal-dulu terbukti (order-issues 3/5 merah, availability 2/4, panic 2/4, resolve voucher/swap 2 merah), regresi 16 berkas 780 lulus, tsc API 0 (heap 8 GB). Review architect (xhigh) pada delta: tanpa P0-P2.
+- Subagent: total 33, puncak 3 bersamaan, token heavy dipegang induk (bukan subagent).
+
+## 1120 Outlet token kasir di order-recovery (19 Nov 2026, legend-cq0u7)
+
+Cabang `ws/1120-akses-outlet-order-recovery`, dasar f3a6ced98 (1094). Tingkat K (akses + uang). Tanpa migrasi. Landing BERSAMA 1094.
+
+- Helper `refuseActingStaffOtherOutlet` (middleware/acting-staff.ts) + resolver charge/item/issue (middleware/acting-staff-outlet.ts): token kasir outlet A ke target outlet B = 403 `ACTING_STAFF_OUTLET_MISMATCH`; target tak ditemukan = tolak; login pribadi tidak berubah. Dipasang di waive, expire, refund, manual-refund, collect-at-pos (charge), report item dan resolve (order-recovery). apology-voucher memakai helper yang sama (outlet tak diketahui tetap diserahkan ke service, 404).
+- Tambahan CTO: `POST /api/apology-vouchers` masuk DENY perangkat bersama (403 `SHARED_DEVICE_SCREEN_CLOSED`, semua bentuk). Temuan architect P1: `waive` dan `expire` charge juga ditutup di perangkat bersama (tamu pilih swap lebih mahal lewat customer-choice, kasir waive = gratis). `collect-at-pos` tetap buka.
+- Tes: gagal-dulu terbukti (28 dari 62 merah di base), akhir 260 lulus (outlet 56, apology perangkat bersama 6, 1094-money 22, allowlist 176); regresi 40 berkas 733 lulus sebelum penyesuaian 1094-money. Prettier/eslint bersih. Review architect (xhigh) sekali.
+- Celah tersisa (bukan 1120): `POST /api/facility/tickets/door-check` tidak membandingkan outlet token (bead baru). Value-out terbuka di tablet: diskon POS, void item, reservation-customer-credit/apply, cash movements, batal reservasi (Q29).
+## 1130 Bundel P2: codec pajak, batal sarapan cek penyedia, rekap struk belum sinkron, 19 Nov 2026
+
+Cabang `ws/1130-p2-pajak-sarapan-rekap`, dasar `e2a63062e` (`origin/milestone/m1`). Tingkat K (uang), tanpa migrasi (`db:generate` kosong).
+
+- `legend-srfud`: belum ada pemanggil API untuk `decodeConfigBundle`; decode impor sudah gagal-tertutup untuk pemilik aturan pajak (peta pemilik wajib bila tax_rules tidak ikut) dan point-value lock (wajib eksplisit). Asumsi tenant-wide/unlocked hanya ada di `configBundleReferenceIssues` (validasi template). Perubahan: peringatan "hanya validasi template" di kode plus `tests/platform-config-codecs-import-guard-1130.test.mjs` (5 test mengunci perilaku itu; hijau di base karena pengaman sudah ada). Saat API impor dibangun, wajib memanggil `decodeConfigBundle` dengan pemilik pajak dan lock asli target.
+- `legend-9sw2w`: `fireBreakfastOrderTx` (di `facility-breakfast-money.ts`, bukan consumers) dan jalur tolak-bayar consumer tidak lagi membatalkan lokal tanpa kata penyedia. Jalur fire: tanpa `providerProven` melempar `BreakfastProviderProofNeeded` sebelum menulis; pemanggil rollback, `confirmBreakfastLinkUnpaid` di luar lock, ulang. Consumer: bukti penyedia sebelum lock; jawaban tidak jelas hanya menahan jalur tolak (409 PAYMENT_PROVIDER_UNCONFIRMED, tidak ada batal/refund), pembayaran yang menandai paid tidak menunggu penyedia (temuan architect, diperbaiki, test BRK-FIREPROV-09). Urutan lock tidak berubah. `facility-breakfast-fire-provider-1130.test.ts` 9 test; 6 merah di base (alasan benar), 2 kontrol hijau; regresi 12 berkas breakfast 126 test hijau.
+- `legend-21c8n`: rekap hari memuat `unsyncedReceiptCount` (nomor struk yang menurut sequence head cloud terbit tetapi tidak ada di `pos_receipts`, sama dengan celah RECEIPT_SEQUENCE_GAP, per outlet; 0 pada hari tanpa celah), tampil di layar tutup hari hanya bila > 0. Struk yang tidak pernah dilaporkan edge tidak terlihat cloud (di luar cakupan). Test 4/4 merah di base, hijau di head; 59 test pos-day hijau; text-contract 12/12.
+- Bukti lain: typecheck shared, web, api hijau (api perlu `NODE_OPTIONS=--max-old-space-size=8192`: default heavy 6144 MB kehabisan heap pada m1); prettier dan eslint hijau; review architect (9sw2w) satu temuan nyata, diperbaiki; reviewer (srfud, 21c8n) tanpa temuan nyata.
+- Risiko sisa 9sw2w: panggilan penyedia consumer berjalan saat tx konsumsi terbuka (tx itu tidak memegang lock order/link); jawaban tidak jelas di jalur tolak berakhir di dead letter sekitar 155 dtk (uang tetap di outlet, pulih lewat replay manual); tidak ada pengecekan ulang di dalam lock bahwa kode baru tidak dibuka setelah bukti (pola sama dengan `confirmBreakfastLinkUnpaid`).
+- Subagent: total 12, puncak 3 bersamaan, token heavy dipegang agent utama (typecheck) dan test-writer/implementer (test terarah). Biaya sesi: lihat `session-usage.py` (total biaya* 4817k, sonnet 2871k, opus 252k, haiku 54k).
+
+### 1130 perbaikan temuan second-opinion sarapan (P2, 1146), 19 Nov 2026
+
+- Temuan: `handleBreakfastPaymentPaid` menunggu penyedia (`confirmOtherCodesBeforeRefuse`) untuk pembayaran valid sambil memegang lock outbox dan offset `consumeOutbox`.
+- Perbaikan: consumer memutuskan `refuse` secara lokal lebih dulu. Pembayaran valid langsung `paid` tanpa panggilan penyedia. Jalur tolak tanpa bukti melempar `BreakfastProviderProofNeeded` sebelum menulis; `withBreakfastProviderProof` (di `facility-breakfast-consumers.ts`) bertanya ke penyedia di luar transaksi konsumsi, lalu mengulang sekali dengan `providerProven` sehingga `refuse` dihitung ulang di bawah lock. Jawaban tidak jelas tetap 409 `PAYMENT_PROVIDER_UNCONFIRMED` (tidak ada batal/refund; uang tetap di outlet). `worker-main.ts` dan jalur tanpa tx di `deliverOrderPaymentEvent` memakai pembungkus itu; helper test `deliver()` ikut dibungkus (temuan reviewer).
+- Bukti: `facility-breakfast-consumer-proof-lock-1146.test.ts` (BRK-PROOFLOCK-01 dan 02 merah di base: valid menunggu penyedia, lock outbox/offset tertahan selama penantian; 03 sampai 05 kontrol hijau). Satu run terarah 16 berkas, 158 test hijau; typecheck api (heap 8192) hijau; prettier dan eslint hijau. Reviewer sonnet: satu cacat (helper test), diperbaiki.
+## 1136 Bundel P3 web mock/e2e/teks (19 Nov 2026)
+
+Cabang `ws/1136-p3-web-mock-e2e`, dasar `origin/milestone/m1`. Tingkat S, tanpa migrasi, tanpa uang/akses.
+
+- legend-lw7gv: `scripts/test.mjs` menolak `LEGEND_TEST_FILES` diset tapi kosong/spasi (exit 1, pesan jelas); test root `tests/test-files-selection.test.mjs` (docker stub).
+- legend-5vcqk: mock ws04-expo `markPickupPickedUp`, `markExpoOrderDelivered`, `PICKUP_CALL_CLOSED`, `EXPO_ORDER_DELIVERED`; 11 test vitest web.
+- legend-46vt (sebagian): `?mock=claim-login` + spec claim-card (e2e lulus). consent-form dan area-frame belum terjangkau (bead tetap terbuka).
+- legend-eukn: snapshot tutup periode menampilkan `periodStatus`/`periodVersion` + penanda riwayat; 3 test vitest web (gagal-dulu terbukti di sumber HEAD).
+- legend-yf2b: preview report builder memakai angka viewer untuk family batch A/B (bukan duplikat x73li, belum di m1).
+- legend-z274: kategori notifikasi `checklist_alert` (tanpa migrasi, kolom varchar); preferensi `schedule_update` lama untuk alert checklist tidak dimigrasi.
+- Bukti: vitest web 14/14, text-contract + selection 17/17, typecheck shared+web hijau, API hijau dengan heap 8 GB (heap default ~6 GB OOM), e2e `legend-46vt` lulus, eslint+prettier hijau.
+- Keputusan CTO z274 (19 Nov): `checklist_alert` tanpa preferensi eksplisit mewarisi `schedule_update` per kanal saat dibaca (`packages/shared/src/notification/delivery.ts`, tanpa migrasi data); preferensi eksplisit menang. Test `notification-checklist-alert-inherit.test.ts` (gagal-dulu 2 dari 6, lalu 50/50 bersama adapter). Typecheck shared+web+api hijau (heap 8 GB). Catatan: setelah user menyimpan panel preferensi, `checklist_alert` jadi eksplisit dan lepas dari `schedule_update`.
+- Bead baru P3: mock `assignExpoRunner` 422 `EXPO_RUNNER_INVALID` (lihat `bd list`).
+## 1123 Performa web: katalog i18n per area (legend-nmn9j, S)
+- Cabang ws/1123-perf-web-i18n (2 commit di atas 4418628e0). Katalog id dipecah per area lewat manifest `packages/shared/src/i18n/area-manifest.ts` + plugin Vite `apps/web/vite-i18n-chunks.ts` (modul virtual per chunk, impor barrel diarahkan ke `i18n/runtime.ts`); chunk area dimuat di beforeLoad layout dan sebelum hidrasi; key meleset memuat chunk pemilik. CLS: font fallback size-adjust, dimensi gambar logo/thumbnail.
+- Ukuran (JS di HTML SSR /masuk): 2497 KB raw / 751 KB gz -> 1929 KB / 662 KB (-23%/-12%). Total aset build 7285 KB -> 7650 KB (lebih banyak chunk kecil, bukan dimuat awal).
+- Sisa: core masih ~374 KB (label features/*/nav.ts membuat namespace tampak lintas area; kunci-per-namespace belum dipecah), kelola 300 KB. CLS belum diukur (Lighthouse belum dijalankan).

@@ -9,6 +9,7 @@ import {
   listEdcTerminals,
   listReconciliationCases,
   listRefundablePayments,
+  listRefundReconHolds,
   listRefunds,
   listUnallocatedFunds,
 } from "@starter/shared/payment/admin";
@@ -56,6 +57,13 @@ export const unallocatedFundsQuery = (
   query: Query<typeof listUnallocatedFunds>,
 ) => ({
   ...endpointQueryOptions(listUnallocatedFunds, { query }),
+  ...RETRY,
+});
+
+export const refundReconHoldsQuery = (
+  query: Query<typeof listRefundReconHolds>,
+) => ({
+  ...endpointQueryOptions(listRefundReconHolds, { query }),
   ...RETRY,
 });
 

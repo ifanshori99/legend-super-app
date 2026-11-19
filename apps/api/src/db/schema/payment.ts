@@ -548,7 +548,17 @@ export const paymentProviderRefunds = pgTable(
      * transaction was recorded as evidence. */
     evidenceId: uuid("evidence_id"),
     provider: varchar("provider", { length: 20 }).notNull(),
-    /** The provider's own refund id (the identity with tenant and provider). */
+    /** What `provider_refund_id` is (legend-yn1of, 1035): `provider`, the
+     * provider's own refund id as sent; `synthetic_full`, the payment's own
+     * `refunded` status, keyed by the raw provider payment id;
+     * `synthetic_hold`, a refund counted by finance from a recon hold that
+     * names no refund id, keyed by the hold id. Branches read this, never a
+     * prefix of the id. */
+    refundIdKind: varchar("refund_id_kind", { length: 20 })
+      .notNull()
+      .default("provider"),
+    /** The refund id within its kind (the identity with tenant, provider and
+     * kind). */
     providerRefundId: varchar("provider_refund_id", { length: 100 }).notNull(),
     /** The provider transaction the refund names. */
     providerPaymentRef: varchar("provider_payment_ref", {
@@ -565,6 +575,7 @@ export const paymentProviderRefunds = pgTable(
     unique("payment_provider_refunds_provider_refund_key").on(
       table.tenantId,
       table.provider,
+      table.refundIdKind,
       table.providerRefundId,
     ),
     foreignKey({
@@ -590,6 +601,10 @@ export const paymentProviderRefunds = pgTable(
     check(
       "payment_provider_refunds_source_check",
       sql`${table.source} IN ('refund_webhook', 'payment_webhook', 'poller')`,
+    ),
+    check(
+      "payment_provider_refunds_refund_id_kind_check",
+      sql`${table.refundIdKind} IN ('provider', 'synthetic_full', 'synthetic_hold')`,
     ),
   ],
 );

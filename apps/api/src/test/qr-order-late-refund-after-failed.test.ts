@@ -522,6 +522,75 @@ async function refundStatus(refundId: string): Promise<string> {
   return rows[0]!.status;
 }
 
+/** An owner of the isolated tenant: finance closes refund holds through the route. */
+async function makeHoldResolver() {
+  const { rows: roles } = await owner.query<{ id: string }>(
+    `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
+     SELECT gen_random_uuid(), $1, name, is_template, template_key, permissions, mfa_required, allowed_scope_types
+       FROM roles WHERE tenant_id = $2 AND template_key = 'owner'
+     RETURNING id`,
+    [tenant.tenantId, seededTenantId],
+  );
+  const client = agent(app);
+  const email = await signUp(client, "Hold Resolver");
+  const session = await client.get("/api/auth/get-session");
+  const userId = session.body.user.id as string;
+  await verifySessionMfa(email);
+  await owner.query(
+    `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by, assigned_at)
+     VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 hour', $2, now() - interval '1 hour')`,
+    [tenant.tenantId, userId, roles[0]!.id],
+  );
+  return client;
+}
+
+/**
+ * legend-w2td5 (1045 F1): R was sent and then failed, so its intent carries one
+ * open hold until finance checks the provider. Asserts that hold exists and
+ * that approving the follow-up late refund is refused (409) with no payout.
+ */
+async function expectHeldAndApproveRefused(
+  approver: Awaited<ReturnType<typeof makeApprover>>,
+  intentId: string,
+  lateRefundId: string,
+): Promise<string> {
+  const { rows } = await owner.query<{ id: string }>(
+    `SELECT id FROM refund_recon_holds
+      WHERE tenant_id = $1 AND payment_intent_id = $2
+        AND reason = 'own_refund_failed_unverified' AND resolved_at IS NULL`,
+    [tenant.tenantId, intentId],
+  );
+  expect(rows).toHaveLength(1);
+  const fake = new FakeRefundGateway();
+  fake.enqueue("succeeded");
+  setPaymentRefundGateway(fake);
+  try {
+    const response = await adminPost(approver, lateRefundId, "approve");
+    expect(response.status, JSON.stringify(response.body)).toBe(409);
+    expect(fake.calls, "nothing is sent while the hold is open").toHaveLength(
+      0,
+    );
+  } finally {
+    setPaymentRefundGateway(null);
+  }
+  return rows[0]!.id;
+}
+
+/** Finance checked the provider dashboard: R is not refunded elsewhere. */
+async function resolveHoldNotThisIntent(holdId: string) {
+  const resolver = await makeHoldResolver();
+  const response = await resolver
+    .post(`${ADMIN}/refund-recon-holds/${holdId}/resolve`)
+    .set("Host", tenant.hostname)
+    .set(originHeader)
+    .send({
+      idempotencyKey: `hold-${randomUUID()}`,
+      resolution: "not_this_intent",
+      note: "Dicek di dashboard penyedia: refund gagal, dana masih di kami.",
+    });
+  expect(response.status, JSON.stringify(response.body)).toBe(200);
+}
+
 describe("QR order late refund after the committed refund failed (legend-p61pe)", () => {
   it("QR-LATE-REFUND-P1 order voided refund_committed by an approved 100% refund R; R then fails: a new pending system:qr refund returns the full amount", async () => {
     const w = await paidOrder();
@@ -609,6 +678,14 @@ describe("QR order late refund after the committed refund failed (legend-p61pe)"
     const [second] = await systemRefunds(w.intentId);
     expect(second).toBeDefined();
 
+    // legend-w2td5 (1045 F1): R was sent, so the intent is held; finance
+    // closes the hold, then the late refund is approved and declined.
+    const holdId = await expectHeldAndApproveRefused(
+      approver,
+      w.intentId,
+      second!.id,
+    );
+    await resolveHoldNotThisIntent(holdId);
     await failViaDecline(approver, second!.id, "approve");
 
     expect(await refundStatus(second!.id)).toBe("failed");
@@ -647,6 +724,15 @@ describe("QR order late refund after the committed refund failed (legend-p61pe)"
     const [late] = await systemRefunds(w.intentId);
     expect(late, "replacement late refund LP2 was not filed").toBeDefined();
     expect(late!.status).toBe("pending");
+
+    // legend-w2td5 (1045 F1): R was sent, so the intent is held; finance
+    // closes the hold before LP2 can be approved.
+    const holdId = await expectHeldAndApproveRefused(
+      approver,
+      w.intentId,
+      late!.id,
+    );
+    await resolveHoldNotThisIntent(holdId);
 
     const fake = new FakeRefundGateway();
     fake.enqueue("succeeded");

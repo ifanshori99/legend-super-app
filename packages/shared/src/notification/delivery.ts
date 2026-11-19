@@ -48,6 +48,13 @@ export function effectiveChannelPreference(
 ): ChannelPreference {
   const own = preference?.categories[category];
   if (own) return own;
+  // legend-z274: `checklist_alert` was split out of `schedule_update`. A user
+  // with no explicit `checklist_alert` keeps what they chose for
+  // `schedule_update`, per channel, so no data migration is needed.
+  if (category === "checklist_alert") {
+    const legacy = preference?.categories.schedule_update;
+    if (legacy) return legacy;
+  }
   const defaults: readonly ExternalChannel[] =
     categoryMeta(category).defaultChannels;
   return {

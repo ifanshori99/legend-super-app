@@ -29,6 +29,7 @@ import {
   handleBreakfastFundsUnallocated,
   handleBreakfastPaymentClosed,
   handleBreakfastPaymentPaid,
+  withBreakfastProviderProof,
   type BreakfastClosedOutcome,
   type BreakfastFundsOutcome,
   type BreakfastPaidOutcome,
@@ -116,11 +117,17 @@ async function linkOf(
   return intent?.paymentLinkId ?? null;
 }
 
+export type DeliverOptions = {
+  /** The provider was asked about the breakfast link's other codes (legend-1146). */
+  breakfastProviderProven?: boolean;
+};
+
 async function dispatchInTx(
   context: ScopedTenantContext,
   event: EventEnvelope,
   tx: Tx,
   now: Date,
+  options: DeliverOptions,
 ): Promise<OrderPaymentDispatch | "pos"> {
   const linkId = await linkOf(tx, context, event);
   if (linkId !== null) {
@@ -160,7 +167,13 @@ async function dispatchInTx(
         route: "facility",
         outcome:
           event.name === "payment.paid"
-            ? await handleBreakfastPaymentPaid(context, event, tx, now)
+            ? await handleBreakfastPaymentPaid(
+                context,
+                event,
+                tx,
+                now,
+                options.breakfastProviderProven,
+              )
             : event.name === "payment.funds_unallocated"
               ? await handleBreakfastFundsUnallocated(context, event, tx, now)
               : await handleBreakfastPaymentClosed(context, event, tx),
@@ -191,13 +204,25 @@ export async function deliverOrderPaymentEvent(
   event: EventEnvelope,
   tx?: Tx,
   now = new Date(),
+  options: DeliverOptions = {},
 ): Promise<OrderPaymentDispatch> {
   if (!isOrderPaymentEvent(event)) return { route: "ignored" };
   if (event.tenantId !== context.tenant.tenantId) return { route: "ignored" };
+  // With `tx` the caller (the outbox consumer) owns the provider proof round
+  // trip (`withBreakfastProviderProof`); without it we own it here.
   const routed = tx
-    ? await dispatchInTx(context, event, tx, now)
-    : await withTenant(db, context, (own) =>
-        dispatchInTx(context, event, own, now),
+    ? await dispatchInTx(context, event, tx, now, options)
+    : await withBreakfastProviderProof(
+        context,
+        (proven) =>
+          withTenant(db, context, (own) =>
+            dispatchInTx(context, event, own, now, {
+              ...options,
+              breakfastProviderProven:
+                proven || options.breakfastProviderProven,
+            }),
+          ),
+        now,
       );
   if (routed !== "pos") return routed;
   // POS runs its own transaction (legend-kk7 signature); it ignores bills of

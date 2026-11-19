@@ -4,18 +4,21 @@ import {
   createRootRouteWithContext,
   HeadContent,
   Link,
+  notFound,
   Outlet,
   Scripts,
   rootRouteId,
   useMatch,
   useRouteContext,
   useRouter,
+  useRouterState,
 } from "@tanstack/react-router";
-import { createTranslator, type MessageOverrides } from "@starter/shared/i18n";
-import { useT } from "@/components/i18n";
+import type { MessageOverrides } from "@starter/shared/i18n";
+import { chunksForRouteIds, defaultT, useT } from "@/components/i18n";
 import { Providers } from "@/components/providers";
 import { Button } from "@/components/ui/button";
 import { PushOwnerGuard } from "@/features/ws05-notifications/components/push-owner-guard";
+import { isScreenClosedOnSharedDevice } from "@/lib/areas/guard";
 import { loadAreaAccess } from "@/lib/areas/load-access";
 import type { AreaAccess } from "@/lib/areas/access";
 import { getSessionFn, type Session } from "@/lib/session";
@@ -25,8 +28,9 @@ import { TenantThemeStyle } from "@/lib/theme";
 import type { TenantThemeConfig } from "@starter/shared/theme";
 import globalsCss from "@/styles/globals.css?url";
 
-// Head and the document shell render outside I18nProvider: default catalog.
-const staticT = createTranslator();
+// Head and the document shell render outside I18nProvider: the core catalog
+// (app.*, shell.*) without tenant overrides.
+const staticT = defaultT;
 
 // Browser-only memory of the last resolved tenant theme (see beforeLoad).
 let lastTenantTheme: TenantThemeConfig | null = null;
@@ -49,7 +53,7 @@ export const Route = createRootRouteWithContext<RouterContext>()({
   // One session read per navigation (the API, via the auth middleware), shared
   // with every route as context. Layouts decide what to do with it; the API
   // still authenticates every request on its own.
-  beforeLoad: async () => {
+  beforeLoad: async ({ location }) => {
     const [session, brand] = await Promise.all([
       getSessionFn(),
       getTenantBrandFn(),
@@ -66,9 +70,14 @@ export const Route = createRootRouteWithContext<RouterContext>()({
       );
       if (isBrowser) lastTenantTheme = tenantTheme;
     }
+    const access = await loadAreaAccess(session);
+    // Shared tablet (founder Q29): screens outside the allowlist do not exist
+    // there, in every area. The API refuses their requests as well.
+    if (isScreenClosedOnSharedDevice(access, location.pathname))
+      throw notFound({ data: { sharedDevice: true } });
     return {
       session,
-      access: await loadAreaAccess(session),
+      access,
       tenantTheme,
       textOverrides: brand.overrides,
     };
@@ -129,15 +138,27 @@ function RootDocument({ children }: { children: ReactNode }) {
     shouldThrow: false,
     select: (match) => match.context.textOverrides,
   });
+  // Catalog chunks of the matched areas. components/i18n.tsx loads them before
+  // the client hydrates, so the first client render prints the same text as
+  // the server HTML.
+  const i18nChunks = useRouterState({
+    select: (state) =>
+      chunksForRouteIds(state.matches.map((match) => match.routeId)).join(","),
+  });
   return (
-    <html lang="id" data-tenant={tenantTheme?.id} suppressHydrationWarning>
+    <html
+      lang="id"
+      data-tenant={tenantTheme?.id}
+      data-i18n-chunks={i18nChunks || undefined}
+      suppressHydrationWarning
+    >
       <head>
         <HeadContent />
         {tenantTheme ? <TenantThemeStyle tenant={tenantTheme} /> : null}
       </head>
       <body>
         <HydrationMarker />
-        <Providers overrides={overrides}>
+        <Providers overrides={overrides} chunks={i18nChunks}>
           <a
             href="#main-content"
             className="sr-only z-50 rounded-md bg-foreground p-3 text-background focus:not-sr-only focus:fixed focus:top-4 focus:left-4"
@@ -152,8 +173,14 @@ function RootDocument({ children }: { children: ReactNode }) {
   );
 }
 
-function NotFound() {
+function NotFound({ data }: { data?: unknown }) {
   const t = useT();
+  // A shared tablet (founder Q29) has no public home: "go home" opens the POS.
+  // The thrown notFound carries the flag (the root context is not built yet).
+  const sharedDevice =
+    typeof data === "object" &&
+    data !== null &&
+    (data as { sharedDevice?: unknown }).sharedDevice === true;
   return (
     <main id="main-content" className="mx-auto max-w-lg px-6 py-24">
       <p className="mb-3 font-mono text-sm text-primary">404</p>
@@ -164,7 +191,7 @@ function NotFound() {
         {t("errorPage.notFoundHint")}
       </p>
       <Button asChild>
-        <Link to="/">{t("errorPage.goHome")}</Link>
+        <Link to={sharedDevice ? "/pos" : "/"}>{t("errorPage.goHome")}</Link>
       </Button>
     </main>
   );

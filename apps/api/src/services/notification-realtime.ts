@@ -20,6 +20,8 @@ const signalSchema = z.strictObject({
   tenantId: tenantIdSchema,
   notificationId: ulidSchema,
 });
+/** How long one shared-tablet answer is reused for a connected socket. */
+const SHARED_RECHECK_WINDOW_MS = 5_000;
 type Signal = z.infer<typeof signalSchema>;
 type Identity = { userId: string; context: ScopedTenantContext };
 type Options = {
@@ -31,6 +33,13 @@ type Options = {
     id: string,
   ) => Promise<Notification | null>;
   trustedOrigins?: readonly string[];
+  /**
+   * legend-iq0jz (founder Q29): true when the request comes from a shared
+   * tablet, which never receives notifications. Checked at upgrade and on each
+   * recheck (answer reused for 5 s per socket), so a tablet flagged later loses
+   * the socket on a wakeup after that window.
+   */
+  isSharedDevice?: (request: IncomingMessage) => Promise<boolean>;
 };
 
 /** The default ports deny every connection until the tenant/RBAC beads wire them. */
@@ -43,7 +52,28 @@ export function attachNotificationRealtime(
     WebSocket,
     { request: IncomingMessage; userId: string; tenantId: string }
   >();
-  const resolve = options.resolveConnection ?? (async () => null);
+  const resolveIdentity = options.resolveConnection ?? (async () => null);
+  // The shared-tablet answer is cached per socket request for a short window,
+  // so a burst of wakeups costs one session read, not one per wakeup. The
+  // upgrade has no entry yet and always asks fresh.
+  const sharedAnswers = new WeakMap<
+    IncomingMessage,
+    { at: number; shared: boolean }
+  >();
+  const isShared = async (request: IncomingMessage) => {
+    if (!options.isSharedDevice) return false;
+    const cached = sharedAnswers.get(request);
+    if (cached && Date.now() - cached.at < SHARED_RECHECK_WINDOW_MS)
+      return cached.shared;
+    const shared = await options.isSharedDevice(request);
+    sharedAnswers.set(request, { at: Date.now(), shared });
+    return shared;
+  };
+  const resolve = async (request: IncomingMessage) => {
+    const identity = await resolveIdentity(request);
+    if (identity && (await isShared(request))) return null;
+    return identity;
+  };
   const lookup = options.lookup ?? (async () => null);
   const upgrade = (
     request: IncomingMessage,

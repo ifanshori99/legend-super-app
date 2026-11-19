@@ -29,9 +29,11 @@
 //    ACTING_STAFF_INVALID (401), not the new code.
 //  - The route families are checked with one representative route each:
 //    pos-order POST /pos/orders, pos-shift GET /pos/shifts (+ POST for the
-//    write check), floor POST /api/floor/zones, table-sessions POST
-//    /api/table-sessions/:id/close, table-links POST /api/table-links, kds PUT
-//    /kitchen/menu-loads. If the architect exempts GET /pos/shifts (a device
+//    write check), table-sessions POST /api/table-sessions/:id/close,
+//    table-links POST /api/table-links, kds POST /kitchen/tickets/:id/start
+//    (Q29: floor zone writes and PUT /kitchen/menu-loads are closed by the
+//    shared-tablet allowlist before the PIN rule; see "closed by the
+//    allowlist" below). If the architect exempts GET /pos/shifts (a device
 //    bootstrap read), drop the "pos-shift GET" family entry only.
 //  - Fixtures are built WITHOUT a device token (the old behaviour), so setup
 //    never depends on the rule.
@@ -277,29 +279,6 @@ const families: Family[] = [
     }),
   },
   {
-    name: "floor POST /api/floor/zones",
-    prepare: async () => {
-      const before = await count("floor_zones");
-      return {
-        call: (who) =>
-          identify(clientFor(who).post("/api/floor/zones"), who).send({
-            name: `Zona Bersama ${randomUUID().slice(0, 8)}`,
-            paymentMode: "pay_first",
-            serviceChargeBp: 500,
-            minimumSpendIdr: 0,
-            hours: [
-              {
-                daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
-                start: "08:00",
-                end: "22:00",
-              },
-            ],
-          }),
-        untouched: async () => expect(await count("floor_zones")).toBe(before),
-      };
-    },
-  },
-  {
     name: "table-sessions POST /table-sessions/:id/close",
     prepare: async () => {
       const { sessionId } = await openSeat();
@@ -328,19 +307,17 @@ const families: Family[] = [
     },
   },
   {
-    name: "kds PUT /kitchen/menu-loads",
+    // Q29: PUT /menu-loads (station setup) is closed on a shared tablet before
+    // the PIN rule, so this family uses a route the allowlist opens. A random
+    // ticket id: the gate runs before the 404.
+    name: "kds POST /kitchen/tickets/:id/start",
+    gateOnly: true,
     prepare: async () => ({
       call: (who) =>
-        identify(clientFor(who).put(`${kdsBase()}/menu-loads`), who).send({
-          loads: [
-            {
-              menuItemId: kdsItem,
-              variantId: null,
-              loadPoints: 3,
-              prepSeconds: 900,
-            },
-          ],
-        }),
+        identify(
+          clientFor(who).post(`${kdsBase()}/tickets/${randomUUID()}/start`),
+          who,
+        ).send({}),
       untouched: async () => {},
     }),
   },
@@ -532,7 +509,11 @@ describe.each(families)("shared device: $name", (family) => {
 
 describe("shared device: rules shared by every family", () => {
   it("a garbage token on a shared device still answers the existing ACTING_STAFF_INVALID, not REQUIRED", async () => {
-    const prepared = await families[2]!.prepare();
+    // POST /api/tables/:id/status: open in the Q29 allowlist, so the PIN rule is reached.
+    const family = families.find((f) =>
+      f.name.includes("/api/tables/:id/status"),
+    );
+    const prepared = await family!.prepare();
     const response = (await prepared.call({
       onDevice: true,
       token: "pas_garbage-token",
@@ -565,6 +546,55 @@ describe("shared device: rules shared by every family", () => {
     expect(response.status, JSON.stringify(response.body)).toBe(401);
     expect(response.body.error?.code).toBe("ACTING_STAFF_REVOKED");
   });
+});
+
+describe("shared device: closed by the allowlist (Q29)", () => {
+  const closed: [string, () => Req][] = [
+    [
+      "floor POST /api/floor/zones",
+      () =>
+        deviceSession.client.post("/api/floor/zones").send({
+          name: `Zona Tutup ${randomUUID().slice(0, 8)}`,
+          paymentMode: "pay_first",
+          serviceChargeBp: 500,
+          minimumSpendIdr: 0,
+          hours: [
+            { daysOfWeek: [0, 1, 2, 3, 4, 5, 6], start: "08:00", end: "22:00" },
+          ],
+        }),
+    ],
+    [
+      "kds PUT /kitchen/menu-loads",
+      () =>
+        deviceSession.client.put(`${kdsBase()}/menu-loads`).send({
+          loads: [
+            {
+              menuItemId: kdsItem,
+              variantId: null,
+              loadPoints: 3,
+              prepSeconds: 900,
+            },
+          ],
+        }),
+    ],
+  ];
+
+  it.each(closed)(
+    "%s is 403 SHARED_DEVICE_SCREEN_CLOSED, with or without a cashier token",
+    async (_name, build) => {
+      const token = await tokenFor();
+      const zonesBefore = await count("floor_zones");
+      for (const acting of [undefined, token]) {
+        const response = await identify(build(), {
+          onDevice: true,
+          token: acting,
+        });
+        expect(response.status, JSON.stringify(response.body)).toBe(403);
+        expect(response.body.error?.code).toBe("SHARED_DEVICE_SCREEN_CLOSED");
+      }
+      expect(await count("floor_zones")).toBe(zonesBefore);
+    },
+  );
 });
 
 describe("shared device: exempt routes and write-off", () => {

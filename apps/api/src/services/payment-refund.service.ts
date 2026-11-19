@@ -71,6 +71,7 @@ import {
   refundBlockedByProviderRefundSql,
 } from "./payment-provider-refunded-guard.ts";
 import { failedRefundHoldsOrderSql } from "./payment-refund-failed-open.ts";
+import { fileOwnRefundFailedHoldInTx } from "./refund-recon-hold.service.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 import {
   lockRefundApprovalScope,
@@ -734,6 +735,40 @@ async function failRefund(
   const { settleSystemRefundFailure } =
     await import("./system-refund-followup.ts");
   await settleSystemRefundFailure(tx, context, updated, input.now);
+  // legend-w2td5 (1045 F1): a refund that may have reached the provider ended
+  // failed, whatever the reason. That does not prove the provider kept the
+  // money (a refund it made on its own may have lost its webhook), so the
+  // intent is held until finance resolves it (the poller only records a
+  // `refunded` answer). Filed last: the re-files above run as
+  // before and their new refund stays pending; approving or sending it is
+  // refused by the open hold (`openReconHoldSql`). Lock order: the caller
+  // holds intent -> fund -> refund; the deposit-intent locks come after, as
+  // in `refundableBalance` of the re-files.
+  if (maybeSentOf(updated)) {
+    const providerPaymentRef = updated.unallocatedFundId
+      ? await fundEvidenceProviderRef(tx, updated, updated.unallocatedFundId)
+      : ((
+          await tx
+            .select({ providerRef: paymentIntents.providerRef })
+            .from(paymentIntents)
+            .where(
+              and(
+                eq(paymentIntents.tenantId, updated.tenantId),
+                eq(paymentIntents.id, updated.paymentIntentId),
+              ),
+            )
+        )[0]?.providerRef ?? null);
+    await fileOwnRefundFailedHoldInTx(tx, context, {
+      tenantId: updated.tenantId,
+      intentId: updated.paymentIntentId,
+      outletId: updated.outletId,
+      refundId: updated.id,
+      providerRefundId: updated.providerRef,
+      amountIdr: Number(updated.amountIdr),
+      providerPaymentRef,
+      now: input.now,
+    });
+  }
   return updated;
 }
 
@@ -2046,6 +2081,19 @@ async function takeSendRight(
   return rows.length > 0 ? deadline : null;
 }
 
+/** Stable code of the refusal while no refund adapter is installed (Q45,
+ * DOIT_REFUNDS_ENABLED off): the refund stays `approved`, which is the manual
+ * queue finance closes with `settleRefundManually`. Nothing was claimed or
+ * counted. */
+export const REFUND_PROVIDER_DISABLED = "REFUND_PROVIDER_DISABLED";
+
+const refundProviderDisabled = () =>
+  new HttpError(
+    503,
+    REFUND_PROVIDER_DISABLED,
+    "Refund otomatis penyedia dimatikan; catat refund manual oleh finance.",
+  );
+
 /** False while the fail-closed default port stands in for `provider` (no
  * adapter). A provider without a refund API (Duitku) never has one: its refunds
  * stay `approved` and finance closes them with `settleRefundManually`. */
@@ -2219,10 +2267,7 @@ export async function runRefundPayout(
   // Before any claim or write: an attempt counted against no provider would
   // make a later first send look like a possible duplicate.
   if (!(await refundGatewayInstalledFor(context, refundId)))
-    throw new CoreError(
-      "SERVICE_UNAVAILABLE",
-      "Belum ada gateway refund yang aktif. Refund akan dicoba lagi nanti.",
-    );
+    throw refundProviderDisabled();
   const token = randomUUID();
   const claim = await withTenant(
     db,
@@ -2957,9 +3002,36 @@ export async function sweepApprovedRefundPayouts(
       "Refund escalation sweep failed",
     );
   }
-  // No gateway: claim nothing and flag nothing (see runRefundPayout).
-  if (!anyRefundGatewayInstalled())
+  // No gateway: claim nothing and flag nothing (see runRefundPayout). The
+  // approved refunds only wait for finance to record them by hand; one warn
+  // with the count, no retry counted, no personal data.
+  if (!anyRefundGatewayInstalled()) {
+    try {
+      const waiting = await withTenant(db, context, async (tx) => {
+        const [row] = await tx
+          .select({ count: sql<number>`count(*)::int` })
+          .from(paymentRefunds)
+          .where(
+            and(
+              eq(paymentRefunds.tenantId, context.tenant.tenantId),
+              eq(paymentRefunds.status, "approved"),
+            ),
+          );
+        return row?.count ?? 0;
+      });
+      if (waiting > 0)
+        logger.warn(
+          { tenantId: context.tenant.tenantId, waiting },
+          "Approved refunds wait for manual settlement: automatic provider refunds are off",
+        );
+    } catch {
+      logger.warn(
+        { tenantId: context.tenant.tenantId },
+        "Counting refunds waiting for manual settlement failed",
+      );
+    }
     return { attempted: 0, exhausted: 0, escalated };
+  }
   const tenantId = context.tenant.tenantId;
   // Each payout may take up to a minute: advance the (possibly injected) clock
   // by the real elapsed time so a later row's lease is not born expired.
@@ -3186,10 +3258,7 @@ export async function retryRefundPayout(
   void key;
   // Before the evidence mapping below writes anything.
   if (!(await refundGatewayInstalledFor(context, params.refundId)))
-    throw new CoreError(
-      "SERVICE_UNAVAILABLE",
-      "Belum ada gateway refund yang aktif. Refund akan dicoba lagi nanti.",
-    );
+    throw refundProviderDisabled();
   await withTenant(db, context, async (tx) => {
     const [refund] = await tx
       .select()
@@ -3740,6 +3809,31 @@ export async function settleRefundManually(
         // legend-7uqbs: paying it by hand would pay money the provider already
         // returned to the payer; release the refund instead.
         await assertNotProviderRefunded(tx, refund.tenantId, refund);
+        // Q45 (1072): with automatic provider refunds off this is the only way
+        // money leaves, so the cap is judged again at the moment finance pays,
+        // like approval: DP a seated session used, a POS or QR sale that took
+        // the money, or a forfeited DP since the approval must not be paid
+        // back by hand. A fund refund is judged by its fund (guard above).
+        // A refund with a provider trace is not blocked: the provider may
+        // already have sent it, so the excess is recorded in the audit detail
+        // (like `approvalDefect`) and the books follow the money.
+        let capExcessIdr: string | null = null;
+        if (!locked.fund) {
+          const balance = await refundableBalance(tx, locked.intent);
+          const otherPending = (await isLatePaymentRefund(tx, refund))
+            ? await otherPendingRefundIdr(tx, refund)
+            : 0n;
+          const excess = balance.reserved - otherPending - balance.cap;
+          if (excess > 0n) {
+            if (!hasProviderTrace(refund) && !isStuckAtProvider(refund))
+              throw new HttpError(
+                409,
+                "REFUND_CAP_EXCEEDED",
+                "Refund exceeds the amount still available to refund; do not pay it.",
+              );
+            capExcessIdr = excess.toString();
+          }
+        }
         // legend-17ml: a provider reference or poll count blocks settling unless
         // ops flagged the refund stuck (MANUAL_RECONCILIATION, or
         // PAYOUT_NOT_FOUND_MAYBE_SENT); any other error keeps the refusal.
@@ -3791,7 +3885,11 @@ export async function settleRefundManually(
           actorId: actor,
           action: "payment.refund_settled_manually",
           reason: note,
-          detail: { ...evidence, approvalDefect: defect },
+          detail: {
+            ...evidence,
+            approvalDefect: defect,
+            capExcessIdr,
+          },
           marker: SETTLED_OUTSIDE_PROVIDER,
         });
         return { settled: true };
@@ -3956,15 +4054,36 @@ export type RefundProviderUpdate = {
   readonly amountIdr?: number;
 };
 
+/** Why the updater refused a provider result (1072 I6). */
+export type RefundProviderRefusal = {
+  readonly kind:
+    "reference_mismatch" | "amount_mismatch" | "contradiction" | "not_awaiting";
+  readonly refund: Refund;
+  readonly intent: Intent;
+  /**
+   * 1072 I9: R was really sent to the provider (`maybeSentOf`, not settled by
+   * hand), read from the locked row. Only then can a smaller provider success
+   * be an echo of it.
+   */
+  readonly sentToProvider: boolean;
+};
+
 /**
  * Applies an asynchronous provider result (webhook or poll). Only an `approved`
  * refund transitions; a replay of the same terminal state is a no-op and a
- * contradicting update is refused without any write.
+ * contradicting update is refused without any write of its own.
+ *
+ * 1072 I6: `onRefusedInTx` runs inside the transaction that holds the intent,
+ * fund, refund and deposit locks, right before a refusal. What it writes (a
+ * conflict hold) commits with that transaction, and only then the 409 is
+ * thrown, so a manual settle or a deposit credit never sees a refusal without
+ * its hold. It must use the `tx` it is given and open no other connection.
  */
 export async function applyRefundProviderUpdate(
   context: ScopedTenantContext,
   update: RefundProviderUpdate,
   now: Date = new Date(),
+  onRefusedInTx?: (tx: Tx, refusal: RefundProviderRefusal) => Promise<void>,
 ) {
   const keyedId = update.idempotencyKey
     ? PROVIDER_KEY.exec(update.idempotencyKey)?.[1]
@@ -3995,13 +4114,30 @@ export async function applyRefundProviderUpdate(
   const refused = await withTenant(db, context, async (tx) => {
     const locked = await lockRefundGraph(tx, context.tenant.tenantId, refundId);
     const { refund } = locked;
+    const refuse = async (
+      kind: RefundProviderRefusal["kind"],
+      message: string,
+    ) => {
+      await onRefusedInTx?.(tx, {
+        kind,
+        refund,
+        intent: locked.intent,
+        sentToProvider:
+          maybeSentOf(refund) &&
+          refund.lastPayoutError !== SETTLED_OUTSIDE_PROVIDER,
+      });
+      return message;
+    };
     // Never re-point a refund at another provider transaction.
     if (
       refund.providerRef &&
       update.providerRef &&
       refund.providerRef !== update.providerRef
     )
-      throw conflict("Provider reference does not match the refund.");
+      return await refuse(
+        "reference_mismatch",
+        "Provider reference does not match the refund.",
+      );
     // Settled by hand: any provider success means paying twice, whatever its
     // amount, so it is recorded before the amount check can refuse it.
     if (
@@ -4009,17 +4145,29 @@ export async function applyRefundProviderUpdate(
       update.amountIdr !== refund.amountIdr &&
       !contradicts(refund, update.status)
     )
-      throw conflict("Provider amount does not match the refund.");
+      return await refuse(
+        "amount_mismatch",
+        "Provider amount does not match the refund.",
+      );
     if (contradicts(refund, update.status)) {
       await recordProviderConflict(tx, context, refund, update.status, now);
-      return "Refund is not awaiting a provider result.";
+      return await refuse(
+        "contradiction",
+        "Refund is not awaiting a provider result.",
+      );
     }
     if (update.status === "succeeded") {
       if (refund.status === "completed") return null;
       if (refund.status !== "approved")
-        throw conflict("Refund is not awaiting a provider result.");
+        return await refuse(
+          "not_awaiting",
+          "Refund is not awaiting a provider result.",
+        );
       const providerRef = update.providerRef ?? refund.providerRef;
-      if (!providerRef) throw conflict("Provider reference is required.");
+      // 1075 P3: refused through the callback like the others, so a matched
+      // success without any refund id still leaves its hold (I6/I8).
+      if (!providerRef)
+        return await refuse("not_awaiting", "Provider reference is required.");
       await completeRefund(tx, context, locked, providerRef, now);
       return null;
     }
@@ -4035,7 +4183,10 @@ export async function applyRefundProviderUpdate(
     )
       return null;
     if (refund.status !== "approved")
-      throw conflict("Refund is not awaiting a provider result.");
+      return await refuse(
+        "not_awaiting",
+        "Refund is not awaiting a provider result.",
+      );
     await failRefund(tx, context, refund, {
       reason: "provider_declined",
       action: "payment.refund_failed",

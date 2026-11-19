@@ -14,6 +14,8 @@ function Thumb({ src }: { src: string | null }) {
     <img
       src={src}
       alt=""
+      width={42}
+      height={42}
       loading="lazy"
       className="size-[42px] shrink-0 rounded-md object-cover min-[700px]:size-14"
     />

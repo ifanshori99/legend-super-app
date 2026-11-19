@@ -451,6 +451,14 @@ afterAll(async () => {
       [tenantId, createdLinkIds],
     );
     await owner.query(
+      `DELETE FROM refund_recon_holds WHERE tenant_id = $1 AND payment_intent_id IN (${intents})`,
+      [tenantId, createdLinkIds],
+    );
+    await owner.query(
+      `DELETE FROM payment_provider_refunds WHERE tenant_id = $1 AND payment_intent_id IN (${intents})`,
+      [tenantId, createdLinkIds],
+    );
+    await owner.query(
       `DELETE FROM payment_evidence WHERE tenant_id = $1 AND payment_intent_id IN (${intents})`,
       [tenantId, createdLinkIds],
     );
@@ -1111,7 +1119,35 @@ describe("legend-7uqbs the provider echo of our own refund is not a provider-ini
     await pollLater().catch(() => null);
   }
 
-  async function expectEchoIgnored(
+  /** Open recon holds of the intent. */
+  async function openHolds(intentId: string): Promise<number> {
+    const { rows } = await owner.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM refund_recon_holds
+        WHERE tenant_id = $1 AND payment_intent_id = $2 AND resolved_at IS NULL`,
+      [tenantId, intentId],
+    );
+    return Number(rows[0]!.n);
+  }
+
+  /** Provider refund facts recorded for the intent. */
+  async function providerFacts(intentId: string): Promise<number> {
+    const { rows } = await owner.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM payment_provider_refunds
+        WHERE tenant_id = $1 AND payment_intent_id = $2`,
+      [tenantId, intentId],
+    );
+    return Number(rows[0]!.n);
+  }
+
+  /**
+   * legend-04izi (1035): a pending answer stores the provider reference and may
+   * still end failed, so the echo of a refund of ours still on its way is NOT
+   * taken as proof it succeeded: nothing new is booked (no provider fact, our
+   * refund untouched), but the intent is held ONCE (duplicate events and the
+   * poller add nothing) and finance told ONCE, so a failure of ours cannot
+   * reopen the money for a second refund.
+   */
+  async function expectEchoHeldOnce(
     code: Code,
     refundStatusesBefore: string[],
     refundAuditBefore: string[],
@@ -1121,13 +1157,17 @@ describe("legend-7uqbs the provider echo of our own refund is not a provider-ini
       (await auditActions(code.id)).filter((a) => /refund/i.test(a)),
       "no new refund audit row",
     ).toEqual(refundAuditBefore);
-    expect(await supervisorAlerts(), "no false alert").toBe(alertsBefore);
+    expect(await providerFacts(code.id), "no provider fact").toBe(0);
+    expect(await openHolds(code.id), "one in-flight hold").toBe(1);
+    expect(await supervisorAlerts(), "one alert, not per event").toBe(
+      alertsBefore + 1,
+    );
     expect(await refundStatuses(code.id), "our refund untouched").toEqual(
       refundStatusesBefore,
     );
   }
 
-  it("958-a6 paid intent, our manual refund sent and still pending at the provider, then the provider echoes refunded: nothing flagged, no alert, refund untouched", async () => {
+  it("958-a6 paid intent, our manual refund sent and still pending at the provider, then the provider echoes refunded: nothing booked, ONE in-flight hold and alert (legend-04izi), refund untouched", async () => {
     const code = await newCode();
     expect((await paid(code)).status).toBe(200);
     const filed = await manualRefund(code.id, BILL_TOTAL);
@@ -1145,11 +1185,11 @@ describe("legend-7uqbs the provider echo of our own refund is not a provider-ini
     );
     const alerts = await supervisorAlerts();
     await echo(code);
-    await expectEchoIgnored(code, statuses, audit, alerts);
+    await expectEchoHeldOnce(code, statuses, audit, alerts);
     expect(fake.calls, "no second payout").toHaveLength(1);
   });
 
-  it("958-a6 parked fund, our refund of it sent and still pending, then the provider echoes refunded: nothing flagged, no alert", async () => {
+  it("958-a6 parked fund, our refund of it sent and still pending, then the provider echoes refunded: nothing booked, ONE in-flight hold and alert (legend-04izi)", async () => {
     const code = await newCode();
     expect((await paid(code, BILL_TOTAL - SHORT_BY)).status).toBeLessThan(500);
     const [fund] = await fundsOf(code.id);
@@ -1165,7 +1205,7 @@ describe("legend-7uqbs the provider echo of our own refund is not a provider-ini
     const alerts = await supervisorAlerts();
 
     await echo(code);
-    await expectEchoIgnored(code, statuses, audit, alerts);
+    await expectEchoHeldOnce(code, statuses, audit, alerts);
     expect(fake.calls, "no second payout").toHaveLength(1);
     expect(await refundRowsOfFund(fund!.id)).toBe(1);
   });
@@ -1398,6 +1438,35 @@ describe("legend-7uqbs a declined fund refund does not free the money when the p
       [fund!.id],
     );
     expect(rows[0]!.at).toBeNull();
+    // legend-w2td5 (1045 F1): the declined refund had been sent (attempt 1),
+    // so its intent is held until finance checks the provider: no second
+    // request yet. Finance closes it `not_this_intent`; then the fund frees.
+    const { rows: holds } = await owner.query<{
+      id: string;
+      amount_idr: number;
+      provider_refund_id: string | null;
+    }>(
+      `SELECT id, amount_idr, provider_refund_id FROM refund_recon_holds
+        WHERE payment_intent_id = $1 AND reason = 'own_refund_failed_unverified'
+          AND resolved_at IS NULL`,
+      [code.id],
+    );
+    expect(holds).toHaveLength(1);
+    // Architect A2: the hold keeps our refund's provider ref, so a late echo
+    // of that refund is a duplicate, never a second fact.
+    expect(holds[0]!.provider_refund_id).toBe("PR-LOOKUP-DECLINED-958C");
+    const held = await resolveFund(fund!.id, "refund");
+    expect(held.status, JSON.stringify(held.body)).toBe(409);
+    expect(held.body.error.code).toBe("PROVIDER_REFUNDED");
+    const closed = await approver
+      .post(`${ADMIN}/refund-recon-holds/${holds[0]!.id}/resolve`)
+      .set(originHeader)
+      .send({
+        idempotencyKey: key("hold"),
+        resolution: "not_this_intent",
+        note: "Dashboard penyedia: refund gagal, dana masih di kami.",
+      });
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
     const again = await resolveFund(fund!.id, "refund");
     expect(again.status, JSON.stringify(again.body)).toBe(200);
   });

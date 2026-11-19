@@ -56,9 +56,16 @@ export type DoitRefundFacts = {
   payment?: DoitRefundPaymentFacts;
   /** Provider payment id named by a flat `payment_id` (no payment object). */
   paymentId?: string;
+  /** 1126: id of a payment object we could not read as a whole (e.g. a status
+   * outside the wire enum). Only names the payment for a hold of an unmatched
+   * success; never a match input (not `payment`, not `paymentId`). */
+  namedPaymentId?: string;
   /** Intent reference carried by a refund object (legend-r7g2): checked
    * against the refund's intent like a payment object's `reference`. */
   reference?: string;
+  /** Status the refund object carries (`succeeded`, `failed`, `pending`...),
+   * when it carries one (legend-9s33i: only a succeeded refund is held). */
+  refundStatus?: string;
   /** legend-2ol8g: facts the event carries but we could not read (or, on an
    * event matched by key or refund id, that it must carry and does not). Sorted, unique. The
    * caller never settles on such an event. */
@@ -167,6 +174,15 @@ export function readDoitRefundFacts(data: unknown): DoitRefundFacts {
       ? undefined
       : (flatPaymentId ?? refundPaymentId);
   if (paymentId) facts.paymentId = paymentId;
+  // 1126: an unreadable payment object still names a payment (never a match).
+  // A stored event keeps it as `data.named_payment_id`.
+  if (!payment) {
+    const named =
+      text(asRecord(record.payment)?.id) ??
+      (paymentShaped ? text(record.id) : undefined) ??
+      text(record.named_payment_id);
+    if (named) facts.namedPaymentId = named;
+  }
   const invalid = new Set<DoitRefundInvalidFact>();
   if (rawAmount !== undefined && refundAmount === undefined)
     invalid.add("amount");
@@ -198,6 +214,9 @@ export function readDoitRefundFacts(data: unknown): DoitRefundFacts {
     refund.reference ?? (isRefundObject ? record.reference : undefined),
   );
   if (reference.success) facts.reference = reference.data;
+  const refundStatus =
+    text(refund.status) ?? (isRefundObject ? text(record.status) : undefined);
+  if (refundStatus) facts.refundStatus = refundStatus;
   return facts;
 }
 
@@ -225,10 +244,12 @@ export const doitRefundWebhookEventSchema =
     if (facts.amountIdr !== undefined) refund.amount = facts.amountIdr;
     if (facts.failureCode) refund.failure_code = facts.failureCode;
     if (facts.reference) refund.reference = facts.reference;
+    if (facts.refundStatus) refund.status = facts.refundStatus;
     const data: Record<string, unknown> = { refund };
     if (facts.idempotencyKey) data.idempotency_key = facts.idempotencyKey;
     if (facts.payment) data.payment = facts.payment;
     if (facts.paymentId) data.payment_id = facts.paymentId;
+    if (facts.namedPaymentId) data.named_payment_id = facts.namedPaymentId;
     if (facts.invalid) data.invalid = facts.invalid;
     return {
       id: event.id,

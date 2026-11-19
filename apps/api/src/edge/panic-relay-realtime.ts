@@ -31,6 +31,7 @@ import {
   resendDue,
   sendOpenAlertsTo,
 } from "../services/panic-relay.service.ts";
+import { anySharedDeviceActive } from "../services/shared-device.service.ts";
 import {
   authenticateReceiverSession,
   onReceiverSessionRevoked,
@@ -56,6 +57,12 @@ const CLOSE_GRACE_MS = 1_000;
 
 type Options = {
   trustedOrigins?: readonly string[];
+  /**
+   * legend-iq0jz (founder Q29): true when the receiver session's device is an
+   * active shared tablet, which never opens the panic stream. Defaults to the
+   * database check.
+   */
+  isSharedDevice?: (deviceId: string) => Promise<boolean>;
 };
 
 type Client = {
@@ -92,6 +99,8 @@ export function attachEmergencyRealtime(server: Server, options: Options = {}) {
     handleProtocols: (protocols) =>
       protocols.has(EMERGENCY_WS_PROTOCOL) ? EMERGENCY_WS_PROTOCOL : false,
   });
+  const isSharedDevice =
+    options.isSharedDevice ?? ((deviceId) => anySharedDeviceActive([deviceId]));
   const clients = new Map<WebSocket, Client>();
   // Upgrades still being checked hold a seat too, so a burst of parallel
   // connects cannot slip past the per-outlet limit.
@@ -134,6 +143,7 @@ export function attachEmergencyRealtime(server: Server, options: Options = {}) {
           request.headers.cookie,
         );
         if (!session) return refuse(socket, 401);
+        if (await isSharedDevice(session.deviceId)) return refuse(socket, 403);
         seat = seatKey(session.tenantId, session.outletId);
         const taken = subscribersOf(session).length + (pending.get(seat) ?? 0);
         if (taken >= MAX_EMERGENCY_SOCKETS_PER_OUTLET)

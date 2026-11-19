@@ -38,12 +38,13 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import sharp from "sharp";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import {
   FakeObjectStorage,
   type ObjectStorage,
 } from "@starter/shared/adapters";
 import { createApp } from "../app.ts";
+import * as payoutService from "../services/payroll-payout.service.ts";
 import { totpCode, totpStep } from "../lib/totp.ts";
 import { NoopMalwareScanner } from "../services/core-image.ts";
 import { uploadPayoutEvidence } from "../services/payroll-payout-evidence-upload.service.ts";
@@ -334,6 +335,60 @@ const returnCall = (
     ),
   );
 
+/** Race proof binding after both real issuers have committed their grants.
+ * The HTTP password step-up is slower than the direct service caller. Starting
+ * both at once can otherwise make the HTTP grant wait on the return's batch
+ * lock, testing the grantor's 5-second busy limit instead of proof uniqueness.
+ */
+async function raceOverpaidAndReturn(
+  first: Approver,
+  w: { batchId: string; andi: string; siti: string },
+  evidenceKey: string,
+) {
+  let release!: () => void;
+  const bothCommitted = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const committedKinds = new Set<string>();
+  let arrivals = 0;
+  const issue = payoutService.payoutTrustedGrant;
+  const issuer = vi
+    .spyOn(payoutService, "payoutTrustedGrant")
+    .mockImplementation(async (actor, binding) => {
+      const secret = await issue(actor, binding);
+      if (
+        binding.batchId === w.batchId &&
+        binding.evidenceKey === evidenceKey &&
+        binding.step === "propose" &&
+        (binding.kind === "return" || binding.kind === "overpaid")
+      ) {
+        arrivals += 1;
+        committedKinds.add(binding.kind);
+        if (arrivals === 2) release();
+        await bothCommitted;
+      }
+      return secret;
+    });
+  const work = [
+    Promise.resolve(overpaidCall(first, w, [w.andi], evidenceKey)).finally(
+      release,
+    ),
+    W.httpFailure(returnCall(w, [w.siti], APP, evidenceKey)).finally(release),
+  ] as const;
+  try {
+    const results = await Promise.all(work);
+    expect(arrivals, "Both real grants committed before the proof race").toBe(
+      2,
+    );
+    expect([...committedKinds].sort()).toEqual(["overpaid", "return"]);
+    return results;
+  } finally {
+    release();
+    await Promise.allSettled(work);
+    issuer.mockRestore();
+  }
+}
+
 type Res = Awaited<ReturnType<typeof overpaidCall>>;
 const expectOk = (res: Res, label = "") =>
   expect(res.status, `${label} ${JSON.stringify(res.body)}`).toBe(200);
@@ -467,7 +522,7 @@ describe("897 a bank proof backs ONE operation (F1)", () => {
     });
   }
 
-  for (const round of [1, 2]) {
+  for (const round of [1, 2, "legacy"] as const) {
     it(`[897-parallel-overpaid-vs-return-${round}] overpaid A and return B on the same bytes at the same moment: exactly one succeeds, the other is refused 409 and leaves nothing`, async () => {
       const { requester, first } = await trio(`Race${round}`);
       const w = await world(requester, {
@@ -476,10 +531,8 @@ describe("897 a bank proof backs ONE operation (F1)", () => {
       });
       const key = await uploadTo(w.batchId, await pdf("balapan"));
 
-      const [overpaid, returned] = await Promise.all([
-        overpaidCall(first, w, [w.andi], key),
-        W.httpFailure(returnCall(w, [w.siti], APP, key)),
-      ]);
+      if (round === "legacy") await eraseProofRecord(key);
+      const [overpaid, returned] = await raceOverpaidAndReturn(first, w, key);
 
       expect(overpaid.status, JSON.stringify(overpaid.body)).toBeLessThan(500);
       const overpaidWon = overpaid.status === 200;

@@ -3,6 +3,7 @@
 // (collected in nav-registry.ts) so parallel feature beads never edit one list.
 import type { LucideIcon } from "lucide-react";
 import type { PermissionCode } from "@starter/shared/access";
+import { isSharedDeviceScreenAllowed } from "@starter/shared/access/shared-device-screens";
 import type { MessageKey, Translate } from "@starter/shared/i18n";
 import type { AreaAccess } from "./access.ts";
 import { AREAS, type AreaKey } from "./definitions.ts";
@@ -98,6 +99,10 @@ export function buildAreaNav(input: {
   const visible = all
     .filter(
       (entry) => !entry.anyPermission || holdsAny(access, entry.anyPermission),
+    )
+    // Shared tablet (founder Q29): only the allowlisted screens are offered.
+    .filter(
+      (entry) => !access.sharedDevice || isSharedDeviceScreenAllowed(entry.to),
     )
     .sort(
       (a, b) =>

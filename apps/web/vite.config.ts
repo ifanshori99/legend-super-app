@@ -5,6 +5,7 @@ import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import { nitro } from "nitro/vite";
 import viteReact from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import { i18nChunks } from "./vite-i18n-chunks.ts";
 
 // Both apps share the repository root's .env.local / .env.
 const envDir = resolve(import.meta.dirname, "../..");
@@ -123,6 +124,9 @@ export default defineConfig(({ command, mode }) => {
       },
     },
     plugins: [
+      // Per-area text catalog, and every import of the catalog barrel
+      // redirected to its catalog-free runtime (legend-nmn9j).
+      i18nChunks({ split: true }),
       tailwindcss(),
       demoSampleAssets(demo),
       tanstackStart(),

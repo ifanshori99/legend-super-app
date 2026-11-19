@@ -1002,6 +1002,38 @@ describe("legend-18qw notification recipient resolver", () => {
     expect(mine).not.toContain(users.lapsedApprover);
   });
 
+  it("legend-z274 checklist.missed and checklist.failed use their own checklist_alert category, not schedule_update", async () => {
+    const base = {
+      runId: randomUUID(),
+      templateId: randomUUID(),
+      shiftDate: "2026-11-08",
+      assignedTo: users.outletApprover,
+    };
+    const missed = await resolve(
+      { email: true, push: true },
+      envelope("checklist.missed", bandung, {
+        ...base,
+        dueAt: "2026-11-08T03:00:00.000Z",
+        detectedAt: "2026-11-08T03:05:00.000Z",
+      }),
+    );
+    expect(ours(missed).length).toBeGreaterThan(0);
+    for (const recipient of ours(missed))
+      expect(recipient.category).toBe("checklist_alert");
+    const failed = await resolve(
+      { email: true, push: true },
+      envelope("checklist.failed", bandung, {
+        ...base,
+        dueAt: "2026-11-08T03:00:00.000Z",
+        completedAt: "2026-11-08T02:30:00.000Z",
+        failedItemIds: [randomUUID()],
+      }),
+    );
+    expect(ours(failed).length).toBeGreaterThan(0);
+    for (const recipient of ours(failed))
+      expect(recipient.category).toBe("checklist_alert");
+  });
+
   it("legend-5rgl facility_incident.raised pages in-scope booth operators with the emergency category", async () => {
     const roleId = randomUUID();
     const facilityId = randomUUID();

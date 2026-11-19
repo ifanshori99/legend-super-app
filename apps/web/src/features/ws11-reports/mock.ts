@@ -20,8 +20,9 @@
 // of the other atoms, with the owner insights' cost structure per period) and
 // balances are the open day's amounts, so a P&L, a payroll cost and a tax
 // report of one period always agree with the sales reports of that period and
-// with the dashboards (I1/I4). The report builder's previews only
-// know the sales metrics; the other families show "no data" there.
+// with the dashboards (I1/I4). The report builder's previews import these
+// figures (`periodFigures`, `cellFor`, `availabilityOf`), so they know every
+// family above; a metric no family has a figure for shows "no data".
 //
 // `?mock=empty` returns runs without rows and an empty catalog;
 // `?mock=slow|error|offline` are handled by the runtime.
@@ -106,7 +107,8 @@ const outlet = cafeLegendFixtures.outlets[0];
 
 // Splits the shared model does not know (supplier, station, zone, member tier);
 // net sales is the fallback weight of every figure.
-const EXTRA_SPLITS: Readonly<Record<string, SplitSpec>> = {
+/** Also the report builder's previews (`ws11-report-builder/mock-preview.ts`). */
+export const EXTRA_SPLITS: Readonly<Record<string, SplitSpec>> = {
   customer_tier: {
     values: ["Bronze", "Silver", "Gold", "Platinum"],
     weights: { net: [3_100_000, 2_300_000, 1_500_000, 520_000] },
@@ -161,12 +163,15 @@ const DERIVED = {
 
 type DerivedKey = keyof typeof DERIVED;
 const DERIVED_KEYS = Object.keys(DERIVED) as DerivedKey[];
-type Figures = Atoms & Record<DerivedKey, number>;
-type FigureKey = AtomKey | DerivedKey;
-const FIGURE_KEYS: readonly FigureKey[] = [...ATOM_KEYS, ...DERIVED_KEYS];
+export type Figures = Atoms & Record<DerivedKey, number>;
+export type FigureKey = AtomKey | DerivedKey;
+export const FIGURE_KEYS: readonly FigureKey[] = [
+  ...ATOM_KEYS,
+  ...DERIVED_KEYS,
+];
 
 /** Weights of one figure in a split: its source atom's, else net sales. */
-function weightsFor(key: FigureKey, spec: SplitSpec): readonly number[] {
+export function weightsFor(key: FigureKey, spec: SplitSpec): readonly number[] {
   const source = key in DERIVED ? DERIVED[key as DerivedKey].from : key;
   return (
     spec.weights[key as AtomKey] ??
@@ -291,7 +296,11 @@ const FAMILY_CELLS: readonly ((
   facility.cellFor,
 ];
 
-function cellFor(metricCode: string, atoms: Figures, totals: Figures): Cell {
+export function cellFor(
+  metricCode: string,
+  atoms: Figures,
+  totals: Figures,
+): Cell {
   for (const familyCell of FAMILY_CELLS) {
     const cell = familyCell(metricCode, atoms, totals);
     if (cell !== undefined) return cell;
@@ -322,7 +331,7 @@ const UNAVAILABLE_METRICS: ReadonlySet<string> = new Set([
 const UNSUPPORTED_SPLITS: Readonly<Record<string, readonly string[]>> =
   paymentsTax.unsupportedSplits;
 
-function availabilityOf(
+export function availabilityOf(
   metricCode: string,
   groupBy: string | null,
 ): MetricAvailability {

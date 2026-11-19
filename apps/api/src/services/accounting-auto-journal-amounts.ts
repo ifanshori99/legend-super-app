@@ -140,7 +140,10 @@ import {
 } from "./accounting-auto-journal-tax-split.ts";
 import { salePostingAccountsOf } from "./accounting-sale-account-history.ts";
 import { netAllocatedIdrSql } from "./payment-net-allocated-sql.ts";
-import { providerRefundedForeignIdrSql } from "./payment-provider-refunded-foreign-sql.ts";
+import {
+  ownRefundEchoesFactSql,
+  providerRefundedForeignIdrSql,
+} from "./payment-provider-refunded-foreign-sql.ts";
 
 type TenantId = ScopedTenantContext["tenant"]["tenantId"];
 
@@ -3047,7 +3050,14 @@ export async function autoJournalFactOf(
           .where(
             and(
               eq(paymentProviderRefunds.tenantId, tenantId),
+              // Only a provider's own refund id can be ours echoed (1035).
+              eq(paymentProviderRefunds.refundIdKind, "provider"),
               eq(paymentProviderRefunds.providerRefundId, refund.providerRef),
+              // 1063 9uz9n: only from the same intent and transaction (and not
+              // above our amount): the id alone is not our echo.
+              sql`EXISTS (SELECT 1 FROM payment_refunds er
+                WHERE er.tenant_id = ${tenantId}::uuid AND er.id = ${p.refundId}::uuid
+                  AND ${ownRefundEchoesFactSql("er", "payment_provider_refunds")})`,
             ),
           );
         if (echoed) {
@@ -3121,6 +3131,7 @@ export async function autoJournalFactOf(
           amountIdr: paymentProviderRefunds.amountIdr,
           createdAt: paymentProviderRefunds.createdAt,
           providerRefundId: paymentProviderRefunds.providerRefundId,
+          refundIdKind: paymentProviderRefunds.refundIdKind,
         })
         .from(paymentProviderRefunds)
         .where(
@@ -3158,7 +3169,18 @@ export async function autoJournalFactOf(
           and(
             eq(paymentRefunds.tenantId, tenantId),
             or(
-              eq(paymentRefunds.providerRef, refund.providerRefundId),
+              // Only the provider's own refund id can be the reference of a
+              // refund of ours (1035): a synthetic id never echoes.
+              // 1063 9uz9n: ... from the same intent and transaction only.
+              refund.refundIdKind === "provider"
+                ? and(
+                    eq(paymentRefunds.providerRef, refund.providerRefundId),
+                    sql`EXISTS (SELECT 1 FROM payment_provider_refunds ep
+                      WHERE ep.tenant_id = ${tenantId}::uuid
+                        AND ep.id = ${p.providerRefundId}::uuid
+                        AND ${ownRefundEchoesFactSql("payment_refunds", "ep")})`,
+                  )
+                : sql`false`,
               and(
                 eq(paymentRefunds.paymentIntentId, p.paymentIntentId),
                 eq(paymentRefunds.status, "approved"),
@@ -3172,6 +3194,7 @@ export async function autoJournalFactOf(
         );
       const matched = ours.filter(
         (row) =>
+          refund.refundIdKind === "provider" &&
           row.providerRef === refund.providerRefundId &&
           row.status !== "failed",
       );
@@ -3184,6 +3207,12 @@ export async function autoJournalFactOf(
       // (providerRefundedForeignIdrSql, the rule of refundableBalance). A refund
       // of a transaction a parked fund holds whole is paid out of that fund's
       // receipt: not guessed here, parked for finance (restrictive).
+      // legend-2hl7y: the guard judges THIS refund at its own time with the
+      // cumulative total of its evidence group (same evidence, recorded up to
+      // and including this row by (created_at, id)) against the parked money,
+      // not this row alone: the refund that passes the parked excess books its
+      // own nominal, the ones within it stay parked for finance. The helper
+      // is unchanged; the order events are delivered in changes nothing.
       const counted = BigInt(
         String(
           (
@@ -3191,16 +3220,47 @@ export async function autoJournalFactOf(
               sql`SELECT ${providerRefundedForeignIdrSql(
                 sql`${tenantId}::uuid`,
                 sql`${p.paymentIntentId}::uuid`,
-                sql`pr.id = ${p.providerRefundId}::uuid`,
+                sql`pr.evidence_id IS NOT DISTINCT FROM (SELECT self.evidence_id
+                    FROM payment_provider_refunds self
+                   WHERE self.tenant_id = ${tenantId}::uuid
+                     AND self.id = ${p.providerRefundId}::uuid)
+                  AND (pr.created_at, pr.id) <= (SELECT self.created_at, self.id
+                    FROM payment_provider_refunds self
+                   WHERE self.tenant_id = ${tenantId}::uuid
+                     AND self.id = ${p.providerRefundId}::uuid)`,
               )}::text AS amount`,
             )
           ).rows[0]?.amount ?? "0",
         ),
       );
-      if (counted === 0n)
+      if (counted === 0n) {
+        // Two different reasons for the same park. A split transaction (the
+        // bill took its part, the rest parked as a fund of the same evidence)
+        // whose refunds so far stay within the parked part: money of the
+        // parked fund, for finance to count. Otherwise a fund holds the whole
+        // transaction.
+        const split =
+          (
+            await tx.execute(
+              sql`SELECT 1 FROM payment_unallocated_funds uf
+                JOIN payment_evidence pe
+                  ON pe.tenant_id = uf.tenant_id AND pe.id = uf.evidence_id
+                JOIN payment_provider_refunds self
+                  ON self.tenant_id = uf.tenant_id
+                 AND self.evidence_id = uf.evidence_id
+                 AND self.payment_intent_id = uf.payment_intent_id
+               WHERE uf.tenant_id = ${tenantId}::uuid
+                 AND self.id = ${p.providerRefundId}::uuid
+                 AND uf.amount_idr < pe.amount_idr
+               LIMIT 1`,
+            )
+          ).rows.length > 0;
         throw new AutoJournalPayloadInvalid(
-          "Provider refund of a transaction an unallocated fund holds whole is not journaled automatically",
+          split
+            ? "Provider refund still within the parked-fund part of a split transaction is not journaled automatically: finance counts it against the parked fund"
+            : "Provider refund of a transaction an unallocated fund holds whole is not journaled automatically",
         );
+      }
       // The money leaves the intent's own receipt.
       const backing = await payoutBackingOf(tx, tenantId, {
         intentId: p.paymentIntentId,

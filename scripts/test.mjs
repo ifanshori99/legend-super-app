@@ -23,7 +23,18 @@ const databaseName = process.env.LEGEND_TEST_DB_NAME || "starter_test";
 if (!/^[a-z_][a-z0-9_]{0,62}$/.test(databaseName))
   throw new Error("LEGEND_TEST_DB_NAME must be a lowercase PostgreSQL name.");
 
-const selected = process.env.LEGEND_TEST_FILES?.trim()
+// LEGEND_TEST_FILES set but empty is a mistake (a shell variable that expanded
+// to nothing), not a request for the full suite: refuse instead of running it.
+if (
+  process.env.LEGEND_TEST_FILES !== undefined &&
+  !process.env.LEGEND_TEST_FILES.trim()
+) {
+  console.error(
+    "LEGEND_TEST_FILES is set but empty. List the test files to run, or unset it to run the full suite.",
+  );
+  process.exit(1);
+}
+const selected = process.env.LEGEND_TEST_FILES
   ? process.env.LEGEND_TEST_FILES.trim().split(/\s+/)
   : undefined;
 const targeted =

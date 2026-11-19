@@ -40,8 +40,8 @@ async function waitForHydration(page: Page, selector: string) {
 }
 
 /** Scan the table and save the inline guest count (PRD §3 "Scan & Sesi Meja"). */
-async function joinTable(page: Page, token: string) {
-  await page.goto(`/t/${token}`);
+async function joinTable(page: Page, token: string, query = "") {
+  await page.goto(`/t/${token}${query}`);
   await waitForHydration(page, "main button");
   await page.getByRole("button", { name: /Pilih jumlah tamu/ }).click();
   await page.getByRole("button", { name: "Simpan" }).click();
@@ -106,9 +106,53 @@ test.describe("Legacy /sign-in links resume the page after /masuk", () => {
     ).toBe(expected);
   });
 
-  // The claim card's login CTA carries the same `/masuk?redirect=<bill>` target,
-  // but the mock never reaches "available + requires login": P1 ships split and
-  // unpaid, and the split screen has no whole-bill pay path there. The change is
-  // typechecked and shares its builder with the checkout card asserted above;
-  // a mock state for the guest claim remains a follow-up (see bead note).
+  // `?mock=claim-login` (legend-46vt) serves an available point claim that needs
+  // an account, so the bill's claim card shows its sign-in CTA. The table frame
+  // has no sign-in button of its own, so the claim card's link is the only
+  // `/masuk?redirect=` link on the page, and it returns to this exact bill.
+  test("legend-46vt: claim card sign-in returns to this bill", async ({
+    page,
+  }) => {
+    test.slow();
+    await joinTable(page, payFirstTable, "?mock=claim-login");
+    await addEspresso(page);
+    await goToCheckout(page);
+    // The bill is empty ("Belum ada tagihan") until an order exists and the
+    // claim card only renders on a bill with orders: placing the order for a
+    // split (as legend-woz does) lands on /t/<token>/bill.
+    const base = `/t/${payFirstTable}`;
+    await page.getByRole("button", { name: "Bagi tagihan" }).click();
+    await expect(
+      page.getByRole("heading", { name: "Tagihan", level: 1 }),
+    ).toBeVisible();
+    await expect(page).toHaveURL(new RegExp(`${base}/bill$`));
+
+    const claim = page.locator("section[aria-labelledby='bill-claim']");
+    await expect(
+      claim.getByRole("heading", { name: "Poin untuk Anda" }),
+    ).toBeVisible({ timeout: 20_000 });
+    await expect(
+      claim.getByText("Masuk dulu untuk menyimpan poin ke akun Anda."),
+    ).toBeVisible();
+
+    const expected = `${base}/bill`;
+    const signIn = page.locator("a[href^='/masuk?redirect=']");
+    await expect(signIn).toHaveCount(1);
+    const cta = claim.getByRole("link", { name: "Masuk" });
+    await expect(cta).toHaveAttribute(
+      "href",
+      `/masuk?redirect=${encodeURIComponent(expected)}`,
+    );
+    expect(
+      new URL(
+        (await cta.getAttribute("href")) ?? "",
+        "https://legend.test",
+      ).searchParams.get("redirect"),
+    ).toBe(expected);
+  });
+
+  // The member consent form's CTA (`/masuk?redirect=/member/daftar`) and the
+  // generic area-frame CTA are not on the QR bill: the table frame renders no
+  // sign-in slot, and the member overview mock is always WhatsApp-verified, so
+  // neither is reachable from this mock scenario (see bead legend-46vt note).
 });

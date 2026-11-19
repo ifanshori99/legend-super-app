@@ -708,6 +708,14 @@ async function computeRecap(
 
   const sum = (pick: (device: DeviceAcc) => number) =>
     deviceRows.reduce((total, device) => total + pick(device), 0);
+  // legend-21c8n: the same outlet-wide numbers RECEIPT_SEQUENCE_GAP names.
+  const receiptGaps = await posOutletReceiptGapsPort()(tx, context, {
+    outletId,
+  });
+  const unsyncedReceiptCount = receiptGaps.reduce(
+    (total, run) => total + run.missing.length,
+    0,
+  );
   return endOfDayRecapSchema.parse({
     id: randomUUID(),
     tenantId,
@@ -726,6 +734,7 @@ async function computeRecap(
     totalVarianceIdr: sum((device) => device.cashVarianceIdr),
     totalExpiredCashOutIdr: sum((device) => device.expiredCashOutIdr),
     inventoryDeductionApplied: false,
+    unsyncedReceiptCount,
     accountingSync: { status: "pending", journalCount: 0, postedAt: null },
   });
 }

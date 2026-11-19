@@ -24,11 +24,13 @@ import {
   resolveServiceRequest as resolveEndpoint,
 } from "@starter/shared/qr-order";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
+import { ACTING_STAFF_ERROR_CODES } from "@starter/shared/pos/acting-staff";
 import {
+  actorOf,
   requireActingStaffOnSharedDevice,
   resolveActingStaff,
 } from "../middleware/acting-staff";
-import { getAuth, requireAuthAllowSharedDevice } from "../middleware/auth";
+import { requireAuthAllowSharedDevice } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
 import { getTenantContext, requireTenantContext } from "../middleware/tenant";
@@ -112,6 +114,14 @@ async function staffContextFor(
     establishScopedTenantContext(getTenantContext(req), { kind: "tenant" }),
     serviceRequestId,
   );
+  // The path carries no outlet, so resolveActingStaff could not compare it:
+  // a cashier token issued for another outlet is refused here.
+  if (req.actingStaff && req.actingStaff.outletId !== outletId)
+    throw new HttpError(
+      403,
+      ACTING_STAFF_ERROR_CODES.OUTLET_MISMATCH,
+      "Kasir aktif bukan untuk outlet permintaan ini.",
+    );
   return resolveOutletContext(req, "floor.table.operate", outletId);
 }
 
@@ -125,7 +135,7 @@ serviceRequestRouter.post(
       data: await acknowledgeServiceRequest(
         context,
         serviceRequestId,
-        getAuth(req).user.id,
+        actorOf(req),
       ),
     });
   },
@@ -143,7 +153,7 @@ serviceRequestRouter.post(
       data: await resolveServiceRequest(
         context,
         serviceRequestId,
-        getAuth(req).user.id,
+        actorOf(req),
         input,
       ),
     });
@@ -186,7 +196,7 @@ serviceRequestRouter.post(
       outletId,
       zoneId,
       input,
-      getAuth(req).user.id,
+      actorOf(req),
     );
     res.status(created ? 201 : 200).json({ data: assignment });
   },
@@ -208,7 +218,7 @@ serviceRequestRouter.delete(
       context,
       outletId,
       assignmentId,
-      getAuth(req).user.id,
+      actorOf(req),
     );
     res.status(204).end();
   },

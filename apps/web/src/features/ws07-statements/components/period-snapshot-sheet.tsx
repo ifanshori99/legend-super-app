@@ -26,10 +26,12 @@ import {
   formatBusinessDate,
   formatDateTime,
   formatPeriod,
+  isSnapshotHistory,
   periodBounds,
   shortUserId,
   statementQueryFor,
 } from "../lib";
+import { PeriodStatusBadge } from "./status-badges";
 import {
   useAccounts,
   usePeriodSnapshot,
@@ -151,6 +153,20 @@ export function PeriodSnapshotSheet({
                 />
               </StatStrip>
 
+              {isSnapshotHistory(snapshot.data) && (
+                <div
+                  role="status"
+                  className="grid gap-0.5 rounded-md border-(length:--border-w) border-border bg-muted p-3 text-sm"
+                >
+                  <p className="font-medium">
+                    {t("accounting.report.periods.snapshotDialog.historyTitle")}
+                  </p>
+                  <p className="text-muted-foreground">
+                    {t("accounting.report.periods.snapshotDialog.historyHint")}
+                  </p>
+                </div>
+              )}
+
               <dl className="grid gap-3 text-sm sm:grid-cols-3">
                 <div className="grid gap-0.5">
                   <dt className="type-eyebrow text-muted-foreground">
@@ -160,6 +176,30 @@ export function PeriodSnapshotSheet({
                     {snapshot.data.version}
                   </dd>
                 </div>
+                {snapshot.data.periodStatus && (
+                  <div className="grid gap-0.5">
+                    <dt className="type-eyebrow text-muted-foreground">
+                      {t(
+                        "accounting.report.periods.snapshotDialog.periodStatus",
+                      )}
+                    </dt>
+                    <dd>
+                      <PeriodStatusBadge status={snapshot.data.periodStatus} />
+                    </dd>
+                  </div>
+                )}
+                {snapshot.data.periodVersion !== undefined && (
+                  <div className="grid gap-0.5">
+                    <dt className="type-eyebrow text-muted-foreground">
+                      {t(
+                        "accounting.report.periods.snapshotDialog.periodVersion",
+                      )}
+                    </dt>
+                    <dd className="tabular font-medium">
+                      {snapshot.data.periodVersion}
+                    </dd>
+                  </div>
+                )}
                 <div className="grid gap-0.5">
                   <dt className="type-eyebrow text-muted-foreground">
                     {t("accounting.report.periods.snapshotDialog.takenAt")}

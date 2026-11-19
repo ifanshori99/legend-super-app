@@ -3354,6 +3354,55 @@
       "when": 1795000000109,
       "tag": "0492_sop_document_media",
       "breakpoints": true
+    },
+    {
+      "idx": 493,
+      "version": "7",
+      "when": 1795000003101,
+      "tag": "0493_refund_recon_holds",
+      "breakpoints": true
+    },
+    {
+      "idx": 494,
+      "version": "7",
+      "when": 1795000004101,
+      "tag": "0494_refund_recon_hold_resolution",
+      "breakpoints": true
+    },
+    {
+      "idx": 495,
+      "version": "7",
+      "when": 1795000005101,
+      "tag": "0495_refund_recon_hold_payment_ref",
+      "breakpoints": true
+    },
+    {
+      "idx": 496,
+      "version": "7",
+      "when": 1795000006101,
+      "tag": "0496_provider_refund_id_kind",
+      "breakpoints": true
+    },
+    {
+      "idx": 497,
+      "version": "7",
+      "when": 1795000007101,
+      "tag": "0497_refund_recon_hold_identity",
+      "breakpoints": true
+    },
+    {
+      "idx": 498,
+      "version": "7",
+      "when": 1795000008101,
+      "tag": "0498_refund_recon_hold_matched_fact",
+      "breakpoints": true
+    },
+    {
+      "idx": 499,
+      "version": "7",
+      "when": 1795000009101,
+      "tag": "0499_refund_hold_invalid_report",
+      "breakpoints": true
     }
   ]
 }

@@ -132,7 +132,13 @@ export function CustomerShell({
       <header className="shrink-0 border-b bg-background">
         <div className="mx-auto flex h-14 w-full max-w-2xl items-center gap-3 px-gutter">
           {logoUrl ? (
-            <img src={logoUrl} alt={brandName} className="h-8 w-auto" />
+            <img
+              src={logoUrl}
+              alt={brandName}
+              width={128}
+              height={32}
+              className="h-8 w-auto"
+            />
           ) : (
             <span className="truncate font-brand type-title">{brandName}</span>
           )}
