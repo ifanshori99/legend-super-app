@@ -191,9 +191,9 @@ async function observedStates(operationId: string) {
 
 /** Everything that moves money for the tenant: counts and the item status. */
 async function moneySnapshot(itemId: string) {
-  const count = async (table: string) => {
+  const count = async (table: string, extra = "") => {
     const [row] = await W.rowsOf(
-      `SELECT count(*)::int AS n FROM ${table} WHERE tenant_id = $1`,
+      `SELECT count(*)::int AS n FROM ${table} WHERE tenant_id = $1${extra}`,
       [W.tenantId],
     );
     return row!.n as number;
@@ -207,7 +207,8 @@ async function moneySnapshot(itemId: string) {
     items: await count("payroll_disbursement_items"),
     glPostings: await count("payroll_payout_gl_postings"),
     journalEntries: await count("journal_entries"),
-    grants: await count(GRANTS),
+    // The two-person clearance itself consumes `recon_clear` grants; they move no money.
+    grants: await count(GRANTS, " AND kind <> 'recon_clear'"),
     itemStatus: item!.status as string,
   };
 }

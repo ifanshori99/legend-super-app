@@ -20,6 +20,18 @@ pool.on("error", (err) => {
   );
 });
 
+// A backend ended while its connection is checked out (pg_terminate_backend, a
+// restart) emits 'error' on that client; without a listener it would crash the
+// process. Log the error name only, never the message or any query data.
+pool.on("connect", (client) => {
+  client.on("error", (err) => {
+    logger.error(
+      { errorName: err.name, module: "db" },
+      "A checked-out PostgreSQL connection was lost.",
+    );
+  });
+});
+
 export const db = drizzle(pool, {
   schema,
   logger: env.LOG_SQL ? new SqlLogger() : false,
