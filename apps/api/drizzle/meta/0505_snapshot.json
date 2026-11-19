@@ -73866,7 +73866,7 @@
       "checkConstraints": {
         "payroll_payout_gl_postings_kind_check": {
           "name": "payroll_payout_gl_postings_kind_check",
-          "value": "\"payroll_payout_gl_postings\".\"kind\" IN ('settle', 'settle_pending', 'settle_skipped', 'return', 'overpaid')"
+          "value": "\"payroll_payout_gl_postings\".\"kind\" IN ('settle', 'settle_pending', 'settle_skipped', 'settle_waived', 'return', 'overpaid')"
         },
         "payroll_payout_gl_postings_hash_check": {
           "name": "payroll_payout_gl_postings_hash_check",
