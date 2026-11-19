@@ -1,0 +1,9 @@
+# 1145 Second opinion refund kasir ronde 3 (fix 1131 atas SO 1129)
+Peran: second-opinion (baca ~/.agents/team/roles/second-opinion.md). Codex xhigh. Read-only, tanpa worktree: `git diff`/`git show` dari folder utama, jangan checkout. Selesaikan dan lapor dalam SATU giliran.
+
+Fokus (sesudah `git fetch origin`, kecualikan `':!**/meta/*snapshot.json'`): `git diff 0b8b9d017..origin/ws/1095-void-refund-ganda-voucher` (head 3bf621e86). Konteks: `git diff origin/milestone/m1...origin/ws/1095-void-refund-ganda-voucher`.
+Brief: `docs/briefs/1131-fix-1095-so-ronde2.md`. Ronde 2: `docs/qa/second-opinion-refund-kasir-1095-1129.md`.
+Isi: satu anggaran per pesanan di `services/order-given.ts` (ruang = dibayar - uang keluar hidup - voucher maaf belum dibatalkan); semua jalur keluar (ORD-09, refund charge manual saat diminta dan disetujui, refund charge online, refund finance, voucher) cek di bawah kunci pesanan, urutan kunci issue -> orders -> charge; 422 `REFUND_OVER_ORDER_ROOM`; batas per baris kompensasi; batas pro-rata pada yang dibayar; `qrSaleInUseOfIntent` menahan voucher pesanan hidup; refund telat di tabel 1116.
+Diterima CTO (jangan dilaporkan): legend-jhbee (refile ORD-09 baca ruang tanpa kunci; ORD-09 disetujui gagal final tanpa notifikasi staf; refund kasir memotong ke ruang, bukan 422); void charge ikut anggaran; penahanan finance ketat split-bill; legend-byws7, legend-fntrm, legend-glu4e.
+Cari: dua P1 ronde 2 benar tertutup; jalur uang keluar lain yang tidak lewat anggaran (refund penyedia, payout, poin, deposit, swap, open bill); urutan kunci yang bisa deadlock atau dilewati; dua koneksi bersamaan yang melewati ruang; tiga fix pasca-architect (d363659cc, 5b45ec4ad, a3cc37c85) yang belum direview ulang; test yang melemahkan jaminan uang.
+Hasil: tulis `docs/qa/second-opinion-refund-kasir-ronde3-1145.md` di folder utama (P0-P3, berkas:baris, skenario, usul test). JANGAN commit, JANGAN edit file lain.
