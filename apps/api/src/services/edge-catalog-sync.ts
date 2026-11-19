@@ -162,6 +162,16 @@ function parseCursor(
   return { txid, keys: keys.map(String) };
 }
 
+const NIL_UUID = "00000000-0000-0000-0000-000000000000";
+
+/** Before every row: `(0, nil uuid...)`, the same scan as no cursor. */
+function startMark(stream: CatalogSyncStream): Mark {
+  return {
+    txid: "0",
+    keys: Array.from({ length: keyCount(stream) }, () => NIL_UUID),
+  };
+}
+
 function encodeMark(mark: Mark): string {
   return encodeCursor([CURSOR_TAG, mark.txid, ...mark.keys]);
 }
@@ -310,6 +320,11 @@ type Scan = {
   /** `outlets.brand_id` of the credential's outlet. */
   readonly brandId: string;
   readonly since: Mark | null;
+  /**
+   * Which `sync_txid` values the scan returns: `committed` for a page, the
+   * future-stamp probe (legend-7r7q6 ronde 3) for the visibility fields.
+   */
+  readonly visible: (syncTxid: AnyPgColumn) => SQL;
   /** Fetch one more than the page to learn `hasMore`. */
   readonly take: number;
   /**
@@ -323,7 +338,7 @@ const scanners: Record<
   CatalogSyncStream,
   (scan: Scan) => Promise<readonly Found[]>
 > = {
-  async stations({ tx, tenantId, outletId, since, take }) {
+  async stations({ tx, visible, tenantId, outletId, since, take }) {
     const t = stations;
     const rows = await tx
       .select({ row: t, txid: txidOf(t.syncTxid) })
@@ -332,7 +347,7 @@ const scanners: Record<
         and(
           eq(t.tenantId, tenantId),
           eq(t.outletId, outletId),
-          committed(t.syncTxid),
+          visible(t.syncTxid),
           after(t.syncTxid, [t.id], since),
         ),
       )
@@ -357,7 +372,7 @@ const scanners: Record<
       },
     }));
   },
-  async printers({ tx, tenantId, outletId, since, take }) {
+  async printers({ tx, visible, tenantId, outletId, since, take }) {
     // Live rows and deletion markers (the cloud deletes a printer for good) are
     // two tables read as one stream in (sync_txid, id) order: each side is cut
     // at `take`, then merged, so the merged head is exactly the union's head.
@@ -372,7 +387,7 @@ const scanners: Record<
           and(
             eq(live.tenantId, tenantId),
             eq(live.outletId, printerOutletId),
-            committed(live.syncTxid),
+            visible(live.syncTxid),
             after(live.syncTxid, [live.id], since),
           ),
         )
@@ -385,7 +400,7 @@ const scanners: Record<
           and(
             eq(gone.tenantId, tenantId),
             eq(gone.outletId, printerOutletId),
-            committed(gone.syncTxid),
+            visible(gone.syncTxid),
             after(gone.syncTxid, [gone.id], since),
           ),
         )
@@ -437,7 +452,7 @@ const scanners: Record<
       })
       .slice(0, take);
   },
-  async inventory_items({ tx, tenantId, since, take }) {
+  async inventory_items({ tx, visible, tenantId, since, take }) {
     const t = inventoryItems;
     const rows = await tx
       .select({ row: t, txid: txidOf(t.syncTxid) })
@@ -445,7 +460,7 @@ const scanners: Record<
       .where(
         and(
           eq(t.tenantId, tenantId),
-          committed(t.syncTxid),
+          visible(t.syncTxid),
           after(t.syncTxid, [t.id], since),
         ),
       )
@@ -471,7 +486,7 @@ const scanners: Record<
       },
     }));
   },
-  async menu_categories({ tx, tenantId, brandId, since, take }) {
+  async menu_categories({ tx, visible, tenantId, brandId, since, take }) {
     const t = menuCategories;
     const rows = await tx
       .select({ row: t, txid: txidOf(t.syncTxid) })
@@ -480,7 +495,7 @@ const scanners: Record<
         and(
           eq(t.tenantId, tenantId),
           eq(t.brandId, brandId),
-          committed(t.syncTxid),
+          visible(t.syncTxid),
           after(t.syncTxid, [t.id], since),
         ),
       )
@@ -501,7 +516,7 @@ const scanners: Record<
       },
     }));
   },
-  async menu_items({ tx, tenantId, outletId, brandId, since, take }) {
+  async menu_items({ tx, visible, tenantId, outletId, brandId, since, take }) {
     const t = menuItems;
     const rows = await tx
       .select({
@@ -514,7 +529,7 @@ const scanners: Record<
         and(
           eq(t.tenantId, tenantId),
           eq(t.brandId, brandId),
-          committed(t.syncTxid),
+          visible(t.syncTxid),
           after(t.syncTxid, [t.id], since),
         ),
       )
@@ -546,7 +561,7 @@ const scanners: Record<
       },
     }));
   },
-  async item_variants({ tx, tenantId, brandId, since, take }) {
+  async item_variants({ tx, visible, tenantId, brandId, since, take }) {
     const t = itemVariants;
     const rows = await tx
       .select({ row: t, txid: txidOf(t.syncTxid) })
@@ -560,7 +575,7 @@ const scanners: Record<
           eq(t.tenantId, tenantId),
           // Variants follow their item: another brand's item never leaves.
           eq(menuItems.brandId, brandId),
-          committed(t.syncTxid),
+          visible(t.syncTxid),
           after(t.syncTxid, [t.id], since),
         ),
       )
@@ -580,7 +595,7 @@ const scanners: Record<
       },
     }));
   },
-  async modifier_groups({ tx, tenantId, since, take }) {
+  async modifier_groups({ tx, visible, tenantId, since, take }) {
     const t = modifierGroups;
     const rows = await tx
       .select({ row: t, txid: txidOf(t.syncTxid) })
@@ -588,7 +603,7 @@ const scanners: Record<
       .where(
         and(
           eq(t.tenantId, tenantId),
-          committed(t.syncTxid),
+          visible(t.syncTxid),
           after(t.syncTxid, [t.id], since),
         ),
       )
@@ -608,7 +623,7 @@ const scanners: Record<
       },
     }));
   },
-  async modifiers({ tx, tenantId, outletId, since, take }) {
+  async modifiers({ tx, visible, tenantId, outletId, since, take }) {
     const t = modifiers;
     const rows = await tx
       .select({
@@ -620,7 +635,7 @@ const scanners: Record<
       .where(
         and(
           eq(t.tenantId, tenantId),
-          committed(t.syncTxid),
+          visible(t.syncTxid),
           after(t.syncTxid, [t.id], since),
         ),
       )
@@ -642,7 +657,14 @@ const scanners: Record<
       },
     }));
   },
-  async menu_item_modifier_groups({ tx, tenantId, brandId, since, take }) {
+  async menu_item_modifier_groups({
+    tx,
+    visible,
+    tenantId,
+    brandId,
+    since,
+    take,
+  }) {
     const t = menuItemModifierGroups;
     const rows = await tx
       .select({ row: t, txid: txidOf(t.syncTxid) })
@@ -656,7 +678,7 @@ const scanners: Record<
           eq(t.tenantId, tenantId),
           // Links follow their item: another brand's item never leaves.
           eq(menuItems.brandId, brandId),
-          committed(t.syncTxid),
+          visible(t.syncTxid),
           after(t.syncTxid, [t.menuItemId, t.groupId], since),
         ),
       )
@@ -675,7 +697,7 @@ const scanners: Record<
       },
     }));
   },
-  async price_lists({ tx, tenantId, outletId, since, take }) {
+  async price_lists({ tx, visible, tenantId, outletId, since, take }) {
     const t = priceLists;
     const rows = await tx
       .select({
@@ -706,7 +728,7 @@ const scanners: Record<
         and(
           eq(t.tenantId, tenantId),
           eq(t.outletId, outletId),
-          committed(t.syncTxid),
+          visible(t.syncTxid),
           after(t.syncTxid, [t.id], since),
         ),
       )
@@ -727,7 +749,7 @@ const scanners: Record<
       },
     }));
   },
-  async promotions({ tx, tenantId, outletId, since, take }) {
+  async promotions({ tx, visible, tenantId, outletId, since, take }) {
     const t = promotions;
     // Never filter inactive/outlet-ineligible headers: revocations must arrive.
     // Child state is read in the same statement so one parent version is whole.
@@ -761,7 +783,7 @@ const scanners: Record<
       .where(
         and(
           eq(t.tenantId, tenantId),
-          committed(t.syncTxid),
+          visible(t.syncTxid),
           after(t.syncTxid, [t.id], since),
         ),
       )
@@ -793,7 +815,7 @@ const scanners: Record<
       }),
     );
   },
-  async vouchers({ tx, tenantId, since, take }) {
+  async vouchers({ tx, visible, tenantId, since, take }) {
     const t = vouchers;
     const rows = await tx
       .select({ row: t, txid: txidOf(t.syncTxid) })
@@ -801,7 +823,7 @@ const scanners: Record<
       .where(
         and(
           eq(t.tenantId, tenantId),
-          committed(t.syncTxid),
+          visible(t.syncTxid),
           after(t.syncTxid, [t.id], since),
         ),
       )
@@ -820,7 +842,15 @@ const scanners: Record<
       },
     }));
   },
-  async recipes({ tx, tenantId, brandId, since, take, protocolVersion }) {
+  async recipes({
+    tx,
+    visible,
+    tenantId,
+    brandId,
+    since,
+    take,
+    protocolVersion,
+  }) {
     const allTenant = protocolVersion !== undefined && protocolVersion >= 3;
     const t = recipes;
     const rows = await tx
@@ -852,7 +882,7 @@ const scanners: Record<
         and(
           eq(t.tenantId, tenantId),
           allTenant ? undefined : eq(t.brandId, brandId),
-          committed(t.syncTxid),
+          visible(t.syncTxid),
           after(t.syncTxid, [t.id], since),
         ),
       )
@@ -982,7 +1012,11 @@ export async function listCatalogRecordsSinceTx(
   // page's own bound, so `visibleBelow` only under-claims) and xmax after it
   // (never below the page's, so `horizon` only over-claims).
   const visibleBelow = await readSnapshotXmin(tx);
-  const rows = await (async () => {
+  const negotiated =
+    protocolVersion === undefined
+      ? undefined
+      : negotiateCatalogProtocolVersion(protocolVersion);
+  const scope = await (async () => {
     // Fail closed: an inactive tenant or a closed / unknown outlet syncs nothing.
     const [tenantRow] = await tx
       .select({ status: tenants.status })
@@ -1003,31 +1037,47 @@ export async function listCatalogRecordsSinceTx(
         "FORBIDDEN",
         "Edge node tidak dapat menyinkronkan outlet ini.",
       );
-    return scanners[stream]({
+    return {
       tx,
       tenantId,
       outletId,
       brandId: outletRow.brandId,
-      since,
-      take: limit + 1,
-      protocolVersion:
-        protocolVersion === undefined
-          ? undefined
-          : negotiateCatalogProtocolVersion(protocolVersion),
-    });
+      protocolVersion: negotiated,
+    };
   })();
+  const rows = await scanners[stream]({
+    ...scope,
+    since,
+    take: limit + 1,
+    visible: committed,
+  });
 
   const horizon = await snapshotXmaxProvider(tx);
+  // legend-7r7q6 ronde 3 P1: a row of this stream's scope stamped at or above
+  // the horizon comes from another database history (a logical restore keeps
+  // the old, higher stamps until the runbook restamps them). The export hides
+  // it, so `visibleBelow` would claim more than this page proves: send no
+  // visibility fields (an edge without them never deactivates anything). A
+  // write committed between the horizon read and this probe also withholds
+  // them for one page: safe, never a wrong deactivation.
+  const futureStamped =
+    negotiated !== undefined &&
+    (
+      await scanners[stream]({
+        ...scope,
+        since: null,
+        take: 1,
+        visible: (syncTxid) =>
+          sql`${syncTxid} >= ${horizon.toString()}::bigint`,
+      })
+    ).length > 0;
   const page = rows.slice(0, limit);
   const last = page.at(-1);
   const lastMark =
     last === undefined
       ? null
       : encodeMark({ txid: last.txid, keys: last.keys });
-  const stamped =
-    protocolVersion === undefined
-      ? undefined
-      : negotiateCatalogProtocolVersion(protocolVersion);
+  const stamped = negotiated;
   const full = catalogSyncCloudPageSchema.parse({
     // Only an edge that asked: an older edge's strict page schema would
     // refuse the field and stop syncing.
@@ -1036,11 +1086,18 @@ export async function listCatalogRecordsSinceTx(
     records: page.map(({ record }) =>
       catalogSyncCloudRecordSchemas[stream].parse(record),
     ),
-    nextCursor: lastMark ?? input.query.since ?? null,
+    // legend-7r7q6 ronde 3 P2: an empty first page gives a versioned edge the
+    // start cursor, so it stores a cursor and its next pull is incremental
+    // (not another first boot that restarts the replay forever). An older
+    // edge keeps null.
+    nextCursor:
+      lastMark ??
+      input.query.since ??
+      (stamped === undefined ? null : encodeMark(startMark(stream))),
     hasMore: rows.length > limit,
     // Same rule as protocolVersion: only an edge that asked gets the snapshot
     // fields (an older edge's strict page schema would refuse them).
-    ...(stamped === undefined
+    ...(stamped === undefined || futureStamped
       ? {}
       : {
           visibleBelow: visibleBelow.toString(),
