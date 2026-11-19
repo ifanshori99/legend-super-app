@@ -7892,3 +7892,22 @@ Cabang `ws/1121-flake-tax-ord03`, dasar `4418628e0` (`origin/milestone/m1`). Tin
 - Bukti gagal-dulu: reproduksi dua aturan PBJT memberi kegagalan persis 409 vs 422 (12/13 lulus). Sesudah isolasi: `LEGEND_TEST_FILES="src/test/tax-api.test.ts" heavy pnpm test` lima kali berurutan, seluruhnya 13/13 lulus (10.58s, 9.81s, 9.22s, 10.14s, 11.48s). Log lokal `/tmp/1121-red.log` dan `/tmp/1121-green-{1..5}.log`.
 - Pemeriksaan: `pnpm exec eslint apps/api/src/test/tax-api.test.ts`, `pnpm exec prettier --check apps/api/src/test/tax-api.test.ts`, dan `git diff --check` hijau. Review konteks segar: tanpa temuan. Suite penuh/build/typecheck tidak dijalankan sesuai scope brief; lanjut integrasi oleh CTO.
 - Subagent: total 5, puncak 4 bersamaan, token heavy dipegang test_runner. Kerja Codex: 2 Explore, 1 test-writer, 1 test-runner, 1 reviewer. Biaya/rata-rata subagent sesi tidak tersedia: session-usage tidak menemukan transkrip Codex dan parallel-report hanya mengenali sesi Claude. Selesai verifikasi 03:27 WIB.
+
+## 1150 Klien member QR token (legend-fmw1u), 19 Nov 2026
+
+Cabang `ghostex/member-qr-token-klien-1150`, dasar `origin/milestone/m1` (rute 930b61c77). Tingkat S web. Tanpa migrasi, tanpa ubah API/server uang.
+
+Sudah:
+- Kontrak shared: `issueMemberQrToken` kini mendeklarasikan `body: memberQrTokenMintInputSchema` (aditif, disetujui CTO). Tanpa tukar poin dikirim `{}`.
+- Klien: `features/ws08-member/{qr-token.ts,api.ts,hooks.ts,mock.ts}` (fungsi murni hitung mundur dan pemilih tampilan, `requestMemberQrToken`, `useMemberQrToken`, mock `registerMock`). Dialog `components/qr-token-dialog.tsx` dibuka dari `points-page.tsx`: QR, hitung mundur 120 dtk, peringatan 15 dtk, minta ulang saat kedaluwarsa, status gagal dan offline. Prop `request?: {orderId, points}` siap, belum dipakai UI.
+- Hitung mundur dihitung dari waktu terima + 120 dtk (bukan jam perangkat vs `expiresAt` server). Mutation `networkMode: "always"` supaya offline menampilkan panel offline, bukan loading selamanya (ditemukan lewat screenshot).
+- Bukti: 28 test vitest web (`test/member-qr-token*.test.ts`) lulus; gagal-dulu = modul `qr-token.ts` disingkirkan sementara, kedua berkas gagal `ERR_MODULE_NOT_FOUND` (test ditulis setelah modul ada, jadi bukan gagal-dulu perilaku murni). Typecheck shared+web+api lewat `heavy` hijau (2x: sebelum dan sesudah perbaikan UI). Prettier, eslint, `tests/text-contract.test.mjs` 12/12 hijau. Review `reviewer` 1x, `ui-auditor` 1x; temuan nyata dibetulkan (skew jam, fokus, live region, layout jump, tombol utama ganda, salin teks).
+- Screenshot 390/1280 (ready, error, offline, loading): `/private/tmp/claude-501/-Users-ifanshori99-Projects-legend-super-app-legend-0a8ebb6f/9ae961ad-7e2f-47d4-9ea7-cdb02d03f977/scratchpad/shots/`.
+
+Belum / celah:
+- Layar pilih poin per order TIDAK dibangun: server (`pos-points.service.ts:219`) mewajibkan QR terikat order dan jumlah sama; butuh mockup dan sumber `orderId`. Tidak ada endpoint member untuk melihat order terbuka atas namanya.
+- Klien tidak bisa tahu QR sudah dipindai kasir (sekali pakai); QR tetap tampil sampai kedaluwarsa.
+- Latensi jaringan membuat hitung mundur bisa sedikit lebih panjang dari jendela server.
+- Tanpa suite penuh `pnpm test`/`pnpm check` dan e2e (gate merge train).
+
+Biaya sesi (session-usage 02:07-02:39Z): total biaya* 2374k (utama sonnet 767k, subagent sonnet 1607k); 14 subagent, puncak 3 bersamaan.

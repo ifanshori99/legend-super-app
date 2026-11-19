@@ -1,8 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { ConsentPurpose } from "@starter/shared/crm";
+import type { ConsentPurpose, MemberQrToken } from "@starter/shared/crm";
 import { errorCode } from "@/features/ws01-login/flow";
 import { useCurrentAuth } from "@/features/ws01-login/hooks";
-import { MEMBER_PAGE_SIZE, requestRedemption, saveMemberConsent } from "./api";
+import {
+  MEMBER_PAGE_SIZE,
+  requestMemberQrToken,
+  requestRedemption,
+  saveMemberConsent,
+} from "./api";
 import {
   memberFavoritesQuery,
   memberKeys,
@@ -13,6 +18,7 @@ import {
   memberVouchersQuery,
   memberVisitsQuery,
 } from "./queries";
+import { localExpiry } from "./qr-token";
 
 // Components only touch member data through these hooks; keys, cache updates
 // and invalidation live here. Lists use `useQuery` (not suspense) so every
@@ -103,5 +109,28 @@ export function useUpdateConsent() {
     }) => saveMemberConsent({ purpose, granted, policyVersion }),
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: memberKeys.overview() }),
+  });
+}
+
+/**
+ * 1150: mints the QR token the cashier scans. One-time token, so there is no
+ * query and nothing to invalidate; the dialog calls `mutate` again for a new one.
+ */
+export function useMemberQrToken() {
+  return useMutation<
+    MemberQrToken,
+    Error,
+    { orderId?: string; points?: number } | undefined
+  >({
+    // Default networkMode pauses a mutation while offline, which would leave
+    // the dialog on "loading" forever; run it so the failure shows "offline".
+    networkMode: "always",
+    // The countdown runs on the device clock, so re-anchor expiresAt to the
+    // moment the token arrived; a skewed device clock must not shorten or
+    // lengthen the 120 s window the server's expiresAt would imply.
+    mutationFn: async (input) => {
+      const result = await requestMemberQrToken(input);
+      return { ...result, expiresAt: localExpiry(Date.now()) };
+    },
   });
 }

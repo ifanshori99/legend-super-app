@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { QrCode } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
@@ -8,12 +9,14 @@ import { LedgerList } from "./ledger-list";
 import { ListSkeleton } from "./list-skeleton";
 import { MemberPageHeader } from "./page-header";
 import { PointsCard } from "./points-card";
+import { QrTokenDialog } from "./qr-token-dialog";
 import { WhatsAppLinkPrompt } from "./whatsapp-link-prompt";
 
 // PRD §3.20 "Poin": the member's balance and the append-only ledger behind it.
 export function MemberPointsPage() {
   const t = useT();
   const [limit, setLimit] = useState(MEMBER_PAGE_SIZE);
+  const [qrOpen, setQrOpen] = useState(false);
   const overviewQuery = useMemberOverview();
   const pointsQuery = useMemberPoints(limit);
   const whatsApp = useWhatsAppLink();
@@ -40,6 +43,20 @@ export function MemberPointsPage() {
           showCta={false}
         />
       )}
+
+      <QrTokenDialog
+        open={qrOpen}
+        onOpenChange={setQrOpen}
+        trigger={
+          <Button
+            variant={whatsApp.status === "linked" ? "default" : "outline"}
+            className="min-h-11 w-full sm:w-fit"
+          >
+            <QrCode aria-hidden="true" />
+            {t("member.qr.open")}
+          </Button>
+        }
+      />
 
       <section className="grid gap-3">
         <h2 className="font-brand type-title">

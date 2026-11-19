@@ -8,6 +8,7 @@ import {
   crmErrorMessages,
   customerConsentSchema,
   getMemberOverview,
+  issueMemberQrToken,
   liabilityIdrForPoints,
   listMemberFavorites,
   listMemberMissions,
@@ -321,4 +322,18 @@ registerMock(updateMemberConsent, ({ body }) => {
     consents: [...list],
   });
   return { data: saved };
+});
+
+// 1150: the real token is signed server-side; the mock only needs a unique
+// string that expires after 120 s. Error, offline and slow scenarios are
+// applied centrally (lib/mock/control.ts).
+let qrTokenCounter = 0;
+registerMock(issueMemberQrToken, () => {
+  qrTokenCounter += 1;
+  return {
+    data: {
+      token: `mock.${qrTokenCounter}.${Date.now().toString(36)}`,
+      expiresAt: new Date(Date.now() + 120_000).toISOString(),
+    },
+  };
 });
