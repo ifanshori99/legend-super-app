@@ -142,7 +142,13 @@ async function refundLateDeposit(
           or(
             isNull(paymentUnallocatedFunds.evidenceId),
             settlingEvidence
-              ? eq(paymentUnallocatedFunds.evidenceId, settlingEvidence.id)
+              ? and(
+                  eq(paymentUnallocatedFunds.evidenceId, settlingEvidence.id),
+                  // A part parked as `overpayment` leaves the allocated
+                  // part of the DP refundable: only a settling transaction
+                  // parked in full (a double payment) skips the refund.
+                  eq(paymentUnallocatedFunds.reason, "double_payment"),
+                )
               : undefined,
           ),
         ),
