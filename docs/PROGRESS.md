@@ -2154,3 +2154,4 @@ Langkah berikut CTO baru:
 - 07:33 CTO (bahan retro): thread mengakhiri giliran tiap watcher kedaluwarsa ('masih menunggu typecheck/e2e'), ~12 laporan antara 07:00-07:40 dari G2yc3/G4ovu/G3bom/G3w2u; melanggar aturan 7 (Q10). Usul: Monitor timeout >= 60 menit.
 - 08:13 CTO: retro 3 jam (07:43/08:13) dilewati: slot Claude 8/8 penuh (hook menolak). Dicoba lagi di slot kosong pertama.
 - 08:29 CTO: 1140 selesai (G5kzm resolved, bb1f85ab6). SO kas ronde 9 (1142) mulai. Kas kembali SIAP batch95.
+- 08:34 CTO: Retro 51 diterima. Keputusan: baseline flake di merge-queue + bead flake audit writer; heap tsc 8192 bersyarat (free>=60, swap<3072) + kolom waktu antre heavy-log dikerjakan thread retro; disk sudah dibersihkan manual 14->19 GB; retro saat slot penuh: CTO tidurkan satu thread selesai-menunggu.
