@@ -60,6 +60,11 @@ export type DoitRefundFacts = {
    * outside the wire enum). Only names the payment for a hold of an unmatched
    * success; never a match input (not `payment`, not `paymentId`). */
   namedPaymentId?: string;
+  /** 1144: the event NAMES a payment id that cannot be used (unreadable,
+   * two different ids, or a payment object we cannot read). Not the same as a
+   * payment id that is absent: the `reference` must never stand in for it. A
+   * stored event keeps it as `data.payment_id_unusable`. */
+  paymentIdUnusable?: boolean;
   /** Intent reference carried by a refund object (legend-r7g2): checked
    * against the refund's intent like a payment object's `reference`. */
   reference?: string;
@@ -183,6 +188,14 @@ export function readDoitRefundFacts(data: unknown): DoitRefundFacts {
       text(record.named_payment_id);
     if (named) facts.namedPaymentId = named;
   }
+  if (
+    flatPaymentIdBad ||
+    refundPaymentIdBad ||
+    paymentIdConflict ||
+    (!payment && (record.payment !== undefined || paymentShaped)) ||
+    record.payment_id_unusable === true
+  )
+    facts.paymentIdUnusable = true;
   const invalid = new Set<DoitRefundInvalidFact>();
   if (rawAmount !== undefined && refundAmount === undefined)
     invalid.add("amount");
@@ -250,6 +263,7 @@ export const doitRefundWebhookEventSchema =
     if (facts.payment) data.payment = facts.payment;
     if (facts.paymentId) data.payment_id = facts.paymentId;
     if (facts.namedPaymentId) data.named_payment_id = facts.namedPaymentId;
+    if (facts.paymentIdUnusable) data.payment_id_unusable = true;
     if (facts.invalid) data.invalid = facts.invalid;
     return {
       id: event.id,

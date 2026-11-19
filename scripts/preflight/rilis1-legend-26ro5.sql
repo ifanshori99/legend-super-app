@@ -16,6 +16,15 @@
 -- bernama punya paling banyak satu fact. Hold tanpa transaksi (provider_payment_ref NULL) dicocokkan ke
 -- fact kunci yang sama di transaksi mana pun (lebih longgar dari 1119 yang
 -- menganggapnya tidak tercakup apa pun).
+-- Hold CONFLICT yang ditutup otomatis oleh 1139 (closeFirstPassHoldCoveredByFact:
+-- reason CONFLICT, resolved_by NULL, kind provider, catatan "Otomatis: refund
+-- penyedia sudah dicatat sebagai fakta ...") tidak mengklaim fact dan tetap
+-- tercakup oleh fact yang menutupnya: pengikatan fact itu oleh hold lain
+-- (rekonsiliasi finance yang sah) tidak membuatnya fact_shared. Cakupan
+-- nominalnya tetap diperiksa, dan hold lain yang belum terikat pada kunci yang
+-- sama tetap menandainya shared. Penanda ketat: berubah satu huruf di
+-- service berarti hold itu kembali diperlakukan sebagai hold lama (membatasi).
+-- Penutupan otomatis not_this_intent tidak pernah menjadi kandidat.
 -- Hold anonim (refund id NULL): hanya finance yang bisa memasangkannya, dan
 -- hanya ke fact kind provider. Terdaftar bila intent-nya punya fact kind
 -- provider dan transaksi masih bersisa (sisa > 0, disederhanakan dari
@@ -61,7 +70,12 @@ c AS (
   SELECT h.tenant_id, h.id AS hold_id, h.payment_intent_id,
          h.provider_refund_id_kind AS kind, h.provider_refund_id,
          h.provider_payment_ref, h.amount_idr AS hold_idr,
-         (h.provider_refund_id IS NULL) AS anonymous
+         (h.provider_refund_id IS NULL) AS anonymous,
+         (h.reason = 'Nomor refund penyedia sudah tercatat di transaksi lain (HOLD_TRANSACTION_CONFLICT)'
+          AND h.resolved_by IS NULL
+          AND h.provider_refund_id_kind = 'provider'
+          AND h.resolution_note = 'Otomatis: refund penyedia sudah dicatat sebagai fakta dan membatasi refund berikutnya')
+           AS auto_closed
   FROM refund_recon_holds h
   WHERE h.resolution = 'counted_against_intent'
     AND h.resolved_at IS NOT NULL
@@ -81,8 +95,9 @@ m AS (
            SELECT 1 FROM refund_recon_holds b
            WHERE b.tenant_id = f.tenant_id
              AND b.id <> c.hold_id
-             AND (b.matched_fact_id = f.id
+             AND ((b.matched_fact_id = f.id AND NOT c.auto_closed)
                   OR (b.payment_intent_id = f.payment_intent_id
+                      AND (b.matched_fact_id IS NULL OR NOT c.auto_closed)
                       AND b.resolution = 'counted_against_intent'
                       AND b.resolved_at IS NOT NULL
                       AND b.provider_refund_id_kind = f.refund_id_kind

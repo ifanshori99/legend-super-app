@@ -1496,7 +1496,9 @@ async function holdUnmatchedRefundSuccess(
     : null;
   // 1139 P1-2: the `reference` (the Legend intent id) is a fallback mapping,
   // only when the event names no payment id at all: a payment id always wins
-  // (a conflicting reference is only alerted below). The intent must be of the
+  // (a conflicting reference is only alerted below). 1144: a payment id that is
+  // named but dropped (conflicting, unreadable) is NOT absent: no mapping by
+  // reference, so no third intent is touched (unmapped: finance is told). The intent must be of the
   // receiving tenant (found by the tenant-scoped read), this provider's, with an
   // own provider ref (a payment exists, not checked as paid), and map back to
   // itself by that ref (one intent).
@@ -1505,6 +1507,7 @@ async function holdUnmatchedRefundSuccess(
     !known &&
     facts.paymentId === undefined &&
     readPaymentId === undefined &&
+    !facts.paymentIdUnusable &&
     facts.reference !== undefined
   ) {
     const reference = uuidSchema.safeParse(facts.reference);
@@ -1786,6 +1789,45 @@ async function announceFirstPassHoldOfRefund(
       now,
     ),
   );
+}
+
+/** 1144: the retry of a first-pass hold ended on a path that closes nothing (the
+ * event matched a refund of ours, but the updater refused it, the payment named
+ * is another transaction's, or the DOIT refund switch is off). A hold of that
+ * first pass still open is announced now (one finance alert, the stable id of
+ * `announceOpenFirstPassHolds`), under the intent and deposit-intent locks. */
+async function announceFirstPassHoldOfIntent(
+  context: ScopedTenantContext,
+  intent: { id: string; outletId: string },
+  key: {
+    eventRowId: string | null;
+    providerRefundId: string | null;
+    paymentRef: string | null | undefined;
+  },
+  now: Date,
+): Promise<void> {
+  const { paymentRef } = key;
+  if (!paymentRef) return;
+  await withTenant(db, context, async (tx) => {
+    await tx
+      .select({ id: paymentIntents.id })
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, context.tenant.tenantId),
+          eq(paymentIntents.id, intent.id),
+        ),
+      )
+      .for("update");
+    await lockDepositIntentsExclusive(tx, context.tenant.tenantId, intent.id);
+    await announceOpenFirstPassHolds(
+      tx,
+      context,
+      intent,
+      { ...key, paymentRef },
+      now,
+    );
+  });
 }
 
 /** 1139 P1-1: the event was held on first processing (no refund of ours
@@ -2856,6 +2898,19 @@ async function processRefundEvent(
           },
           now,
         );
+      // 1144: the first-pass hold of this event (minute 0) on the owner of
+      // the named payment is still open: finance is told once.
+      if (status === "succeeded" && owner && namedPaymentId)
+        await announceFirstPassHoldOfIntent(
+          context,
+          owner.intent,
+          {
+            eventRowId: facts.refundId ? null : row.id,
+            providerRefundId: facts.refundId ?? null,
+            paymentRef: namedPaymentId,
+          },
+          now,
+        );
       return await ignoredWith("REFERENCE_MISMATCH");
     }
 
@@ -2886,6 +2941,19 @@ async function processRefundEvent(
         },
         now,
       );
+      // 1144: the first-pass hold of this refund id (minute 0) is raised by the
+      // hold above or stays as it was; finance is told once, never closed here.
+      if (status === "succeeded")
+        await announceFirstPassHoldOfIntent(
+          context,
+          intent,
+          {
+            eventRowId: null,
+            providerRefundId: facts.refundId ?? null,
+            paymentRef: switchedOffPaymentRef,
+          },
+          now,
+        );
       return await ignoredWith("REJECTED_CONFLICT");
     }
 
@@ -2979,6 +3047,9 @@ async function processRefundEvent(
           (await refundSourcePayment(context, refund, intent))?.providerRef ??
           intent.providerRef)
         : null;
+    // 1144: the updater refused a SMALLER amount of a refund already sent to
+    // the provider (an echo, no surplus hold): R counts that money.
+    let smallerEchoOfSent = false;
     try {
       await applyRefundProviderUpdate(
         context,
@@ -3000,15 +3071,16 @@ async function processRefundEvent(
           // One rule (I2, I9): a smaller reported amount stays an echo only of
           // a refund already sent to the provider; anything else refused here
           // is no echo of this refund.
+          if (status !== "succeeded" || match.kind === "payment_object") return;
           if (
-            status !== "succeeded" ||
-            match.kind === "payment_object" ||
-            (refusal.kind === "amount_mismatch" &&
-              refusal.sentToProvider &&
-              facts.amountIdr !== undefined &&
-              facts.amountIdr < Number(refusal.refund.amountIdr))
-          )
+            refusal.kind === "amount_mismatch" &&
+            refusal.sentToProvider &&
+            facts.amountIdr !== undefined &&
+            facts.amountIdr < Number(refusal.refund.amountIdr)
+          ) {
+            smallerEchoOfSent = true;
             return;
+          }
           await fileOwnRefundSurplusHoldInTx(
             tx,
             context,
@@ -3040,6 +3112,34 @@ async function processRefundEvent(
             ["amount_mismatch"],
             now,
           );
+        // 1144: the hold of the first pass (minute 0) was left as it was. It is
+        // closed ONLY when R (this refund, same refund id and payment) covers
+        // its value in full (a smaller echo of a sent refund: hold <= R);
+        // any other refusal leaves it open. A hold still open is announced
+        // once (same rule as 1139).
+        if (status === "succeeded" && match.kind !== "payment_object") {
+          if (smallerEchoOfSent)
+            await closeUnmatchedHoldOfMatchedRefund(
+              context,
+              row,
+              refund,
+              intent,
+              facts.refundId ?? null,
+              holdPaymentRef ?? null,
+              now,
+            );
+          else
+            await announceFirstPassHoldOfIntent(
+              context,
+              intent,
+              {
+                eventRowId: row.id,
+                providerRefundId: facts.refundId ?? null,
+                paymentRef: holdPaymentRef,
+              },
+              now,
+            );
+        }
         return await ignoredWith("REJECTED_CONFLICT");
       }
       if (error instanceof HttpError && error.status === 404)
