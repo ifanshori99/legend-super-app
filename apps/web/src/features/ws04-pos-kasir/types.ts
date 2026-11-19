@@ -367,6 +367,10 @@ export type DayCloseRecap = {
   totalSalesIdr: number;
   refundIdr: number;
   voidIdr: number;
+  /** DP applied to the day's sales (liability, never a tender). Not shown yet. */
+  depositAppliedIdr?: number;
+  /** DP refunded on this day (on top of `refundIdr`). Not shown yet. */
+  depositRefundedIdr?: number;
   channels: { code: string; label: string; amountIdr: number }[];
   shifts: {
     total: number;

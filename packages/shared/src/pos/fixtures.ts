@@ -1240,6 +1240,8 @@ const endOfDay: FixtureInput["endOfDay"] = {
       refundAmountIdr: 31_900,
       shiftCount: 1,
       cashVarianceIdr: -5_000,
+      depositAppliedIdr: 0,
+      depositRefundedIdr: 0,
       closed: true,
     },
     {
@@ -1257,6 +1259,8 @@ const endOfDay: FixtureInput["endOfDay"] = {
       refundAmountIdr: 0,
       shiftCount: 1,
       cashVarianceIdr: 0,
+      depositAppliedIdr: 0,
+      depositRefundedIdr: 0,
       closed: false,
     },
   ],
@@ -1285,6 +1289,8 @@ const endOfDay: FixtureInput["endOfDay"] = {
   totalRefundsIdr: 31_900,
   totalVoidsIdr: 77_400,
   totalVarianceIdr: -5_000,
+  totalDepositAppliedIdr: 0,
+  totalDepositRefundedIdr: 0,
   inventoryDeductionApplied: false,
   accountingSync: { status: "pending", journalCount: 0, postedAt: null },
 };
