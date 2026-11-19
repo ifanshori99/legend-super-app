@@ -1013,7 +1013,12 @@ describe("990 phase 6: raising known flags again is chunked and cannot fail the 
       expect(reraiseFailed, "the known flags failed").toBeGreaterThanOrEqual(
         w.flagIds.length,
       );
-      expect(reraised, "no known flag raised again").toBe(0);
+      // One savepoint per row (legend-t1ufu): known flags of the page that are not
+      // refused are raised again, so `reraised` may be above 0.
+      expect(
+        reraised + reraiseFailed,
+        "every known flag of the page is counted, none lost",
+      ).toBeGreaterThanOrEqual(w.flagIds.length);
     } finally {
       await W.asTenant(async (c) => {
         await c.query(`DROP TRIGGER IF EXISTS ${guard} ON ${SIGHTINGS}`);
@@ -1022,7 +1027,7 @@ describe("990 phase 6: raising known flags again is chunked and cannot fail the 
     }
   });
 
-  it("[legend-hklnq-reraise-chunks] 250 known flags are all raised again in chunks of 100 (each gets its new sighting); a bad chunk fails alone and the others still run", async () => {
+  it("[legend-hklnq-reraise-chunks] 250 known flags are all raised again in chunks of 100 (each gets its new sighting); a bad row fails alone and the others still run", async () => {
     const { reraiseKnownFlags, PAYOUT_RECON_RERAISE_CHUNK } =
       await import("../services/payroll-payout-recon.service.ts");
     expect(PAYOUT_RECON_RERAISE_CHUNK).toBe(100);
@@ -1062,9 +1067,9 @@ describe("990 phase 6: raising known flags again is chunked and cannot fail the 
       mixed as unknown as Flags,
       2,
     );
-    expect(part, "the bad chunk fails alone").toEqual({
-      reraised: 2,
-      failed: 2,
+    expect(part, "the bad row fails alone (savepoint per row)").toEqual({
+      reraised: 3,
+      failed: 1,
     });
     expect(await sightingCount(), "the good chunk still wrote").toBeGreaterThan(
       500,
