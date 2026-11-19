@@ -2291,3 +2291,4 @@ Langkah berikut CTO baru:
 - 19:55 CTO: 1191 (G1tw8) SIAP 48da44a3f, resolve. Koreksi angka fail-first dicatat di merge-queue saja (baris PROGRESS cabang tidak diubah).
 - 20:31 CTO: Claude #1 5h habis 20:29 (reset). Claude #5 ikut disabled ('organization has disabled Claude subscription access'): G3oqb/G8u3h kembali ke #1. Retro jadwal 19:43 dilewati (Retro 53 baru 18:25; kuota Claude tinggal #1). 1198/1199/1192 lanjut sesudah kuota.
 - 20:37 CTO: 1198 (G8wau) SIAP dacdbc33f, resolve. P3 sisa di bead baru. Catatan rilis: RESEAL_DATABASE_URL baru.
+- 20:40 CTO cek akun: Claude #1 satu-satunya hidup, 5h 5%, 7d 75% (laju ~1,6 poin/jam -> habis ~Nov 20 siang, sebelum reset Nov 24). Slot kosong sengaja tidak diisi; prioritas: 1192, 1199, batch97/98. Codex #2 disimpan SO refund 00:27. RAM hijau.
