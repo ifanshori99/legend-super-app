@@ -255,3 +255,4 @@ Induk lebih dulu. Migrasi dinomori ulang dari ujung m1 saat batch disusun.
 - 09:36 ws/1130-p2-pajak-sarapan-rekap 86ed0ec32 (fix SO 1146 P2: bukti penyedia di luar tx, valid tidak menunggu; 158 test hijau, tsc hijau) SIAP batch95 menggantikan 013a20709. SO 1154 (retry idempoten) menahan gerbang rilis saja.
 - 09:39 ghostex/member-qr-token-klien-1150 3ad22a061 (fmw1u QR attach-only member, kontrak shared body aditif; 28 vitest, tsc shared/web/api hijau, reviewer + ui-auditor) SIAP batch96 (tingkat S).
 - 09:41 SO sarapan 1154 bersih (P0-P3 nihil) untuk 86ed0ec32: gerbang rilis sarapan lepas.
+- 09:42 CTO: batch93 (494228f7b) + batch94 (6b3288bc2) MENDARAT di m1 (G3w2u resolved). Batch95 brief 1155. Flake baru 911-closure-swap = legend-uwafm.
