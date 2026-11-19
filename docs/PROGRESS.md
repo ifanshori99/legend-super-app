@@ -2245,3 +2245,4 @@ Langkah berikut CTO baru:
 - 14:35 CTO: SO 1180 (webhook claim/secret + opname buta, ws/1167+1176) mulai Codex #2 xhigh (5h 31%, 7d 65%).
 - 14:40 CTO: 1177 selesai (f48fe4134), G2lhm resolve, worktree legend-6b065769 dihapus, 4 kartu ditutup. Keputusan: namespace payroll tetap MUST_BE_CORE (184 KB cukup), Lighthouse tidak dijalankan terpisah. SO akses 1181 (1172+1177) disiapkan.
 - 14:41 CTO: SO 1181 (akses 1172+1177) mulai Codex #2 xhigh.
+- 14:46 CTO cek akun: Claude #1 5h 100% (reset 15:30) memuat G1kc6, G8u3h, G02j3 (1178/1179 dimulai --account 5 tetapi berjalan di #1); switch ditolak karena tengah giliran, cron 15:44 cek ulang. Codex #4 dan #5 batas (reset 16:49, 7d 98-99%): 1170 G6afz tertahan, pindah ke Codex #2 sesudah SO 1180/1181.
