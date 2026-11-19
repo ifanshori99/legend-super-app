@@ -7936,3 +7936,20 @@ pnpm exec prettier --check --ignore-unknown apps/api/src/test/payment-doit-recur
 heavy pnpm --filter @starter/api typecheck
 git diff --check
 ```
+
+## 1162: POS struk edge reporter (legend-gdjpu, legend-j772n; legend-rh1hk diparkir; legend-vet9d menunggu), 19 Nov 2026
+Cabang `ws/1162-pos-struk-edge` (dasar `milestone/m1` 6b3288bc2). Tanpa migrasi (`db:generate` kosong).
+
+Sudah:
+- gdjpu (SO 1111 P2): ACK void dari edge bisa mendahului ingest yang sukses, sehingga run struk yang ditolak (`applier_refused`) tertinggal. Sweep `edge-order-redrive.job.ts` kini menerapkan ulang run struk yang ditolak untuk order itu, sesudah void/penjualan pulih, di transaksi sendiri per run. Semua error ditangkap dan hanya id/nama error yang dicatat, sehingga re-apply gagal tidak membatalkan void. Konflik yang sudah punya resolusi dilewati (keputusan supervisor menang), run yang pulih dicatat resolusi `replayed`/`applied`. Jalur `redrivePaid` ikut. Test: tidak ada double reversal, tidak ada nomor ganda atau lubang, `lastNumber` benar.
+- j772n: kontrak dokumen struk/invoice punya bucket DP `depositAppliedIdr`. Dokumen seimbang bila tender + DP = total, DP tidak boleh melebihi total, dokumen DP-saja boleh tanpa tender. PDF mencetak baris "Uang muka (DP)"; struk edge juga (DP bukan tender, bukan kas, tidak ada kembalian palsu).
+- Review architect (xhigh): 1 P1 dan 3 P2, semua dibetulkan di `a954fc63c`.
+
+Belum / keputusan untuk CTO:
+- legend-rh1hk (laporan restore-detect membawa kursor tautan outbox): tidak ada desain aman tanpa migrasi. Diparkir, butuh nomor migrasi dari CTO.
+- legend-vet9d (bucket DP rekap hari): menunggu CTO menyatakan batch95 mendarat, lalu `git merge milestone/m1`.
+- Re-apply yang gagal tidak diulang otomatis (alasan ledger dihapus setelah void sukses); konflik tetap terbuka untuk replay manual supervisor. Retry otomatis butuh keputusan desain.
+- Dilewati bila ada resolusi apa pun, termasuk replay manual yang gagal.
+- Suite penuh dan `pnpm check` tidak dijalankan (tugas merge train). Printer fisik tidak diuji.
+
+Biaya sesi (session-usage, satuan k): total 11051k. Subagent 13 (3 Explore, 4 test-writer/implementer awal, 2 implementer perbaikan, 3 test-runner, 1 architect), puncak 5 bersamaan.
