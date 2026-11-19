@@ -333,7 +333,33 @@ export type ReconHoldFiledAlert = {
   /** Stable per hold (same input, same alert id). */
   dedupKey: string;
   amountIdr: number;
+  /** 1144 (SO ronde 16 P2-1): one provider refund report is ONE alert, whatever
+   * the alert type (switched off, unmatched) and the retry that sends it. With
+   * this set the alert id is derived from tenant, integration, intent and
+   * refund id only (not from the event name, `dedupKey` or the amount); the
+   * first alert of the report wins, later ones are swallowed by the dedupe. */
+  stableRefund?: { integrationId: string | null; refundId: string };
 };
+
+/** The stable alert id (ULID) of a recon hold alert. Pure: same input, same
+ * id; the tenant is always part of it. */
+export function reconHoldAlertId(
+  tenantId: string,
+  eventName: string,
+  held: Pick<ReconHoldFiledAlert, "intentId" | "dedupKey" | "stableRefund">,
+): string {
+  const hex = createHash("sha256")
+    .update(
+      held.stableRefund
+        ? `payment.provider_refund_report\0${tenantId}\0${held.stableRefund.integrationId ?? ""}\0${held.intentId.toLowerCase()}\0${held.stableRefund.refundId}`
+        : `${eventName}\0${tenantId}\0${held.intentId.toLowerCase()}\0${held.dedupKey}`,
+    )
+    .digest("hex")
+    .slice(0, 32);
+  return uuidToUlid(
+    `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
+  );
+}
 
 async function alertReconHoldFiled(
   tx: Tx,
@@ -343,15 +369,7 @@ async function alertReconHoldFiled(
   now: Date,
 ): Promise<void> {
   const tenantId = context.tenant.tenantId;
-  const hex = createHash("sha256")
-    .update(
-      `${message.eventName}\0${tenantId}\0${held.intentId.toLowerCase()}\0${held.dedupKey}`,
-    )
-    .digest("hex")
-    .slice(0, 32);
-  const id = uuidToUlid(
-    `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
-  );
+  const id = reconHoldAlertId(tenantId, message.eventName, held);
   try {
     await tx.transaction(async (savepoint) => {
       await notifyOutletSupervisors(

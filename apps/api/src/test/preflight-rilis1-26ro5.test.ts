@@ -41,7 +41,8 @@ async function shadowed(run: (client: PoolClient) => Promise<void>) {
       provider_refund_id varchar(100), provider_refund_id_kind varchar(20),
       amount_idr integer NOT NULL, reason varchar(200) NOT NULL,
       provider_payment_ref varchar(100), resolved_at timestamptz,
-      resolution text, matched_fact_id uuid) ON COMMIT DROP`);
+      resolution text, matched_fact_id uuid, resolved_by uuid,
+      resolution_note text) ON COMMIT DROP`);
     await client.query(`CREATE TEMP TABLE payment_provider_refunds (
       id uuid PRIMARY KEY, tenant_id uuid NOT NULL, payment_intent_id uuid NOT NULL,
       provider varchar(20) NOT NULL, refund_id_kind varchar(20) NOT NULL DEFAULT 'provider',
@@ -86,6 +87,8 @@ interface Hold {
   resolved?: boolean;
   resolution?: string | null;
   matchedFactId?: string | null;
+  resolvedBy?: string | null;
+  note?: string | null;
 }
 
 // Defaults: a named, closed, counted hold of 5000 that names refund "r1" on
@@ -96,9 +99,9 @@ async function addHold(client: PoolClient, h: Hold) {
     `INSERT INTO refund_recon_holds
        (id, tenant_id, payment_intent_id, provider_refund_id,
         provider_refund_id_kind, amount_idr, reason, provider_payment_ref,
-        resolved_at, resolution, matched_fact_id)
+        resolved_at, resolution, matched_fact_id, resolved_by, resolution_note)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
-       CASE WHEN $9::boolean THEN now() END, $10, $11)`,
+       CASE WHEN $9::boolean THEN now() END, $10, $11, $12, $13)`,
     [
       h.id,
       h.tenantId ?? tenantA,
@@ -111,6 +114,8 @@ async function addHold(client: PoolClient, h: Hold) {
       h.resolved ?? true,
       h.resolution === undefined ? "counted_against_intent" : h.resolution,
       h.matchedFactId ?? null,
+      h.resolvedBy ?? null,
+      h.note ?? null,
     ],
   );
 }
@@ -163,6 +168,17 @@ beforeAll(() => {
 afterAll(async () => {
   await owner.end();
 });
+
+// What the 1139 auto-close of a first-pass CONFLICT hold writes
+// (closeFirstPassHoldCoveredByFact in payment-webhook.service.ts): no
+// resolved_by, this reason and this note.
+const CONFLICT_REASON =
+  "Nomor refund penyedia sudah tercatat di transaksi lain (HOLD_TRANSACTION_CONFLICT)";
+const AUTO_COUNTED_NOTE =
+  "Otomatis: refund penyedia sudah dicatat sebagai fakta dan membatasi refund berikutnya";
+const AUTO_NOT_THIS_INTENT_NOTE =
+  "Otomatis: laporan ini ternyata refund Legend yang sudah dihitung; bukan refund tambahan";
+const financeUser = "60000000-0000-4000-8000-000000000001";
 
 const ownId = (n: number) =>
   `50000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
@@ -368,6 +384,111 @@ describe("[legend-26ro5] counted holds without a bound fact release gate", () =>
       // tx2 has 70000 left (100000 - 30000); our tx1 refund is not its money.
       const rows = (await client.query(sql)).rows;
       expect(rows.map((r) => r.hold_id)).toContain(holdId(2));
+    });
+  });
+
+  it("[legend-26ro5] does not list a CONFLICT hold auto-closed by the fact when finance later binds an anonymous hold to that fact (1139)", async () => {
+    const sql = gateText();
+    await shadowed(async (client) => {
+      // Fact X of 40000. H1: first-pass CONFLICT hold closed by the system as
+      // counted (covered by X), no matched_fact_id. H2: anonymous hold that
+      // finance bound to X with same_as_counted. A legitimate reconciliation.
+      await addFact(client, { id: factId(1), amount: 40000 });
+      await addHold(client, {
+        id: holdId(1),
+        amount: 40000,
+        reason: CONFLICT_REASON,
+        note: AUTO_COUNTED_NOTE,
+      });
+      await addHold(client, {
+        id: holdId(2),
+        refundId: null,
+        amount: 40000,
+        reason: "own_refund_failed_unverified",
+        matchedFactId: factId(1),
+        resolvedBy: financeUser,
+      });
+      expect((await client.query(sql)).rows).toEqual([]);
+    });
+  });
+
+  it("[legend-26ro5] does not list a CONFLICT hold auto-closed as not_this_intent because our refund counts it (1139)", async () => {
+    const sql = gateText();
+    await shadowed(async (client) => {
+      await addHold(client, {
+        id: holdId(1),
+        amount: 40000,
+        reason: CONFLICT_REASON,
+        resolution: "not_this_intent",
+        note: AUTO_NOT_THIS_INTENT_NOTE,
+      });
+      await addOwnRefund(client, {
+        id: ownId(1),
+        refundId: "r1",
+        amount: 40000,
+      });
+      expect((await client.query(sql)).rows).toEqual([]);
+    });
+  });
+
+  it("[legend-26ro5] still lists an auto-closed CONFLICT hold whose fact is below it", async () => {
+    const sql = gateText();
+    await shadowed(async (client) => {
+      await addFact(client, { id: factId(1), amount: 3000 });
+      await addHold(client, {
+        id: holdId(1),
+        amount: 5000,
+        reason: CONFLICT_REASON,
+        note: AUTO_COUNTED_NOTE,
+      });
+      const rows = (await client.query(sql)).rows;
+      expect(rows.map((r) => [r.hold_id, r.problem])).toEqual([
+        [holdId(1), "fact_below_hold"],
+      ]);
+    });
+  });
+
+  it("[legend-26ro5] still lists a legacy hold that shares a fact, even with the CONFLICT reason or the auto note, unless the system closed it", async () => {
+    const sql = gateText();
+    await shadowed(async (client) => {
+      await addFact(client, { id: factId(1), refundId: "r1" });
+      await addFact(client, { id: factId(2), refundId: "r2" });
+      await addFact(client, { id: factId(3), refundId: "r3" });
+      // Bound holds that own the facts.
+      for (const n of [1, 2, 3])
+        await addHold(client, {
+          id: holdId(10 + n),
+          refundId: `b${n}`,
+          matchedFactId: factId(n),
+        });
+      // Closed by finance (resolved_by set) with the conflict reason.
+      await addHold(client, {
+        id: holdId(1),
+        refundId: "r1",
+        reason: CONFLICT_REASON,
+        resolvedBy: financeUser,
+        note: "finance",
+      });
+      // Finance copying the auto note: resolved_by still marks it as manual.
+      await addHold(client, {
+        id: holdId(2),
+        refundId: "r2",
+        reason: CONFLICT_REASON,
+        resolvedBy: financeUser,
+        note: AUTO_COUNTED_NOTE,
+      });
+      // Auto note but another reason (a rowOf-era hold): not the 1139 path.
+      await addHold(client, {
+        id: holdId(3),
+        refundId: "r3",
+        note: AUTO_COUNTED_NOTE,
+      });
+      const rows = (await client.query(sql)).rows;
+      expect(rows.map((r) => [r.hold_id, r.problem])).toEqual([
+        [holdId(1), "fact_shared"],
+        [holdId(2), "fact_shared"],
+        [holdId(3), "fact_shared"],
+      ]);
     });
   });
 

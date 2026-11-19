@@ -604,6 +604,9 @@ describe("legend-2ol8g PAY-04 the parser marks present-but-invalid facts", () =>
         refundId: "rf_abc",
         amountIdr: 4000,
         invalid: ["payment_id"],
+        // 1144: an unreadable payment id must never count as "absent", so the
+        // mapper does not fall back to the reference of another intent.
+        paymentIdUnusable: true,
       });
     },
   );

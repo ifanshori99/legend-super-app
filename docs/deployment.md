@@ -1416,6 +1416,19 @@ punya fact kind `provider` dan transaksinya masih bersisa. Tidak terdaftar
 kurang, hold `synthetic_full`, alasan `credit_used_before_provider_refund`, dan
 hold anonim yang punya fact `synthetic_hold` miliknya sendiri.
 
+Hold CONFLICT yang ditutup otomatis oleh 1139 tidak dilaporkan `fact_shared`
+hanya karena hold lain kemudian diikat ke fact yang sama (rekonsiliasi finance
+yang sah): hold `counted_against_intent` dengan alasan CONFLICT, `resolved_by`
+kosong, kind `provider`, dan catatan "Otomatis: refund penyedia sudah dicatat
+sebagai fakta dan membatasi refund berikutnya" (jalur
+`closeFirstPassHoldCoveredByFact`) tetap diperiksa cakupan nominalnya, dan
+hold lain yang belum terikat pada kunci yang sama tetap menandainya. Penutupan
+otomatis `not_this_intent` tidak pernah menjadi kandidat. Penandanya ketat dan
+dicocokkan persis dengan teks service: bila teks service berubah, hold itu
+kembali diperlakukan sebagai hold lama (membatasi, bisa memblokir rilis).
+Hold yang ditutup finance (`resolved_by` terisi), meski beralasan CONFLICT atau
+memakai catatan yang sama, tetap diperlakukan sebagai hold lama.
+
 Keterbatasan gerbang (sengaja dibuat membatasi bila ragu): pencocokan hold
 bernama tanpa ref transaksi lebih longgar dari aturan 1119, yang menganggapnya
 tidak tercakup apa pun (gerbang mencocokkannya ke fact kunci yang sama di
