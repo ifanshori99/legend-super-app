@@ -2274,6 +2274,27 @@ export const id = {
       },
       expiresOn: "Berlaku sampai {date}",
     },
+    qr: {
+      open: "Tunjukkan QR ke kasir",
+      title: "QR member",
+      description: "Tunjukkan kode ini ke kasir untuk memakai poinmu",
+      descriptionOrder:
+        "Tunjukkan kode ini ke kasir supaya poinmu bisa dipakai di pesanan ini.",
+      qrLabel: "Kode QR member untuk kasir",
+      loading: "Menyiapkan QR…",
+      countdown: "Berlaku {time} lagi",
+      onceHint: "Kode hanya berlaku untuk satu kali pakai.",
+      endingSoon: "QR hampir kedaluwarsa. Tunjukkan ke kasir sekarang.",
+      expiredTitle: "QR sudah kedaluwarsa",
+      expiredBody: "Minta QR baru, lalu tunjukkan lagi ke kasir.",
+      renew: "Minta QR baru",
+      errorTitle: "QR belum bisa dibuat",
+      errorBody: "Terjadi kesalahan saat menyiapkan QR. Coba lagi.",
+      offlineTitle: "Tidak ada koneksi",
+      offlineBody: "Sambungkan internet, lalu coba lagi.",
+      retry: "Coba lagi",
+      close: "Tutup",
+    },
     rewards: {
       title: "Katalog hadiah",
       intro:

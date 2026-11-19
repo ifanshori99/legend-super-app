@@ -7,6 +7,7 @@
 // endpoints unwrap the `{ data }` envelope so components see the resource.
 import {
   getMemberOverview,
+  issueMemberQrToken,
   listMemberFavorites,
   listMemberMissions,
   listMemberPoints,
@@ -18,6 +19,7 @@ import {
 } from "@starter/shared/crm";
 import type { ConsentPurpose } from "@starter/shared/crm";
 import { callEndpoint } from "@/lib/api/endpoint";
+import { buildQrTokenBody } from "./qr-token";
 
 /** Page size for the member's own lists; small enough for a phone screen. */
 export const MEMBER_PAGE_SIZE = 10;
@@ -74,4 +76,16 @@ export function saveMemberConsent(input: {
   return callEndpoint(updateMemberConsent, { body: input }).then(
     (response) => response.data,
   );
+}
+
+/** 1150: mints a 120 s single-use token; `input` binds it to one order and amount of points. */
+export function requestMemberQrToken(
+  input?: { orderId?: string; points?: number },
+  signal?: AbortSignal,
+) {
+  return callEndpoint(
+    issueMemberQrToken,
+    { body: buildQrTokenBody(input) },
+    { signal },
+  ).then((response) => response.data);
 }

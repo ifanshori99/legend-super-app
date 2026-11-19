@@ -22,6 +22,7 @@ import {
   userIdSchema,
 } from "../core/index.ts";
 import { defineEndpoint } from "../api/index.ts";
+import { memberQrTokenMintInputSchema } from "../validators/member-qr-token.ts";
 import {
   consentPurposeSchema,
   customerProfileDtoSchema,
@@ -232,6 +233,7 @@ export type MemberQrToken = z.infer<typeof memberQrTokenSchema>;
 export const issueMemberQrToken = defineEndpoint({
   method: "POST",
   path: "/api/member/qr-token",
+  body: memberQrTokenMintInputSchema,
   response: dataResponseSchema(memberQrTokenSchema),
 });
 
