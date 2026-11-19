@@ -1,0 +1,1029 @@
+{
+  "generatedAt": "2026-11-19T02:31:07.460Z",
+  "scope": "targeted-interactions",
+  "note": "Mockup checks only; no API or real transaction is exercised.",
+  "screenshots": [
+    {
+      "state": "tagihan-aktif",
+      "width": 390,
+      "exists": true,
+      "scrollWidth": 390,
+      "overflow": false,
+      "outside": [],
+      "missingAssets": [],
+      "fonts": {
+        "status": "loaded",
+        "jakartaLoaded": true,
+        "faces": [
+          {
+            "family": "Jakarta",
+            "status": "loaded"
+          }
+        ]
+      },
+      "h1Count": 1,
+      "screenHasContent": true,
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": [],
+      "file": "tagihan-aktif-390.png"
+    },
+    {
+      "state": "tagihan-aktif",
+      "width": 1280,
+      "exists": true,
+      "scrollWidth": 1280,
+      "overflow": false,
+      "outside": [],
+      "missingAssets": [],
+      "fonts": {
+        "status": "loaded",
+        "jakartaLoaded": true,
+        "faces": [
+          {
+            "family": "Jakarta",
+            "status": "loaded"
+          }
+        ]
+      },
+      "h1Count": 1,
+      "screenHasContent": true,
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": [],
+      "file": "tagihan-aktif-1280.png"
+    },
+    {
+      "state": "pilih-poin",
+      "width": 390,
+      "exists": true,
+      "scrollWidth": 390,
+      "overflow": false,
+      "outside": [],
+      "missingAssets": [],
+      "fonts": {
+        "status": "loaded",
+        "jakartaLoaded": true,
+        "faces": [
+          {
+            "family": "Jakarta",
+            "status": "loaded"
+          }
+        ]
+      },
+      "h1Count": 1,
+      "screenHasContent": true,
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": [],
+      "file": "pilih-poin-390.png"
+    },
+    {
+      "state": "pilih-poin",
+      "width": 1280,
+      "exists": true,
+      "scrollWidth": 1280,
+      "overflow": false,
+      "outside": [],
+      "missingAssets": [],
+      "fonts": {
+        "status": "loaded",
+        "jakartaLoaded": true,
+        "faces": [
+          {
+            "family": "Jakarta",
+            "status": "loaded"
+          }
+        ]
+      },
+      "h1Count": 1,
+      "screenHasContent": true,
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": [],
+      "file": "pilih-poin-1280.png"
+    },
+    {
+      "state": "qr-aktif",
+      "width": 390,
+      "exists": true,
+      "scrollWidth": 390,
+      "overflow": false,
+      "outside": [],
+      "missingAssets": [],
+      "fonts": {
+        "status": "loaded",
+        "jakartaLoaded": true,
+        "faces": [
+          {
+            "family": "Jakarta",
+            "status": "loaded"
+          }
+        ]
+      },
+      "h1Count": 1,
+      "screenHasContent": true,
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": [],
+      "file": "qr-aktif-390.png"
+    },
+    {
+      "state": "qr-aktif",
+      "width": 1280,
+      "exists": true,
+      "scrollWidth": 1280,
+      "overflow": false,
+      "outside": [],
+      "missingAssets": [],
+      "fonts": {
+        "status": "loaded",
+        "jakartaLoaded": true,
+        "faces": [
+          {
+            "family": "Jakarta",
+            "status": "loaded"
+          }
+        ]
+      },
+      "h1Count": 1,
+      "screenHasContent": true,
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": [],
+      "file": "qr-aktif-1280.png"
+    },
+    {
+      "state": "tanpa-tagihan",
+      "width": 390,
+      "exists": true,
+      "scrollWidth": 390,
+      "overflow": false,
+      "outside": [],
+      "missingAssets": [],
+      "fonts": {
+        "status": "loaded",
+        "jakartaLoaded": true,
+        "faces": [
+          {
+            "family": "Jakarta",
+            "status": "loaded"
+          }
+        ]
+      },
+      "h1Count": 1,
+      "screenHasContent": true,
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": [],
+      "file": "tanpa-tagihan-390.png"
+    },
+    {
+      "state": "tanpa-tagihan",
+      "width": 1280,
+      "exists": true,
+      "scrollWidth": 1280,
+      "overflow": false,
+      "outside": [],
+      "missingAssets": [],
+      "fonts": {
+        "status": "loaded",
+        "jakartaLoaded": true,
+        "faces": [
+          {
+            "family": "Jakarta",
+            "status": "loaded"
+          }
+        ]
+      },
+      "h1Count": 1,
+      "screenHasContent": true,
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": [],
+      "file": "tanpa-tagihan-1280.png"
+    },
+    {
+      "state": "poin-kurang",
+      "width": 390,
+      "exists": true,
+      "scrollWidth": 390,
+      "overflow": false,
+      "outside": [],
+      "missingAssets": [],
+      "fonts": {
+        "status": "loaded",
+        "jakartaLoaded": true,
+        "faces": [
+          {
+            "family": "Jakarta",
+            "status": "loaded"
+          }
+        ]
+      },
+      "h1Count": 1,
+      "screenHasContent": true,
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": [],
+      "file": "poin-kurang-390.png"
+    },
+    {
+      "state": "poin-kurang",
+      "width": 1280,
+      "exists": true,
+      "scrollWidth": 1280,
+      "overflow": false,
+      "outside": [],
+      "missingAssets": [],
+      "fonts": {
+        "status": "loaded",
+        "jakartaLoaded": true,
+        "faces": [
+          {
+            "family": "Jakarta",
+            "status": "loaded"
+          }
+        ]
+      },
+      "h1Count": 1,
+      "screenHasContent": true,
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": [],
+      "file": "poin-kurang-1280.png"
+    },
+    {
+      "state": "qr-kedaluwarsa",
+      "width": 390,
+      "exists": true,
+      "scrollWidth": 390,
+      "overflow": false,
+      "outside": [],
+      "missingAssets": [],
+      "fonts": {
+        "status": "loaded",
+        "jakartaLoaded": true,
+        "faces": [
+          {
+            "family": "Jakarta",
+            "status": "loaded"
+          }
+        ]
+      },
+      "h1Count": 1,
+      "screenHasContent": true,
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": [],
+      "file": "qr-kedaluwarsa-390.png"
+    },
+    {
+      "state": "qr-kedaluwarsa",
+      "width": 1280,
+      "exists": true,
+      "scrollWidth": 1280,
+      "overflow": false,
+      "outside": [],
+      "missingAssets": [],
+      "fonts": {
+        "status": "loaded",
+        "jakartaLoaded": true,
+        "faces": [
+          {
+            "family": "Jakarta",
+            "status": "loaded"
+          }
+        ]
+      },
+      "h1Count": 1,
+      "screenHasContent": true,
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": [],
+      "file": "qr-kedaluwarsa-1280.png"
+    },
+    {
+      "state": "offline",
+      "width": 390,
+      "exists": true,
+      "scrollWidth": 390,
+      "overflow": false,
+      "outside": [],
+      "missingAssets": [],
+      "fonts": {
+        "status": "loaded",
+        "jakartaLoaded": true,
+        "faces": [
+          {
+            "family": "Jakarta",
+            "status": "loaded"
+          }
+        ]
+      },
+      "h1Count": 1,
+      "screenHasContent": true,
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": [],
+      "file": "offline-390.png"
+    },
+    {
+      "state": "offline",
+      "width": 1280,
+      "exists": true,
+      "scrollWidth": 1280,
+      "overflow": false,
+      "outside": [],
+      "missingAssets": [],
+      "fonts": {
+        "status": "loaded",
+        "jakartaLoaded": true,
+        "faces": [
+          {
+            "family": "Jakarta",
+            "status": "loaded"
+          }
+        ]
+      },
+      "h1Count": 1,
+      "screenHasContent": true,
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": [],
+      "file": "offline-1280.png"
+    },
+    {
+      "state": "gagal",
+      "width": 390,
+      "exists": true,
+      "scrollWidth": 390,
+      "overflow": false,
+      "outside": [],
+      "missingAssets": [],
+      "fonts": {
+        "status": "loaded",
+        "jakartaLoaded": true,
+        "faces": [
+          {
+            "family": "Jakarta",
+            "status": "loaded"
+          }
+        ]
+      },
+      "h1Count": 1,
+      "screenHasContent": true,
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": [],
+      "file": "gagal-390.png"
+    },
+    {
+      "state": "gagal",
+      "width": 1280,
+      "exists": true,
+      "scrollWidth": 1280,
+      "overflow": false,
+      "outside": [],
+      "missingAssets": [],
+      "fonts": {
+        "status": "loaded",
+        "jakartaLoaded": true,
+        "faces": [
+          {
+            "family": "Jakarta",
+            "status": "loaded"
+          }
+        ]
+      },
+      "h1Count": 1,
+      "screenHasContent": true,
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": [],
+      "file": "gagal-1280.png"
+    },
+    {
+      "state": "sudah-dipakai",
+      "width": 390,
+      "exists": true,
+      "scrollWidth": 390,
+      "overflow": false,
+      "outside": [],
+      "missingAssets": [],
+      "fonts": {
+        "status": "loaded",
+        "jakartaLoaded": true,
+        "faces": [
+          {
+            "family": "Jakarta",
+            "status": "loaded"
+          }
+        ]
+      },
+      "h1Count": 1,
+      "screenHasContent": true,
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": [],
+      "file": "sudah-dipakai-390.png"
+    },
+    {
+      "state": "sudah-dipakai",
+      "width": 1280,
+      "exists": true,
+      "scrollWidth": 1280,
+      "overflow": false,
+      "outside": [],
+      "missingAssets": [],
+      "fonts": {
+        "status": "loaded",
+        "jakartaLoaded": true,
+        "faces": [
+          {
+            "family": "Jakarta",
+            "status": "loaded"
+          }
+        ]
+      },
+      "h1Count": 1,
+      "screenHasContent": true,
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": [],
+      "file": "sudah-dipakai-1280.png"
+    },
+    {
+      "state": "poin-setelah",
+      "width": 390,
+      "exists": true,
+      "scrollWidth": 390,
+      "overflow": false,
+      "outside": [],
+      "missingAssets": [],
+      "fonts": {
+        "status": "loaded",
+        "jakartaLoaded": true,
+        "faces": [
+          {
+            "family": "Jakarta",
+            "status": "loaded"
+          }
+        ]
+      },
+      "h1Count": 1,
+      "screenHasContent": true,
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": [],
+      "file": "poin-setelah-390.png"
+    },
+    {
+      "state": "poin-setelah",
+      "width": 1280,
+      "exists": true,
+      "scrollWidth": 1280,
+      "overflow": false,
+      "outside": [],
+      "missingAssets": [],
+      "fonts": {
+        "status": "loaded",
+        "jakartaLoaded": true,
+        "faces": [
+          {
+            "family": "Jakarta",
+            "status": "loaded"
+          }
+        ]
+      },
+      "h1Count": 1,
+      "screenHasContent": true,
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": [],
+      "file": "poin-setelah-1280.png"
+    },
+    {
+      "state": "qr-member",
+      "width": 390,
+      "exists": true,
+      "scrollWidth": 390,
+      "overflow": false,
+      "outside": [],
+      "missingAssets": [],
+      "fonts": {
+        "status": "loaded",
+        "jakartaLoaded": true,
+        "faces": [
+          {
+            "family": "Jakarta",
+            "status": "loaded"
+          }
+        ]
+      },
+      "h1Count": 1,
+      "screenHasContent": true,
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": [],
+      "file": "qr-member-390.png"
+    },
+    {
+      "state": "qr-member",
+      "width": 1280,
+      "exists": true,
+      "scrollWidth": 1280,
+      "overflow": false,
+      "outside": [],
+      "missingAssets": [],
+      "fonts": {
+        "status": "loaded",
+        "jakartaLoaded": true,
+        "faces": [
+          {
+            "family": "Jakarta",
+            "status": "loaded"
+          }
+        ]
+      },
+      "h1Count": 1,
+      "screenHasContent": true,
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": [],
+      "file": "qr-member-1280.png"
+    },
+    {
+      "state": "loading",
+      "width": 390,
+      "exists": true,
+      "scrollWidth": 390,
+      "overflow": false,
+      "outside": [],
+      "missingAssets": [],
+      "fonts": {
+        "status": "loaded",
+        "jakartaLoaded": true,
+        "faces": [
+          {
+            "family": "Jakarta",
+            "status": "loaded"
+          }
+        ]
+      },
+      "h1Count": 1,
+      "screenHasContent": true,
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": [],
+      "file": "loading-390.png"
+    },
+    {
+      "state": "loading",
+      "width": 1280,
+      "exists": true,
+      "scrollWidth": 1280,
+      "overflow": false,
+      "outside": [],
+      "missingAssets": [],
+      "fonts": {
+        "status": "loaded",
+        "jakartaLoaded": true,
+        "faces": [
+          {
+            "family": "Jakarta",
+            "status": "loaded"
+          }
+        ]
+      },
+      "h1Count": 1,
+      "screenHasContent": true,
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": [],
+      "file": "loading-1280.png"
+    },
+    {
+      "state": "perbandingan-alur",
+      "width": 390,
+      "exists": true,
+      "scrollWidth": 390,
+      "overflow": false,
+      "outside": [],
+      "missingAssets": [],
+      "fonts": {
+        "status": "loaded",
+        "jakartaLoaded": true,
+        "faces": [
+          {
+            "family": "Jakarta",
+            "status": "loaded"
+          }
+        ]
+      },
+      "h1Count": 1,
+      "screenHasContent": true,
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": [],
+      "file": "perbandingan-alur-390.png"
+    },
+    {
+      "state": "perbandingan-alur",
+      "width": 1280,
+      "exists": true,
+      "scrollWidth": 1280,
+      "overflow": false,
+      "outside": [],
+      "missingAssets": [],
+      "fonts": {
+        "status": "loaded",
+        "jakartaLoaded": true,
+        "faces": [
+          {
+            "family": "Jakarta",
+            "status": "loaded"
+          }
+        ]
+      },
+      "h1Count": 1,
+      "screenHasContent": true,
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": [],
+      "file": "perbandingan-alur-1280.png"
+    },
+    {
+      "state": "kode-tagihan",
+      "width": 390,
+      "exists": true,
+      "scrollWidth": 390,
+      "overflow": false,
+      "outside": [],
+      "missingAssets": [],
+      "fonts": {
+        "status": "loaded",
+        "jakartaLoaded": true,
+        "faces": [
+          {
+            "family": "Jakarta",
+            "status": "loaded"
+          }
+        ]
+      },
+      "h1Count": 1,
+      "screenHasContent": true,
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": [],
+      "file": "kode-tagihan-390.png"
+    },
+    {
+      "state": "kode-tagihan",
+      "width": 1280,
+      "exists": true,
+      "scrollWidth": 1280,
+      "overflow": false,
+      "outside": [],
+      "missingAssets": [],
+      "fonts": {
+        "status": "loaded",
+        "jakartaLoaded": true,
+        "faces": [
+          {
+            "family": "Jakarta",
+            "status": "loaded"
+          }
+        ]
+      },
+      "h1Count": 1,
+      "screenHasContent": true,
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": [],
+      "file": "kode-tagihan-1280.png"
+    },
+    {
+      "state": "kode-hasil",
+      "width": 390,
+      "exists": true,
+      "scrollWidth": 390,
+      "overflow": false,
+      "outside": [],
+      "missingAssets": [],
+      "fonts": {
+        "status": "loaded",
+        "jakartaLoaded": true,
+        "faces": [
+          {
+            "family": "Jakarta",
+            "status": "loaded"
+          }
+        ]
+      },
+      "h1Count": 1,
+      "screenHasContent": true,
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": [],
+      "file": "kode-hasil-390.png"
+    },
+    {
+      "state": "kode-hasil",
+      "width": 1280,
+      "exists": true,
+      "scrollWidth": 1280,
+      "overflow": false,
+      "outside": [],
+      "missingAssets": [],
+      "fonts": {
+        "status": "loaded",
+        "jakartaLoaded": true,
+        "faces": [
+          {
+            "family": "Jakarta",
+            "status": "loaded"
+          }
+        ]
+      },
+      "h1Count": 1,
+      "screenHasContent": true,
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": [],
+      "file": "kode-hasil-1280.png"
+    }
+  ],
+  "quickChecks": [
+    {
+      "state": "pilih-poin",
+      "width": 320,
+      "zoom": 1,
+      "scrollWidth": 320,
+      "overflow": false,
+      "outside": [],
+      "missingAssets": [],
+      "fonts": {
+        "status": "loaded",
+        "jakartaLoaded": true,
+        "faces": [
+          {
+            "family": "Jakarta",
+            "status": "loaded"
+          }
+        ]
+      },
+      "h1Count": 1,
+      "screenHasContent": true,
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": []
+    },
+    {
+      "state": "pilih-poin",
+      "width": 1280,
+      "zoom": 2,
+      "scrollWidth": 1280,
+      "overflow": false,
+      "outside": [],
+      "missingAssets": [],
+      "fonts": {
+        "status": "loaded",
+        "jakartaLoaded": true,
+        "faces": [
+          {
+            "family": "Jakarta",
+            "status": "loaded"
+          }
+        ]
+      },
+      "h1Count": 1,
+      "screenHasContent": true,
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": []
+    },
+    {
+      "state": "qr-aktif",
+      "width": 320,
+      "zoom": 1,
+      "scrollWidth": 320,
+      "overflow": false,
+      "outside": [],
+      "missingAssets": [],
+      "fonts": {
+        "status": "loaded",
+        "jakartaLoaded": true,
+        "faces": [
+          {
+            "family": "Jakarta",
+            "status": "loaded"
+          }
+        ]
+      },
+      "h1Count": 1,
+      "screenHasContent": true,
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": []
+    },
+    {
+      "state": "qr-aktif",
+      "width": 1280,
+      "zoom": 2,
+      "scrollWidth": 1280,
+      "overflow": false,
+      "outside": [],
+      "missingAssets": [],
+      "fonts": {
+        "status": "loaded",
+        "jakartaLoaded": true,
+        "faces": [
+          {
+            "family": "Jakarta",
+            "status": "loaded"
+          }
+        ]
+      },
+      "h1Count": 1,
+      "screenHasContent": true,
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": []
+    },
+    {
+      "state": "perbandingan-alur",
+      "width": 320,
+      "zoom": 1,
+      "scrollWidth": 320,
+      "overflow": false,
+      "outside": [],
+      "missingAssets": [],
+      "fonts": {
+        "status": "loaded",
+        "jakartaLoaded": true,
+        "faces": [
+          {
+            "family": "Jakarta",
+            "status": "loaded"
+          }
+        ]
+      },
+      "h1Count": 1,
+      "screenHasContent": true,
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": []
+    },
+    {
+      "state": "perbandingan-alur",
+      "width": 1280,
+      "zoom": 2,
+      "scrollWidth": 1280,
+      "overflow": false,
+      "outside": [],
+      "missingAssets": [],
+      "fonts": {
+        "status": "loaded",
+        "jakartaLoaded": true,
+        "faces": [
+          {
+            "family": "Jakarta",
+            "status": "loaded"
+          }
+        ]
+      },
+      "h1Count": 1,
+      "screenHasContent": true,
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": []
+    },
+    {
+      "state": "tagihan-aktif",
+      "width": 320,
+      "zoom": 1,
+      "scrollWidth": 320,
+      "overflow": false,
+      "outside": [],
+      "missingAssets": [],
+      "fonts": {
+        "status": "loaded",
+        "jakartaLoaded": true,
+        "faces": [
+          {
+            "family": "Jakarta",
+            "status": "loaded"
+          }
+        ]
+      },
+      "h1Count": 1,
+      "screenHasContent": true,
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": []
+    }
+  ],
+  "interactions": [
+    {
+      "name": "Member QR → tagihan → pilih poin → QR penukaran",
+      "passed": true,
+      "result": {
+        "state": "qr-aktif",
+        "timer": "02:00"
+      },
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": []
+    },
+    {
+      "name": "Input poin memperbarui nilai dan membatasi saldo",
+      "passed": true,
+      "result": {
+        "validInput": 500,
+        "excessiveInput": 1500,
+        "excessiveInputBlocked": true
+      },
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": []
+    },
+    {
+      "name": "Alternatif kode → konfirmasi tagihan → pilih poin",
+      "passed": true,
+      "result": {
+        "state": "pilih-poin"
+      },
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": []
+    },
+    {
+      "name": "740 poin → sisa 500 poin pada QR, berhasil, dan navigasi header",
+      "passed": true,
+      "result": {
+        "selectedPoints": 740,
+        "qrRemaining": "500 poin",
+        "successBalance": "500 poin",
+        "afterBalance": "500 poin",
+        "disclosureNavigations": 0,
+        "headerDestinations": [
+          "file:///Users/ifanshori99/Projects/legend%20super%20app/legend/design/mockups/member-tukar-poin/index.html?state=poin-setelah&capture=1&points=740"
+        ]
+      },
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": []
+    },
+    {
+      "name": "QR kedaluwarsa memerlukan pemeriksaan status sebelum penukaran baru",
+      "passed": true,
+      "result": {
+        "nextState": "loading",
+        "directRedeemBlocked": true
+      },
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": []
+    },
+    {
+      "name": "Hitung mundur langsung 02:00 → 01:59 → kedaluwarsa tanpa QR",
+      "passed": true,
+      "result": {
+        "ticks": [
+          "02:00",
+          "01:59",
+          "00:00"
+        ],
+        "finalState": "qr-kedaluwarsa",
+        "qrRemoved": true
+      },
+      "pageerror": [],
+      "requestfailed": [],
+      "badResponses": []
+    }
+  ],
+  "failures": [],
+  "screenshotsVerifiedAt": "2026-11-19T02:29:31.635Z",
+  "priorInteractionFailures": [
+    "Interaction 740 poin → sisa 500 poin pada QR, berhasil, dan navigasi header"
+  ],
+  "states": [
+    "tagihan-aktif",
+    "pilih-poin",
+    "qr-aktif",
+    "tanpa-tagihan",
+    "poin-kurang",
+    "qr-kedaluwarsa",
+    "offline",
+    "gagal",
+    "sudah-dipakai",
+    "poin-setelah",
+    "qr-member",
+    "loading",
+    "perbandingan-alur",
+    "kode-tagihan",
+    "kode-hasil"
+  ],
+  "passed": true
+}
