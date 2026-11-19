@@ -1342,6 +1342,7 @@ export async function decideApprovalRequest(
   options: DecideOptions,
 ): Promise<ApprovalRequest> {
   const now = options.now ?? new Date();
+  const t0 = performance.now();
   const approverId = userIdSchema.parse(actorUserId);
   const key =
     options.idempotencyKey === null
@@ -1404,6 +1405,19 @@ export async function decideApprovalRequest(
       }
     }
     await lockChain(tx, found.chainId);
+    // legend-ijy8u: the call may have queued behind the chain lock, so every
+    // time-based check below uses a clock after the lock. An explicit
+    // options.now (production callers pass one) is advanced by the time waited.
+    const waited = Math.max(0, performance.now() - t0);
+    let lockedAt = new Date(now.getTime() + waited);
+    if (options.now === undefined && Date.now() > lockedAt.getTime())
+      lockedAt = new Date(Date.now());
+    // One time for checks and stored facts: never earlier than a refund fact
+    // time taken before the lock, and the decision is stored at the time it was
+    // judged.
+    const checkAt =
+      lockedAt.getTime() >= decisionAt.getTime() ? lockedAt : decisionAt;
+    decisionAt = checkAt;
     const rows = await chainRows(tx, found.chainId);
     const row = rows.find((candidate) => candidate.id === requestId);
     if (!row) throw notFound();
@@ -1452,6 +1466,26 @@ export async function decideApprovalRequest(
         approverId,
       );
 
+    // The approver's role assignment may have ended while queued: judge reach
+    // and the access snapshot again at the post-lock time (fail closed).
+    if (
+      reachContext(
+        tenant,
+        approverId,
+        caller.data,
+        "approval.request.decide",
+        checkAt,
+      ) === null
+    )
+      throw new AccessError("PERMISSION_DENIED");
+    const lockedSnapshot = resolveAccessSnapshot({
+      tenant,
+      userId: approverId,
+      ...caller.data,
+      mfaVerified: options.mfaVerified,
+      now: checkAt,
+    });
+
     const prior = rows.filter((candidate) => candidate.level < row.level);
     if (
       prior.some(
@@ -1471,7 +1505,7 @@ export async function decideApprovalRequest(
       decidedBy: approverId,
       priorApproverIds,
       reason,
-      now,
+      now: checkAt,
       selfApproval,
     });
     // Matrix: role for this level, scope covers the outlet/tenant, MFA (MCP-04).
@@ -1495,22 +1529,22 @@ export async function decideApprovalRequest(
       surface: "dashboard",
       target,
       org: caller.data.org,
-      now,
+      now: checkAt,
       selfApproval,
     });
-    if (!caller.snapshot.allows("approval.request.decide", target))
+    if (!lockedSnapshot.allows("approval.request.decide", target))
       throw new AccessError("PERMISSION_DENIED");
     // Replays above keep their stored decision. A new approval must satisfy
     // the current scoped amount ceiling as well as the configured matrix.
     if (
       paymentRefund !== null &&
-      caller.snapshot.allows("pos.refund.approve", target) &&
+      lockedSnapshot.allows("pos.refund.approve", target) &&
       !(await refundApprovalWithinLimit(
         tx,
         context,
         approverId,
         paymentRefund,
-        now,
+        checkAt,
       ))
     )
       throw refundApprovalLimitRefused();
@@ -1582,9 +1616,9 @@ export async function decideApprovalRequest(
           amountIdr: row.amountIdr,
           status: "pending",
           requestReason: row.requestReason,
-          deadlineAt: approvalDeadlineAt(now, minutes),
-          createdAt: now,
-          updatedAt: now,
+          deadlineAt: approvalDeadlineAt(checkAt, minutes),
+          createdAt: checkAt,
+          updatedAt: checkAt,
         })
         .returning();
       if (!next) throw new Error("next approval level insert returned no row");
@@ -1592,7 +1626,7 @@ export async function decideApprovalRequest(
         chainId: row.chainId,
         outletId: row.outletId,
         actor,
-        now,
+        now: checkAt,
         destinations: [EVENT_DESTINATION, NOTIFICATION_DESTINATION],
         payload: requestedPayload(next),
       });
