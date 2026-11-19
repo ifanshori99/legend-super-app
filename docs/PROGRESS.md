@@ -25,6 +25,30 @@
 - B legend-kmrto: flag mati -> 503 `REFUND_PROVIDER_DISABLED`, refund tetap approved (antrean manual), sweep warn tanpa retry; doit terdaftar tetap dianggap tak terpasang saat flag mati; shim test `setPaymentRefundGateway` melempar di production; settle manual cek ulang cap (tolak 409 bila tanpa jejak penyedia, catat `capExcessIdr` bila ada jejak); warn startup bila flag true; runbook di `docs/deployment.md`.
 - Bukti: test 1072 a1-a4 + b merah di base (24 gagal), hijau di HEAD; regresi 74 file refund 1379 lulus; typecheck API exit 0; db:generate kosong; eslint+prettier file berubah bersih. Tanpa migrasi.
 - Tindak lanjut: legend-55up0 (P3 laporan tanpa nominal/ref beda), legend-h6k7c (refund ber-jejak macet tak bisa dicatat manual saat flag mati), legend-l9ey4 (pool DP 0 bila ada refund + fact echo).
+## 1149: flake audit dan race proof payout (19 Nov 2026)
+
+Scope test saja, dasar `494228f7b`; brief `docs/briefs/1149-flake-full-run.md` di checkout coordinator. Tidak mengubah produksi atau migrasi; CTO mengurus status Beads.
+
+`legend-5voa6`/`legend-h4ary`: matrix audit membaca semua policy tenant fixture, termasuk action sementara di luar enum yang ditinggalkan suite kas. Reproduksi menyisipkan sentinel action di tenant bersama dan gagal pada Zod sebelum writer; setup audit sekarang memakai tenant sendiri (reuse patch `a289bc986`) sambil mempertahankan bukti rollback dan sentinel.
+
+`legend-c2z4x`: race mencampur HTTP password step-up dengan service langsung. Return sudah memegang batch lock ketika HTTP menerbitkan grant; FK grant terkena batas lock 5 detik. Reproduksi storage read di bawah lock menghasilkan 503 `PAYOUT_STEP_GRANT_UNAVAILABLE` dalam 5977 ms. Barrier test menunggu kedua issuer asli COMMIT sebelum berebut proof, tanpa mengganti HTTP atau mengurangi assertion satu pemenang/satu 409/tidak ada perubahan tambahan. Menambah variasi proof legacy.
+
+`legend-inflf` belum ditutup. Log asli batch90 menunjukkan timeout 20 detik pada legit-operations dan satu recon exception pada withdrawn-propose di rerun tiga file. Hipotesis timer MFA tidak menjelaskan resolve-only (jalur recon itu tidak memeriksa umur MFA); eksperimen sementara dibuang. Assertion kini mencetak isi exception untuk bukti kegagalan berikutnya.
+
+Bukti: `/tmp/1149-red.log` 67 lulus/2 gagal (audit+503 sesuai reproduksi); `/tmp/1149-green1.log` audit+897 27/27 lulus. Dua pengulangan tujuh file (`rbac-audit-writer`, `897-proof-binding`, `990-recon-attest/clear/reopen`, `tax-api`, `888-fingerprint`) masing-masing lulus 96/96, dalam 125,87 detik (`/tmp/1149-repeat1.log`) dan 83,01 detik (`/tmp/1149-repeat2.log`), termasuk 990-attest 14/14 pada keduanya; `inflf` belum tereproduksi. Semua proses dan cleanup database selesai, token heavy dilepas. ESLint dan Prettier tiga file test hijau setelah perubahan terakhir; review final tanpa temuan blocking. Prettier dokumen PROGRESS merah juga pada versi HEAD sebelum perubahan (dibuktikan `/tmp/1149-progress-base.md`); tidak memformat ulang seluruh dokumen. Tidak menjalankan full suite, build atau typecheck karena hanya test yang berubah dan brief melarang full run.
+
+Perintah verifikasi (dari root worktree, exit 0 untuk ESLint/Prettier tiga file TS dan run hijau):
+
+```sh
+pnpm exec eslint apps/api/src/test/rbac-audit-writer.test.ts apps/api/src/test/payroll-payout-897-proof-binding.test.ts apps/api/src/test/payroll-payout-990-recon-attest.test.ts
+pnpm exec prettier --check apps/api/src/test/rbac-audit-writer.test.ts apps/api/src/test/payroll-payout-897-proof-binding.test.ts apps/api/src/test/payroll-payout-990-recon-attest.test.ts
+LEGEND_TEST_FILES="src/test/rbac-audit-writer.test.ts src/test/payroll-payout-897-proof-binding.test.ts src/test/payroll-payout-990-recon-attest.test.ts src/test/payroll-payout-990-recon-clear.test.ts src/test/payroll-payout-990-recon-reopen.test.ts src/test/tax-api.test.ts src/test/payroll-payout-888-fingerprint.test.ts" heavy pnpm test
+```
+
+Log asli `inflf`: `/private/tmp/claude-501/-Users-ifanshori99-Projects-legend-super-app-legend-734d81c4/752891d2-434d-4630-913b-74b1f92b21de/scratchpad/full90.log:29420` (legit-operations timeout) dan `rerun90-2.log:81` di folder yang sama (withdrawn-propose mendapat satu exception tanpa detail alasan). Eksperimen timer yang ditolak tersimpan sementara di `/tmp/1149-990-timer-hypothesis.patch`, tidak masuk commit.
+
+Subagent: total 10, puncak 5 bersamaan; token heavy final dipegang test-runner. Skrip `session-usage.py` tidak menemukan transkrip Codex dan `parallel-report` hanya menghitung sesi Claude, jadi biaya/rata-rata Codex tidak tersedia dari kedua skrip itu.
+
 ## legend-e3k4p: pengirim digest reconciliation edge berkala (18 Nov 2026)
 
 - Dasar: `a915c9409` (`ghostex/bawa-kai-upsync-ke-m1`, ledger 0684), cabang kerja `ghostex/job-rekonsiliasi-edge-berkala`. Referensi runtime S1-S5 dibaca tanpa merge. Tidak merencanakan migrasi atau perubahan perhitungan ledger.

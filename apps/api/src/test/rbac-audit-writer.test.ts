@@ -386,28 +386,46 @@ describe("§3.7 RBAC audit rolls back with the domain write", () => {
 
   it("§3.7 a failing audit writer leaves the approval matrix and audit log unchanged", async () => {
     const actor = await ownerUser("Rollback Matrix Actor");
-    const before = await policyFingerprint();
-    setAuditWriter(writeThenFail);
+    const parkedPolicyId = randomUUID();
+    // Other suites temporarily park fixture policies under action names that
+    // are outside the API enum. This suite must not read their matrix.
+    const parkedPolicy = await owner.query(
+      `INSERT INTO approval_policies (id, tenant_id, action_type, approver_role_id, levels)
+       SELECT $1, tenant_id, 'cash_out_held_by_test', id, 1 FROM roles
+        WHERE tenant_id = $2 AND template_key = 'supervisor'`,
+      [parkedPolicyId, cafeLegendPlatformFixtures.tenant.id],
+    );
+    try {
+      expect(parkedPolicy.rowCount).toBe(1);
+      const before = await policyFingerprint();
+      setAuditWriter(writeThenFail);
 
-    await expect(
-      replaceApprovalMatrix(
-        scopedContext(),
-        {
-          policies: [
-            {
-              actionType: "void",
-              thresholdIdr: null,
-              approverRoleId: roleIdSchema.parse(await roleIdOf("supervisor")),
-              levels: 1,
-            },
-          ],
-        },
-        actor,
-      ),
-    ).rejects.toThrow("audit writer failed after appending");
+      await expect(
+        replaceApprovalMatrix(
+          scopedContext(),
+          {
+            policies: [
+              {
+                actionType: "void",
+                thresholdIdr: null,
+                approverRoleId: roleIdSchema.parse(
+                  await roleIdOf("supervisor"),
+                ),
+                levels: 1,
+              },
+            ],
+          },
+          actor,
+        ),
+      ).rejects.toThrow("audit writer failed after appending");
 
-    expect(await policyFingerprint()).toBe(before);
-    expect(await auditByActor(actor)).toEqual([]);
+      expect(await policyFingerprint()).toBe(before);
+      expect(await auditByActor(actor)).toEqual([]);
+    } finally {
+      await owner.query("DELETE FROM approval_policies WHERE id = $1", [
+        parkedPolicyId,
+      ]);
+    }
   });
 
   it("§3.7 an audit row appended on a transaction that later throws is absent", async () => {
