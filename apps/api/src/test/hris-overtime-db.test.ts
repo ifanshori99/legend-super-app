@@ -478,6 +478,13 @@ afterAll(async () => {
       `DELETE FROM shift_templates WHERE tenant_id = $1 AND name LIKE 'OTROSTER %'`,
       [tenantId],
     );
+    // The leave accrual job grants every active employee of a tenant, so a
+    // parallel leave file can leave ledger/balance rows on ours (FK no action).
+    for (const table of ["leave_accruals", "leave_balances"])
+      await client.query(
+        `DELETE FROM ${table} WHERE tenant_id = $1 AND ${mine}`,
+        [tenantId, createdUsers],
+      );
     await client.query(
       `DELETE FROM employees WHERE tenant_id = $1 AND created_by = ANY($2::text[])`,
       [tenantId, createdUsers],

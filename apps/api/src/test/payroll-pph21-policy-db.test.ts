@@ -34,8 +34,13 @@ import {
   resolvePph21PolicyFor,
 } from "../services/payroll-pph21-policy.service.ts";
 
-const tenantId = cafeLegendPlatformFixtures.tenant.id;
-const outletA = cafeLegendPlatformFixtures.outlets[0].id;
+// Own tenant (+ one outlet): policy versions are numbered per tenant, so sharing
+// the fixture tenant with payroll-run-pph21-db.test.ts under 2 workers made
+// both files collide (PAYROLL_PPH21_POLICY_CONFLICT, wrong version counts;
+// bead legend-gx3i4). The fixture tenant is only the template for the rows.
+const fixtureTenant = cafeLegendPlatformFixtures.tenant;
+const tenantId = randomUUID();
+const outletA = randomUUID();
 const otherTenant = randomUUID();
 
 const owner = new Pool({
@@ -173,9 +178,37 @@ beforeAll(async () => {
     throw new Error("Requires the disposable test database");
   await owner.query(
     `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
+     SELECT $1, $2, 'PPh21 policy tenant', plan, status, deployment_mode, feature_flags, limits, created_by
+       FROM tenants WHERE id = $3`,
+    [tenantId, `pph21-pol-${tenantId.slice(0, 8)}`, fixtureTenant.id],
+  );
+  await owner.query(
+    `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
      SELECT $1, $2, 'PPh21 policy RLS tenant', plan, status, deployment_mode, feature_flags, limits, created_by
        FROM tenants WHERE id = $3`,
-    [otherTenant, `pph21-rls-${otherTenant.slice(0, 8)}`, tenantId],
+    [otherTenant, `pph21-rls-${otherTenant.slice(0, 8)}`, fixtureTenant.id],
+  );
+  // The outlet-scoped actor needs a real outlet of this tenant.
+  const brandId = randomUUID();
+  const entityId = randomUUID();
+  await owner.query(
+    `INSERT INTO brands (id, tenant_id, slug, name) VALUES ($1, $2, 'pph21-pol', 'PPh21 policy brand')`,
+    [brandId, tenantId],
+  );
+  await owner.query(
+    `INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'PPh21 policy entity', false)`,
+    [entityId, tenantId],
+  );
+  await owner.query(
+    `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
+     VALUES ($1, $2, $3, $4, 'PPH21-POL', 'PPh21 policy outlet', 'Jl. Uji', 'Asia/Jakarta', $5, 'active')`,
+    [
+      outletA,
+      tenantId,
+      brandId,
+      entityId,
+      JSON.stringify(cafeLegendPlatformFixtures.outlets[0].openingHours),
+    ],
   );
   await clearPolicies();
   admin = await actor(["payroll.view", "payroll.run"], { type: "tenant" });
@@ -205,14 +238,35 @@ afterAll(async () => {
         [tenant, createdRoles],
       );
     });
-  // Audit rows are append-only: a tenant that was audited cannot be deleted
-  // any more. Leave that fixture tenant in place (the database is disposable).
-  const audited = await owner.query(
-    "SELECT 1 FROM audit_logs WHERE tenant_id = $1 LIMIT 1",
-    [otherTenant],
-  );
-  if ((audited.rowCount ?? 0) === 0)
-    await owner.query("DELETE FROM tenants WHERE id = $1", [otherTenant]);
+  // Audit rows are append-only (trigger): suspend it for one purge so both
+  // tenants can really be removed; a failure here must be visible.
+  const purge = await owner.connect();
+  try {
+    await purge.query("BEGIN");
+    await purge.query(
+      "ALTER TABLE audit_logs DISABLE TRIGGER audit_logs_append_only",
+    );
+    await purge.query("DELETE FROM audit_logs WHERE tenant_id = ANY($1)", [
+      [tenantId, otherTenant],
+    ]);
+    await purge.query(
+      "ALTER TABLE audit_logs ENABLE TRIGGER audit_logs_append_only",
+    );
+    await purge.query("COMMIT");
+  } catch (error) {
+    await purge.query("ROLLBACK");
+    throw error;
+  } finally {
+    purge.release();
+  }
+  for (const statement of [
+    "DELETE FROM outlets WHERE tenant_id = $1",
+    "DELETE FROM legal_entities WHERE tenant_id = $1",
+    "DELETE FROM brands WHERE tenant_id = $1",
+    "DELETE FROM tenants WHERE id = $1",
+  ])
+    for (const tenant of [tenantId, otherTenant])
+      await owner.query(statement, [tenant]);
   await owner.query('DELETE FROM "user" WHERE id = ANY($1)', [createdUsers]);
   await owner.end();
 });
