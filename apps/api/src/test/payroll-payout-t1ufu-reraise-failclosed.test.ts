@@ -33,6 +33,21 @@
 // - The lock case needs a stuck holder (run A inside a held storage read), as in
 //   q2nkl; the first lock flag is closed after the holder ended (legend-jsrcs).
 //
+// Round 4 (brief "Ronde 4", CTO 19 Nov): the cursor advances when every hold is
+// committed. A flag that cannot be written (or a flag transaction that fails at
+// COMMIT) no longer fails the page IF the hold of each failed item was committed:
+// the page resolves, its result carries `held` (flags held through a hold instead of
+// written, a number > 0), `last` is filled (the cursor moves on, the next page is
+// processed) and the slip stays held by the hold, so clear-approve and the pay guard
+// still refuse. Only when a hold itself cannot be written does the page fail, and
+// then the cursor stays (the next run tries the same page again).
+// Round 4 assumptions: `held` is read from the page result (`result.held`); "the
+// cursor advanced" = the page that reports `held > 0` resolved with `last` set, so the
+// night run moved on to the following pages; "hold refused" is induced with a trigger
+// on the holds table (the hold function inserts there); the log line of the job is
+// not captured by exact text (the logger may bypass process.stdout): the sweep must
+// not reject, must not leak, and must surface `held` in its result or output.
+//
 // Round 3 REVISI (brief "Ronde 3 REVISI", migration 0709; CTO: when writing a flag
 // fails, the slip MUST stay held without depending on a row in the exceptions table).
 // Design: a HOLD PER ITEM, no observation:
@@ -385,13 +400,19 @@ type PageResult = {
   operations: number;
   last: string | null;
   unreadable: number;
+  held?: number;
 };
 
 /** The night run over all pages of the tenant; `extra` are the options under test. */
 async function runRecon(
   storage: unknown,
   extra: Record<string, unknown> = {},
-): Promise<{ unreadable: number; pages: number }> {
+): Promise<{
+  unreadable: number;
+  pages: number;
+  held: number;
+  results: PageResult[];
+}> {
   const mod =
     (await import("../services/payroll-payout-recon.service.ts")) as Record<
       string,
@@ -406,11 +427,15 @@ async function runRecon(
   );
   let after: string | null = null;
   let unreadable = 0;
+  let held = 0;
+  const results: PageResult[] = [];
   for (let page = 1; page <= 1000; page += 1) {
     const result = await run(W.scope(), { storage, after, ...extra });
+    results.push(result);
     unreadable += result.unreadable;
+    held += result.held ?? 0;
     if (result.last === null || result.operations === 0)
-      return { unreadable, pages: page };
+      return { unreadable, pages: page, held, results };
     after = result.last;
   }
   throw new Error("recon did not finish");
@@ -754,7 +779,7 @@ async function startStuckHolder(key: string) {
 
 describe("t1ufu T1: one new flag that cannot be written does not roll back the others", () => {
   it(
-    "[t1ufu-fresh-flag-one-fails-others-commit] two items get a hash-mismatch flag in one page; writing the flag of the first is refused: the second flag is still committed, the page fails (the cursor does not advance), and the next run, once the refusal is gone, flags the first and does not duplicate the second",
+    "[t1ufu-fresh-flag-one-fails-others-commit] two items get a hash-mismatch flag in one page; writing the flag of the first is refused: the second flag is still committed, the first slip is held by a hold, the page resolves with held > 0 and the cursor advances, and the next run, once the refusal is gone, flags the first and does not duplicate the second",
     async () => {
       const { w1, w2, tampered } = await twoCorrectedWorlds();
       const slip1 = await slipOf(w1);
@@ -764,10 +789,27 @@ describe("t1ufu T1: one new flag that cannot be written does not roll back the o
       );
       try {
         const outcome = await within(runRecon(makeStorage({ tampered })));
+        // Round 4: the hold of the failed row committed, so the page resolves and the
+        // cursor moves on; the slip is held by the hold.
         expect(
           outcome.kind,
-          `fail-closed: the page must fail, not finish (${JSON.stringify(outcome)})`,
-        ).toBe("threw");
+          `the hold committed: the page resolves, it does not fail (${JSON.stringify(outcome)})`,
+        ).toBe("done");
+        if (outcome.kind === "done") {
+          expect(
+            outcome.value.held,
+            "the failed flag is reported as held (a hold, not a written flag)",
+          ).toBeGreaterThan(0);
+          const heldPage = outcome.value.results.find((r) => (r.held ?? 0) > 0);
+          expect(
+            heldPage?.last,
+            "the cursor advanced on the page with a held flag",
+          ).toBeTruthy();
+        }
+        expect(
+          (await holdRows(w1.itemId)).length,
+          "the failed row left a hold row",
+        ).toBeGreaterThan(0);
         expect(
           await heldBySql(slip1.payslipId),
           "the slip of the failed row is held although it has no exception row",
@@ -862,7 +904,7 @@ describe("t1ufu T2: one known flag that cannot be raised again is recorded, the 
 
 describe("t1ufu T3: a second lock timeout on the same day cannot be swallowed", () => {
   it(
-    "[t1ufu-second-timeout-same-day-failing-reraise-keeps-hold] the first lock flag is closed by two people; a second timeout on the SAME Jakarta day meets a refused flag write: either the new episode flag exists and holds the slip, or the page fails; the run never finishes with the slip free, and no money moves",
+    "[t1ufu-second-timeout-same-day-failing-reraise-keeps-hold] the first lock flag is closed by two people; a second timeout on the SAME Jakarta day meets a refused flag write: either the new episode flag exists and holds the slip, or the page fails; the page resolves (held > 0, cursor advances) because the hold committed, the slip stays held, and no money moves",
     async () => {
       // The slip is free with an old ok (as in q2nkl), then a first lock flag
       // for day1 is raised and closed.
@@ -923,10 +965,21 @@ describe("t1ufu T3: a second lock timeout on the same day cannot be swallowed", 
           await heldBySql(payslipId),
           `a failed flag write must leave the slip held (${JSON.stringify(second)})`,
         ).toBe(true);
+        // Round 4: the hold committed, so the page resolves (held > 0), cursor moves on.
         expect(
           second.kind,
-          "the page fails (fail-closed), it does not finish with a refused write",
-        ).toBe("threw");
+          "the page resolves because the hold committed",
+        ).toBe("done");
+        if (second.kind === "done") {
+          expect(
+            second.value.held,
+            "the refused episode flag is reported as held",
+          ).toBeGreaterThan(0);
+          expect(
+            second.value.results.find((r) => (r.held ?? 0) > 0)?.last,
+            "the cursor advanced on the page with a held flag",
+          ).toBeTruthy();
+        }
         expect(
           (await holdRows(w.itemId)).length,
           "the refused flag left a hold row for the item",
@@ -993,9 +1046,20 @@ async function refusedWriteScenario(
   const unblock = await blockInserts(EXCEPTIONS, `NEW.item_id = '${w.itemId}'`);
   try {
     const outcome = await within(runRecon(makeStorage({ tampered: [w.key] })));
-    expect(outcome.kind, `fail-closed (${JSON.stringify(outcome)})`).toBe(
-      "threw",
-    );
+    expect(
+      outcome.kind,
+      `the hold committed: the page resolves (${JSON.stringify(outcome)})`,
+    ).toBe("done");
+    if (outcome.kind === "done") {
+      expect(
+        outcome.value.held,
+        `${label}: the refused flag is reported as held`,
+      ).toBeGreaterThan(0);
+      expect(
+        outcome.value.results.find((r) => (r.held ?? 0) > 0)?.last,
+        `${label}: the cursor advanced on the page with a held flag`,
+      ).toBeTruthy();
+    }
     expect(
       await exceptionRows(w.itemId),
       "nothing was written: no exception row at all",
@@ -1037,6 +1101,8 @@ async function refusedWriteScenario(
   expect(retry.kind, `the retry finishes (${JSON.stringify(retry)})`).toBe(
     "done",
   );
+  if (retry.kind === "done")
+    expect(retry.value.held, "nothing is held once the write works").toBe(0);
   const flags = await exceptionRows(w.itemId);
   expect(flags.length, "the retry raises the flag").toBeGreaterThan(0);
   expect(await heldBySql(payslipId), "held by the flag now").toBe(true);
@@ -1053,7 +1119,7 @@ async function refusedWriteScenario(
 
 describe("t1ufu round 3: a refused flag write holds the slip without any exception row", () => {
   it(
-    "[t1ufu-first-ever-flag-fails-slip-held] correction kind: the item has no flag and no observation; the hash-mismatch flag cannot be written: the page fails, no exception exists, yet the slip is held (a hold row, no observation), the pay guard refuses, no money moves, a good read does not release it; after the retry wrote the flag, only the two-person clearance frees the slip",
+    "[t1ufu-first-ever-flag-fails-slip-held] correction kind: the item has no flag and no observation; the hash-mismatch flag cannot be written: the page resolves with held > 0 and the cursor advances, no exception exists, yet the slip is held (a hold row, no observation), the pay guard refuses, no money moves, a good read does not release it; after the retry wrote the flag, only the two-person clearance frees the slip",
     async () => {
       await refusedWriteScenario(await correctedWorld(), "correction");
     },
@@ -1181,7 +1247,7 @@ describe("t1ufu round 3: a refused flag write holds the slip without any excepti
   );
 
   it(
-    "[t1ufu-flag-transaction-commit-fails-slip-held] the transaction of the flags itself fails at COMMIT (deferred trigger): no flag is on record, the page fails, yet the slip is held by a hold, the pay guard refuses, the error text carries no marker; the retry writes the flag",
+    "[t1ufu-flag-transaction-commit-fails-slip-held] the transaction of the flags itself fails at COMMIT (deferred trigger) but the hold commits: no flag is on record, the page resolves with held > 0 and the cursor advances, the slip is held by a hold, the pay guard refuses; the retry writes the flag",
     async () => {
       const w = await correctedWorld();
       await runRecon(makeStorage());
@@ -1196,13 +1262,22 @@ describe("t1ufu round 3: a refused flag write holds the slip without any excepti
         const outcome = await within(
           runRecon(makeStorage({ tampered: [w.key] })),
         );
-        expect(outcome.kind, `fail-closed (${JSON.stringify(outcome)})`).toBe(
-          "threw",
-        );
-        if (outcome.kind === "threw")
-          expect(outcome.error, "no marker of the failing query").not.toContain(
-            LEAK,
-          );
+        // Round 4 (c): the flag transaction failed at COMMIT but the hold committed:
+        // the page resolves, held > 0, the cursor advances, the slip stays held.
+        expect(
+          outcome.kind,
+          `the hold committed: the page resolves (${JSON.stringify(outcome)})`,
+        ).toBe("done");
+        if (outcome.kind === "done") {
+          expect(
+            outcome.value.held,
+            "the flags of the failed transaction are reported as held",
+          ).toBeGreaterThan(0);
+          expect(
+            outcome.value.results.find((r) => (r.held ?? 0) > 0)?.last,
+            "the cursor advanced on the page with a held flag",
+          ).toBeTruthy();
+        }
         expect(
           await exceptionRows(w.itemId),
           "the commit failed: no exception row",
@@ -1386,7 +1461,7 @@ describe("t1ufu round 3: app.payout_recon_hold_unwritten", () => {
 
 describe("t1ufu round 3: a failed write leaks nothing into logs or errors", () => {
   it(
-    "[t1ufu-failed-write-log-without-cause] the flag write is refused with a marker text: neither the output of the daily sweep nor the rejection of the page (as util.inspect prints it, cause included) contains the marker, the query text or the item id",
+    "[t1ufu-failed-write-log-without-cause] the flag write is refused with a marker text but the hold commits: the daily sweep and the page do not reject, the sweep reports `held`, and neither its output nor its result contains the marker, the query text or the item id",
     async () => {
       const w = await correctedWorld();
       await runRecon(makeStorage());
@@ -1405,17 +1480,25 @@ describe("t1ufu round 3: a failed write leaks nothing into logs or errors", () =
             ) => Promise<unknown>;
           };
         const storage = makeStorage({ tampered: [w.key] });
+        let swept: unknown;
         const captured = await captureOutput(async () => {
-          await runPayoutTrustedReconSweep(W.scope(), new Date(), {
+          swept = await runPayoutTrustedReconSweep(W.scope(), new Date(), {
             storage,
           }).catch((e: unknown) => rejected.push(e));
           await runRecon(storage).catch((e: unknown) => rejected.push(e));
         });
+        // Round 4: the hold committed, so neither the sweep nor the page fails; the
+        // number of held flags is surfaced (result or output), without the cause.
         expect(
-          rejected.length,
-          "premise: the refused write made the page fail somewhere",
-        ).toBeGreaterThan(0);
+          rejected.map((e) => String(e)),
+          "the hold committed: nothing is rejected",
+        ).toHaveLength(0);
+        expect(
+          [JSON.stringify(swept ?? null), ...captured.lines].join("\n"),
+          "the sweep reports the held flags",
+        ).toMatch(/held/i);
         const text = [
+          JSON.stringify(swept ?? null),
           ...captured.lines,
           ...rejected.map((e) => inspect(e, { depth: 10 })),
           ...rejected.map((e) => String(e)),
@@ -1426,6 +1509,66 @@ describe("t1ufu round 3: a failed write leaks nothing into logs or errors", () =
       } finally {
         await unblock();
       }
+    },
+    TEST_TIMEOUT_MS,
+  );
+});
+
+// =========================================================================
+// Round 4 (b): a hold that cannot be written still fails the page
+// =========================================================================
+
+describe("t1ufu round 4: the cursor stays when a hold cannot be written", () => {
+  it(
+    "[t1ufu-hold-refused-page-fails-cursor-stays] the flag write AND the hold write of one item are refused: the page rejects (no cursor advance), no exception and no hold exist, the error carries no marker; once both refusals are gone the same run (same cursor) flags the item",
+    async () => {
+      const w = await correctedWorld();
+      await runRecon(makeStorage());
+      const { payslipId } = await slipOf(w);
+      const unblockFlag = await blockInserts(
+        EXCEPTIONS,
+        `NEW.item_id = '${w.itemId}'`,
+      );
+      const unblockHold = await blockInserts(
+        HOLDS,
+        `NEW.item_id = '${w.itemId}'`,
+      );
+      try {
+        const outcome = await within(
+          runRecon(makeStorage({ tampered: [w.key] })),
+        );
+        expect(
+          outcome.kind,
+          `a hold that is not committed fails the page (${JSON.stringify(outcome)})`,
+        ).toBe("threw");
+        if (outcome.kind === "threw")
+          expect(outcome.error, "no marker of the failing query").not.toContain(
+            LEAK,
+          );
+        expect(await exceptionRows(w.itemId), "no flag written").toHaveLength(
+          0,
+        );
+        expect(await holdRows(w.itemId), "no hold written").toHaveLength(0);
+        expect(
+          await heldBySql(payslipId),
+          "nothing records the item: the slip is free, which is why the cursor must not move",
+        ).toBe(false);
+      } finally {
+        await unblockHold();
+        await unblockFlag();
+      }
+      const retry = await within(runRecon(makeStorage({ tampered: [w.key] })));
+      expect(
+        retry.kind,
+        `the same page is tried again and finishes (${JSON.stringify(retry)})`,
+      ).toBe("done");
+      if (retry.kind === "done")
+        expect(retry.value.held, "written, not held").toBe(0);
+      expect(
+        (await exceptionRows(w.itemId)).length,
+        "the retry raises the flag the failed page could not write",
+      ).toBeGreaterThan(0);
+      expect(await heldBySql(payslipId), "held by the flag").toBe(true);
     },
     TEST_TIMEOUT_MS,
   );

@@ -136,6 +136,11 @@ export type PayoutReconPageResult = {
   readonly reraised: number;
   /** Known flags whose chunk failed to be raised again; logged, page not failed. */
   readonly reraiseFailed: number;
+  /**
+   * Flags that could not be written and hold their slips through a committed hold
+   * instead (legend-t1ufu); the page still moved on. 0 when every flag was written.
+   */
+  readonly held: number;
   /** Proof files that could not be read for a reason other than "not found". */
   readonly unreadable: number;
   /** Sort key of the last operation of the page; null when the page was empty. */
@@ -2254,13 +2259,15 @@ function flagWriteError(failure: FlagFailure | undefined): Error {
  * 3, migration 0709): once the transaction of the flags is committed,
  * app.payout_recon_hold_unwritten records one hold per item, per (kind,
  * operation), in a transaction of its own. A failure here is logged (name and code
- * only); the page fails either way.
+ * only). Returns true only when every hold is committed: then the slips stay held
+ * and the page may move on; otherwise the page must fail (the cursor stays).
  */
 async function holdUnwrittenFlags(
   context: ScopedTenantContext,
   failedFlags: readonly Flag[],
-): Promise<void> {
+): Promise<boolean> {
   const tenantId = context.tenant.tenantId;
+  let allHeld = true;
   const groups = new Map<
     string,
     { kind: string; operationId: string; reason: string; itemIds: Set<string> }
@@ -2287,6 +2294,7 @@ async function holdUnwrittenFlags(
         );
       });
     } catch (error) {
+      allHeld = false;
       logger.error(
         {
           errorName: error instanceof Error ? error.name : "unknown",
@@ -2297,6 +2305,7 @@ async function holdUnwrittenFlags(
       );
     }
   }
+  return allHeld;
 }
 
 /**
@@ -2404,6 +2413,7 @@ export async function reconcileTrustedPayouts(
       flagged: 0,
       reraised: 0,
       reraiseFailed: 0,
+      held: 0,
       unreadable: 0,
       last,
       exhausted,
@@ -2600,7 +2610,9 @@ export async function reconcileTrustedPayouts(
   // lock flag (`evidence_read_locked`) goes this way too (legend-t1ufu): a new
   // episode of it must be written or the page must fail, never be lost in the
   // best-effort re-raise below. A row that fails rolls back alone, the others are
-  // committed, and then the page fails (fail closed, the cursor does not advance).
+  // committed, and the failed ones are held through app.payout_recon_hold_unwritten:
+  // when every hold is committed the page moves on (the slips stay held), otherwise
+  // the page fails (fail closed, the cursor does not advance).
   const keyOf = (flag: Flag) =>
     flagKey(flag.kind, flag.operationId, flag.itemId, flag.reason);
   const freshKeys = new Set(fresh.map(keyOf));
@@ -2610,8 +2622,9 @@ export async function reconcileTrustedPayouts(
       String(flag.reason).includes("evidence_read_locked"),
   );
   const firstWrite = [...fresh, ...knownLocked];
+  let heldFlags: readonly Flag[] = [];
   if (firstWrite.length > 0) {
-    let written: Awaited<ReturnType<typeof raiseFlagsPerRow>>;
+    let written: Awaited<ReturnType<typeof raiseFlagsPerRow>> | undefined;
     try {
       written = await withTenant(db, context, (tx) =>
         raiseFlagsPerRow(tx, tenantId, firstWrite),
@@ -2619,15 +2632,24 @@ export async function reconcileTrustedPayouts(
     } catch (error) {
       // The transaction of the flags itself failed (connection lost, COMMIT
       // refused): none of its flags is known to be written, so hold them all.
-      await holdUnwrittenFlags(context, firstWrite);
-      throw flagWriteError({
+      // Every hold committed: the slips stay held and the page moves on. A hold
+      // that cannot be written fails the page (the cursor does not advance).
+      const failure = {
         name: error instanceof Error ? error.name : "unknown",
         code: pgCodeOf(error),
-      });
+      };
+      logger.error(
+        { errorName: failure.name, errorCode: failure.code },
+        "payout recon: the transaction of the flags failed, holding their slips",
+      );
+      if (!(await holdUnwrittenFlags(context, firstWrite)))
+        throw flagWriteError(failure);
+      heldFlags = firstWrite;
     }
-    if (written.failed > 0) {
-      await holdUnwrittenFlags(context, written.failedFlags);
-      throw flagWriteError(written.firstError);
+    if (written && written.failed > 0) {
+      if (!(await holdUnwrittenFlags(context, written.failedFlags)))
+        throw flagWriteError(written.firstError);
+      heldFlags = written.failedFlags;
     }
   }
   // The other known flags are raised again in small chunks of their own (each
@@ -2638,12 +2660,17 @@ export async function reconcileTrustedPayouts(
     context,
     raised.filter((flag) => !writtenKeys.has(keyOf(flag))),
   );
+  // A flag that was held instead of written counts as held only.
+  const heldKeys = new Set(heldFlags.map(keyOf));
   return {
     operations: operations.length,
-    flagged: fresh.length,
+    flagged: fresh.filter((flag) => !heldKeys.has(keyOf(flag))).length,
     // Known lock flags written on the first path count as raised again.
-    reraised: again.reraised + knownLocked.length,
+    reraised:
+      again.reraised +
+      knownLocked.filter((flag) => !heldKeys.has(keyOf(flag))).length,
     reraiseFailed: again.failed,
+    held: heldFlags.length,
     unreadable,
     last,
     exhausted,
