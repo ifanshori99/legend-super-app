@@ -1119,21 +1119,24 @@ async function assertAutoCashOutSourceNotPaid(
   lines: readonly { accountId: string; debitIdr: number; creditIdr: number }[],
 ): Promise<void> {
   if (row.sourceType === "manual" || row.sourceType === "recurring") return;
-  // The cash account is the one the journal was posted on (its snapshot), not
-  // only today's mapping: a remap of petty_cash A -> B -> A must not let a
-  // reversal of a still-paid source slip through while the mapping points
-  // elsewhere (legend 1140). Today's mapping stays in the set, and a journal
-  // without a snapshot (older rule) is measured on it alone.
-  const currentPettyCashId = await pettyCashGlAccount(
-    tx,
-    tenantId,
-    row.legalEntityId,
-  );
-  const cashAccountIds = new Set<string>();
-  if (currentPettyCashId !== null) cashAccountIds.add(currentPettyCashId);
+  // The cash account is the one the journal was posted on (its snapshot), judged
+  // apart from today's mapping: a remap of petty_cash A -> B -> A (legend 1140)
+  // or onto the account the journal debited (legend 1142: Dr C / Cr A, then
+  // petty_cash A -> C nets the credit to zero) must not let a reversal of a
+  // still-paid source slip through. Today's mapping is used only when the
+  // journal has no petty_cash account of its own to name.
   const snapshotPettyCashId = row.postingAccountSnapshot?.petty_cash;
-  if (typeof snapshotPettyCashId === "string")
+  const cashAccountIds = new Set<string>();
+  if (typeof snapshotPettyCashId === "string") {
     cashAccountIds.add(snapshotPettyCashId);
+  } else {
+    const currentPettyCashId = await pettyCashGlAccount(
+      tx,
+      tenantId,
+      row.legalEntityId,
+    );
+    if (currentPettyCashId !== null) cashAccountIds.add(currentPettyCashId);
+  }
   const key = row.idempotencyKey;
   // A journal without a snapshot (posted before the snapshot existed) has no
   // record of its cash account, and today's mapping may have moved since. For

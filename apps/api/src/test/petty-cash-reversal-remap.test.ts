@@ -73,6 +73,7 @@ afterEach(async () => {
   await H.setPettyCashAccount(await H.accountId("1102"));
   while (leaked.length > 0) await H.forget(leaked.pop()!);
   await dropReversalJournals();
+  await H.setReceivable("1204");
   await H.restoreBaseline();
 });
 
@@ -374,6 +375,130 @@ describe("1140 P1-1 reversal of a still-paid cash reimbursement journal after a 
     const res = await H.payClaim(second, AMOUNT);
     if (res.status === 200) leaked.push(second);
     expectGlRefusal(res);
+    await H.expectNoCashAvailable();
+  }, 120_000);
+});
+
+// legend 1142 / second opinion 1142 finding P2-1 (docs/qa/second-opinion-kas-ronde9-1142.md):
+// ONE mapping PUT moves employee_receivable C -> D and petty_cash A -> C, i.e.
+// petty cash is pointed at the account the old kasbon / claim journal DEBITED.
+// Netting the journal's historical credit to A against today's mapping C
+// (+100.000 - 100.000) must not make the guard forget the source is still paid:
+// the reversal is refused 409 CASH_OUT_JOURNAL_LOCKED whatever the mapping
+// says now (CTO decision: judged on the source identity and the journal's own
+// account snapshot, apart from today's mapping).
+
+/** One PUT: employee_receivable C -> D (spare account), petty_cash A -> C. */
+async function swapReceivableIntoPettyCash(code: string) {
+  const receivable = await H.mappedAccountId("employee_receivable");
+  const petty = await H.mappedAccountId("petty_cash");
+  const spare = await createAssetAccount(code);
+  const current = await H.listMappings();
+  const res = await H.putMappings(
+    current.map((m) => ({
+      role: m.role,
+      accountId:
+        m.role === "employee_receivable"
+          ? spare
+          : m.role === "petty_cash"
+            ? receivable
+            : m.accountId,
+    })),
+  );
+  expect(
+    res.status,
+    `the swap is a valid mapping and must be accepted: ${JSON.stringify(res.body)}`,
+  ).toBe(200);
+  return { petty };
+}
+
+async function claimStatus(claimId: string): Promise<string> {
+  const { rows } = await owner.query<{ status: string }>(
+    "SELECT status FROM reimbursements WHERE tenant_id = $1 AND id = $2",
+    [tenantId, claimId],
+  );
+  return rows[0]!.status;
+}
+
+describe("1142 P2-1 reversal of a still-paid journal after petty_cash is remapped onto the journal's debit account", () => {
+  it("[1142-reversal-swap-loan-409] kasbon delivered (Dr 1204 / Cr A), one PUT moves receivable 1204 -> spare and petty_cash A -> 1204: the reversal is refused 409 CASH_OUT_JOURNAL_LOCKED, no reversal journal, kasbon stays disbursed, GL A stays Rp0, and after remapping back a second kasbon is refused 422 PETTY_CASH_GL_INSUFFICIENT", async () => {
+    await H.drain();
+    await H.W.fundPettyCash(AMOUNT);
+    const { id, journalKey } = await payLoanAndBook();
+    expect(await H.glBalance(), "premise: petty cash account is empty").toBe(0);
+    expect(await H.available(), "premise: nothing available").toBe(0);
+    const journalId = await journalIdOf(journalKey);
+    const { petty } = await swapReceivableIntoPettyCash("1196");
+    const journals = await H.journalCount();
+
+    const reversal = await reverse(journalId);
+
+    expect(
+      reversal.status,
+      `the kasbon is still disbursed, the reversal must be refused: ${JSON.stringify(reversal.body)}`,
+    ).toBe(409);
+    expect(reversal.body.error?.code).toBe("CASH_OUT_JOURNAL_LOCKED");
+    expect(await H.journalCount(), "no reversal journal").toBe(journals);
+    expect(await H.glBalance(), "GL A stays Rp0").toBe(0);
+    expect((await H.loanState(id)).status).toBe("disbursed");
+
+    await H.setPettyCashAccount(petty);
+    await H.setReceivable("1204");
+    const second = await H.seedLoan(AMOUNT);
+    const res = await H.disburse(second, AMOUNT);
+    if (res.status === 200) leaked.push(second);
+    expectGlRefusal(res);
+    expect((await H.loanState(second)).events).toBe(0);
+    await H.expectNoCashAvailable();
+  }, 120_000);
+
+  it("[1142-reversal-swap-loan-legacy-409] same swap for a kasbon journal without posting_account_snapshot (posted before migration 0296): still refused 409, no reversal journal", async () => {
+    await H.drain();
+    await H.W.fundPettyCash(AMOUNT);
+    const { id, journalKey } = await payLoanAndBook();
+    const journalId = await journalIdOf(journalKey);
+    await stripSnapshot(journalId);
+    await swapReceivableIntoPettyCash("1197");
+    const journals = await H.journalCount();
+
+    const reversal = await reverse(journalId);
+
+    expect(
+      reversal.status,
+      `the kasbon is still disbursed, the reversal must be refused: ${JSON.stringify(reversal.body)}`,
+    ).toBe(409);
+    expect(await H.journalCount(), "no reversal journal").toBe(journals);
+    expect((await H.loanState(id)).status).toBe("disbursed");
+  }, 120_000);
+
+  it("[1142-reversal-swap-reimbursement-409] cash claim paid and delivered, the same swap: the reversal of the claim journal is refused 409 CASH_OUT_JOURNAL_LOCKED, no reversal journal, claim stays paid, GL A stays Rp0, and after remapping back a second claim is refused 422 PETTY_CASH_GL_INSUFFICIENT", async () => {
+    await H.drain();
+    await H.W.fundPettyCash(AMOUNT);
+    const { id, journalKey } = await payClaimAndBook();
+    expect(await H.glBalance(), "premise: petty cash account is empty").toBe(0);
+    expect(await H.available(), "premise: nothing available").toBe(0);
+    const journalId = await journalIdOf(journalKey);
+    const { petty } = await swapReceivableIntoPettyCash("1198");
+    const journals = await H.journalCount();
+
+    const reversal = await reverse(journalId);
+
+    expect(
+      reversal.status,
+      `the claim is still paid, the reversal must be refused: ${JSON.stringify(reversal.body)}`,
+    ).toBe(409);
+    expect(reversal.body.error?.code).toBe("CASH_OUT_JOURNAL_LOCKED");
+    expect(await H.journalCount(), "no reversal journal").toBe(journals);
+    expect(await H.glBalance(), "GL A stays Rp0").toBe(0);
+    expect(await claimStatus(id)).toBe("paid");
+
+    await H.setPettyCashAccount(petty);
+    await H.setReceivable("1204");
+    const second = await H.seedClaim(AMOUNT);
+    const res = await H.payClaim(second, AMOUNT);
+    if (res.status === 200) leaked.push(second);
+    expectGlRefusal(res);
+    expect(await H.claimEvents(second)).toBe(0);
     await H.expectNoCashAvailable();
   }, 120_000);
 });

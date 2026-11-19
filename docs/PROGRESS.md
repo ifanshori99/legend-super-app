@@ -1,3 +1,8 @@
+## 1142 Perbaikan SO kas ronde 9 (engineer Sonnet, cabang ghostex/d158b041 dari bb1f85ab6, 19 Nov 2026)
+- Sudah: guard reversal kas keluar (`assertAutoCashOutSourceNotPaid`) menilai akun kas dari snapshot jurnal saja (`petty_cash` di snapshot), terpisah dari mapping sekarang; mapping sekarang hanya dipakai bila jurnal tidak menyebut akun petty cash sendiri. Remap satu PUT (piutang C->D, petty_cash A->C) tidak lagi menetralkan kredit historis: reversal kasbon yang masih disbursed = 409 `CASH_OUT_JOURNAL_LOCKED`.
+- Test gagal-dulu: `[1142-reversal-swap-loan-409]` gagal di bb1f85ab6 (reversal diterima 200), lulus setelah perbaikan; kontrol legacy tanpa snapshot dan klaim reimburse lulus di kedua sisi (jurnal klaim mendebit akun beban, tidak bisa dipetakan sebagai petty cash).
+- Tanpa migrasi.
+
 ## 1140 Perbaikan SO kas ronde 8 (engineer Sonnet, cabang ghostex/d158b041 dari eab61aa7a, 19 Nov 2026)
 - Sudah: P1-1 reversal jurnal kasbon/reimburse tunai yang sumbernya masih dibayar kini 409 berdasarkan akun snapshot jurnal + mapping sekarang (jurnal tanpa snapshot dan sumber kas keluar dikenal: diputuskan oleh status sumber saja); cadangan delivered menghitung reversal. P2-1 impor konfigurasi mengunci chart sebelum `tenants FOR UPDATE` (urutan sama dengan endpoint mapping), entitas yang muncul belakangan try-lock dan gagal-tutup. P2-2 nominal NULL/hilang/bukan angka JSON/<=0 = baris penghalang gerbang SQL dan kas tertahan di helper, dicek sebelum saringan neto; gerbang menghitung reversal.
 - Tanpa migrasi; db:generate kosong. Architect xhigh: tiga temuan tertutup, dua P2 + dua P3 tindak lanjut sudah dikerjakan (gerbang menghitung reversal, aturan nominal sama dengan helper, hapus debug).
