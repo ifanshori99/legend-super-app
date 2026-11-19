@@ -2172,3 +2172,4 @@ Langkah berikut CTO baru:
 - 09:12 CTO: 1150 opsi A (QR attach-only + body kontrak shared); kartu lanjutan legend-0ne0z, mockup 1152 (Codex #4). 1151 fix approval (G4m76, Claude #5). Disk: hapus worktree bersih 1136/1137 + cleanup-ssd, 14.6 -> 17 GB.
 - 09:15 CTO: 1149 (G4d60) berhenti: Codex #5 kena batas 5 jam (reset 11:43). 3 test berubah belum di-commit di legend-769735ff. Cron sekali 11:47 kirim ulang.
 - 09:21 CTO: 1144 selesai 41b89605d; G2yc3 lanjut fix hold echo tutup hanya saat R final sukses. SO 16 (G03qv, Codex #3).
+- 09:27 CTO: SO refund 16 (G03qv) satu P2 alert ganda saat saklar mati; ke G2yc3 bersama fix P3. Dua P2 ronde 15 tertutup.
