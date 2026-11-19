@@ -8158,7 +8158,7 @@ heavy pnpm --filter @starter/api typecheck
 git diff --check
 ```
 
-## 1162: POS struk edge reporter (legend-gdjpu, legend-j772n, legend-rh1hk, legend-rzt8s; legend-vet9d menunggu), 19 Nov 2026
+## 1162: POS struk edge reporter (legend-gdjpu, legend-j772n, legend-rh1hk, legend-rzt8s, legend-vet9d), 19 Nov 2026
 Cabang `ws/1162-pos-struk-edge` (dasar `milestone/m1` 6b3288bc2). Tanpa migrasi (`db:generate` kosong; nomor kerja 0704/0705 tidak terpakai).
 
 Sudah:
@@ -8170,7 +8170,7 @@ Sudah:
 - Review architect rh1hk (xhigh): 0 P1, 2 P2 (celah test: test clone tidak menjalankan jalur longgar; alert tidak ter-resolve oleh pull `behind`), 1 P3 (kegagalan baca kursor menjatuhkan laporan). Semua dibetulkan, termasuk 3 test batas tambahan.
 
 Belum / keputusan untuk CTO:
-- legend-vet9d (bucket DP rekap hari): menunggu CTO menyatakan batch95 mendarat, lalu `git merge milestone/m1`.
+- vet9d (batch95 mendarat, `milestone/m1` d99aae067 digabung di `c38c1a4ca`; hanya `docs/PROGRESS.md` berkonflik, dua bagian dipertahankan): rekap tutup hari punya bucket DP. DP adalah liabilitas, bukan tender dan bukan kas. Kontrak shared: per device `depositAppliedIdr` dan `depositRefundedIdr`, total `totalDepositAppliedIdr` dan `totalDepositRefundedIdr` (default 0, payload lama tetap lolos; refine DP <= total penjualan, total = jumlah device), identitas tender: Σ net tender = penjualan − DP − refund − void; blind recap dan mapper web membawa empat field itu (belum ditampilkan, kartu UI terpisah). `computeRecap` (`pos-day.service.ts`): penjualan hari itu menjumlah `orders.deposit_applied_idr`; cek keseimbangan jadi tender diterima + DP = penjualan; refund DP (`pos_deposit_refunds`, tambahan di atas `pos_order_refunds`) masuk bucket pada tanggal `refundedAt`, baik untuk penjualan hari ini maupun hari lama; hanya tabel POS-native yang dibaca, `payment_refunds` (mirror WS05) tidak, jadi tidak ada hitung ganda. Penolakan yang tetap: void pesanan ber-DP, refund DP pada order tanpa DP, total refund DP melebihi DP order (lintas hari), `releasedAt` di luar hari bisnis refund, outlet atau order baris DP berbeda dari refund, baris refund tidak sama dengan jumlah. Kas laci tidak berubah oleh DP (shift/cash guard tidak memakai `computeRecap`). Tanpa migrasi. Test: 10 baru + 5 pelengkap review di `pos-day.test.ts`, 9 di `pos-vet9d-recap-contract.test.ts`; Q81-ECON-DAY-01 ditulis ulang (sebelumnya menguji penolakan). Review architect (high): 0 P1, 3 P2 celah test dan 4 P3, semua dibetulkan.
 - Re-apply yang gagal tidak diulang otomatis (alasan ledger dihapus setelah void sukses); konflik tetap terbuka untuk replay manual supervisor (rilis 1). Retry otomatis: kartu P3 terpisah dari CTO.
 - Dilewati bila ada resolusi apa pun, termasuk replay manual yang gagal.
 - Suite penuh dan `pnpm check` tidak dijalankan (tugas merge train). Printer fisik tidak diuji.

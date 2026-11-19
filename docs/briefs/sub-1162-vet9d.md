@@ -1,0 +1,14 @@
+# legend-vet9d — implementation (rule: docs/briefs/sub-1162-vet9d-design-answer.md; read it first)
+
+Field names are fixed: device recap `depositAppliedIdr`, `depositRefundedIdr`; recap `totalDepositAppliedIdr`, `totalDepositRefundedIdr`; all `nonnegativeIdr.default(idr(0))` (old payloads parse as 0). No migration. DP is never a tender or cash. Do not touch accounting-journal*, order-given.ts, payment-admin.service.ts. No tsc, no commit, no push (the lead does those). Each part: prettier --write + eslint on changed files; Bash one command per call; tests via `LEGEND_TEST_FILES="..." heavy pnpm test` in the background, wait for the notification.
+
+## Part A (shared) — files: packages/shared/src/pos/schemas.ts, packages/shared/src/pos/fixtures.ts only
+Add the fields to `endOfDayDeviceRecapSchema` (refine depositApplied <= totalIdr), `endOfDayRecapSchema` (totals = sum over devices; tender identity becomes sum tender net = sales - depositApplied - refunds - voids), and to `endOfDayBlindDeviceRecapSchema` / `endOfDayBlindRecapSchema` (strict schemas: add the four fields). Update fixtures. Add shared tests in apps/api/src/test/pos-vet9d-recap-contract.test.ts (new file): old payload without fields parses as 0; DP above total rejects; totals != device sum rejects; identity with DP balances; blind parses with the fields.
+
+## Part B (web) — files: apps/web/src/features/ws04-pos-kasir/{api.ts,mock.ts,mock-wire.ts,CONTRACT-GAPS.md} and its recap type file only
+Map the new fields in `dayRecapFrom` and the recap type (default 0), update mock and mock-wire, note in CONTRACT-GAPS.md that the DP figures are returned but not shown yet (UI is a separate card). No screens.
+
+## Part C (api) — runs AFTER part A. Files: apps/api/src/services/pos-day.service.ts, apps/api/src/test/pos-day.test.ts
+Tests first, RED, then code, GREEN. Implement section 6 and 2/3 of the design answer in `computeRecap`: remove the blanket DP-refund reject (:320-355) and bucket DP refunds by `pos_order_refunds.refundedAt` into `depositRefundedIdr`; sum `orders.deposit_applied_idr` of the day's sales into `depositAppliedIdr`; balance check captured + depositApplied == sales; refund count includes all-DP refunds; the four CONFLICT guards; void of a DP order -> CONFLICT; return the new fields (device + totals). Tests (pos-day.test.ts): rewrite Q81-ECON-DAY-01 (closes, refund bucketed today); DP refund today for today's sale; DP-only sale; mixed DP+cash (cash net = cash captured); payment_refunds mirror row counted once; void of DP order 409; over-refunded DP 409; releasedAt outside business day 409; shift close difference 0 on a DP day. Use seedEconomicDepositRefund (dp-economic-refund-fixture.ts). Money rule: nothing may let a refund exceed what was paid; cash expectation unaffected by DP.
+
+Report: files changed, RED/GREEN per test, counts, not verified.

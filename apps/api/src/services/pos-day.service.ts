@@ -5,7 +5,7 @@
 // close; the close freezes that recap in `pos_daily_closes.recap` and appends
 // `day.closed` with the same totals, so POS, accounting and the dashboard read
 // one set of numbers. The identity the contract enforces is
-//   Σ tender net = sales − refunds − voided paid sales.
+//   Σ tender net = sales − DP applied − refunds − voided paid sales.
 //
 // How the figures are derived (read the columns the order rows carry):
 // - Sales set: `pos_orders` rows whose `orders` row has this business date and
@@ -17,8 +17,10 @@
 // - Voids and refunds belong to the business date of `voided_at` /
 //   `refunded_at` (outlet clock), attributed to the original order's device.
 // - A void is paid back through the tenders the sale was captured with.
-// - A reservation deposit has no tender row, so a sale whose captured tenders
-//   do not equal its total cannot keep the identity: the recap fails closed
+// - A reservation deposit (DP) has no tender row: it is a liability bucket
+//   (`deposit_applied_idr` of the day's sales, and the DP paid back by the
+//   day's refunds, legend-vet9d). A sale whose captured tenders plus DP do not
+//   equal its total cannot keep the identity: the recap fails closed
 //   (CONFLICT) instead of publishing figures that disagree.
 //
 // Lock order of the close: advisory lock (tenant, outlet, date) -> reads ->
@@ -35,6 +37,7 @@ import {
   lt,
   lte,
   notInArray,
+  or,
   sql,
 } from "drizzle-orm";
 import { z } from "zod";
@@ -276,6 +279,8 @@ type DeviceAcc = {
   voidedAmountIdr: number;
   refundCount: number;
   refundAmountIdr: number;
+  depositAppliedIdr: number;
+  depositRefundedIdr: number;
   shiftCount: number;
   cashVarianceIdr: number;
   expiredCashOutIdr: number;
@@ -296,6 +301,8 @@ function newDevice(deviceId: string): DeviceAcc {
     voidedAmountIdr: 0,
     refundCount: 0,
     refundAmountIdr: 0,
+    depositAppliedIdr: 0,
+    depositRefundedIdr: 0,
     shiftCount: 0,
     cashVarianceIdr: 0,
     expiredCashOutIdr: 0,
@@ -317,43 +324,6 @@ async function computeRecap(
     businessDate as never,
     outletBusinessDayClock(outlet),
   );
-  // The recap contract has no DP liability bucket yet. A return of an older
-  // sale can otherwise hide its DP part while today's tender identity still
-  // balances. Refuse to publish or close that incomplete recap.
-  const [depositReturn] = await tx
-    .select({ id: posDepositRefunds.id })
-    .from(posDepositRefunds)
-    .innerJoin(
-      posOrderRefunds,
-      and(
-        eq(posOrderRefunds.tenantId, posDepositRefunds.tenantId),
-        eq(posOrderRefunds.id, posDepositRefunds.posRefundId),
-      ),
-    )
-    .innerJoin(
-      posOrders,
-      and(
-        eq(posOrders.tenantId, posDepositRefunds.tenantId),
-        eq(posOrders.orderId, posDepositRefunds.orderId),
-        eq(posOrders.outletId, posDepositRefunds.outletId),
-      ),
-    )
-    .where(
-      and(
-        eq(posDepositRefunds.tenantId, tenantId),
-        eq(posDepositRefunds.outletId, outletId),
-        gte(posOrderRefunds.refundedAt, range.start),
-        lt(posOrderRefunds.refundedAt, range.end),
-        reportablePosOrders(),
-      ),
-    )
-    .limit(1);
-  if (depositReturn)
-    throw new CoreError(
-      "CONFLICT",
-      "Rekap refund DP belum tersedia; kewajiban refund tetap tercatat dan hari tidak dapat ditutup dengan rekap yang tidak lengkap.",
-    );
-
   const devices = new Map<string, DeviceAcc>();
   const deviceOf = (id: string | null | undefined): DeviceAcc => {
     const key = (id ?? NIL_DEVICE).toLowerCase();
@@ -376,6 +346,7 @@ async function computeRecap(
       taxIdr: orders.taxIdr,
       roundingIdr: orders.roundingIdr,
       totalIdr: orders.totalIdr,
+      depositAppliedIdr: orders.depositAppliedIdr,
       pricesIncludeTax: orders.pricesIncludeTax,
       deviceId: posOrders.deviceId,
       shiftDeviceId: posShifts.deviceId,
@@ -408,6 +379,7 @@ async function computeRecap(
     );
   const channels = new Map<string, { orderCount: number; totalIdr: number }>();
   let salesTotal = 0;
+  let depositAppliedTotal = 0;
   for (const row of sales) {
     const acc = deviceOf(row.deviceId ?? row.shiftDeviceId);
     acc.orderCount += 1;
@@ -427,6 +399,9 @@ async function computeRecap(
     acc.roundingIdr += Number(row.roundingIdr);
     acc.totalIdr += Number(row.totalIdr);
     salesTotal += Number(row.totalIdr);
+    // legend-vet9d: DP is a liability bucket beside the tenders, never a tender.
+    acc.depositAppliedIdr += Number(row.depositAppliedIdr);
+    depositAppliedTotal += Number(row.depositAppliedIdr);
     const channel = channels.get(row.channel) ?? { orderCount: 0, totalIdr: 0 };
     channel.orderCount += 1;
     channel.totalIdr += Number(row.totalIdr);
@@ -474,10 +449,10 @@ async function computeRecap(
     captured.set(row.method, Number(row.amount));
     capturedTotal += Number(row.amount);
   }
-  if (capturedTotal !== salesTotal)
+  if (capturedTotal + depositAppliedTotal !== salesTotal)
     throw new CoreError(
       "CONFLICT",
-      "Rekap hari ini tidak seimbang: pembayaran yang diterima tidak sama dengan total penjualan.",
+      "Rekap hari ini tidak seimbang: pembayaran yang diterima ditambah DP tidak sama dengan total penjualan.",
     );
 
   // Voids (paid sales voided by correction) dated this business day.
@@ -488,6 +463,7 @@ async function computeRecap(
     .select({
       orderId: posOrderVoids.orderId,
       amountIdr: posOrderVoids.amountIdr,
+      depositAppliedIdr: orders.depositAppliedIdr,
       deviceId: posOrders.deviceId,
       shiftDeviceId: posShifts.deviceId,
     })
@@ -498,6 +474,13 @@ async function computeRecap(
         eq(posOrders.tenantId, posOrderVoids.tenantId),
         eq(posOrders.orderId, posOrderVoids.orderId),
         eq(posOrders.outletId, posOrderVoids.outletId),
+      ),
+    )
+    .innerJoin(
+      orders,
+      and(
+        eq(orders.tenantId, posOrderVoids.tenantId),
+        eq(orders.id, posOrderVoids.orderId),
       ),
     )
     .leftJoin(
@@ -516,6 +499,13 @@ async function computeRecap(
         lt(posOrderVoids.voidedAt, range.end),
         reportablePosOrders(),
       ),
+    );
+  // legend-vet9d: a DP order is never voided (voidPosOrder refuses it); a void
+  // on one cannot be paid back through its tenders, so fail closed.
+  if (voids.some((row) => Number(row.depositAppliedIdr) > 0))
+    throw new CoreError(
+      "CONFLICT",
+      "Rekap hari ini tidak seimbang: ada void pada pesanan yang memakai DP.",
     );
   if (voids.length > 0) {
     const tenders = await tx
@@ -588,8 +578,12 @@ async function computeRecap(
       and(
         eq(posOrderRefunds.tenantId, tenantId),
         eq(posOrderRefunds.outletId, outletId),
-        // A Rp0 goods return (legend-wkl3) moved no money: not a refund here.
-        gt(posOrderRefunds.amountIdr, idr(0)),
+        // A Rp0 goods return (legend-wkl3) moved no money: not a refund here,
+        // unless it paid DP back (legend-vet9d): that counts as a refund.
+        or(
+          gt(posOrderRefunds.amountIdr, idr(0)),
+          sql`exists (select 1 from ${posDepositRefunds} where ${posDepositRefunds.tenantId} = ${posOrderRefunds.tenantId} and ${posDepositRefunds.posRefundId} = ${posOrderRefunds.id})`,
+        ),
         gte(posOrderRefunds.refundedAt, range.start),
         lt(posOrderRefunds.refundedAt, range.end),
         reportablePosOrders(),
@@ -610,6 +604,126 @@ async function computeRecap(
       );
     for (const line of row.lines)
       addRefunded(line.method, Number(line.amountIdr));
+  }
+
+  // legend-vet9d: DP paid back by this day's refunds (additive to the tender
+  // part above). Read from POS-native rows only, never `payment_refunds`, so a
+  // WS-05 mirror of the same return cannot be counted twice.
+  const depositRows = await tx
+    .select({
+      depositOrderId: posDepositRefunds.orderId,
+      refundOrderId: posOrderRefunds.orderId,
+      amountIdr: posDepositRefunds.amountIdr,
+      releasedAt: posDepositRefunds.releasedAt,
+      depositOutletId: posDepositRefunds.outletId,
+      refundOutletId: posOrderRefunds.outletId,
+      orderDepositIdr: orders.depositAppliedIdr,
+      deviceId: posOrders.deviceId,
+      shiftDeviceId: posShifts.deviceId,
+    })
+    .from(posDepositRefunds)
+    .innerJoin(
+      posOrderRefunds,
+      and(
+        eq(posOrderRefunds.tenantId, posDepositRefunds.tenantId),
+        eq(posOrderRefunds.id, posDepositRefunds.posRefundId),
+      ),
+    )
+    .innerJoin(
+      posOrders,
+      and(
+        eq(posOrders.tenantId, posOrderRefunds.tenantId),
+        eq(posOrders.orderId, posOrderRefunds.orderId),
+        eq(posOrders.outletId, posOrderRefunds.outletId),
+      ),
+    )
+    .innerJoin(
+      orders,
+      and(
+        eq(orders.tenantId, posOrders.tenantId),
+        eq(orders.id, posOrders.orderId),
+      ),
+    )
+    .leftJoin(
+      posShifts,
+      and(
+        eq(posShifts.tenantId, posOrders.tenantId),
+        eq(posShifts.outletId, posOrders.outletId),
+        eq(posShifts.id, posOrders.shiftId),
+      ),
+    )
+    .where(
+      and(
+        eq(posOrderRefunds.tenantId, tenantId),
+        eq(posOrderRefunds.outletId, outletId),
+        gte(posOrderRefunds.refundedAt, range.start),
+        lt(posOrderRefunds.refundedAt, range.end),
+        reportablePosOrders(),
+      ),
+    );
+  for (const row of depositRows) {
+    if (row.depositOrderId.toLowerCase() !== row.refundOrderId.toLowerCase())
+      throw new CoreError(
+        "CONFLICT",
+        "Rekap hari ini tidak seimbang: order refund DP tidak sama dengan order refund.",
+      );
+    if (row.depositOutletId.toLowerCase() !== row.refundOutletId.toLowerCase())
+      throw new CoreError(
+        "CONFLICT",
+        "Rekap hari ini tidak seimbang: outlet refund DP tidak sama dengan outlet refund.",
+      );
+    if (row.releasedAt < range.start || row.releasedAt >= range.end)
+      throw new CoreError(
+        "CONFLICT",
+        "Rekap hari ini tidak seimbang: tanggal pelepasan DP di luar hari kerja refund.",
+      );
+    if (Number(row.orderDepositIdr) <= 0)
+      throw new CoreError(
+        "CONFLICT",
+        "Rekap hari ini tidak seimbang: refund DP pada pesanan tanpa DP.",
+      );
+    deviceOf(row.deviceId ?? row.shiftDeviceId).depositRefundedIdr += Number(
+      row.amountIdr,
+    );
+  }
+  if (depositRows.length > 0) {
+    // Never pay back more DP than the order took, counting every earlier day.
+    const paidBack = await tx
+      .select({
+        orderId: posDepositRefunds.orderId,
+        amount: sql<string>`coalesce(sum(${posDepositRefunds.amountIdr}), 0)::text`,
+      })
+      .from(posDepositRefunds)
+      .innerJoin(
+        posOrderRefunds,
+        and(
+          eq(posOrderRefunds.tenantId, posDepositRefunds.tenantId),
+          eq(posOrderRefunds.id, posDepositRefunds.posRefundId),
+        ),
+      )
+      .where(
+        and(
+          eq(posDepositRefunds.tenantId, tenantId),
+          inArray(
+            posDepositRefunds.orderId,
+            depositRows.map((row) => row.depositOrderId),
+          ),
+          lt(posOrderRefunds.refundedAt, range.end),
+        ),
+      )
+      .groupBy(posDepositRefunds.orderId);
+    const depositOf = new Map(
+      depositRows.map((row) => [
+        row.depositOrderId.toLowerCase(),
+        Number(row.orderDepositIdr),
+      ]),
+    );
+    for (const row of paidBack)
+      if (Number(row.amount) > (depositOf.get(row.orderId.toLowerCase()) ?? 0))
+        throw new CoreError(
+          "CONFLICT",
+          "Rekap hari ini tidak seimbang: refund DP melebihi DP pesanan asal.",
+        );
   }
 
   // Shifts of this business day: count, variance, all closed?
@@ -733,6 +847,8 @@ async function computeRecap(
     totalVoidsIdr: sum((device) => device.voidedAmountIdr),
     totalVarianceIdr: sum((device) => device.cashVarianceIdr),
     totalExpiredCashOutIdr: sum((device) => device.expiredCashOutIdr),
+    totalDepositAppliedIdr: sum((device) => device.depositAppliedIdr),
+    totalDepositRefundedIdr: sum((device) => device.depositRefundedIdr),
     inventoryDeductionApplied: false,
     unsyncedReceiptCount,
     accountingSync: { status: "pending", journalCount: 0, postedAt: null },

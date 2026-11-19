@@ -1387,7 +1387,7 @@ export type PosCashMovementDecision = z.infer<
 
 // ---- End of day (F8 "Tutup Hari") -----------------------------------------
 
-export const endOfDayDeviceRecapSchema = z.strictObject({
+const endOfDayDeviceRecapShape = z.strictObject({
   deviceId: uuidSchema,
   orderCount: z.number().int().nonnegative(),
   grossSalesIdr: nonnegativeIdr,
@@ -1409,8 +1409,33 @@ export const endOfDayDeviceRecapSchema = z.strictObject({
    * before it.
    */
   expiredCashOutIdr: nonnegativeIdr.default(idr(0)),
+  /**
+   * legend-vet9d: deposit (DP) that funded the day's sales. DP is a liability,
+   * never a tender: it sits beside the tender rows, so the drawer's expected
+   * cash is unchanged. 0 on recaps frozen before this field existed.
+   */
+  depositAppliedIdr: nonnegativeIdr.default(idr(0)),
+  /**
+   * legend-vet9d: deposit paid back by refunds made on the business day (the
+   * refund's own date), on top of the tender part in refundAmountIdr.
+   */
+  depositRefundedIdr: nonnegativeIdr.default(idr(0)),
   closed: z.boolean(),
 });
+
+const depositWithinTotal = (device: {
+  depositAppliedIdr: unknown;
+  totalIdr: unknown;
+}) => Number(device.depositAppliedIdr) <= Number(device.totalIdr);
+const depositWithinTotalIssue = {
+  path: ["depositAppliedIdr"],
+  message: "depositAppliedIdr cannot exceed the device total",
+};
+
+export const endOfDayDeviceRecapSchema = endOfDayDeviceRecapShape.refine(
+  depositWithinTotal,
+  depositWithinTotalIssue,
+);
 export type EndOfDayDeviceRecap = z.infer<typeof endOfDayDeviceRecapSchema>;
 
 export const endOfDayTenderRowSchema = z
@@ -1453,6 +1478,10 @@ export const endOfDayRecapSchema = z
     totalVarianceIdr: idrSchema,
     /** Sum of the device expiredCashOutIdr (legend-y9bf). */
     totalExpiredCashOutIdr: nonnegativeIdr.default(idr(0)),
+    /** Sum of the device depositAppliedIdr (legend-vet9d). */
+    totalDepositAppliedIdr: nonnegativeIdr.default(idr(0)),
+    /** Sum of the device depositRefundedIdr (legend-vet9d). */
+    totalDepositRefundedIdr: nonnegativeIdr.default(idr(0)),
     /** F8: "pemotongan stok akhir hari bila dipilih". */
     inventoryDeductionApplied: z.boolean(),
     /**
@@ -1534,9 +1563,32 @@ export const endOfDayRecapSchema = z
         message:
           "totalExpiredCashOutIdr must equal the device expired cash outs",
       });
+    const depositApplied = recap.devices.reduce(
+      (sum, device) => sum + Number(device.depositAppliedIdr),
+      0,
+    );
+    if (Number(recap.totalDepositAppliedIdr) !== depositApplied)
+      ctx.addIssue({
+        code: "custom",
+        path: ["totalDepositAppliedIdr"],
+        message:
+          "totalDepositAppliedIdr must equal the device deposits applied",
+      });
+    const depositRefunded = recap.devices.reduce(
+      (sum, device) => sum + Number(device.depositRefundedIdr),
+      0,
+    );
+    if (Number(recap.totalDepositRefundedIdr) !== depositRefunded)
+      ctx.addIssue({
+        code: "custom",
+        path: ["totalDepositRefundedIdr"],
+        message:
+          "totalDepositRefundedIdr must equal the device deposits refunded",
+      });
     const net = recap.tenders.reduce((sum, row) => sum + Number(row.netIdr), 0);
     const expectedNet =
       Number(recap.totalSalesIdr) -
+      Number(recap.totalDepositAppliedIdr) -
       Number(recap.totalRefundsIdr) -
       Number(recap.totalVoidsIdr);
     if (net !== expectedNet)
@@ -1544,7 +1596,7 @@ export const endOfDayRecapSchema = z
         code: "custom",
         path: ["tenders"],
         message:
-          "Tender net must equal sales − refunds − voided paid sales (POS-05 identity at contract level)",
+          "Tender net must equal sales − deposit applied − refunds − voided paid sales (POS-05 identity at contract level)",
       });
     if (
       recap.status === "closed" &&
@@ -1585,10 +1637,12 @@ export type EndOfDayRecap = z.infer<typeof endOfDayRecapSchema>;
  * per method (on a one-device outlet those are their own cash sales and cash
  * paid back). A device row is blank whole: both fields null together.
  */
-export const endOfDayBlindDeviceRecapSchema = endOfDayDeviceRecapSchema.extend({
-  cashVarianceIdr: idrSchema.nullable(),
-  expiredCashOutIdr: nonnegativeIdr.nullable(),
-});
+export const endOfDayBlindDeviceRecapSchema = endOfDayDeviceRecapShape
+  .extend({
+    cashVarianceIdr: idrSchema.nullable(),
+    expiredCashOutIdr: nonnegativeIdr.nullable(),
+  })
+  .refine(depositWithinTotal, depositWithinTotalIssue);
 export type EndOfDayBlindDeviceRecap = z.infer<
   typeof endOfDayBlindDeviceRecapSchema
 >;
@@ -1620,6 +1674,9 @@ export const endOfDayBlindRecapSchema = z
     totalVoidsIdr: nonnegativeIdr,
     totalVarianceIdr: z.null(),
     totalExpiredCashOutIdr: z.null(),
+    /** Deposit figures are not drawer figures: they stay visible (legend-vet9d). */
+    totalDepositAppliedIdr: nonnegativeIdr.default(idr(0)),
+    totalDepositRefundedIdr: nonnegativeIdr.default(idr(0)),
     inventoryDeductionApplied: z.boolean(),
     /** Same count as the full recap (legend-21c8n); not a drawer figure. */
     unsyncedReceiptCount: z.number().int().nonnegative().default(0),
@@ -1682,6 +1739,25 @@ export const endOfDayBlindRecapSchema = z
         code: "custom",
         path: ["totalVoidsIdr"],
         message: "totalVoidsIdr must equal the device voided sales",
+      });
+    if (
+      Number(recap.totalDepositAppliedIdr) !== total((d) => d.depositAppliedIdr)
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["totalDepositAppliedIdr"],
+        message:
+          "totalDepositAppliedIdr must equal the device deposits applied",
+      });
+    if (
+      Number(recap.totalDepositRefundedIdr) !==
+      total((d) => d.depositRefundedIdr)
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["totalDepositRefundedIdr"],
+        message:
+          "totalDepositRefundedIdr must equal the device deposits refunded",
       });
     if ((recap.status === "closed") !== (recap.closedAt !== null))
       ctx.addIssue({

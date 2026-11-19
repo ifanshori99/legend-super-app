@@ -1625,45 +1625,608 @@ describe("POS-05 migration 0090 grants pos.day.close to existing template roles 
   });
 });
 
-describe("legend-77r0 Q81 DP corrections cannot disappear from a later recap", () => {
-  it("Q81-ECON-DAY-01: a DP return today for an earlier sale fails closed while recap has no deposit bucket", async () => {
+describe("legend-vet9d DP buckets in the day recap (liability, never a tender)", () => {
+  const at = (businessDate: string, time = "12:00:00") =>
+    `${businessDate}T${time}Z`;
+
+  /** A completed POS sale funded partly or wholly by DP; cash is the only tender. */
+  async function seedDpSale(
+    client: PoolClient,
+    input: {
+      businessDate: string;
+      totalIdr: number;
+      depositIdr: number;
+      cashIdr?: number;
+      outletId?: string;
+      deviceId?: string;
+      shiftId?: string;
+    },
+  ) {
     const orderId = randomUUID();
-    const businessDate = "2037-01-15";
-    await asOwnerTenant(tenant.tenantId, async (client) => {
+    const outletId = input.outletId ?? tenant.outletId;
+    await client.query(
+      `INSERT INTO orders
+        (id,tenant_id,outlet_id,number,channel,service_type,payment_mode,
+         subtotal_idr,discount_idr,service_charge_idr,tax_idr,rounding_idr,total_idr,
+         prices_include_tax,status,business_date,placed_at,deposit_applied_idr)
+       VALUES ($1,$2,$3,$4,'pos','takeaway','pay_first',$5,0,0,0,0,$5,
+         false,'completed',$6,$7,$8)`,
+      [
+        orderId,
+        tenant.tenantId,
+        outletId,
+        `DP-DAY-${orderId.slice(0, 20)}`,
+        input.totalIdr,
+        input.businessDate,
+        at(input.businessDate),
+        input.depositIdr,
+      ],
+    );
+    await client.query(
+      `INSERT INTO pos_orders
+        (order_id,tenant_id,outlet_id,channel,cashier_id,submitted_at,completed_at,
+         device_id,shift_id)
+       VALUES ($1,$2,$3,'pos',$4,$5,$6,$7,$8)`,
+      [
+        orderId,
+        tenant.tenantId,
+        outletId,
+        cashier.userId,
+        at(input.businessDate),
+        at(input.businessDate, "12:00:01"),
+        input.deviceId ?? null,
+        input.shiftId ?? null,
+      ],
+    );
+    if ((input.cashIdr ?? 0) > 0)
       await client.query(
-        `INSERT INTO orders
-          (id,tenant_id,outlet_id,number,channel,service_type,payment_mode,
-           subtotal_idr,discount_idr,service_charge_idr,tax_idr,rounding_idr,total_idr,
-           prices_include_tax,status,business_date,placed_at,deposit_applied_idr)
-         VALUES ($1,$2,$3,$4,'pos','takeaway','pay_first',25000,0,0,0,0,25000,
-           false,'completed','2037-01-14','2037-01-14T12:00:00Z',25000)`,
+        `INSERT INTO pos_order_tenders
+          (tenant_id,outlet_id,order_id,method,provider,amount_idr,received_idr,
+           change_idr,status,requested_at,resolved_at,captured_by,shift_id)
+         VALUES ($1,$2,$3,'cash','manual',$4,$4,0,'captured',$5,$5,$6,$7)`,
         [
-          orderId,
           tenant.tenantId,
-          tenant.outletId,
-          `DP-DAY-${orderId.slice(0, 20)}`,
+          outletId,
+          orderId,
+          input.cashIdr,
+          at(input.businessDate),
+          cashier.userId,
+          input.shiftId ?? null,
         ],
       );
-      await client.query(
-        `INSERT INTO pos_orders
-          (order_id,tenant_id,outlet_id,channel,cashier_id,submitted_at,completed_at)
-         VALUES ($1,$2,$3,'pos',$4,'2037-01-14T12:00:00Z','2037-01-14T12:00:01Z')`,
-        [orderId, tenant.tenantId, tenant.outletId, cashier.userId],
-      );
-      await seedEconomicDepositRefund(client, {
-        tenantId: tenant.tenantId,
-        outletId: tenant.outletId,
-        orderId,
-        tenderIdr: 0,
+    return orderId;
+  }
+
+  const depositRefund = (
+    client: PoolClient,
+    orderId: string,
+    refundedAt: string,
+    tenderIdr: number,
+    depositIdr: number,
+  ) =>
+    seedEconomicDepositRefund(client, {
+      tenantId: tenant.tenantId,
+      outletId: tenant.outletId,
+      orderId,
+      tenderIdr,
+      depositIdr,
+      requestedBy: cashier.userId,
+      approvedBy: supervisor.userId,
+      refundedAt,
+    });
+
+  const readRecap = async (businessDate: string) => {
+    const response = await day(manager).get(businessDate);
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    return parseRecap(response.body);
+  };
+  const cashRow = (recap: EndOfDayRecap) =>
+    recap.tenders.find((row) => row.method === "cash")!;
+
+  it("Q81-ECON-DAY-01: a DP return today for an earlier sale closes the day with the refund in today's DP bucket", async () => {
+    const saleDay = "2025-03-10";
+    const refundDay = "2025-03-11";
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      const orderId = await seedDpSale(client, {
+        businessDate: saleDay,
+        totalIdr: 25_000,
         depositIdr: 25_000,
-        requestedBy: cashier.userId,
-        approvedBy: supervisor.userId,
-        refundedAt: "2037-01-15T12:00:00Z",
+      });
+      await depositRefund(client, orderId, at(refundDay), 0, 25_000);
+    });
+
+    // DP applied stays on the sale's own day; nothing is netted across days.
+    const sale = await readRecap(saleDay);
+    expect(sale).toMatchObject({
+      totalSalesIdr: 25_000,
+      totalDepositAppliedIdr: 25_000,
+      totalDepositRefundedIdr: 0,
+      totalRefundsIdr: 0,
+    });
+    expect(cashRow(sale)).toMatchObject({ capturedIdr: 0, netIdr: 0 });
+
+    const open = await readRecap(refundDay);
+    expect(open).toMatchObject({
+      totalSalesIdr: 0,
+      totalDepositAppliedIdr: 0,
+      totalDepositRefundedIdr: 25_000,
+      totalRefundsIdr: 0,
+    });
+    expect(open.devices[0]).toMatchObject({
+      refundCount: 1,
+      refundAmountIdr: 0,
+      depositRefundedIdr: 25_000,
+    });
+    expect(cashRow(open).netIdr).toBe(0);
+
+    const closed = await day(manager).close({ businessDate: refundDay });
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+    const stored = await dailyCloseRows(refundDay);
+    expect(stored).toHaveLength(1);
+    expect(parseRecap({ data: stored[0]!.recap })).toMatchObject({
+      status: "closed",
+      totalDepositRefundedIdr: 25_000,
+    });
+  });
+
+  it("a DP refund today for today's sale, on top of a cash part, lands in both buckets and the cash row only nets the cash part", async () => {
+    const businessDate = "2025-03-12";
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      const orderId = await seedDpSale(client, {
+        businessDate,
+        totalIdr: 40_000,
+        depositIdr: 10_000,
+        cashIdr: 30_000,
+      });
+      await depositRefund(
+        client,
+        orderId,
+        at(businessDate, "13:00:00"),
+        5_000,
+        10_000,
+      );
+    });
+    const recap = await readRecap(businessDate);
+    expect(recap).toMatchObject({
+      totalSalesIdr: 40_000,
+      totalDepositAppliedIdr: 10_000,
+      totalDepositRefundedIdr: 10_000,
+      totalRefundsIdr: 5_000,
+    });
+    expect(recap.devices[0]).toMatchObject({
+      refundCount: 1,
+      refundAmountIdr: 5_000,
+      depositAppliedIdr: 10_000,
+      depositRefundedIdr: 10_000,
+    });
+    expect(cashRow(recap)).toMatchObject({
+      capturedIdr: 30_000,
+      refundedIdr: 5_000,
+      netIdr: 25_000,
+    });
+  });
+
+  it("a mixed DP and cash sale: the cash net is exactly the cash captured, DP is not a tender", async () => {
+    const businessDate = "2025-03-13";
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      await seedDpSale(client, {
+        businessDate,
+        totalIdr: 50_000,
+        depositIdr: 20_000,
+        cashIdr: 30_000,
       });
     });
-    const recap = await day(manager).get(businessDate);
-    expect(recap.status, JSON.stringify(recap.body)).toBe(409);
-    expect(recap.body.error.code).toBe("CONFLICT");
+    const recap = await readRecap(businessDate);
+    expect(recap.totalSalesIdr).toBe(50_000);
+    expect(recap.totalDepositAppliedIdr).toBe(20_000);
+    expect(recap.devices[0]!.depositAppliedIdr).toBe(20_000);
+    expect(cashRow(recap)).toMatchObject({
+      capturedIdr: 30_000,
+      netIdr: 30_000,
+    });
+    expect(recap.tenders.map((row) => row.method)).toEqual(["cash"]);
+  });
+
+  it("a DP-only sale with no tender balances and the day closes", async () => {
+    const businessDate = "2025-03-14";
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      await seedDpSale(client, {
+        businessDate,
+        totalIdr: 25_000,
+        depositIdr: 25_000,
+      });
+    });
+    const recap = await readRecap(businessDate);
+    expect(recap).toMatchObject({
+      totalSalesIdr: 25_000,
+      totalDepositAppliedIdr: 25_000,
+    });
+    expect(cashRow(recap)).toMatchObject({ capturedIdr: 0, netIdr: 0 });
+    const closed = await day(manager).close({ businessDate });
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+  });
+
+  it("a WS-05 payment_refunds mirror row of the same DP return is not counted a second time", async () => {
+    const businessDate = "2025-03-15";
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      const orderId = await seedDpSale(client, {
+        businessDate,
+        totalIdr: 25_000,
+        depositIdr: 25_000,
+      });
+      const { intentId } = await depositRefund(
+        client,
+        orderId,
+        at(businessDate, "13:00:00"),
+        0,
+        25_000,
+      );
+      await client.query(
+        `INSERT INTO payment_refunds
+           (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status,
+            requested_by, approved_by, decided_at, completed_at, unallocated_fund_id)
+         VALUES ($1, $2, $3, $4, 25000, 'Pengembalian dana', 'completed',
+                 'requester', 'approver', $5, $5, NULL)`,
+        [
+          randomUUID(),
+          tenant.tenantId,
+          tenant.outletId,
+          intentId,
+          at(businessDate, "13:00:00"),
+        ],
+      );
+    });
+    const recap = await readRecap(businessDate);
+    expect(recap.totalDepositRefundedIdr).toBe(25_000);
+    expect(recap.totalRefundsIdr).toBe(0);
+    expect(recap.devices[0]!.refundCount).toBe(1);
+  });
+
+  it("a void of an order that took DP is refused with 409 and nothing is stored", async () => {
+    const businessDate = "2025-03-16";
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      const orderId = await seedDpSale(client, {
+        businessDate,
+        totalIdr: 25_000,
+        depositIdr: 10_000,
+        cashIdr: 15_000,
+      });
+      await client.query(
+        `INSERT INTO pos_order_voids
+          (tenant_id,outlet_id,order_id,receipt_number,amount_idr,reason,reason_note,
+           requested_by,approved_by,approval_request_id,voided_at)
+         VALUES ($1,$2,$3,'POS1-000999',15000,'customer_cancelled','Void DP',$4,$5,$6,$7)`,
+        [
+          tenant.tenantId,
+          tenant.outletId,
+          orderId,
+          cashier.userId,
+          supervisor.userId,
+          randomUUID(),
+          at(businessDate, "13:00:00"),
+        ],
+      );
+    });
+    // The void (Rp15.000) equals the cash taken, so only the DP guard can fire.
+    const read = await day(manager).get(businessDate);
+    expect(read.status, JSON.stringify(read.body)).toBe(409);
+    expect(read.body.error.code).toBe("CONFLICT");
+    expect(read.body.error.message).toContain(
+      "void pada pesanan yang memakai DP",
+    );
+    const closed = await day(manager).close({ businessDate });
+    expect(closed.status, JSON.stringify(closed.body)).toBe(409);
+    expect(closed.body.error.message).toContain(
+      "void pada pesanan yang memakai DP",
+    );
     expect(await dailyCloseRows(businessDate)).toHaveLength(0);
   });
+
+  it("deposit refunds above the DP the order took are refused with 409 (never pay out more than was paid)", async () => {
+    const businessDate = "2025-03-17";
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      const orderId = await seedDpSale(client, {
+        businessDate,
+        totalIdr: 25_000,
+        depositIdr: 10_000,
+        cashIdr: 15_000,
+      });
+      await depositRefund(
+        client,
+        orderId,
+        at(businessDate, "13:00:00"),
+        0,
+        10_000,
+      );
+      await depositRefund(
+        client,
+        orderId,
+        at(businessDate, "14:00:00"),
+        0,
+        10_000,
+      );
+    });
+    const read = await day(manager).get(businessDate);
+    expect(read.status, JSON.stringify(read.body)).toBe(409);
+    expect(read.body.error.code).toBe("CONFLICT");
+    expect(read.body.error.message).toContain("melebihi DP pesanan asal");
+    const closed = await day(manager).close({ businessDate });
+    expect(closed.status, JSON.stringify(closed.body)).toBe(409);
+    expect(closed.body.error.message).toContain("melebihi DP pesanan asal");
+    expect(await dailyCloseRows(businessDate)).toHaveLength(0);
+  });
+
+  it("deposit refunds spread over two days above the DP: day 2 is refused with 409, day 1 still reads", async () => {
+    const dayOne = "2025-03-20";
+    const dayTwo = "2025-03-21";
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      const orderId = await seedDpSale(client, {
+        businessDate: dayOne,
+        totalIdr: 25_000,
+        depositIdr: 10_000,
+        cashIdr: 15_000,
+      });
+      await depositRefund(client, orderId, at(dayOne, "13:00:00"), 0, 10_000);
+      await depositRefund(client, orderId, at(dayTwo, "13:00:00"), 0, 10_000);
+    });
+    const first = await readRecap(dayOne);
+    expect(first.totalDepositRefundedIdr).toBe(10_000);
+    const second = await day(manager).get(dayTwo);
+    expect(second.status, JSON.stringify(second.body)).toBe(409);
+    expect(second.body.error.message).toContain("melebihi DP pesanan asal");
+  });
+
+  it("a deposit refund on an order that took no DP is refused with 409", async () => {
+    const businessDate = "2025-03-18";
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      const orderId = await seedDpSale(client, {
+        businessDate,
+        totalIdr: 25_000,
+        depositIdr: 0,
+        cashIdr: 25_000,
+      });
+      await depositRefund(
+        client,
+        orderId,
+        at(businessDate, "13:00:00"),
+        0,
+        5_000,
+      );
+    });
+    const read = await day(manager).get(businessDate);
+    expect(read.status, JSON.stringify(read.body)).toBe(409);
+    expect(read.body.error.code).toBe("CONFLICT");
+    expect(read.body.error.message).toContain(
+      "refund DP pada pesanan tanpa DP",
+    );
+  });
+
+  /**
+   * A refund (Rp0 tender, goods return) and a hand-made deposit row for it, so a
+   * row that disagrees with its refund can be seeded. A valid release is made
+   * first on another day, only to borrow a real payment intent.
+   */
+  async function rawDepositRefund(
+    client: PoolClient,
+    input: {
+      refundOrderId: string;
+      depositOrderId?: string;
+      depositOutletId?: string;
+      refundedAt: string;
+      releasedAt: string;
+    },
+  ) {
+    const borrowedOrder = await seedDpSale(client, {
+      businessDate: "2025-03-01",
+      totalIdr: 25_000,
+      depositIdr: 25_000,
+    });
+    const { intentId } = await depositRefund(
+      client,
+      borrowedOrder,
+      at("2025-03-01", "13:00:00"),
+      0,
+      25_000,
+    );
+    const refundId = randomUUID();
+    await client.query(
+      `INSERT INTO pos_order_refunds
+        (id,tenant_id,outlet_id,order_id,amount_idr,reason,reason_note,lines,
+         requested_by,approved_by,approval_request_id,refunded_at,items)
+       VALUES ($1,$2,$3,$4,0,'customer_cancelled','Retur DP','[]'::jsonb,$5,$6,$7,$8,$9::jsonb)`,
+      [
+        refundId,
+        tenant.tenantId,
+        tenant.outletId,
+        input.refundOrderId,
+        cashier.userId,
+        supervisor.userId,
+        randomUUID(),
+        input.refundedAt,
+        JSON.stringify([{ itemId: randomUUID(), quantity: 1 }]),
+      ],
+    );
+    await client.query(
+      `INSERT INTO pos_deposit_refunds
+        (tenant_id,outlet_id,order_id,pos_refund_id,payment_intent_id,amount_idr,released_at)
+       VALUES ($1,$2,$3,$4,$5,25000,$6)`,
+      [
+        tenant.tenantId,
+        input.depositOutletId ?? tenant.outletId,
+        input.depositOrderId ?? input.refundOrderId,
+        refundId,
+        intentId,
+        input.releasedAt,
+      ],
+    );
+  }
+
+  it("a deposit release dated outside the business day of its refund is refused with 409", async () => {
+    const businessDate = "2025-03-19";
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      const orderId = await seedDpSale(client, {
+        businessDate,
+        totalIdr: 25_000,
+        depositIdr: 25_000,
+      });
+      await rawDepositRefund(client, {
+        refundOrderId: orderId,
+        refundedAt: at(businessDate, "13:00:00"),
+        releasedAt: at("2025-03-25"),
+      });
+    });
+    const read = await day(manager).get(businessDate);
+    expect(read.status, JSON.stringify(read.body)).toBe(409);
+    expect(read.body.error.code).toBe("CONFLICT");
+    expect(read.body.error.message).toContain(
+      "tanggal pelepasan DP di luar hari kerja refund",
+    );
+  });
+
+  it("a deposit row on another outlet than its refund is refused with 409", async () => {
+    const businessDate = "2025-03-22";
+    const otherOutletId = randomUUID();
+    const suffix = randomUUID().slice(0, 8);
+    await owner.query(
+      `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
+       SELECT $1, tenant_id, brand_id, legal_entity_id, $3, $4, address, timezone, opening_hours, status
+       FROM outlets WHERE tenant_id = $2 AND id = $5`,
+      [
+        otherOutletId,
+        tenant.tenantId,
+        `M-${suffix}`.toUpperCase(),
+        `Outlet Lain ${suffix}`,
+        tenant.outletId,
+      ],
+    );
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      const orderId = await seedDpSale(client, {
+        businessDate,
+        totalIdr: 25_000,
+        depositIdr: 25_000,
+      });
+      await rawDepositRefund(client, {
+        refundOrderId: orderId,
+        depositOutletId: otherOutletId,
+        refundedAt: at(businessDate, "13:00:00"),
+        releasedAt: at(businessDate, "13:00:00"),
+      });
+    });
+    const read = await day(manager).get(businessDate);
+    expect(read.status, JSON.stringify(read.body)).toBe(409);
+    expect(read.body.error.code).toBe("CONFLICT");
+    expect(read.body.error.message).toContain(
+      "outlet refund DP tidak sama dengan outlet refund",
+    );
+  });
+
+  it("a deposit row for another order than its refund is refused with 409", async () => {
+    const businessDate = "2025-03-23";
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      const refundOrderId = await seedDpSale(client, {
+        businessDate,
+        totalIdr: 25_000,
+        depositIdr: 25_000,
+      });
+      const depositOrderId = await seedDpSale(client, {
+        businessDate,
+        totalIdr: 25_000,
+        depositIdr: 25_000,
+      });
+      await rawDepositRefund(client, {
+        refundOrderId,
+        depositOrderId,
+        refundedAt: at(businessDate, "13:00:00"),
+        releasedAt: at(businessDate, "13:00:00"),
+      });
+    });
+    const read = await day(manager).get(businessDate);
+    expect(read.status, JSON.stringify(read.body)).toBe(409);
+    expect(read.body.error.code).toBe("CONFLICT");
+    expect(read.body.error.message).toContain(
+      "order refund DP tidak sama dengan order refund",
+    );
+  });
+
+  it("the shift close difference stays 0 on a day that took DP: expected cash ignores DP", async () => {
+    const outletId = randomUUID();
+    const deviceId = randomUUID();
+    const suffix = randomUUID().slice(0, 8);
+    await owner.query(
+      `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
+       SELECT $1, tenant_id, brand_id, legal_entity_id, $3, $4, address, timezone, opening_hours, status
+       FROM outlets WHERE tenant_id = $2 AND id = $5`,
+      [
+        outletId,
+        tenant.tenantId,
+        `D-${suffix}`.toUpperCase(),
+        `Outlet DP ${suffix}`,
+        tenant.outletId,
+      ],
+    );
+    await setStaffPin(
+      establishTenantContext({
+        tenantId: tenantIdSchema.parse(tenant.tenantId),
+        brandId: null,
+        source: "session",
+      }),
+      supervisor.userId,
+      { outletId, userId: supervisor.userId },
+      { pin: PIN },
+    );
+    extraDevices.set(deviceId, outletId);
+    await registerTestDevice(owner, {
+      tenantId: tenant.tenantId,
+      outletId,
+      deviceId,
+    });
+    const till: Till = { outletId, deviceId };
+    const opened = await shiftApi(cashier, till).open();
+    expect(opened.status, JSON.stringify(opened.body)).toBe(201);
+    const outletShiftId = opened.body.data.id as string;
+    const businessDate = opened.body.data.businessDate as string;
+
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      await seedDpSale(client, {
+        businessDate,
+        totalIdr: 25_000,
+        depositIdr: 25_000,
+        outletId,
+        deviceId,
+        shiftId: outletShiftId,
+      });
+    });
+
+    const api = shiftApi(cashier, till);
+    const counted = await api.count(outletShiftId, [
+      { denominationIdr: 1_000, quantity: OPENING_FLOAT_IDR / 1_000 },
+    ]);
+    expect(counted.status, JSON.stringify(counted.body)).toBe(201);
+    const countId = counted.body.data.id as string;
+    const closed = await api.close(outletShiftId, {
+      countId,
+      ...(await pinApproval({
+        outletId,
+        action: "cash_shift_close",
+        objectType: "pos_shift_count",
+        objectId: countId,
+        valueIdr: 0,
+      })),
+    });
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+    const { rows } = await owner.query<{ difference: number }>(
+      "SELECT difference_idr::float8 AS difference FROM pos_shifts WHERE id = $1",
+      [outletShiftId],
+    );
+    expect(rows[0]!.difference).toBe(0);
+
+    const read = await day(manager, outletId).get(businessDate);
+    expect(read.status, JSON.stringify(read.body)).toBe(200);
+    const recap = parseRecap(read.body);
+    expect(recap.totalVarianceIdr).toBe(0);
+    expect(recap.totalDepositAppliedIdr).toBe(25_000);
+    expect(
+      recap.devices.find((row) => row.deviceId === deviceId),
+    ).toMatchObject({ cashVarianceIdr: 0, depositAppliedIdr: 25_000 });
+  }, 120_000);
 });
