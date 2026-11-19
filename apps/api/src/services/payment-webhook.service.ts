@@ -4033,10 +4033,16 @@ export async function receiveDoitWebhook(input: {
               eq(gatewayWebhookEvents.integrationId, verified.integrationId),
             ),
           )
-          .returning({ id: gatewayWebhookEvents.id }),
+          .returning(),
       );
-      if (filled) useStored = false;
-      else {
+      if (filled) {
+        useStored = false;
+        // Process the row the fill just stored (integration binding, payload,
+        // status, claim), never the row read before it: a stale binding would
+        // fall back to the owner alone and ignore a payment the shared-secret
+        // sibling verified (legend-aj5tv).
+        row = filled;
+      } else {
         // A concurrent delivery filled it first: continue with what it stored.
         const fresh = await loadVerifiedRow(
           context,
