@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="ghostex-page" content="v2">
+<title>Review layar lepas hold slip gaji (1192)</title>
+<style>
+  .state { display: grid; gap: 8px; margin: 0 0 22px; }
+  .state h2 { margin: 0; font-size: 16px; font-weight: 650; color: var(--gx-fg); }
+  .state .gx-lede { margin: 0; }
+  .pair { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 1fr); gap: 12px; align-items: start; }
+  .pair figure { margin: 0; padding: 8px; border-radius: 12px; background: var(--gx-surface); border: 1px solid var(--gx-line); }
+  .pair img { display: block; width: 100%; height: auto; border-radius: 8px; }
+  .pair figcaption { margin-top: 6px; font-size: 11px; color: var(--gx-muted); }
+  @media (max-width: 720px) { .pair { grid-template-columns: minmax(0, 1fr); } .pair .narrow { max-width: 320px; } }
+</style>
+</head>
+<body>
+<gx-questions submit="Kirim ke agent">
+  <header>
+    <span class="gx-eyebrow">Review founder · UI 1192</span>
+    <h1>Layar lepas hold slip gaji</h1>
+    <p class="gx-lede">Delapan keadaan layar, masing-masing tampil di layar lebar dan layar HP. Lihat semuanya, lalu jawab di bawah.</p>
+    <div class="gx-chips">
+      <span class="gx-chip"><b>8</b> keadaan layar</span>
+      <span class="gx-chip"><b>2</b> ukuran layar</span>
+      <span class="gx-chip">tema terang</span>
+    </div>
+  </header>
+
+  <gx-wide>
+  <section class="state">
+    <h2>1. Daftar slip tertahan</h2>
+    <p class="gx-lede">Ini tampilan utama: daftar slip gaji yang sedang ditahan dan menunggu dilepas.</p>
+    <div class="pair">
+      <figure class="wide"><img src="ui1192-recon-hold-normal-1280-light.png" alt="Daftar slip tertahan, layar lebar 1280" loading="lazy"><figcaption>Layar lebar (1280)</figcaption></figure>
+      <figure class="narrow"><img src="ui1192-recon-hold-normal-390-light.png" alt="Daftar slip tertahan, layar HP 390" loading="lazy"><figcaption>Layar HP (390)</figcaption></figure>
+    </div>
+  </section>
+  <section class="state">
+    <h2>2. Orang kedua menyetujui pelepasan</h2>
+    <p class="gx-lede">Orang kedua memeriksa slip yang diusulkan lalu menyetujui supaya slip bisa dilepas.</p>
+    <div class="pair">
+      <figure class="wide"><img src="ui1192-recon-hold-approve-1280-light.png" alt="Orang kedua menyetujui pelepasan, layar lebar 1280" loading="lazy"><figcaption>Layar lebar (1280)</figcaption></figure>
+      <figure class="narrow"><img src="ui1192-recon-hold-approve-390-light.png" alt="Orang kedua menyetujui pelepasan, layar HP 390" loading="lazy"><figcaption>Layar HP (390)</figcaption></figure>
+    </div>
+  </section>
+  <section class="state">
+    <h2>3. Pengusul tidak boleh menyetujui sendiri</h2>
+    <p class="gx-lede">Orang yang mengusulkan pelepasan tidak bisa menyetujuinya sendiri, jadi tombol setuju dikunci.</p>
+    <div class="pair">
+      <figure class="wide"><img src="ui1192-recon-hold-self-1280-light.png" alt="Pengusul tidak boleh menyetujui sendiri, layar lebar 1280" loading="lazy"><figcaption>Layar lebar (1280)</figcaption></figure>
+      <figure class="narrow"><img src="ui1192-recon-hold-self-390-light.png" alt="Pengusul tidak boleh menyetujui sendiri, layar HP 390" loading="lazy"><figcaption>Layar HP (390)</figcaption></figure>
+    </div>
+  </section>
+  <section class="state">
+    <h2>4. Sudah diproses orang lain</h2>
+    <p class="gx-lede">Slip ini sudah ditangani orang lain lebih dulu, jadi layar memberi tahu dan tidak mengulang proses.</p>
+    <div class="pair">
+      <figure class="wide"><img src="ui1192-recon-hold-taken-over-1280-light.png" alt="Sudah diproses orang lain, layar lebar 1280" loading="lazy"><figcaption>Layar lebar (1280)</figcaption></figure>
+      <figure class="narrow"><img src="ui1192-recon-hold-taken-over-390-light.png" alt="Sudah diproses orang lain, layar HP 390" loading="lazy"><figcaption>Layar HP (390)</figcaption></figure>
+    </div>
+  </section>
+  <section class="state">
+    <h2>5. Catatan wajib diisi</h2>
+    <p class="gx-lede">Pelepasan tidak bisa dilanjutkan sebelum catatan alasan diisi; layar menunjukkan bagian yang kurang.</p>
+    <div class="pair">
+      <figure class="wide"><img src="ui1192-recon-hold-validation-1280-light.png" alt="Catatan wajib diisi, layar lebar 1280" loading="lazy"><figcaption>Layar lebar (1280)</figcaption></figure>
+      <figure class="narrow"><img src="ui1192-recon-hold-validation-390-light.png" alt="Catatan wajib diisi, layar HP 390" loading="lazy"><figcaption>Layar HP (390)</figcaption></figure>
+    </div>
+  </section>
+  <section class="state">
+    <h2>6. Gagal memuat</h2>
+    <p class="gx-lede">Daftar slip tidak berhasil dimuat; layar menjelaskan masalahnya dan menawarkan coba lagi.</p>
+    <div class="pair">
+      <figure class="wide"><img src="ui1192-recon-hold-error-1280-light.png" alt="Gagal memuat, layar lebar 1280" loading="lazy"><figcaption>Layar lebar (1280)</figcaption></figure>
+      <figure class="narrow"><img src="ui1192-recon-hold-error-390-light.png" alt="Gagal memuat, layar HP 390" loading="lazy"><figcaption>Layar HP (390)</figcaption></figure>
+    </div>
+  </section>
+  <section class="state">
+    <h2>7. Memuat</h2>
+    <p class="gx-lede">Layar sedang mengambil daftar slip, jadi yang tampil adalah kerangka sementara.</p>
+    <div class="pair">
+      <figure class="wide"><img src="ui1192-recon-hold-loading-1280-light.png" alt="Memuat, layar lebar 1280" loading="lazy"><figcaption>Layar lebar (1280)</figcaption></figure>
+      <figure class="narrow"><img src="ui1192-recon-hold-loading-390-light.png" alt="Memuat, layar HP 390" loading="lazy"><figcaption>Layar HP (390)</figcaption></figure>
+    </div>
+  </section>
+  <section class="state">
+    <h2>8. Tidak ada slip tertahan</h2>
+    <p class="gx-lede">Semua slip sudah lancar, tidak ada yang sedang ditahan.</p>
+    <div class="pair">
+      <figure class="wide"><img src="ui1192-recon-hold-empty-1280-light.png" alt="Tidak ada slip tertahan, layar lebar 1280" loading="lazy"><figcaption>Layar lebar (1280)</figcaption></figure>
+      <figure class="narrow"><img src="ui1192-recon-hold-empty-390-light.png" alt="Tidak ada slip tertahan, layar HP 390" loading="lazy"><figcaption>Layar HP (390)</figcaption></figure>
+    </div>
+  </section>
+  </gx-wide>
+
+  <gx-wide>
+    <div class="gx-options">
+      <section data-question="Q57" data-choice="setuju">
+        <span class="gx-ribbon">Rekomendasi</span>
+        <h3>Setuju</h3>
+        <p>Delapan keadaan layar sudah sesuai, lanjut ke tahap berikutnya.</p>
+      </section>
+      <section data-question="Q57" data-choice="ubah">
+        <h3>Perlu diubah</h3>
+        <p>Ada bagian yang perlu diperbaiki; tulis catatan di bawah.</p>
+      </section>
+    </div>
+  </gx-wide>
+
+  <gx-question tag="Q57" title="Q57: Layar lepas hold slip gaji">
+    <gx-choice value="setuju" recommended>Setuju (Rekomendasi)<small>Layar dipakai apa adanya.</small></gx-choice>
+    <gx-choice value="ubah">Perlu diubah (tulis catatan)<small>Tulis bagian mana yang perlu diubah di kolom catatan.</small></gx-choice>
+  </gx-question>
+</gx-questions>
+</body>
+</html>
