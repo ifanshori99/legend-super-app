@@ -17,6 +17,17 @@
 --    The name is short because payroll_payout_grants.kind is varchar(16).
 -- 4. app.payout_payslip_held_by_recon (0709 body + one clause): a hold with an approved
 --    release does not hold the slip. Signature, owner and ACL are unchanged.
+-- 5. payroll_payout_recon_hold_clean_reads (insert-only, PAYOUT-87; legend_app may only read)
+--    and app.payout_recon_clean_read (payout role, granted to legend_payout_recon): the
+--    proof file of an operation was read and found ok while an evidence hold of it was
+--    open. An 'ok' observation is deduped and is not written twice, so this is the record
+--    a release needs ('clean' = a clean read after the hold, 0712). The function writes a
+--    row only when the operation has an open evidence hold and no clean read since the
+--    last such hold was made, so the table grows by one row per hold at most.
+-- 6. hold_unwritten takes the advisory lock payout_recon_hold:<tenant>:<operation> (the
+--    release functions of 0712 take it too) and dedupes only against a hold of the SAME
+--    reason; for evidence reasons a clean read after the hold ends the dedupe, so a
+--    failure after a clean read holds the slip again.
 ALTER TABLE "payroll_payout_recon_unwritten_holds" ADD CONSTRAINT "payroll_payout_recon_unwritten_holds_tenant_id_key" UNIQUE("tenant_id","id");--> statement-breakpoint
 CREATE TABLE "payroll_payout_recon_hold_releases" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
@@ -42,7 +53,6 @@ CREATE TABLE "payroll_payout_recon_hold_releases" (
 	CONSTRAINT "payroll_payout_recon_hold_releases_approved_grant_fk" FOREIGN KEY ("tenant_id","approved_grant_id") REFERENCES "public"."payroll_payout_grants"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
-CREATE INDEX "payroll_payout_recon_hold_releases_hold_idx" ON "payroll_payout_recon_hold_releases" USING btree ("tenant_id","hold_id");--> statement-breakpoint
 ALTER TABLE "payroll_payout_grants" DROP CONSTRAINT "payroll_payout_grants_kind_check";
 --> statement-breakpoint
 ALTER TABLE "payroll_payout_grants" DROP CONSTRAINT "payroll_payout_grants_detail_check";
@@ -88,6 +98,41 @@ CREATE TRIGGER payroll_payout_recon_hold_releases_truncate_guard_trg
   BEFORE TRUNCATE ON public.payroll_payout_recon_hold_releases
   FOR EACH STATEMENT EXECUTE FUNCTION app.payroll_payout_recon_hold_releases_guard();
 --> statement-breakpoint
+CREATE TABLE "payroll_payout_recon_hold_clean_reads" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"tenant_id" uuid NOT NULL,
+	"operation_id" uuid NOT NULL,
+	"read_at" timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+	CONSTRAINT "payroll_payout_recon_hold_clean_reads_tenant_id_key" UNIQUE("tenant_id","id"),
+	CONSTRAINT "payroll_payout_recon_hold_clean_reads_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action
+);
+--> statement-breakpoint
+CREATE INDEX "payroll_payout_recon_hold_clean_reads_op_idx" ON "payroll_payout_recon_hold_clean_reads" USING btree ("tenant_id","operation_id","read_at");--> statement-breakpoint
+SELECT app.enforce_tenant_rls('public.payroll_payout_recon_hold_clean_reads'::regclass);
+--> statement-breakpoint
+-- enforce_tenant_rls hands legend_app full DML; this table is read-only to it.
+REVOKE ALL ON TABLE public.payroll_payout_recon_hold_clean_reads FROM PUBLIC, legend_app;
+--> statement-breakpoint
+GRANT SELECT ON TABLE public.payroll_payout_recon_hold_clean_reads TO legend_app;
+--> statement-breakpoint
+GRANT SELECT, INSERT ON TABLE public.payroll_payout_recon_hold_clean_reads TO legend_payout;
+--> statement-breakpoint
+-- Insert-only: a row is never changed or deleted (PAYOUT-87, 23514).
+CREATE FUNCTION app.payroll_payout_recon_hold_clean_reads_guard() RETURNS trigger
+LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+BEGIN
+  RAISE EXCEPTION 'PAYOUT-87: a clean read of a hold cannot be changed or erased'
+    USING ERRCODE = '23514';
+END $$;
+--> statement-breakpoint
+CREATE TRIGGER payroll_payout_recon_hold_clean_reads_row_guard_trg
+  BEFORE UPDATE OR DELETE ON public.payroll_payout_recon_hold_clean_reads
+  FOR EACH ROW EXECUTE FUNCTION app.payroll_payout_recon_hold_clean_reads_guard();
+--> statement-breakpoint
+CREATE TRIGGER payroll_payout_recon_hold_clean_reads_truncate_guard_trg
+  BEFORE TRUNCATE ON public.payroll_payout_recon_hold_clean_reads
+  FOR EACH STATEMENT EXECUTE FUNCTION app.payroll_payout_recon_hold_clean_reads_guard();
+--> statement-breakpoint
 GRANT legend_payout TO CURRENT_USER WITH INHERIT FALSE, SET TRUE;
 --> statement-breakpoint
 GRANT CREATE ON SCHEMA app TO legend_payout;
@@ -112,20 +157,35 @@ BEGIN
     RAISE EXCEPTION 'PAYOUT-68: the hold needs a kind, an operation and items'
       USING ERRCODE = '23514';
   END IF;
+  -- One writer per operation at a time (the release functions take the same lock): the
+  -- dedupe below and the clean read cannot interleave with a release.
+  PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(
+    'payout_recon_hold:' || p_tenant::text || ':' || p_operation::text, 0));
   INSERT INTO public.payroll_payout_recon_unwritten_holds (
     tenant_id, kind, operation_id, item_id, payslip_id, reason, created_at)
   SELECT p_tenant, p_kind, p_operation, i.id, i.payslip_id, p_reason, pg_catalog.clock_timestamp()
     FROM public.payroll_disbursement_items i
    WHERE i.tenant_id = p_tenant AND i.id = ANY (p_items)
      AND NOT EXISTS (
-       -- A hold of the same kind, operation and item that no flag has taken over yet
-       -- and no approved release lifted already holds the slip: no second row. A hold
+       -- A hold of the same kind, operation, item and REASON that no flag has taken over
+       -- yet and no approved release lifted already holds the slip: no second row. A hold
        -- that a flag took over, or that was released, does NOT count: a later failed
-       -- write must hold the slip again.
+       -- write must hold the slip again. For an evidence reason a clean read of the
+       -- operation after the hold ends the dedupe too (the slip may be released by a
+       -- release, so a new failure needs its own hold); other reasons ignore clean reads,
+       -- which bounds the growth of the table.
        SELECT 1
          FROM public.payroll_payout_recon_unwritten_holds h
         WHERE h.tenant_id = p_tenant AND h.kind = p_kind
           AND h.operation_id = p_operation AND h.item_id = i.id
+          AND h.reason IS NOT DISTINCT FROM p_reason
+          AND (NOT COALESCE(p_reason IN ('evidence_missing', 'evidence_hash_mismatch')
+                            OR p_reason LIKE 'evidence\_read\_locked:%', false)
+               OR NOT EXISTS (
+                    SELECT 1
+                      FROM public.payroll_payout_recon_hold_clean_reads cr
+                     WHERE cr.tenant_id = h.tenant_id AND cr.operation_id = h.operation_id
+                       AND cr.read_at > h.created_at))
           AND NOT EXISTS (
               SELECT 1
                 FROM public.payroll_payout_recon_hold_releases r
@@ -176,6 +236,55 @@ END $$;
 REVOKE ALL ON FUNCTION app.payout_recon_hold_unwritten(uuid, text, uuid, uuid[], text) FROM PUBLIC, legend_app;
 --> statement-breakpoint
 GRANT EXECUTE ON FUNCTION app.payout_recon_hold_unwritten(uuid, text, uuid, uuid[], text) TO legend_payout_recon;
+--> statement-breakpoint
+-- The proof file of the operation was read and found ok (called by recordReadOk, as the
+-- role legend_payout_recon, after observe_ok). Returns true when a row was written: the
+-- operation has an open evidence hold (no approved release) and no clean read yet since
+-- the last such hold was made. Otherwise false and nothing is written.
+CREATE FUNCTION app.payout_recon_clean_read(p_tenant uuid, p_operation uuid)
+RETURNS boolean
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+DECLARE
+  v_last timestamptz;
+BEGIN
+  IF p_tenant IS DISTINCT FROM app.require_tenant_id() THEN
+    RAISE EXCEPTION 'PAYOUT-68: a clean read is recorded in the tenant in force only'
+      USING ERRCODE = '23514';
+  END IF;
+  IF p_operation IS NULL THEN
+    RAISE EXCEPTION 'PAYOUT-68: the clean read needs an operation'
+      USING ERRCODE = '23514';
+  END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(
+    'payout_recon_hold:' || p_tenant::text || ':' || p_operation::text, 0));
+  SELECT pg_catalog.max(h.created_at) INTO v_last
+    FROM public.payroll_payout_recon_unwritten_holds h
+   WHERE h.tenant_id = p_tenant AND h.operation_id = p_operation
+     AND (h.reason IN ('evidence_missing', 'evidence_hash_mismatch')
+          OR h.reason LIKE 'evidence\_read\_locked:%')
+     AND NOT EXISTS (
+         SELECT 1
+           FROM public.payroll_payout_recon_hold_releases r
+          WHERE r.tenant_id = h.tenant_id AND r.hold_id = h.id
+            AND r.approved_at IS NOT NULL);
+  IF v_last IS NULL THEN
+    RETURN false;
+  END IF;
+  IF EXISTS (
+       SELECT 1
+         FROM public.payroll_payout_recon_hold_clean_reads cr
+        WHERE cr.tenant_id = p_tenant AND cr.operation_id = p_operation
+          AND cr.read_at > v_last) THEN
+    RETURN false;
+  END IF;
+  INSERT INTO public.payroll_payout_recon_hold_clean_reads (tenant_id, operation_id)
+  VALUES (p_tenant, p_operation);
+  RETURN true;
+END $$;
+--> statement-breakpoint
+REVOKE ALL ON FUNCTION app.payout_recon_clean_read(uuid, uuid) FROM PUBLIC, legend_app;
+--> statement-breakpoint
+GRANT EXECUTE ON FUNCTION app.payout_recon_clean_read(uuid, uuid) TO legend_payout_recon;
 --> statement-breakpoint
 RESET ROLE;
 --> statement-breakpoint

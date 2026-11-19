@@ -631,6 +631,10 @@ export const payrollPayoutReviewMessages = {
       heldAt: "Ditahan sejak {time}",
       cause: "Penyebab",
       causeUnknown: "Penyebab tidak tercatat",
+      causeEvidenceMissing: "Berkas bukti tidak ditemukan",
+      causeEvidenceMismatch: "Isi berkas bukti tidak sama dengan catatan",
+      causeEvidenceLocked: "Berkas bukti tidak bisa dibaca tepat waktu",
+      causeOther: "Selisih lain pada rekonsiliasi",
       held: "Slip tertahan · Belum boleh diterbitkan",
       notClean:
         "Bukti rekonsiliasi belum bersih sejak hold dibuat. Hold tetap menahan slip sampai pemeriksaan berikutnya bersih.",

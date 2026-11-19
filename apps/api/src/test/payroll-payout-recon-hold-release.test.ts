@@ -86,6 +86,7 @@ const SIGHTINGS = "payroll_payout_recon_flag_sightings";
 const OBSERVATIONS = "payroll_payout_recon_evidence_observations";
 const HOLDS = "payroll_payout_recon_unwritten_holds";
 const RELEASES = "payroll_payout_recon_hold_releases";
+const CLEAN_READS = "payroll_payout_recon_hold_clean_reads";
 const GRANTS = "payroll_payout_grants";
 const BYTES_A = "1192 tampered proof bytes A";
 const PROPOSED_ACTION = "payroll.disbursement.recon_hold_release_proposed";
@@ -474,11 +475,11 @@ async function makeHold(
 }
 
 /** Clean evidence after the hold: a release can be proposed. Also left: flags cleared by two people. */
-async function cleanWorld(): Promise<HeldWorld> {
+async function cleanWorld(reason: string = LOCK_REASON): Promise<HeldWorld> {
   const w = await correctedWorld();
   const ids = await flaggedByTamper(w);
   for (const f of ids.flags) await clearFlag(f.id as string);
-  const held = await makeHold(w, ids, LOCK_REASON);
+  const held = await makeHold(w, ids, reason);
   expect(await heldBySql(ids.payslipId), "premise: held by the hold").toBe(
     true,
   );
@@ -488,6 +489,45 @@ async function cleanWorld(): Promise<HeldWorld> {
     "premise: an 'ok' observation after the hold",
   ).toBe("ok");
   expect(await heldBySql(ids.payslipId), "premise: still held").toBe(true);
+  return held;
+}
+
+/**
+ * 1192 P1a: the operation's latest observation BEFORE the hold is already 'ok' (or there
+ * is none), then a lock hold is made, then (optionally) a good read goes through the real
+ * recon path. An 'ok' read after an 'ok' observation writes no new observation row, so
+ * only a separate clean-read record can say "read after the hold".
+ */
+async function priorReadWorld(
+  prior: "ok" | "none",
+  readAfterHold: boolean,
+): Promise<HeldWorld> {
+  const w = await correctedWorld();
+  const ids = await flaggedByTamper(w);
+  if (prior === "ok") {
+    for (const f of ids.flags) await clearFlag(f.id as string);
+    await runRecon(makeStorage());
+    expect(await lastState(ids.operationId), "premise: prior 'ok'").toBe("ok");
+  } else {
+    // No flag and no observation of this operation at all (like takenOverWorld).
+    await resetRecon();
+    expect(
+      await lastState(ids.operationId),
+      "premise: no observation",
+    ).toBeUndefined();
+  }
+  const held = await makeHold(w, ids, LOCK_REASON);
+  expect(await heldBySql(ids.payslipId), "premise: held by the hold").toBe(
+    true,
+  );
+  if (readAfterHold) {
+    await runRecon(makeStorage());
+    // A first 'ok' (nothing observed before) writes no observation row: ok or none.
+    expect(
+      [prior === "ok" ? "ok" : undefined],
+      "premise: the latest observation is ok or none",
+    ).toContain(await lastState(ids.operationId));
+  }
   return held;
 }
 
@@ -537,7 +577,12 @@ async function resetRecon() {
   const hasReleases = await tableExists(RELEASES);
   const hasHolds = await tableExists(HOLDS);
   const hasObservations = await tableExists(OBSERVATIONS);
+  const hasCleanReads = await tableExists(CLEAN_READS);
   await W.asTenant(async (c) => {
+    if (hasCleanReads)
+      await c.query(`DELETE FROM ${CLEAN_READS} WHERE tenant_id = $1`, [
+        W.tenantId,
+      ]);
     if (hasReleases)
       await c.query(`DELETE FROM ${RELEASES} WHERE tenant_id = $1`, [
         W.tenantId,
@@ -661,8 +706,8 @@ describe("1192: a hold is released by two people", () => {
         id: releaseId,
         status: "approved",
         approvedBy: approverA.userId,
+        approvedAt: expect.any(String),
       });
-      expect(afterApprove!.release.approvedAt).toBeTruthy();
     },
     TEST_TIMEOUT_MS,
   );
@@ -1022,6 +1067,55 @@ describe("1192: a release needs clean evidence", () => {
   );
 
   it(
+    "[1192-approve-observe-lock] a run still reading the proof of the operation (it holds the observe advisory lock of tenant and operation in an open transaction): a different person's approval is refused 409 PAYOUT_RECON_HOLD_EVIDENCE_NOT_CLEAN, the release stays unapproved and the slip stays held; after that run has ended the same approval succeeds",
+    async () => {
+      const w = await cleanWorld();
+      const releaseId = await proposed(w.holdId);
+
+      // Mimics a read that is still running: a second connection keeps the lock open.
+      const reader = await mfaOwner.connect();
+      let readerOpen = false;
+      try {
+        await reader.query("BEGIN");
+        readerOpen = true;
+        await reader.query(
+          `SELECT pg_advisory_xact_lock(hashtextextended('payout_recon_evidence_observe:' || $1::text || ':' || $2::text, 0))`,
+          [W.tenantId, w.operationId],
+        );
+
+        const refused = await approveHttp(approverA, releaseId);
+        expect(refused.status, detail(refused)).toBe(409);
+        expect(errorCodeOf(refused)).toBe(NOT_CLEAN);
+        const [row] = await releaseRows(w.holdId);
+        expect(
+          row!.approved_by,
+          "not approved while the lock is held",
+        ).toBeNull();
+        expect(row!.approved_at).toBeNull();
+        expect(row!.basis).toBeNull();
+        expect(await heldBySql(w.payslipId), "the slip stays held").toBe(true);
+        expect(await auditCount(APPROVED_ACTION, releaseId, w.holdId)).toBe(0);
+
+        await reader.query("COMMIT");
+        readerOpen = false;
+      } finally {
+        if (readerOpen) await reader.query("ROLLBACK").catch(() => undefined);
+        reader.release();
+      }
+
+      const approved = await approveHttp(approverA, releaseId);
+      expect(approved.status, detail(approved)).toBe(200);
+      const [done] = await releaseRows(w.holdId);
+      expect(done!.approved_by).toBe(approverA.userId);
+      expect(done!.basis).toBe("clean_evidence");
+      expect(await heldBySql(w.payslipId), "approved: the slip is free").toBe(
+        false,
+      );
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
     "[1192-taken-over-refused] a hold that a later flag took over cannot be released: 409 PAYOUT_RECON_HOLD_TAKEN_OVER, no release row; the list says takenOver and not releasable; the flag holds the slip",
     async () => {
       const w = await takenOverWorld();
@@ -1263,6 +1357,276 @@ describe("1192: audit and finance exceptions", () => {
       expect(mentionsHold(text, w), "taken over: not a hold exception").toBe(
         false,
       );
+    },
+    TEST_TIMEOUT_MS,
+  );
+});
+
+// =========================================================================
+// 8: bead 1192 architect findings (P0, P1a, P1b): fail-first
+// =========================================================================
+//
+// Assumptions (the brief "Status WIP" names the rules, not the columns):
+// - "Not clean" is the same 409 PAYOUT_RECON_HOLD_EVIDENCE_NOT_CLEAN (PAYOUT-97) as above.
+// - The clean-read table payroll_payout_recon_hold_clean_reads has a tenant_id column and is
+//   insert-only: UPDATE / DELETE by any role (the owner login included, triggers on) are
+//   refused with PAYOUT-87; legend_app has no INSERT privilege (42501).
+// - Row counts of that table are read per tenant; the cleanup after each test removes them
+//   with triggers off, like the observations.
+
+describe("1192: only evidence reasons can be clean (P0)", () => {
+  it(
+    "[1192-p0-non-evidence-reason] a hold with reason net_mismatch (or attestation_same_person) is never clean, although the proof file reads ok after it: propose is 409 PAYOUT_RECON_HOLD_EVIDENCE_NOT_CLEAN, no release row, the slip stays held, the list says releasable=false",
+    async () => {
+      for (const reason of ["net_mismatch", "attestation_same_person"]) {
+        await resetRecon();
+        const w = await cleanWorld(reason); // premise inside: an 'ok' observation after the hold
+        const listed = await listedHold(proposer, w.holdId);
+        expect(listed, `${reason}: the hold is listed`).toBeDefined();
+        expect(listed!.reason).toBe(reason);
+        expect(listed!.releasable, `${reason}: not releasable`).toBe(false);
+
+        const res = await proposeHttp(proposer, w.holdId);
+        expect(res.status, `${reason}: ${detail(res)}`).toBe(409);
+        expect(errorCodeOf(res)).toBe(NOT_CLEAN);
+        expect(
+          await releaseRows(w.holdId),
+          `${reason}: no release`,
+        ).toHaveLength(0);
+        expect(await heldBySql(w.payslipId), `${reason}: still held`).toBe(
+          true,
+        );
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+});
+
+describe("1192: a good read after the hold counts even when the last observation was already ok (P1a)", () => {
+  for (const prior of ["ok", "none"] as const) {
+    it(
+      `[1192-p1a-lock-prior-${prior}] the operation's observation before the lock hold is ${prior === "ok" ? "already ok" : "absent"}, then a good read goes through the real recon path: the hold is clean and releasable, two people release it, the slip is free`,
+      async () => {
+        const w = await priorReadWorld(prior, true);
+        const money = await moneyOf();
+        const listed = await listedHold(proposer, w.holdId);
+        expect(listed!.releasable, "clean read after the hold").toBe(true);
+
+        const releaseId = await proposed(w.holdId);
+        expect(await heldBySql(w.payslipId), "proposal alone holds").toBe(true);
+        const approved = await approveHttp(approverA, releaseId);
+        expect(approved.status, detail(approved)).toBe(200);
+        expect((await releaseRows(w.holdId))[0]!.basis).toBe("clean_evidence");
+        expect(await heldBySql(w.payslipId), "approved: free").toBe(false);
+        expect(await moneyOf(), "releasing moves no money").toEqual(money);
+      },
+      TEST_TIMEOUT_MS,
+    );
+  }
+
+  it(
+    "[1192-p1a-no-read-after] a lock hold with no read after it is not clean even though an older 'ok' observation exists: releasable=false, propose 409 PAYOUT_RECON_HOLD_EVIDENCE_NOT_CLEAN, the slip stays held",
+    async () => {
+      const w = await priorReadWorld("ok", false);
+      expect((await listedHold(proposer, w.holdId))!.releasable).toBe(false);
+      const res = await proposeHttp(proposer, w.holdId);
+      expect(res.status, detail(res)).toBe(409);
+      expect(errorCodeOf(res)).toBe(NOT_CLEAN);
+      expect(await releaseRows(w.holdId)).toHaveLength(0);
+      expect(await heldBySql(w.payslipId)).toBe(true);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "[1192-p1a-observation-not-ok] a good read happened after the hold, but the latest observation is a mismatch: not clean, propose 409 PAYOUT_RECON_HOLD_EVIDENCE_NOT_CLEAN, the slip stays held",
+    async () => {
+      const w = await cleanWorld(); // a clean read after the hold
+      await changeItemData(w.itemId);
+      await runRecon(makeStorage([w.key]));
+      expect(
+        await lastState(w.operationId),
+        "premise: the latest observation is not ok",
+      ).not.toBe("ok");
+      const res = await proposeHttp(proposer, w.holdId);
+      expect(res.status, detail(res)).toBe(409);
+      expect(errorCodeOf(res)).toBe(NOT_CLEAN);
+      expect(await releaseRows(w.holdId)).toHaveLength(0);
+      expect(await heldBySql(w.payslipId)).toBe(true);
+      expect((await listedHold(proposer, w.holdId))!.releasable).toBe(false);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "[1192-p1a-clean-read-row-growth] reading ok twice more after one hold keeps one clean-read row for the operation (no row per read)",
+    async () => {
+      expect(await tableExists(CLEAN_READS), `${CLEAN_READS} exists`).toBe(
+        true,
+      );
+      const w = await priorReadWorld("ok", true);
+      const rowsNow = () =>
+        count(
+          `SELECT count(*)::int AS n FROM ${CLEAN_READS} WHERE tenant_id = $1`,
+          [W.tenantId],
+        );
+      expect(
+        await rowsNow(),
+        "one clean-read row after the first good read",
+      ).toBe(1);
+      await runRecon(makeStorage());
+      await runRecon(makeStorage());
+      expect(await lastState(w.operationId)).toBe("ok");
+      expect(await rowsNow(), "still one row after more good reads").toBe(1);
+    },
+    TEST_TIMEOUT_MS,
+  );
+});
+
+describe("1192: holds of one item are told apart by reason and by clean reads (P1b)", () => {
+  it(
+    "[1192-p1b-failure-after-proposal] a new read failure after a proposal makes a NEW hold; approving the first release succeeds but the slip stays held by the new hold until a new clean read and its own release",
+    async () => {
+      const first = await cleanWorld(); // hold H (day 2031-01-01) + a clean read
+      const releaseId = await proposed(first.holdId);
+
+      const second = await holdUnwritten(
+        first.kind,
+        first.operationId,
+        [first.itemId],
+        "evidence_read_locked:2031-01-02",
+      );
+      expect(second.code, `hold call ${second.message}`).toBeUndefined();
+      const holds = await holdRows(first.itemId);
+      expect(holds, "a new failure is a new hold row").toHaveLength(2);
+      const h2 = holds.find((h) => h.id !== first.holdId)!;
+      expect(h2.reason).toBe("evidence_read_locked:2031-01-02");
+
+      const approved = await approveHttp(approverA, releaseId);
+      expect(approved.status, detail(approved)).toBe(200);
+      expect(
+        await heldBySql(first.payslipId),
+        "the new hold still holds the slip",
+      ).toBe(true);
+      expect(
+        (await listedHold(proposer, h2.id as string))!.releasable,
+        "no clean read after the new hold yet",
+      ).toBe(false);
+      const early = await proposeHttp(proposer, h2.id as string);
+      expect(early.status, detail(early)).toBe(409);
+      expect(errorCodeOf(early)).toBe(NOT_CLEAN);
+
+      await runRecon(makeStorage());
+      expect((await listedHold(proposer, h2.id as string))!.releasable).toBe(
+        true,
+      );
+      const release2 = await proposed(h2.id as string);
+      const approved2 = await approveHttp(approverA, release2);
+      expect(approved2.status, detail(approved2)).toBe(200);
+      expect(await heldBySql(first.payslipId), "all holds released").toBe(
+        false,
+      );
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "[1192-p1b-reason-dedupe] two holds of one item with different reasons are two rows; the same reason twice with no clean read between is one row",
+    async () => {
+      const w = await correctedWorld();
+      const ids = await flaggedByTamper(w);
+      for (const f of ids.flags) await clearFlag(f.id as string);
+      const hold = async (reason: string) => {
+        const made = await holdUnwritten(
+          ids.kind,
+          ids.operationId,
+          [w.itemId],
+          reason,
+        );
+        expect(made.code, `hold ${reason}: ${made.message}`).toBeUndefined();
+        return (await holdRows(w.itemId)).length;
+      };
+      const a = "evidence_read_locked:2031-01-01";
+      const b = "evidence_read_locked:2031-01-02";
+      expect(await hold(a), "first hold").toBe(1);
+      expect(await hold(a), "same reason, no clean read between: one row").toBe(
+        1,
+      );
+      expect(await hold(b), "different reason: a second row").toBe(2);
+      expect(await hold(a), "same reason again: still two rows").toBe(2);
+      expect(await hold(b), "same reason again: still two rows").toBe(2);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "[1192-p1b-clean-reads-insert-only] clean-read rows cannot be updated or deleted by anyone (PAYOUT-87, even the owner login) and legend_app cannot insert one (42501)",
+    async () => {
+      expect(await tableExists(CLEAN_READS), `${CLEAN_READS} exists`).toBe(
+        true,
+      );
+      const w = await cleanWorld();
+      const rowsOf = () =>
+        W.rowsOf(
+          `SELECT * FROM ${CLEAN_READS} WHERE tenant_id = $1 ORDER BY 1`,
+          [W.tenantId],
+        );
+      const before = JSON.stringify(await rowsOf());
+      expect(
+        (await rowsOf()).length,
+        "premise: a clean read is on record",
+      ).toBe(1);
+
+      const ownerUpdate = await W.asTenant(async (c) => {
+        try {
+          await c.query("SAVEPOINT s");
+          await c.query(
+            `UPDATE ${CLEAN_READS} SET tenant_id = tenant_id WHERE tenant_id = $1`,
+            [W.tenantId],
+          );
+          return "";
+        } catch (e) {
+          await c.query("ROLLBACK TO SAVEPOINT s");
+          return (e as Error).message;
+        }
+      });
+      expect(ownerUpdate, "UPDATE is refused").toMatch(/PAYOUT-87/);
+      const ownerDelete = await W.asTenant(async (c) => {
+        try {
+          await c.query("SAVEPOINT s");
+          await c.query(`DELETE FROM ${CLEAN_READS} WHERE tenant_id = $1`, [
+            W.tenantId,
+          ]);
+          return "";
+        } catch (e) {
+          await c.query("ROLLBACK TO SAVEPOINT s");
+          return (e as Error).message;
+        }
+      });
+      expect(ownerDelete, "DELETE is refused").toMatch(/PAYOUT-87/);
+
+      const insert = await sqlAs(
+        `INSERT INTO ${CLEAN_READS} DEFAULT VALUES`,
+        [],
+      );
+      expect(insert.code, `legend_app INSERT: ${insert.message}`).toBe(
+        PRIVILEGE,
+      );
+      const update = await sqlAs(
+        `UPDATE ${CLEAN_READS} SET tenant_id = tenant_id WHERE tenant_id = $1`,
+        [W.tenantId],
+      );
+      expect(update.code, `legend_app UPDATE: ${update.message}`).toBe(
+        PRIVILEGE,
+      );
+      const del = await sqlAs(
+        `DELETE FROM ${CLEAN_READS} WHERE tenant_id = $1`,
+        [W.tenantId],
+      );
+      expect(del.code, `legend_app DELETE: ${del.message}`).toBe(PRIVILEGE);
+
+      expect(JSON.stringify(await rowsOf()), "rows unchanged").toBe(before);
+      expect(await heldBySql(w.payslipId)).toBe(true);
     },
     TEST_TIMEOUT_MS,
   );

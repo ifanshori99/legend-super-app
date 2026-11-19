@@ -2055,10 +2055,6 @@ export const payrollPayoutReconHoldReleases = pgTable(
       table.tenantId,
       table.holdId,
     ),
-    index("payroll_payout_recon_hold_releases_hold_idx").on(
-      table.tenantId,
-      table.holdId,
-    ),
     foreignKey({
       name: "payroll_payout_recon_hold_releases_hold_fk",
       columns: [table.tenantId, table.holdId],
@@ -2084,6 +2080,36 @@ export const payrollPayoutReconHoldReleases = pgTable(
     check(
       "payroll_payout_recon_hold_releases_approved_check",
       sql`(${table.approvedBy} IS NULL AND ${table.approvedSessionId} IS NULL AND ${table.approvedGrantId} IS NULL AND ${table.approvedAt} IS NULL AND ${table.basis} IS NULL) OR (${table.approvedBy} IS NOT NULL AND ${table.approvedSessionId} IS NOT NULL AND ${table.approvedGrantId} IS NOT NULL AND ${table.approvedAt} IS NOT NULL AND ${table.basis} IN ('flag_rewritten', 'clean_evidence') AND ${table.approvedBy} <> ${table.proposedBy} AND ${table.approvedSessionId} <> ${table.proposedSessionId})`,
+    ),
+  ],
+);
+
+/**
+ * A clean read of the proof file of an operation while an evidence hold of it was open
+ * (1192, legend-6o7pc, migration 0710). The 'ok' observation is deduped and is not
+ * written twice, so this is the record a hold release needs: `read_at` after the
+ * hold's `created_at`. Insert-only (PAYOUT-87), written only by
+ * `app.payout_recon_clean_read` (payout role); the app role may read.
+ */
+export const payrollPayoutReconHoldCleanReads = pgTable(
+  "payroll_payout_recon_hold_clean_reads",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    operationId: uuid("operation_id").notNull(),
+    readAt: timestamp("read_at", { withTimezone: true })
+      .notNull()
+      .default(sql`clock_timestamp()`),
+  },
+  (table) => [
+    unique("payroll_payout_recon_hold_clean_reads_tenant_id_key").on(
+      table.tenantId,
+      table.id,
+    ),
+    index("payroll_payout_recon_hold_clean_reads_op_idx").on(
+      table.tenantId,
+      table.operationId,
+      table.readAt,
     ),
   ],
 );

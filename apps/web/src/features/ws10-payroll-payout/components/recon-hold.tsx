@@ -96,6 +96,17 @@ function HoldCard({
   onNotice: (notice: HoldNotice) => void;
 }) {
   const t = useT();
+  const causeText = (reason: string | null) => {
+    if (reason === null)
+      return t("payrollPayoutReview.reconHold.card.causeUnknown");
+    if (reason === "evidence_missing")
+      return t("payrollPayoutReview.reconHold.card.causeEvidenceMissing");
+    if (reason === "evidence_hash_mismatch")
+      return t("payrollPayoutReview.reconHold.card.causeEvidenceMismatch");
+    if (reason.startsWith("evidence_read_locked"))
+      return t("payrollPayoutReview.reconHold.card.causeEvidenceLocked");
+    return t("payrollPayoutReview.reconHold.card.causeOther");
+  };
   const [proposing, setProposing] = React.useState(false);
   const status = holdStatus(hold);
   const release = hold.release;
@@ -129,7 +140,7 @@ function HoldCard({
           <span className="text-muted-foreground">
             {t("payrollPayoutReview.reconHold.card.cause")}:{" "}
           </span>
-          {hold.reason ?? t("payrollPayoutReview.reconHold.card.causeUnknown")}
+          {causeText(hold.reason)}
         </p>
         <p className="text-xs text-muted-foreground tabular">
           {t("payrollPayoutReview.reconHold.card.heldAt", {

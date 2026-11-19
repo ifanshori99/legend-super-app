@@ -44,11 +44,6 @@ export type PayoutReconHoldDto = {
 ## Aturan eksekusi
 Satu eksekutor heavy per thread: agen induk menjalankan tsc/test penuh; subagent hanya `LEGEND_TEST_FILES=... heavy pnpm test` terarah dari root worktree. Jangan commit. Test-writer menulis test gagal-dulu (sebab benar) sebelum implementer menjalankan test.
 
-## Status WIP (usage limit, 19 Nov): BELUM SIAP, jangan merge
-Sudah: 0710-0712, service, routes, shared, web, test API (41 lulus), test web (88 lulus). Belum: tsc, e2e, screenshot ui1192, db:generate.
-Architect xhigh: P0 + 2 P1, WAJIB dibetulkan sebelum siap:
-- P0 (0712:51-55): status `clean` abaikan `h.reason`; batasi ke reason evidence_missing / evidence_hash_mismatch / evidence_read_locked:%; selain itu unclean (termasuk NULL).
-- P1a: observasi `ok` tidak tercatat (dedupe/ok pertama), jadi hold lock tak pernah clean. Buat tabel insert-only `payroll_payout_recon_hold_clean_reads` + fungsi definer (GRANT legend_payout_recon) dipanggil di `recordReadOk` (recon.service ~2509) selama ada hold aktif; clean = read_at > hold.created_at dan observasi terakhir (bila ada) ok. Jangan tulis baris ok ganda ke observations.
-- P1b (0710:120-148): dedupe hold_unwritten hanya terhadap hold reason sama, tanpa release, dibuat sesudah clean read terakhir; advisory lock `payout_recon_hold:<tenant>:<operation>` di hold_unwritten, propose, approve (bukan kunci observe).
-- P2: hapus index dobel `payroll_payout_recon_hold_releases_hold_idx` (schema, snapshot, SQL).
-Test gagal-dulu: hold net_mismatch + bukti ok -> 409; lock dengan ok sebelumnya lalu baca ok bisa dilepas; kegagalan sesudah usulan tetap menahan slip sesudah approve.
+## Status: SIAP (19 Nov, ronde architect kedua)
+P0, P1a, P1b, P2 dibetulkan di 0710/0712 (tanpa 0713): status `clean` hanya untuk reason bukti (evidence_missing, evidence_hash_mismatch, evidence_read_locked:%) plus baca bersih sesudah hold (tabel insert-only `payroll_payout_recon_hold_clean_reads`, fungsi `app.payout_recon_clean_read` dipanggil di `recordReadOk`) dan observasi terakhir ok atau kosong; dedupe hold per reason yang sama, tanpa release, sebelum baca bersih terakhir (reason bukti); advisory lock `payout_recon_hold:<tenant>:<operation>` di hold_unwritten, clean_read, propose, approve; index dobel dihapus. UI: penyebab hold memakai label biasa, bukan kode. Test gagal-dulu: 7 merah di kode lama, ditambah `[1192-approve-observe-lock]`. Catatan: DB lokal yang sudah menjalankan 0710 lama harus dibuat ulang (migrasi diedit di tempat, belum merge).
+Terbuka: hold dengan alasan non-bukti (net_mismatch dll.) tidak bisa dilepas; ia menunggu flag ditulis ulang. Keputusan perlu dari founder via CTO bila jalur lepas diinginkan.

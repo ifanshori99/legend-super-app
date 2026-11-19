@@ -2108,11 +2108,16 @@ export async function recordReadOk(
   tenantId: string,
   operationId: string,
 ): Promise<void> {
-  await asReconRole(tx, () =>
-    tx.execute(
+  await asReconRole(tx, async () => {
+    await tx.execute(
       sql`SELECT app.payout_recon_evidence_observe_ok(${tenantId}::uuid, ${operationId}::uuid)`,
-    ),
-  );
+    );
+    // 1192: the ok observation is deduped, so a clean read is recorded apart (only
+    // while an evidence hold of the operation is open); a hold release needs it.
+    await tx.execute(
+      sql`SELECT app.payout_recon_clean_read(${tenantId}::uuid, ${operationId}::uuid)`,
+    );
+  });
 }
 
 /**

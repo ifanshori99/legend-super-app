@@ -27,7 +27,7 @@ test.describe.configure({ timeout: 90_000 });
 const RECON = "/kelola/payroll/rekonsiliasi";
 const RIGHT_PASSWORD = "benar-123";
 const PASSWORD_LABEL = "Konfirmasi sandi untuk pelepasan hold";
-const REASON = "Bukti bank terbaca bersih pada pemeriksaan malam berikutnya.";
+const REASON = "Pemeriksaan ulang berkas bukti hari ini sudah bersih.";
 
 async function signInAs(context: BrowserContext, role: "finance" | "hr") {
   if (base)

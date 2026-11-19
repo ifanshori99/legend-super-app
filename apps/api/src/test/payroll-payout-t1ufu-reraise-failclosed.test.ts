@@ -1174,7 +1174,7 @@ describe("t1ufu round 3: a refused flag write holds the slip without any excepti
   );
 
   it(
-    "[t1ufu-hold-old-flag-cleared-before-keeps-hold] the older flag was cleared by two people BEFORE the hold: it does not take the hold over, a good read does not release it, a second call writes no second row",
+    "[t1ufu-hold-old-flag-cleared-before-keeps-hold] the older flag was cleared by two people BEFORE the hold: it does not take the hold over, a good read does not release it, a second call without a read in between writes no second row, one after a good read writes a new row",
     async () => {
       const w = await correctedWorld();
       await runRecon(makeStorage());
@@ -1203,6 +1203,9 @@ describe("t1ufu round 3: a refused flag write holds the slip without any excepti
         await heldBySql(payslipId),
         "a good read does not release the hold",
       ).toBe(true);
+      // 1192 (P1b): the good read above is a clean read after the hold, so a NEW failure
+      // to write the same flag is a new fact and gets its own row (it must not be
+      // swallowed into the old hold, which a release could lift on the stale read).
       await holdUnwritten(
         kind,
         operationId,
@@ -1213,8 +1216,21 @@ describe("t1ufu round 3: a refused flag write holds the slip without any excepti
       );
       expect(
         await holdRows(w.itemId),
-        "one hold row, no duplicate while not taken over",
-      ).toHaveLength(1);
+        "a failure after a clean read is a new hold row",
+      ).toHaveLength(2);
+      await holdUnwritten(
+        kind,
+        operationId,
+        [w.itemId],
+        undefined,
+        undefined,
+        reason,
+      );
+      expect(
+        await holdRows(w.itemId),
+        "no duplicate while no clean read came in between",
+      ).toHaveLength(2);
+      expect(await heldBySql(payslipId), "still held").toBe(true);
     },
     TEST_TIMEOUT_MS,
   );

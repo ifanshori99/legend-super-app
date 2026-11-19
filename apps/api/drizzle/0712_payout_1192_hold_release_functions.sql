@@ -6,17 +6,22 @@
 -- 1. app.payout_recon_hold_status(tenant, hold) (new, read only, invoker): 'released' (an
 --    approved release exists), 'taken_over' (a flag of the same kind, operation, item and
 --    reason took the hold over, the 0709 rule; that flag and its clearance decide now),
---    'clean' (the latest recon observation of the operation is 'ok' and was made after the
---    hold) or 'unclean' (anything else); NULL when the hold does not exist in the tenant.
+--    'clean' (ONLY a hold of an evidence reason: evidence_missing, evidence_hash_mismatch or
+--    evidence_read_locked:<day>; AND a clean read of the operation (0710,
+--    payroll_payout_recon_hold_clean_reads) was recorded after the hold; AND the latest
+--    recon observation, if any, is 'ok') or 'unclean' (anything else, a hold of another
+--    reason, e.g. net_mismatch, or with no reason included); NULL when the hold does not
+--    exist in the tenant.
 -- 2. app.payout_recon_hold_release_propose(hold, grant, reason) -> release id. Reason 10 to
 --    500 characters (PAYOUT-85), hold not found (PAYOUT-69), tenant-wide owner or finance
 --    (PAYOUT-42), released already (PAYOUT-87), taken over (PAYOUT-96), evidence not clean
 --    (PAYOUT-97). An open proposal of the hold returns its id again (the reason stays as first
---    proposed; no second row).
+--    proposed; no second row). The advisory lock payout_recon_hold:<tenant>:<operation>
+--    (the one of hold_unwritten) is taken before the status check.
 -- 3. app.payout_recon_hold_release_approve(release, grant) -> release id. The proposer and
 --    the session that proposed are PAYOUT-86, an approved release PAYOUT-87. The advisory
---    lock of the operation (the key of the recon read and of observe) is taken first
---    (pg_try_advisory_xact_lock); a run that holds it makes the approval PAYOUT-97 (the proof
+--    lock payout_recon_hold:<tenant>:<operation> is taken first, then the lock of the
+--    operation (the key of the recon read and of observe) with pg_try_advisory_xact_lock; a run that holds it makes the approval PAYOUT-97 (the proof
 --    is being read). Taken over (PAYOUT-96) and not clean (PAYOUT-97) are checked again
 --    UNDER that lock: this is the authoritative check. Basis: clean_evidence.
 GRANT legend_payout TO CURRENT_USER WITH INHERIT FALSE, SET TRUE;
@@ -48,11 +53,21 @@ LANGUAGE sql STABLE SET search_path = pg_catalog AS $$
                  WHERE c.tenant_id = e.tenant_id AND c.exception_id = e.id
                    AND c.approved_at IS NOT NULL
                    AND c.approved_at < h.created_at))) THEN 'taken_over'
-    WHEN (SELECT o.state = 'ok' AND o.observed_at > h.created_at
-            FROM public.payroll_payout_recon_evidence_observations o
-           WHERE o.tenant_id = h.tenant_id AND o.operation_id = h.operation_id
-           ORDER BY o.seq DESC
-           LIMIT 1) IS TRUE THEN 'clean'
+    WHEN (h.reason IN ('evidence_missing', 'evidence_hash_mismatch')
+          OR h.reason LIKE 'evidence\_read\_locked:%')
+     AND EXISTS (
+       SELECT 1
+         FROM public.payroll_payout_recon_hold_clean_reads cr
+        WHERE cr.tenant_id = h.tenant_id AND cr.operation_id = h.operation_id
+          AND cr.read_at > h.created_at)
+     AND NOT EXISTS (
+       SELECT 1
+         FROM (SELECT o.state
+                 FROM public.payroll_payout_recon_evidence_observations o
+                WHERE o.tenant_id = h.tenant_id AND o.operation_id = h.operation_id
+                ORDER BY o.seq DESC
+                LIMIT 1) lo
+        WHERE lo.state <> 'ok') THEN 'clean'
     ELSE 'unclean'
   END
     FROM public.payroll_payout_recon_unwritten_holds h
@@ -70,6 +85,7 @@ LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
 DECLARE
   v_tenant uuid := app.require_tenant_id();
   v_batch uuid;
+  v_operation uuid;
   v_grant uuid;
   v_actor text;
   v_session text;
@@ -84,7 +100,7 @@ BEGIN
     RAISE EXCEPTION 'PAYOUT-85: a release of a hold needs a reason of 10 to 500 characters'
       USING ERRCODE = '23514';
   END IF;
-  SELECT it.batch_id INTO v_batch
+  SELECT it.batch_id, h.operation_id INTO v_batch, v_operation
     FROM public.payroll_payout_recon_unwritten_holds h
     JOIN public.payroll_disbursement_items it
       ON it.tenant_id = h.tenant_id AND it.id = h.item_id
@@ -111,6 +127,9 @@ BEGIN
     RAISE EXCEPTION 'PAYOUT-42: only a tenant-wide owner or finance role can release a hold'
       USING ERRCODE = '42501';
   END IF;
+  -- One writer per operation (hold_unwritten and clean_read take it too).
+  PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(
+    'payout_recon_hold:' || v_tenant::text || ':' || v_operation::text, 0));
   v_status := app.payout_recon_hold_status(v_tenant, p_hold);
   IF v_status = 'released' THEN
     RAISE EXCEPTION 'PAYOUT-87: the hold is already released' USING ERRCODE = '23514';
@@ -190,6 +209,9 @@ BEGIN
     RAISE EXCEPTION 'PAYOUT-42: only a tenant-wide owner or finance role can release a hold'
       USING ERRCODE = '42501';
   END IF;
+  -- One writer per operation (hold_unwritten, clean_read and propose take it too).
+  PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(
+    'payout_recon_hold:' || v_tenant::text || ':' || v_operation::text, 0));
   SELECT r.* INTO v_row
     FROM public.payroll_payout_recon_hold_releases r
    WHERE r.tenant_id = v_tenant AND r.id = p_release

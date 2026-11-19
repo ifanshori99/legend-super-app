@@ -75297,6 +75297,96 @@
       },
       "isRLSEnabled": false
     },
+    "public.payroll_payout_recon_hold_clean_reads": {
+      "name": "payroll_payout_recon_hold_clean_reads",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "operation_id": {
+          "name": "operation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "read_at": {
+          "name": "read_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "clock_timestamp()"
+        }
+      },
+      "indexes": {
+        "payroll_payout_recon_hold_clean_reads_op_idx": {
+          "name": "payroll_payout_recon_hold_clean_reads_op_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "operation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "read_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "payroll_payout_recon_hold_clean_reads_tenant_id_tenants_id_fk": {
+          "name": "payroll_payout_recon_hold_clean_reads_tenant_id_tenants_id_fk",
+          "tableFrom": "payroll_payout_recon_hold_clean_reads",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "payroll_payout_recon_hold_clean_reads_tenant_id_key": {
+          "name": "payroll_payout_recon_hold_clean_reads_tenant_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.payroll_payout_recon_hold_releases": {
       "name": "payroll_payout_recon_hold_releases",
       "schema": "",
@@ -75382,29 +75472,7 @@
           "notNull": false
         }
       },
-      "indexes": {
-        "payroll_payout_recon_hold_releases_hold_idx": {
-          "name": "payroll_payout_recon_hold_releases_hold_idx",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "hold_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
+      "indexes": {},
       "foreignKeys": {
         "payroll_payout_recon_hold_releases_tenant_id_tenants_id_fk": {
           "name": "payroll_payout_recon_hold_releases_tenant_id_tenants_id_fk",
