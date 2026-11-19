@@ -2187,3 +2187,4 @@ Langkah berikut CTO baru:
 - 10:10 CTO: mulai 1158 edge/outbox (gzcw, 1ffe, 7z9c, 2lp.10) + 1159 web/test (uwafm, hmig6, n64n) di Claude #4. Disk 18 GB sesudah hapus worktree 1130/1150/1122. Kesalahan CTO: worktree 1130 dihapus dengan --force padahal laporan cleanup-ssd sebelumnya mencatat 1 berkas untracked; berkas itu hilang (cabang dan commit aman di remote). Ke depan: tanpa --force, cek untracked dulu.
 - 10:29 CTO keputusan akses batch95: door-check outlet lain = B (403 ACTING_STAFF_OUTLET_MISMATCH sesudah kredensial cocok, percobaan dihitung; kredensial salah tetap DOOR_CREDENTIAL_INVALID seragam; tanpa data tiket). R2-05 ditulis ulang di int/batch95 + architect.
 - 10:31 CTO: 1151 selesai e1020c77e (G4m76 resolved). SO approval r2 mulai.
+- 10:39 CTO: 1158 selesai 840ff2eeb (G40mk resolved).
