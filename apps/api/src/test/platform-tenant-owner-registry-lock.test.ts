@@ -222,7 +222,10 @@ async function waitForLockWaiter(
   throw new Error("the Owner request never waited on the advisory lock");
 }
 
-type Outcome = { status: number; body: { error?: { code?: string } } };
+type Outcome = {
+  status: number;
+  body: { error?: { code?: string }; data?: { assignmentId?: string } };
+};
 
 /**
  * Holds the tenant lock, starts `request`, waits until it queues on the lock,
@@ -361,7 +364,7 @@ describe("legend-2n5qj Owner appointment re-checks the Super Admin registry afte
     );
 
     expect(response.status, JSON.stringify(response.body)).toBe(201);
-    const secondId = response.body.data.assignmentId as string;
+    const secondId = response.body.data?.assignmentId as string;
     expect(secondId).not.toBe(firstId);
     expect(await activeOwnerIds(tenantId)).toEqual([secondId]);
   }, 30_000);
