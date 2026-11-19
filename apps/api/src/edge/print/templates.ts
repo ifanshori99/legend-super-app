@@ -118,7 +118,11 @@ export function renderReceipt(
     );
   b.bold(true).columns("TOTAL", formatRupiah(data.total), width).bold(false);
 
-  if (data.payments.length > 0) b.divider("-", width);
+  // DP is a prepaid bucket, not a tender: shown before the payment rows and
+  // never added to payments or change.
+  const deposit = data.depositAppliedIdr ?? 0;
+  if (data.payments.length > 0 || deposit > 0) b.divider("-", width);
+  if (deposit > 0) b.columns("Uang muka (DP)", formatRupiah(deposit), width);
   for (const payment of data.payments) {
     b.columns(payment.method, formatRupiah(payment.amount), width);
   }

@@ -22,8 +22,9 @@ import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import {
   assertTrustedScopedContext,
-  CoreError,
+  createUlid,
   uuidToUlid,
+  ulidToUuid,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
@@ -59,6 +60,8 @@ export const EDGE_ORDER_REDRIVE_LOCK_TIMEOUT_MS = 5_000;
 const VOID_REFUSED_PREFIX = "void_refused:";
 /** Most refused receipt run events re-applied for one recovered void. */
 const RECEIPT_RUN_REAPPLY_LIMIT = 100;
+/** `resolved_by` of the resolution row the redrive writes for a healed run. */
+const REAPPLY_RESOLVED_BY = "system:edge-order-redrive";
 
 export type EdgeOrderRedriveDeps = {
   database?: Database;
@@ -207,7 +210,18 @@ async function redrivePaid(
           return ledger?.state;
         },
       );
-      if (state === "ingested") result.recovered += 1;
+      if (state === "ingested") {
+        result.recovered += 1;
+        // legend-gdjpu: a run refused earlier (the sale was not in the cloud
+        // yet) can apply now. After the commit, never part of the recovery.
+        await reapplyRefusedReceiptRuns(
+          database,
+          context,
+          lockTimeoutMs,
+          log,
+          row.orderId,
+        );
+      }
     } catch (error) {
       result.failed += 1;
       log.error(
@@ -225,37 +239,52 @@ type OrderTx = Parameters<Parameters<typeof withTenant>[2]>[0];
 /**
  * legend-gdjpu: the edge reporter sends a receipt run once `order.voided` is
  * ACKed, and the ACK only proves the transport. A run that reached the cloud
- * before the void was recovered was refused (RECEIPT_VOID_UNMATCHED) and
- * stored as an `applier_refused` conflict; the sender never requeues it. Once
- * the void is in, the refused run events of the devices that reported this
- * order are applied again, in event order, through the receipt run applier.
- * The merge is idempotent (numbers fixed, nothing inserted twice, no journal
- * of its own), so this never double reverses. A run still refused (another
- * hole, a prefix mismatch) stays refused and its conflict row is untouched.
+ * before the void (or the sale) was recovered was refused and stored as an
+ * `applier_refused` conflict; the sender never requeues it. Once the order is
+ * recovered, the refused run events of the devices that reported this order
+ * are applied again, in event order, through the receipt run applier.
+ *
+ * Runs AFTER the recovery committed, one transaction per run, and never
+ * throws: a failed re-apply (lock timeout, a hole still open, anything) can
+ * not undo or block the recovered void or sale. Its conflict stays open (no
+ * resolution), so a supervisor can still replay it by hand. A
+ * conflict that already has a resolution row (a supervisor decision, or an
+ * earlier heal) is never touched. A healed run gets an `applied` resolution
+ * in the same transaction as its apply, so it is not picked again. The merge
+ * is idempotent (numbers fixed, nothing inserted twice, no journal of its
+ * own), so this never double reverses or issues a number twice.
  */
 async function reapplyRefusedReceiptRuns(
-  tx: OrderTx,
+  database: Database,
   context: ScopedTenantContext,
+  lockTimeoutMs: number,
+  log: Pick<Console, "error">,
   orderId: string,
 ): Promise<void> {
   const tenantId = context.tenant.tenantId;
-  const dbId = sourceIdToDb(orderId);
-  const forms = [...new Set([orderId, dbId, uuidToUlid(dbId)])];
-  const mentions = sql.join(
-    forms.map(
-      (form) =>
-        sql`event -> 'payload' -> 'receipts' @> ${JSON.stringify([{ receipt: { orderId: form } }])}::jsonb`,
-    ),
-    sql` OR `,
-  );
-  const found = await tx.execute(
-    sql`SELECT edge_node_id::text AS edge_node_id, event
+  try {
+    const dbId = sourceIdToDb(orderId);
+    const forms = [...new Set([orderId, dbId, uuidToUlid(dbId)])];
+    const mentions = sql.join(
+      forms.map(
+        (form) =>
+          sql`event -> 'payload' -> 'receipts' @> ${JSON.stringify([{ receipt: { orderId: form } }])}::jsonb`,
+      ),
+      sql` OR `,
+    );
+    const found = await withTenant(database, context, (tx) =>
+      tx.execute(
+        sql`SELECT id::text AS conflict_id, outlet_id::text AS outlet_id, edge_node_id::text AS edge_node_id, event
         FROM edge_sync_conflicts
         WHERE tenant_id = ${tenantId}::uuid
           AND direction = 'edge_to_cloud'
           AND reason = 'applier_refused'
           AND aggregate_type = ${RECEIPT_RUN_AGGREGATE}
           AND event ->> 'name' = ${RECEIPT_RUN_REPORTED_EVENT}
+          AND NOT EXISTS (
+            SELECT 1 FROM edge_sync_conflict_resolutions r
+            WHERE r.tenant_id = edge_sync_conflicts.tenant_id
+              AND r.conflict_id = edge_sync_conflicts.id)
           AND aggregate_id IN (
             SELECT aggregate_id FROM edge_sync_conflicts
             WHERE tenant_id = ${tenantId}::uuid
@@ -266,23 +295,57 @@ async function reapplyRefusedReceiptRuns(
               AND (${mentions}))
         ORDER BY event_id
         LIMIT ${RECEIPT_RUN_REAPPLY_LIMIT}`,
-  );
-  for (const row of found.rows as { edge_node_id: string; event: unknown }[]) {
-    const parsed = eventEnvelopeSchema.safeParse(row.event);
-    if (!parsed.success) continue;
-    const event: EventEnvelope = parsed.data;
-    try {
-      // Savepoint: a refusal (still a hole, ...) rolls back only this run.
-      await tx.transaction((savepoint) =>
-        applyReceiptRunReported(
-          savepoint,
-          event,
-          metaOf(context, row.edge_node_id),
-        ),
-      );
-    } catch (error) {
-      if (!(error instanceof CoreError)) throw error;
+      ),
+    );
+    for (const row of found.rows as {
+      conflict_id: string;
+      outlet_id: string;
+      edge_node_id: string;
+      event: unknown;
+    }[]) {
+      const parsed = eventEnvelopeSchema.safeParse(row.event);
+      if (!parsed.success) continue;
+      const event: EventEnvelope = parsed.data;
+      try {
+        await inOrderTx(database, context, lockTimeoutMs, async (tx) => {
+          // Lock the conflict and re-check: a supervisor may have decided it
+          // since the list was read.
+          const open = await tx.execute(
+            sql`SELECT 1 FROM edge_sync_conflicts c
+                WHERE c.tenant_id = ${tenantId}::uuid
+                  AND c.id = ${row.conflict_id}::uuid
+                  AND NOT EXISTS (
+                    SELECT 1 FROM edge_sync_conflict_resolutions r
+                    WHERE r.tenant_id = c.tenant_id AND r.conflict_id = c.id)
+                FOR UPDATE OF c`,
+          );
+          if (open.rows.length === 0) return;
+          // A refusal (still a hole, ...) throws and rolls back this run only.
+          await applyReceiptRunReported(
+            tx,
+            event,
+            metaOf(context, row.edge_node_id),
+          );
+          await tx.execute(
+            sql`INSERT INTO edge_sync_conflict_resolutions (id, tenant_id, outlet_id, conflict_id, action, outcome, note, resolved_by)
+                VALUES (${ulidToUuid(createUlid())}::uuid, ${tenantId}::uuid, ${row.outlet_id}::uuid, ${row.conflict_id}::uuid, 'replayed', 'applied', ${"Receipt run applied again after the order was recovered"}, ${REAPPLY_RESOLVED_BY})`,
+          );
+        });
+      } catch (error) {
+        // Counts and ids only: a payload never reaches the log.
+        log.error(
+          `Edge receipt run re-apply failed for conflict ${row.conflict_id} of tenant ${tenantId}: ${
+            error instanceof Error ? error.name : "unknown error"
+          }`,
+        );
+      }
     }
+  } catch (error) {
+    log.error(
+      `Edge receipt run re-apply failed for an order of tenant ${tenantId}: ${
+        error instanceof Error ? error.name : "unknown error"
+      }`,
+    );
   }
 }
 
@@ -341,7 +404,6 @@ async function ingestParkedVoids(
             eq(edgeOrderIngests.orderId, orderId),
           ),
         );
-      await reapplyRefusedReceiptRuns(tx, context, orderId);
       return true;
     }
   }
@@ -393,7 +455,17 @@ async function redriveVoided(
       const voided = await inOrderTx(database, context, lockTimeoutMs, (tx) =>
         ingestParkedVoids(tx, context, orderId),
       );
-      if (voided) result.recovered += 1;
+      if (voided) {
+        result.recovered += 1;
+        // After the void committed: a failed re-apply never undoes it.
+        await reapplyRefusedReceiptRuns(
+          database,
+          context,
+          lockTimeoutMs,
+          log,
+          orderId,
+        );
+      }
     } catch (error) {
       result.failed += 1;
       log.error(

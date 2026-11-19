@@ -74,7 +74,10 @@ import {
   registerPosDeferredEdgeApplier,
 } from "../edge/deferred-event-applier.ts";
 import { registerOrderEdgeApplier } from "../edge/order-edge-applier.ts";
-import { ingestEdgeOrderVoided } from "../edge/order-ingest.ts";
+import {
+  ingestEdgeOrderPaid,
+  ingestEdgeOrderVoided,
+} from "../edge/order-ingest.ts";
 import type { EdgeApplyMeta } from "../edge/ports.ts";
 import { registerReceiptRunEdgeApplier } from "../edge/receipt-run-applier.ts";
 import { registerStockMovedEdgeApplier } from "../edge/stock-moved-applier.ts";
@@ -453,10 +456,34 @@ async function receiveVoidWhileLocked(
   }
 }
 
+/** Same transient refusal for `order.paid`: the sale is parked, not ingested. */
+async function receivePaidWhileLocked(
+  node: AuthenticatedEdgeNode,
+  event: EventEnvelope,
+) {
+  const orderId = (event.payload as { orderId: string }).orderId;
+  const release = await holdOrderLock(orderId);
+  try {
+    const meta: EdgeApplyMeta = {
+      edgeNodeId: node.scope.edgeNodeId,
+      direction: "edge_to_cloud",
+      kind: "transaction_event",
+      context: node.context,
+    };
+    await withTenant(db, node.context, async (tx) => {
+      await tx.execute(sql`SELECT set_config('lock_timeout', '300ms', true)`);
+      await applyEdgeDeferredEvent(tx, event, meta);
+      await ingestEdgeOrderPaid(tx, event, meta);
+    });
+  } finally {
+    await release();
+  }
+}
+
 const quiet = { error: () => undefined };
-const sweep = () =>
+const sweep = (log: { error: (message: string) => void } = quiet) =>
   redriveEdgeOrderRefusalsForTenant(jobContext(), {
-    log: quiet,
+    log,
     lockTimeoutMs: 300,
   });
 
@@ -676,108 +703,201 @@ afterAll(async () => {
   await owner.end();
 });
 
+// ---- Scenario helpers --------------------------------------------------------------
+
+/** Cloud provisions the device prefix; the edge claim binds it to this node. */
+async function provisionDevice(
+  outletId: string,
+  deviceId: string,
+  node: AuthenticatedEdgeNode,
+): Promise<ScopedTenantContext> {
+  const context = scopeOf();
+  await withTenant(db, context, (tx) =>
+    provisionReceiptSequence(
+      tx as Parameters<typeof provisionReceiptSequence>[0],
+      context,
+      { outletId, deviceId, prefix: "OFF1" },
+    ),
+  );
+  await asOwnerTenant(async (client) => {
+    await client.query("SET LOCAL session_replication_role = replica");
+    await client.query(
+      `UPDATE receipt_sequences SET edge_node_id = $4, edge_instance_id = $5
+        WHERE tenant_id = $1 AND outlet_id = $2 AND device_id = $3 AND prefix = 'OFF1'`,
+      [
+        tenant.tenantId,
+        outletId,
+        deviceId,
+        node.scope.edgeNodeId,
+        EDGE_INSTANCE,
+      ],
+    );
+  });
+  return context;
+}
+
+/** One production reporter pass; what it wrote reaches the cloud over the link. */
+function reporterRoundOf(
+  outletId: string,
+  deviceId: string,
+  node: AuthenticatedEdgeNode,
+  edgeReceipts: EdgeReceipt[],
+) {
+  const delivered = new Set<string>();
+  return async (): Promise<number> => {
+    const installed = await installEdgeReceipts(
+      outletId,
+      deviceId,
+      edgeReceipts,
+    );
+    const result = await reportEdgeReceiptRuns(scopeOf([outletId]), {
+      outletId,
+      edgeNodeId: node.scope.edgeNodeId,
+      edgeInstanceId: EDGE_INSTANCE,
+    });
+    await removeEdgeReceipts(outletId, deviceId, installed);
+    const fresh = (await reporterEvents(deviceId)).filter(
+      (event) => !delivered.has(event.id),
+    );
+    for (const event of fresh) delivered.add(event.id);
+    await deliver(node, fresh);
+    return result.reported;
+  };
+}
+
+type Scenario = {
+  outletId: string;
+  deviceId: string;
+  node: AuthenticatedEdgeNode;
+  context: ScopedTenantContext;
+  voidedOrder: string;
+  reporterRound: () => Promise<number>;
+};
+
+/**
+ * Steps 1-3 of the card: two sales ingested, the void of order 2 refused as
+ * `void_refused:lock_failed` yet ACKed, and the run chunk (carrying the voided
+ * receipt) delivered to the cloud before the void: stored as a refused run.
+ */
+async function refusedRunScenario(): Promise<Scenario> {
+  const outletId = await freshOutlet();
+  const deviceId = randomUUID();
+  const node = await edgeNodeFor(outletId);
+  const context = await provisionDevice(outletId, deviceId, node);
+
+  const orders = [createUlid(++clock), createUlid(++clock)];
+  await deliver(
+    node,
+    orders.map((orderId) => paidEvent(outletId, deviceId, orderId)),
+  );
+  const [, voidedOrder] = orders;
+  expect(await ingestOf(voidedOrder!)).toMatchObject({ state: "ingested" });
+  for (const orderId of orders)
+    await putAckedOrderEvent(outletId, node, orderId, "order.paid");
+
+  const edgeReceipts: EdgeReceipt[] = orders.map((orderId, index) => ({
+    id: randomUUID(),
+    orderId,
+    ordinal: index + 1,
+    voided: index === 1,
+  }));
+
+  await receiveVoidWhileLocked(
+    node,
+    voidedEvent(outletId, voidedOrder!, "OFF1-000002"),
+  );
+  expect(await ingestOf(voidedOrder!)).toMatchObject({
+    reason: "void_refused:lock_failed",
+  });
+  expect(await voidCount(outletId)).toBe(0);
+  await putAckedOrderEvent(outletId, node, voidedOrder!, "order.voided");
+
+  const reporterRound = reporterRoundOf(outletId, deviceId, node, edgeReceipts);
+  const firstPass = await reporterRound();
+  expect(
+    firstPass,
+    "the reporter must send the run once order.voided is acked",
+  ).toBeGreaterThan(0);
+  expect(
+    (await reporterEvents(deviceId)).every(
+      (event) => event.name === RECEIPT_RUN_REPORTED_EVENT,
+    ),
+  ).toBe(true);
+  expect(await voidCount(outletId)).toBe(0);
+  return {
+    outletId,
+    deviceId,
+    node,
+    context,
+    voidedOrder: voidedOrder!,
+    reporterRound,
+  };
+}
+
+/** Refused run conflicts of one device (the sender never requeues them). */
+const runConflictIds = (deviceId: string) =>
+  rows<{ id: string }>(
+    `SELECT id::text AS id FROM edge_sync_conflicts
+      WHERE tenant_id = $1 AND reason = 'applier_refused' AND aggregate_type = $2
+        AND aggregate_id::text = $3
+      ORDER BY id`,
+    [tenant.tenantId, RECEIPT_RUN_AGGREGATE, deviceId],
+  ).then((r) => r.map((row) => row.id));
+
+type ResolutionOf = {
+  conflict_id: string;
+  action: string;
+  outcome: string;
+  resolved_by: string;
+};
+
+const resolutionsOf = (conflictIds: string[]) =>
+  rows<ResolutionOf>(
+    `SELECT conflict_id::text AS conflict_id, action, outcome, resolved_by
+       FROM edge_sync_conflict_resolutions
+      WHERE tenant_id = $1 AND conflict_id = ANY($2::uuid[])
+      ORDER BY conflict_id, id`,
+    [tenant.tenantId, conflictIds],
+  );
+
+/** Holds row locks on the conflicts: a re-apply then times out (55P03). */
+async function holdConflictLocks(conflictIds: string[]) {
+  const client = await owner.connect();
+  await client.query("BEGIN");
+  await client.query(
+    "SELECT 1 FROM edge_sync_conflicts WHERE tenant_id = $1 AND id = ANY($2::uuid[]) FOR UPDATE",
+    [tenant.tenantId, conflictIds],
+  );
+  return async () => {
+    await client.query("ROLLBACK");
+    client.release();
+  };
+}
+
+async function expectRunInCloud(s: Scenario) {
+  const stored = await receiptRows(s.outletId);
+  expect(stored.map((row) => [row.number, row.status])).toEqual([
+    ["OFF1-000001", "issued"],
+    ["OFF1-000002", "voided"],
+  ]);
+  expect(await lastNumberOf(s.outletId)).toBe(2);
+  expect(await voidCount(s.outletId)).toBe(1);
+  // No double reversal: as many reversing journals as voided sale journals.
+  const sales = await journalCount(s.outletId, "sale");
+  expect(await journalCount(s.outletId, "reversal")).toBe(sales > 0 ? 1 : 0);
+}
+
 // ---- Test ------------------------------------------------------------------------
 
 describe("legend-gdjpu edge run ACKed before the void ingest succeeded", () => {
   it("legend-gdjpu the receipts of the run reach the cloud with numbers kept after the void is redriven, one void, no manual run event", async () => {
-    const outletId = await freshOutlet();
-    const deviceId = randomUUID();
-    const node = await edgeNodeFor(outletId);
-
-    // Cloud provisions the device prefix; the edge claim binds it to this node.
-    const context = scopeOf();
-    await withTenant(db, context, (tx) =>
-      provisionReceiptSequence(
-        tx as Parameters<typeof provisionReceiptSequence>[0],
-        context,
-        { outletId, deviceId, prefix: "OFF1" },
-      ),
-    );
-    await asOwnerTenant(async (client) => {
-      await client.query("SET LOCAL session_replication_role = replica");
-      await client.query(
-        `UPDATE receipt_sequences SET edge_node_id = $4, edge_instance_id = $5
-          WHERE tenant_id = $1 AND outlet_id = $2 AND device_id = $3 AND prefix = 'OFF1'`,
-        [
-          tenant.tenantId,
-          outletId,
-          deviceId,
-          node.scope.edgeNodeId,
-          EDGE_INSTANCE,
-        ],
-      );
-    });
-
-    // 1. The cloud ingested the offline sales of two orders.
-    const orders = [createUlid(++clock), createUlid(++clock)];
-    await deliver(
-      node,
-      orders.map((orderId) => paidEvent(outletId, deviceId, orderId)),
-    );
-    const [, voidedOrder] = orders;
-    expect(await ingestOf(voidedOrder!)).toMatchObject({ state: "ingested" });
-    for (const orderId of orders)
-      await putAckedOrderEvent(outletId, node, orderId, "order.paid");
-
-    const edgeReceipts: EdgeReceipt[] = orders.map((orderId, index) => ({
-      id: randomUUID(),
-      orderId,
-      ordinal: index + 1,
-      voided: index === 1,
-    }));
-
-    // 2. The cloud receives order.voided of order 2 under a held lock: a
-    // transient refusal. The transport still ACKs the event.
-    await receiveVoidWhileLocked(
-      node,
-      voidedEvent(outletId, voidedOrder!, "OFF1-000002"),
-    );
-    expect(await ingestOf(voidedOrder!)).toMatchObject({
-      reason: "void_refused:lock_failed",
-    });
-    expect(await voidCount(outletId)).toBe(0);
-    await putAckedOrderEvent(outletId, node, voidedOrder!, "order.voided");
-
-    // 3. The production reporter sends the run chunk (void delivered + acked),
-    // and everything it wrote reaches the cloud before the sweep runs.
-    const delivered = new Set<string>();
-    async function reporterRound(): Promise<number> {
-      const installed = await installEdgeReceipts(
-        outletId,
-        deviceId,
-        edgeReceipts,
-      );
-      const result = await reportEdgeReceiptRuns(scopeOf([outletId]), {
-        outletId,
-        edgeNodeId: node.scope.edgeNodeId,
-        edgeInstanceId: EDGE_INSTANCE,
-      });
-      await removeEdgeReceipts(outletId, deviceId, installed);
-      const fresh = (await reporterEvents(deviceId)).filter(
-        (event) => !delivered.has(event.id),
-      );
-      for (const event of fresh) delivered.add(event.id);
-      await deliver(node, fresh);
-      return result.reported;
-    }
-
-    const firstPass = await reporterRound();
-    expect(
-      firstPass,
-      "the reporter must send the run once order.voided is acked",
-    ).toBeGreaterThan(0);
-    expect(
-      (await reporterEvents(deviceId)).every(
-        (event) => event.name === RECEIPT_RUN_REPORTED_EVENT,
-      ),
-    ).toBe(true);
-    // The void is still not in the cloud when the run arrived.
-    expect(await voidCount(outletId)).toBe(0);
+    const s = await refusedRunScenario();
+    const { outletId, voidedOrder, context, reporterRound } = s;
 
     // 4. The lock is gone: the sweep ingests the void.
     expect(await sweep()).toMatchObject({ recovered: 1, failed: 0 });
     expect(await voidCount(outletId)).toBe(1);
-    expect(await ingestOf(voidedOrder!)).toMatchObject({
+    expect(await ingestOf(voidedOrder)).toMatchObject({
       state: "voided",
       reason: null,
     });
@@ -816,5 +936,158 @@ describe("legend-gdjpu edge run ACKed before the void ingest succeeded", () => {
     const sales = await journalCount(outletId, "sale");
     expect(sales).toBeLessThanOrEqual(2);
     expect(await journalCount(outletId, "reversal")).toBe(sales > 0 ? 1 : 0);
+  });
+
+  it("legend-gdjpu a re-apply that throws a non-CoreError never rolls back the recovered void and leaves the conflict open", async () => {
+    const s = await refusedRunScenario();
+    const conflictIds = await runConflictIds(s.deviceId);
+    expect(conflictIds.length).toBeGreaterThan(0);
+
+    const logged: string[] = [];
+    const release = await holdConflictLocks(conflictIds);
+    let blocked;
+    try {
+      blocked = await sweep({ error: (message) => void logged.push(message) });
+    } finally {
+      await release();
+    }
+    // The void is recovered and stays recovered; the re-apply failed alone.
+    expect(blocked).toMatchObject({ recovered: 1, failed: 0 });
+    expect(await voidCount(s.outletId)).toBe(1);
+    expect(await ingestOf(s.voidedOrder)).toMatchObject({
+      state: "voided",
+      reason: null,
+    });
+    expect(await receiptRows(s.outletId)).toHaveLength(0);
+    expect(await resolutionsOf(conflictIds)).toEqual([]);
+    expect(logged.some((line) => line.includes("re-apply failed"))).toBe(true);
+    // Counts and ids only: no payload, number or amount in the log.
+    for (const line of logged) expect(line).not.toContain("OFF1-");
+
+    // The failed run stays an open conflict (no resolution) for a supervisor.
+    await sweep();
+    expect(await resolutionsOf(conflictIds)).toEqual([]);
+  });
+
+  it("legend-gdjpu a conflict that already has a resolution is never re-applied", async () => {
+    const s = await refusedRunScenario();
+    const conflictIds = await runConflictIds(s.deviceId);
+    expect(conflictIds.length).toBeGreaterThan(0);
+    await asOwnerTenant(async (client) => {
+      for (const conflictId of conflictIds)
+        await client.query(
+          `INSERT INTO edge_sync_conflict_resolutions
+             (id, tenant_id, outlet_id, conflict_id, action, outcome, note, resolved_by)
+           VALUES ($1, $2, $3, $4, 'dismissed', 'dismissed', 'Supervisor: dibuang', $5)`,
+          [
+            ulidToUuid(createUlid()),
+            tenant.tenantId,
+            s.outletId,
+            conflictId,
+            supervisorId,
+          ],
+        );
+    });
+
+    for (let round = 0; round < 2; round += 1)
+      expect(await sweep()).toMatchObject({ failed: 0 });
+    // The void is in; the supervisor's decision stands, the run is not applied.
+    expect(await voidCount(s.outletId)).toBe(1);
+    expect(await receiptRows(s.outletId)).toHaveLength(0);
+    const resolutions = await resolutionsOf(conflictIds);
+    expect(resolutions).toHaveLength(conflictIds.length);
+    for (const resolution of resolutions)
+      expect(resolution).toMatchObject({
+        action: "dismissed",
+        outcome: "dismissed",
+        resolved_by: supervisorId,
+      });
+  });
+
+  it("legend-gdjpu a healed run gets one applied resolution and is not picked again: no double reversal, no duplicate number", async () => {
+    const s = await refusedRunScenario();
+    const conflictIds = await runConflictIds(s.deviceId);
+    expect(conflictIds.length).toBeGreaterThan(0);
+
+    expect(await sweep()).toMatchObject({ recovered: 1, failed: 0 });
+    await expectRunInCloud(s);
+    const healed = await resolutionsOf(conflictIds);
+    expect(healed).toHaveLength(conflictIds.length);
+    for (const resolution of healed)
+      expect(resolution).toMatchObject({
+        action: "replayed",
+        outcome: "applied",
+        resolved_by: "system:edge-order-redrive",
+      });
+
+    // Later sweeps skip the healed rows: nothing new, nothing doubled.
+    await sweep();
+    await sweep();
+    expect(await resolutionsOf(conflictIds)).toEqual(healed);
+    await expectRunInCloud(s);
+    const numbers = (await receiptRows(s.outletId)).map((row) => row.number);
+    expect(new Set(numbers).size).toBe(numbers.length);
+  });
+
+  it("legend-gdjpu the paid redrive applies a run refused earlier with RECEIPT_PREFIX_MISMATCH once the sale is ingested", async () => {
+    const outletId = await freshOutlet();
+    const deviceId = randomUUID();
+    const node = await edgeNodeFor(outletId);
+    const context = await provisionDevice(outletId, deviceId, node);
+
+    // Sale 1 is refused transiently (parked, not ingested); sale 2 is ingested.
+    const orders = [createUlid(++clock), createUlid(++clock)];
+    await deliver(node, [paidEvent(outletId, deviceId, orders[1]!)]);
+    await receivePaidWhileLocked(
+      node,
+      paidEvent(outletId, deviceId, orders[0]!),
+    );
+    expect(await ingestOf(orders[0]!)).toMatchObject({
+      state: "refused",
+      reason: "lock_failed",
+    });
+    for (const orderId of orders)
+      await putAckedOrderEvent(outletId, node, orderId, "order.paid");
+
+    const edgeReceipts: EdgeReceipt[] = orders.map((orderId, index) => ({
+      id: randomUUID(),
+      orderId,
+      ordinal: index + 1,
+      voided: false,
+    }));
+    const reporterRound = reporterRoundOf(
+      outletId,
+      deviceId,
+      node,
+      edgeReceipts,
+    );
+    expect(await reporterRound()).toBeGreaterThan(0);
+
+    // The run reached the cloud before sale 1: refused, nothing stored.
+    const conflictIds = await runConflictIds(deviceId);
+    expect(conflictIds.length).toBeGreaterThan(0);
+    expect(await receiptRows(outletId)).toHaveLength(0);
+
+    expect(await sweep()).toMatchObject({ recovered: 1, failed: 0 });
+    expect(await ingestOf(orders[0]!)).toMatchObject({ state: "ingested" });
+    const stored = await receiptRows(outletId);
+    expect(stored.map((row) => [row.number, row.status])).toEqual([
+      ["OFF1-000001", "issued"],
+      ["OFF1-000002", "issued"],
+    ]);
+    expect(await lastNumberOf(outletId)).toBe(2);
+    expect(await resolutionsOf(conflictIds)).toHaveLength(conflictIds.length);
+
+    await sweep();
+    expect(await receiptRows(outletId)).toHaveLength(2);
+    expect(await lastNumberOf(outletId)).toBe(2);
+    const gaps = await withTenant(db, context, (tx) =>
+      receiptGapsForOutlet(
+        tx as Parameters<typeof receiptGapsForOutlet>[0],
+        context,
+        outletId,
+      ),
+    );
+    for (const gap of gaps) expect(gap.missing).toEqual([]);
   });
 });
