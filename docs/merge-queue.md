@@ -287,3 +287,4 @@ Induk lebih dulu. Migrasi dinomori ulang dari ujung m1 saat batch disusun.
 - 13:56 ws/1175-approval-payout-p3 e35d52a76 (base ws/1164, landing sesudah 1164; migrasi kerja 0707): SIAP batch97. 52e52 (cancel lewat tenggat -> 'expired' untuk pemanggil sistem, HTTP cancelOwnRequest tetap 409; diterima CTO), 1e9py, 9cx64. Architect xhigh bersih; tsc exit 0.
 - 14:17 SO 1171 reservasi DP (ws/1163) berjalan Codex #2; menahan gerbang rilis area reservasi, tidak menahan batch97.
 - 14:25 ws/1163-reservasi-slot-pickup cca06c1a6: SO 1171 2 P2 -> fix ws/1178-reservasi-so1171-fix (G02j3). 1163 boleh tetap batch97; 1178 menyusul sebelum gerbang rilis reservasi.
+- 14:31 ws/1164 + ws/1175: SO 1173 3 P1 -> fix ws/1179-payout-so1173-fix (G8u3h, migrasi kerja 0708). Gerbang rilis payout/DOIT ditahan sampai 1179 mendarat; batch96/97 tidak ditahan.
