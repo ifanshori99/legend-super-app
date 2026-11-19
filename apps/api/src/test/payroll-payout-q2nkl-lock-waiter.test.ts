@@ -442,7 +442,10 @@ async function lockHolderPid(): Promise<number> {
     if (rows.length === 1) pid = Number(rows[0]!.pid);
     else await new Promise((r) => setTimeout(r, 50));
   }
-  expect(pid, "premise: exactly one backend holds an advisory lock").toBeDefined();
+  expect(
+    pid,
+    "premise: exactly one backend holds an advisory lock",
+  ).toBeDefined();
   return pid!;
 }
 
@@ -709,7 +712,8 @@ describe("q2nkl T2: the stuck lock holder is killed", () => {
         "a good read does not close the flag: the slip stays held until two people clear it",
       ).toBe(true);
 
-      for (const f of await lockedFlags(w.itemId)) await clearFlag(f.id as string);
+      for (const f of await lockedFlags(w.itemId))
+        await clearFlag(f.id as string);
       expect(
         await heldBySql(w.payslipId),
         "the two-person clearance of the flag frees the slip",
