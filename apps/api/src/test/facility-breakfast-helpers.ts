@@ -42,6 +42,7 @@ import {
 import type { PaymentInstructions } from "@starter/shared/payment";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
+import { withBreakfastProviderProof } from "../services/facility-breakfast-consumers.ts";
 import { deliverOrderPaymentEvent } from "../services/order-payment-consumers.ts";
 import {
   setPaymentGateway,
@@ -590,10 +591,17 @@ export async function paidEvent(
   return eventEnvelopeSchema.parse(rows[0]!.event);
 }
 
-/** As the worker does: inside the tenant (consumption) transaction. */
+/**
+ * As the worker does: inside the tenant (consumption) transaction, wrapped so a
+ * refused payment asks the provider outside that transaction first (legend-9sw2w).
+ */
 export function deliver(world: BreakfastWorld, event: EventEnvelope) {
-  return withTenant(db, world.context, (tx) =>
-    deliverOrderPaymentEvent(world.context, event, tx, new Date()),
+  return withBreakfastProviderProof(world.context, (breakfastProviderProven) =>
+    withTenant(db, world.context, (tx) =>
+      deliverOrderPaymentEvent(world.context, event, tx, new Date(), {
+        breakfastProviderProven,
+      }),
+    ),
   );
 }
 

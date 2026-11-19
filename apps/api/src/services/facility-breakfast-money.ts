@@ -540,6 +540,20 @@ export async function cancelBreakfastOrderTx(
   return { linked: cancelled, refundIdr };
 }
 
+/**
+ * Thrown by `fireBreakfastOrderTx` before it would cancel an order locally
+ * (legend-9sw2w) while the provider was not asked about the order's other open
+ * codes. Nothing was written: the caller rolls back, runs
+ * `confirmBreakfastLinkUnpaid` OUTSIDE any transaction and lock, then calls
+ * again with `providerProven: true`.
+ */
+export class BreakfastProviderProofNeeded extends Error {
+  constructor(readonly paymentLinkId: string) {
+    super("Breakfast cancel needs the payment provider's word first");
+    this.name = "BreakfastProviderProofNeeded";
+  }
+}
+
 export type BreakfastFireOutcome =
   | "fired"
   | "already_fired"
@@ -554,13 +568,20 @@ export type BreakfastFireOutcome =
  * cancelled one. Re-checks the paid intent under its row lock: a refund already
  * filed against it, a ticket that will never be used, or a fact time at or
  * after the ticket's ends_at cancels the order and returns the rest instead of
- * firing (outcome `ended` for the last one).
+ * firing (outcome `ended` for the last one). Every local cancel needs
+ * `providerProven` (legend-9sw2w; see `BreakfastProviderProofNeeded`): another
+ * open code of the link may already hold money at the provider.
  */
 export async function fireBreakfastOrderTx(
   tx: Tx,
   context: ScopedTenantContext,
   locked: LockedBreakfast,
-  input: { actorUserId: string | null; now: Date },
+  input: {
+    actorUserId: string | null;
+    now: Date;
+    /** The provider was asked about the link's other codes (outside the lock). */
+    providerProven?: boolean;
+  },
 ): Promise<{ linked: BreakfastLinkedRow; outcome: BreakfastFireOutcome }> {
   const { order, linked } = locked;
   const tenantId = context.tenant.tenantId;
@@ -597,6 +618,8 @@ export async function fireBreakfastOrderTx(
   ) {
     // The money is gone (refunded) or the intent is missing: nothing to sell.
     // Cancel instead of throwing so the fire sweep does not retry forever.
+    if (!input.providerProven)
+      throw new BreakfastProviderProofNeeded(order.paymentLinkId);
     const cancelled = await cancelBreakfastOrderTx(tx, context, locked, {
       reason: "payment_refunded",
       actorUserId: input.actorUserId,
@@ -625,6 +648,8 @@ export async function fireBreakfastOrderTx(
   const ended = !!ticket && at.getTime() >= ticket.endsAt.getTime();
   const balance = await refundableBalance(tx, intent);
   if (ticketDead || ended || balance.reserved > 0n) {
+    if (!input.providerProven)
+      throw new BreakfastProviderProofNeeded(order.paymentLinkId);
     const cancelled = await cancelBreakfastOrderTx(tx, context, locked, {
       reason: ticketDead
         ? "ticket_closed"

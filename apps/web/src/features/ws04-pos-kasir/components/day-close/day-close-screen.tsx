@@ -349,6 +349,7 @@ function CheckPanel({ recap }: { recap: DayCloseRecap }) {
   const stock = recap.stockDeduction;
   const allClosed = recap.shifts.closed >= recap.shifts.total;
   const unmatched = recap.standaloneUnmatched ?? 0;
+  const unsynced = recap.unsyncedReceiptCount ?? 0;
 
   const failure =
     closeDay.error instanceof ApiError
@@ -382,6 +383,18 @@ function CheckPanel({ recap }: { recap: DayCloseRecap }) {
       }
     >
       <div className="grid gap-5">
+        {unsynced > 0 && (
+          <Notice
+            tone="warning"
+            title={t("posKasirDayclose.check.unsyncedTitle")}
+          >
+            <p>
+              {t("posKasirDayclose.check.unsyncedReceipts", {
+                count: unsynced,
+              })}
+            </p>
+          </Notice>
+        )}
         <Notice
           tone="warning"
           title={t("posKasirDayclose.check.settlementTitle")}

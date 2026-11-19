@@ -65,6 +65,7 @@ import {
   assertBreakfastLinkHoldsNoMoney,
   breakfastLines,
   cancelBreakfastOrderTx,
+  BreakfastProviderProofNeeded,
   confirmBreakfastLinkUnpaid,
   DEAD_TICKET_STATUSES,
   fireBreakfastOrderTx,
@@ -852,30 +853,41 @@ export async function fireBreakfastOrderByStaff(
   _body: { idempotencyKey: string },
   now = new Date(),
 ): Promise<BreakfastOrder> {
-  const result = await withTenant(db, context, async (tx) => {
-    if (!ulidSchema.safeParse(orderId).success) throw notFound("Pesanan");
-    const locked = await lockBreakfastOrder(tx, context, orderId);
-    if (!locked) throw notFound("Pesanan");
-    await assertFacilityPermission(
-      tx,
-      context,
-      actorUserId,
-      OPERATE_PERMISSION,
-      locked.order.outletId,
-    );
-    // Refuses anything not paid (BREAKFAST_NOT_PAID); a fired order answers
-    // with itself. A refund already filed or a dead ticket cancels instead.
-    const { linked, outcome } = await fireBreakfastOrderTx(
-      tx,
-      context,
-      locked,
-      { actorUserId, now },
-    );
-    // At or after ends_at the order was cancelled and refunded in full above;
-    // refused after the commit, or the cancel would roll back.
-    if (outcome === "ended") return null;
-    return toBreakfastOrder(tx, context, linked);
-  });
+  const attempt = (providerProven: boolean) =>
+    withTenant(db, context, async (tx) => {
+      if (!ulidSchema.safeParse(orderId).success) throw notFound("Pesanan");
+      const locked = await lockBreakfastOrder(tx, context, orderId);
+      if (!locked) throw notFound("Pesanan");
+      await assertFacilityPermission(
+        tx,
+        context,
+        actorUserId,
+        OPERATE_PERMISSION,
+        locked.order.outletId,
+      );
+      // Refuses anything not paid (BREAKFAST_NOT_PAID); a fired order answers
+      // with itself. A refund already filed or a dead ticket cancels instead,
+      // but only once the provider was asked about the other open codes.
+      const { linked, outcome } = await fireBreakfastOrderTx(
+        tx,
+        context,
+        locked,
+        { actorUserId, now, providerProven },
+      );
+      // At or after ends_at the order was cancelled and refunded in full above;
+      // refused after the commit, or the cancel would roll back.
+      if (outcome === "ended") return null;
+      return toBreakfastOrder(tx, context, linked);
+    });
+  let result: BreakfastOrder | null;
+  try {
+    result = await attempt(false);
+  } catch (error) {
+    if (!(error instanceof BreakfastProviderProofNeeded)) throw error;
+    // Provider proof outside any lock (legend-9sw2w); unclear answer: 409.
+    await confirmBreakfastLinkUnpaid(context, orderId, now);
+    result = await attempt(true);
+  }
   if (result === null) throw new FacilityError("BREAKFAST_UNAVAILABLE");
   return result;
 }
