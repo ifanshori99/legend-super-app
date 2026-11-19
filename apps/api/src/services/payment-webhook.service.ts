@@ -29,6 +29,7 @@ import {
   isoDateTimeSchema,
   tenantIdSchema,
   uuidSchema,
+  uuidToUlid,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
@@ -40,11 +41,13 @@ import {
   asc,
   eq,
   gt,
+  gte,
   inArray,
   isNotNull,
   isNull,
   lt,
   ne,
+  not,
   notInArray,
   or,
   sql,
@@ -73,6 +76,7 @@ import {
   markProviderRefunded,
   recordUnsettledGatewayFunds,
 } from "./payment.service";
+import { notifyOutletSupervisors } from "./edge-sync-conflict-alert";
 import { decidePaymentConfirmation } from "./payment-lifecycle";
 import { plausiblePaidAt } from "./payment-paid-at";
 import {
@@ -140,6 +144,9 @@ export const WEBHOOK_RETRY_WINDOW_MS = 24 * 3_600_000;
  * even beyond the retry window. */
 export const WEBHOOK_STUCK_RECEIVED_MS = 5 * 60_000;
 const WEBHOOK_RETRY_MAX_BACKOFF_MINUTES = 60;
+/** legend-dhzqb: stuck-received claims before the row is given up on. */
+const WEBHOOK_STUCK_MAX_ATTEMPTS = 6;
+const WEBHOOK_STUCK_EXHAUSTED = "STUCK_EXHAUSTED";
 /** An event for a reference we do not know yet may just be early (the intent
  * stores its provider ref after the create call): retried this long. */
 export const WEBHOOK_UNKNOWN_REFERENCE_RETRY_MS = 15 * 60_000;
@@ -3700,17 +3707,28 @@ function untouchedSince(row: GatewayWebhookEvent) {
   return sql`date_trunc('milliseconds', ${gatewayWebhookEvents.updatedAt}) = ${row.updatedAt.toISOString()}::timestamptz`;
 }
 
-/** A `received` row idle past WEBHOOK_STUCK_RECEIVED_MS: its delivery or
- * claimer died before recording an outcome. A fresher `received` row is still
- * being processed by whoever stored or claimed it. */
+/** Next attempt is due `min(2^attempts, 60)` minutes after the last one. */
+function webhookBackoff() {
+  return sql`least(power(2, least(${gatewayWebhookEvents.attempts}, 6)), ${WEBHOOK_RETRY_MAX_BACKOFF_MINUTES}) * interval '1 minute'`;
+}
+
+/** A `received` row idle past the larger of WEBHOOK_STUCK_RECEIVED_MS and the
+ * backoff of its attempts: its delivery or claimer died before recording an
+ * outcome (legend-dhzqb: each stuck claim counts as an attempt, so a crash loop
+ * slows down and ends). A fresher `received` row is still being processed by
+ * whoever stored or claimed it. */
 function stuckReceived(now: Date) {
   return and(
     eq(gatewayWebhookEvents.status, "received"),
-    lt(
-      gatewayWebhookEvents.updatedAt,
-      new Date(now.getTime() - WEBHOOK_STUCK_RECEIVED_MS),
-    ),
+    sql`${gatewayWebhookEvents.updatedAt} + greatest(${WEBHOOK_STUCK_RECEIVED_MS / 1000} * interval '1 second', ${webhookBackoff()}) < ${now.toISOString()}::timestamptz`,
   );
+}
+
+/** A claim of a stuck `received` row is one more attempt; a claim of a `failed`
+ * row is not (its recorded outcome already counted). Postgres reads the old
+ * status and attempts in SET. */
+function claimAttempts() {
+  return sql`case when ${gatewayWebhookEvents.status} = 'received' then ${gatewayWebhookEvents.attempts} + 1 else ${gatewayWebhookEvents.attempts} end`;
 }
 
 /** Status a claim may take a row from: `failed`, or a stuck `received`. Every
@@ -3726,8 +3744,8 @@ function claimableStatus(now: Date) {
  * updated_at only while the row is still claimable (`failed`, or `received`
  * and stuck) and untouched since `row` was loaded, so of a redelivery and a
  * worker (or two redeliveries) that loaded the same row only one processes it,
- * and a fresh `received` row stays with the delivery processing it. Attempts
- * stay as is.
+ * and a fresh `received` row stays with the delivery processing it. A stuck
+ * claim counts as an attempt, a `failed` one does not (legend-dhzqb).
  */
 async function claimStoredRow(
   context: ScopedTenantContext,
@@ -3737,7 +3755,7 @@ async function claimStoredRow(
   const claimed = await withTenant(db, context, async (tx) =>
     tx
       .update(gatewayWebhookEvents)
-      .set({ status: "received", updatedAt: now })
+      .set({ status: "received", updatedAt: now, attempts: claimAttempts() })
       .where(
         and(
           eq(gatewayWebhookEvents.tenantId, context.tenant.tenantId),
@@ -4082,12 +4100,14 @@ export async function receiveDoitWebhook(input: {
  * the backoff (attempts=0 would make them due after 1 minute, while the
  * request may still be processing): they are due only once stuck for
  * WEBHOOK_STUCK_RECEIVED_MS, even past the 24 h window, so a recurring invoice
- * event is never stranded. Idempotent via the dedupe.
+ * event is never stranded. Idempotent via the dedupe. legend-dhzqb: a stuck
+ * `received` row is claimed only below WEBHOOK_STUCK_MAX_ATTEMPTS (the sweep
+ * turns the rest into `failed`/STUCK_EXHAUSTED), and a STUCK_EXHAUSTED row is
+ * not retried by the worker at all: it needs a manual resend.
  */
 function webhookRetryDue(context: ScopedTenantContext, now: Date) {
   const windowStart = new Date(now.getTime() - WEBHOOK_RETRY_WINDOW_MS);
-  // Next attempt is due `min(2^attempts, 60)` minutes after the last one.
-  const backoff = sql`least(power(2, least(${gatewayWebhookEvents.attempts}, 6)), ${WEBHOOK_RETRY_MAX_BACKOFF_MINUTES}) * interval '1 minute'`;
+  const backoff = webhookBackoff();
   return and(
     eq(gatewayWebhookEvents.tenantId, context.tenant.tenantId),
     eq(gatewayWebhookEvents.provider, PROVIDER),
@@ -4098,10 +4118,119 @@ function webhookRetryDue(context: ScopedTenantContext, now: Date) {
         eq(gatewayWebhookEvents.status, "failed"),
         gt(gatewayWebhookEvents.receivedAt, windowStart),
         sql`${gatewayWebhookEvents.updatedAt} + ${backoff} <= ${now.toISOString()}::timestamptz`,
+        notStuckExhausted(),
       ),
-      stuckReceived(now),
+      and(
+        stuckReceived(now),
+        or(
+          lt(gatewayWebhookEvents.attempts, WEBHOOK_STUCK_MAX_ATTEMPTS),
+          not(neverRecordedOutcome()),
+        ),
+      ),
     ),
   );
+}
+
+/** The row never recorded an outcome of its own (no error code, or only the
+ * STUCK_EXHAUSTED mark of an earlier give-up that a manual resend reclaimed):
+ * only such rows are capped. A row with a recorded failure keeps retrying on
+ * the backoff, so a parked recurring event is never stranded (legend-dhzqb). */
+function neverRecordedOutcome() {
+  return sql`coalesce(${gatewayWebhookEvents.lastErrorCode}, '') in ('', ${WEBHOOK_STUCK_EXHAUSTED})`;
+}
+
+/** The row was not given up on by the stuck-received bound (legend-dhzqb). */
+function notStuckExhausted() {
+  return sql`coalesce(${gatewayWebhookEvents.lastErrorCode}, '') <> ${WEBHOOK_STUCK_EXHAUSTED}`;
+}
+
+/**
+ * legend-dhzqb: gives up on stuck `received` rows that reached
+ * WEBHOOK_STUCK_MAX_ATTEMPTS claims without ever recording an outcome (a crash
+ * loop): `failed`/STUCK_EXHAUSTED, which the worker no longer retries. Per row
+ * the conditional flip and its alert share one transaction: only the sweep
+ * that flips a row alerts, and an alert that fails rolls the flip back (the row
+ * stays stuck; the next sweep tries again) without breaking the sweep. The
+ * alert id carries the exhaust time, so a second exhaustion after a failed
+ * manual resend alerts again.
+ */
+async function exhaustStuckReceivedRows(
+  context: ScopedTenantContext,
+  now: Date,
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const exhausted = and(
+    eq(gatewayWebhookEvents.tenantId, tenantId),
+    eq(gatewayWebhookEvents.provider, PROVIDER),
+    eq(gatewayWebhookEvents.signatureValid, true),
+    stuckReceived(now),
+    gte(gatewayWebhookEvents.attempts, WEBHOOK_STUCK_MAX_ATTEMPTS),
+    neverRecordedOutcome(),
+  );
+  const candidates = await withTenant(db, context, async (tx) =>
+    tx
+      .select({ id: gatewayWebhookEvents.id })
+      .from(gatewayWebhookEvents)
+      .where(exhausted)
+      .orderBy(asc(gatewayWebhookEvents.receivedAt)),
+  );
+  for (const candidate of candidates) {
+    try {
+      await withTenant(db, context, async (tx) => {
+        const [row] = await tx
+          .update(gatewayWebhookEvents)
+          .set({
+            status: "failed",
+            lastErrorCode: WEBHOOK_STUCK_EXHAUSTED,
+            updatedAt: now,
+          })
+          .where(and(exhausted, eq(gatewayWebhookEvents.id, candidate.id)))
+          .returning({
+            id: gatewayWebhookEvents.id,
+            eventId: gatewayWebhookEvents.eventId,
+          });
+        if (!row) return;
+        const hex = createHash("sha256")
+          .update(
+            `payment.webhook_stuck_exhausted\0${tenantId}\0${row.id}\0${now.getTime()}`,
+          )
+          .digest("hex")
+          .slice(0, 32);
+        const id = uuidToUlid(
+          `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
+        );
+        await tx.transaction(async (savepoint) => {
+          await notifyOutletSupervisors(
+            savepoint,
+            context,
+            {
+              tenantId,
+              outletId: null,
+              category: "operational_anomaly",
+              alsoOwners: true,
+              recordEmpty: true,
+              id,
+              eventName: "payment.webhook_stuck_exhausted",
+              aggregateType: "payment",
+              aggregateId: id,
+              payload: {
+                webhookEventId: row.id,
+                ...(row.eventId ? { eventId: row.eventId } : {}),
+              },
+              title: "Webhook pembayaran macet dan dihentikan",
+              body: "Sebuah webhook pembayaran dari penyedia berulang kali macet saat diproses dan sekarang dihentikan. Pembayaran di dalamnya mungkin belum tercatat. Periksa di dashboard penyedia lalu kirim ulang webhook-nya.",
+            },
+            now,
+          );
+        });
+      });
+    } catch (err) {
+      logger.warn(
+        { err, tenantId, webhookEventId: candidate.id },
+        "Stuck webhook exhausted: alert failed, the row stays stuck",
+      );
+    }
+  }
 }
 
 /**
@@ -4116,6 +4245,7 @@ export async function reprocessStoredWebhookEvents(
   now = new Date(),
   limit = 100,
 ): Promise<{ checked: number; processed: number }> {
+  await exhaustStuckReceivedRows(context, now);
   const rows = await withTenant(db, context, async (tx) =>
     tx
       .select()
@@ -4130,11 +4260,12 @@ export async function reprocessStoredWebhookEvents(
   for (const row of rows) {
     // Atomic claim: set `received` and bump updated_at only while the row is
     // still due, so the due predicate (and every other claim) turns false
-    // until an outcome is recorded. Attempts stay as is.
+    // until an outcome is recorded. A stuck claim counts as an attempt, a
+    // `failed` one does not (legend-dhzqb).
     const claimed = await withTenant(db, context, async (tx) =>
       tx
         .update(gatewayWebhookEvents)
-        .set({ status: "received", updatedAt: now })
+        .set({ status: "received", updatedAt: now, attempts: claimAttempts() })
         .where(
           and(
             webhookRetryDue(context, now),
@@ -4208,7 +4339,7 @@ export async function reprocessParkedRecurringEvents(
   now: Date = new Date(),
   opts: { providerSubscriptionId?: string; limit?: number } = {},
 ): Promise<{ checked: number; processed: number }> {
-  const backoff = sql`least(power(2, least(${gatewayWebhookEvents.attempts}, 6)), ${WEBHOOK_RETRY_MAX_BACKOFF_MINUTES}) * interval '1 minute'`;
+  const backoff = webhookBackoff();
   const conditions = [
     eq(gatewayWebhookEvents.tenantId, context.tenant.tenantId),
     eq(gatewayWebhookEvents.provider, PROVIDER),
@@ -4218,6 +4349,8 @@ export async function reprocessParkedRecurringEvents(
     isNotNull(gatewayWebhookEvents.payload),
     // An unreadable body stays unreadable: not retried forever here.
     sql`coalesce(${gatewayWebhookEvents.lastErrorCode}, '') <> 'MALFORMED'`,
+    // A given-up stuck row needs a manual resend (legend-dhzqb).
+    notStuckExhausted(),
   ];
   if (opts.providerSubscriptionId !== undefined)
     conditions.push(

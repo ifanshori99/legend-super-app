@@ -7943,3 +7943,10 @@ Dasar `origin/milestone/m1` 3ddf85f3b (batch90). Cabang masuk: `ghostex/pin-kasi
 Alasan 8b2dc0b1 keluar: allowlist default-tolak 1043 bertabrakan dengan desain 1027/1054/wa9n7 (guard bertanda sesi). Hasil merge membuat 53 tes perangkat bersama gagal (`shared-device-allowlist`, `shared-device-backoffice-guard`, `auth-shared-device-guard`, `push-removal-shared-device-1024`, `shared-device-fail-closed-stamp-vzvok`); rute keep-alive `POST /api/auth/sessions/current/activity` juga tidak ada di allowlist 1043. Menyatukan dua desain akses ini keputusan pemilik cabang, bukan merge train: cabang 1043 perlu di-rebase di atas 1027/1054 (allowlist ditambah keep-alive, urutan guard mengikuti wa9n7 lalu allowlist). Dilaporkan ke CTO.
 
 Gerbang: workspace links + lint hijau (6m32 antre, 2 warning lama); typecheck API+web hijau 2m29 (heap 8 GB); fast gate 16 berkas (580 tes API + 46 root) hijau 4m27, ditambah keluarga perangkat bersama 45 berkas (1033 tes) hijau; build hijau; e2e produksi 18 lulus/1 skip. Full run 20:58-23:20 (2j21m): 23991 lulus, 4 gagal di 3 berkas, semuanya lulus pada rerun terarah (2x): `hris-employee-bank-code`, `tax-api` ORD-03, `rbac-audit-writer` x2 (flake dikenal).
+
+## 1176 webhook + opname P3 (19 Nov 2026, `ws/1176-webhook-opname-p3`, base 1167 1014c8963)
+
+- legend-dhzqb: baris webhook `received` yang macet kini dibatasi. Klaim baris `received` macet menambah `attempts`; jendela macet = max(5 menit, backoff attempts); sesudah 6 klaim baris yang belum pernah mencatat hasil pindah ke `failed`/`STUCK_EXHAUSTED` + satu alert (flip dan alert satu transaksi; gagal alert membatalkan flip). Worker dan sweep recurring tidak mengulang `STUCK_EXHAUSTED`; kirim ulang manual tetap memproses. Baris dengan kegagalan tercatat tidak pernah dihentikan (backoff per jam). Tanpa migrasi.
+- legend-nxqrw: retur pembelian menjawab `BLIND_COUNT_LOCKED` 409 untuk penghitung opname buta sebelum cek stok.
+- Tes PAY-03 dua worker: attempts 1 -> 2 (klaim macet + hasil).
+- Bukti: 75 tes terarah hijau, tsc api exit 0, prettier + eslint hijau, architect 2 ronde.

@@ -99,8 +99,10 @@ import { HttpError } from "../lib/http-error.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { baseUnitCost } from "./inventory-receiving.service.ts";
 import { recordStockMovementInTransaction } from "./inventory.service.ts";
+import { isBlindCountCounterOfPair } from "./inventory-count.visibility.ts";
 import {
   assertOutlet,
+  blindCountLocked,
   cursorInstant,
   cursorKeys,
   cursorUuid,
@@ -960,6 +962,17 @@ export async function createPurchaseReturn(
       >();
       for (const [stockKey, wanted] of wantedByStock) {
         const [locationId, itemId] = stockKey.split(":") as [string, string];
+        // A counter of an open blind count must not learn the hidden quantity
+        // from a return that succeeds or fails on it: refuse BEFORE the stock
+        // check.
+        if (
+          await isBlindCountCounterOfPair(tx, {
+            locationId,
+            inventoryItemId: itemId,
+            userId: actorUserId,
+          })
+        )
+          throw blindCountLocked();
         const [balance] = await tx
           .select({
             quantity: stockBalances.quantity,
