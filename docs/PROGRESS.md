@@ -8448,3 +8448,11 @@ Pemakaian (`session-usage.py`, sesi 81d47474): 54 menit sejak 10:53, puncak kont
 - legend-nxqrw: retur pembelian menjawab `BLIND_COUNT_LOCKED` 409 untuk penghitung opname buta sebelum cek stok.
 - Tes PAY-03 dua worker: attempts 1 -> 2 (klaim macet + hasil).
 - Bukti: 75 tes terarah hijau, tsc api exit 0, prettier + eslint hijau, architect 2 ronde.
+
+## 1175 Approval + payout P3 lanjutan 1164 (19 Nov, cabang `ws/1175-approval-payout-p3`)
+
+- legend-52e52: `cancelApprovalRequest` (dipakai modul refund, jurnal manual/berulang, bagi hasil, impor settlement) kini memeriksa tenggat level terbuka dengan jam sesudah `lockChain`. Lewat tenggat: level di-expire lewat helper bersama `expireOpenLevel` (juga dipakai `resolveApprovalChainOutcome`), mengembalikan `"expired"`, tanpa status/event/audit `cancelled`. Penyimpangan dari 409: pemanggil sistem (impor settlement, `actorUserId` null) tidak boleh abort; semua pemanggil sudah menganggap hasil selain `"approved"` aman. Rute HTTP `cancelOwnRequest` tetap 409.
+- legend-1e9py: migrasi kerja 0707 `0707_payout_attest_clock_and_lock_database.sql`: cek `pg_locks` di `app.payout_recon_clear_approve` kini difilter `l.database = oid database saat ini` (staging di cluster yang sama tidak lagi memblokir approval). Hanya badan fungsi, tanpa data diubah.
+- legend-9cx64: migrasi yang sama; `app.payout_attest` mengisi `attested_at` dengan `clock_timestamp()` yang dibaca sesudah `mfa_verified_at` (INSERT dan ON CONFLICT), jadi `attested_at >= mfa_verified_at` dan recon tidak lagi memberi `mfa_stale` palsu. Tanpa kolom baru.
+- Bukti: 18 tes baru, 12 gagal di kode dasar (6 kontrol lulus), semua lulus sesudah perbaikan; 7 berkas / 87 tes terarah hijau (termasuk data-import-registry, platform-approval-cancel-lock-time, 990 recon-attest, jsrcs); `db:generate` kosong; tsc api (`heavy pnpm --filter @starter/api typecheck`) exit 0; eslint + prettier hijau. Architect xhigh atas diff: tanpa temuan penghalang.
+- Sisa P3 (tidak diubah): `lockHolderGone` di tes menghitung advisory lock se-cluster; baca MFA saat grant vs attest masih punya celah lama (arah aman, slip tertahan).
