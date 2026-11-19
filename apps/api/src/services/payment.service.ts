@@ -90,10 +90,12 @@ import {
 } from "./payment-failover.service";
 import {
   billClosedForLateSettlement,
+  depositPaidPastCap,
   depositProvenLate,
   lockBillOwner,
 } from "./payment-late-settlement";
 import { GATEWAY_POLL_WINDOW_MS } from "./payment-poll-window";
+import { cancelUnpaidDeposit } from "./reservation-core";
 import { plausiblePaidAt } from "./payment-paid-at";
 import { alertProviderRefundedAfterRecorded } from "./payment-provider-refunded-alert.ts";
 import {
@@ -3006,10 +3008,24 @@ async function applyConfirmation(
         ? evidenceAtMs
         : new Date(confirmation.at).getTime(),
     );
-    if (
+    const gatewayProof =
       decision.kind === "settle" &&
       (confirmation.source === "verified_webhook" ||
-        confirmation.source === "gateway_status") &&
+        confirmation.source === "gateway_status");
+    // legend-3dfri (SO 1171): a DP proven paid AFTER the cap is decided here,
+    // under the locks, the same way for every provider, callback or polling,
+    // before or after the sweep: the booking is cancelled (if the sweep has not
+    // yet), the intent settles, and RSV-02 (`handlePaymentPaid`) refunds it in
+    // full once. It never confirms the booking and is not parked. A DP late
+    // BEFORE the cap keeps the parking rule below.
+    const pastCapReservation = gatewayProof
+      ? await depositPaidPastCap(tx, context, freshLink, current, confirmedAt)
+      : null;
+    if (pastCapReservation?.status === "pending_deposit")
+      await cancelUnpaidDeposit(tx, context, pastCapReservation, now);
+    if (
+      !pastCapReservation &&
+      gatewayProof &&
       (await depositProvenLate(tx, context, freshLink, current, confirmedAt))
     ) {
       // Parked here, under the locks (like the QRIS hold above), so every
@@ -3053,6 +3069,7 @@ async function applyConfirmation(
       return current;
     }
     if (
+      !pastCapReservation &&
       options.closedIntentNeedsOpenBill &&
       decision.kind === "settle" &&
       (await billClosedForLateSettlement(

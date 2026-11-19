@@ -59,7 +59,12 @@ export async function sweepStaleDepositHolds(
   // legend-m0kqn: the cancel decision stays in `reconcileDeposit`
   // (reservation-core.ts). This filter only keeps rows that are certain no-ops
   // (a gateway code still pollable) from filling the LIMIT batch and starving
-  // the rows behind them (ORDER BY created_at).
+  // the rows behind them (ORDER BY created_at). A legacy row without a DP
+  // link (pre-0049) is never capped by `reconcileDeposit` (the late refund
+  // cannot reach it), so an unanswered provider code keeps it a no-op for
+  // good: same predicate here, or 100 of them starve every newer booking
+  // (legend-chmz2). A legacy row that is paid is not pollable: it still
+  // reconciles to confirmed.
   const gatewayStillPollable = sql`exists (
     select 1 from payment_intents
     where ${paymentIntents.tenantId} = ${reservations.tenantId}
@@ -70,10 +75,13 @@ export async function sweepStaleDepositHolds(
       and ${paymentIntents.providerRef} is not null
       and ${paymentIntents.providerFinalAt} is null
       and ${paymentIntents.status} not in ('paid', 'partially_refunded', 'refunded')
-      and greatest(
-        coalesce(${reservations.depositLinkExpiresAt}, ${reservations.createdAt} + ${window}),
-        ${paymentIntents.expiresAt}
-      ) + make_interval(secs => ${GATEWAY_POLL_WINDOW_MS / 1000}) > ${nowSql}
+      and (
+        ${reservations.depositPaymentLinkId} is null
+        or greatest(
+          coalesce(${reservations.depositLinkExpiresAt}, ${reservations.createdAt} + ${window}),
+          ${paymentIntents.expiresAt}
+        ) + make_interval(secs => ${GATEWAY_POLL_WINDOW_MS / 1000}) > ${nowSql}
+      )
   ) and not exists (
     select 1 from payment_intents paid_pi
     where paid_pi.tenant_id = ${reservations.tenantId}
