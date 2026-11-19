@@ -635,6 +635,56 @@ describe("q2nkl T1: a waiter that cannot get the operation lock holds the slip",
   );
 });
 
+describe("q2nkl T1b: a lock timeout after the flag was closed raises a new flag", () => {
+  it(
+    "[q2nkl-waiter-timeout-after-clearance-new-day-new-flag] the lock flag is cleared by two people; a later timeout on another Jakarta day (options.now) raises a new flag with a day-marked reason and holds the slip again",
+    async () => {
+      const w = await freeWithOldOkWorld();
+      const day1 = new Date("2031-03-10T05:00:00Z"); // 12:00 Jakarta, 10 Mar
+      const day2 = new Date("2031-03-11T05:00:00Z"); // 11 Mar
+      const a = await startStuckHolder(w.key);
+      try {
+        const first = await within(
+          runRecon(makeStorage(w.key), { lockTimeoutMs: 300, now: day1 }),
+        );
+        expect(first.kind, "first waiter finishes").toBe("done");
+        const firstFlags = await lockedFlags(w.itemId);
+        expect(firstFlags, "premise: one lock flag").toHaveLength(1);
+        expect(
+          String(firstFlags[0]!.reason),
+          "the reason is marked with the Jakarta day",
+        ).toContain("evidence_read_locked:2031-03-10");
+        await clearFlag(firstFlags[0]!.id as string);
+        expect(
+          await heldBySql(w.payslipId),
+          "premise: the cleared flag frees the slip",
+        ).toBe(false);
+
+        const second = await within(
+          runRecon(makeStorage(w.key), { lockTimeoutMs: 300, now: day2 }),
+        );
+        expect(second.kind, "second waiter finishes").toBe("done");
+        const flags = await lockedFlags(w.itemId);
+        expect(flags, "a new flag for the new day").toHaveLength(2);
+        expect(
+          flags.some((f) =>
+            String(f.reason).includes("evidence_read_locked:2031-03-11"),
+          ),
+          "the new flag carries the new day",
+        ).toBe(true);
+        expect(
+          await heldBySql(w.payslipId),
+          "the timeout after the clearance holds the slip again",
+        ).toBe(true);
+      } finally {
+        if (!a.gate.isEnded()) a.gate.end("return");
+        await a.outcome;
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+});
+
 // =========================================================================
 // T2: the lock holder dies (pg_terminate_backend)
 // =========================================================================

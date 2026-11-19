@@ -67,6 +67,19 @@ export type PayoutReconKind =
 export type PayoutReconFlagKind =
   PayoutReconKind | "closure" | "resolve" | "bank_confirm" | "batch_approve";
 
+/**
+ * The Jakarta calendar day (YYYY-MM-DD) of a recon run. The lock-timeout flag
+ * carries it in its reason, so a timeout on a later day is a new flag even when
+ * an earlier one was closed by two people (legend-q2nkl).
+ */
+const jakartaDay = (now: Date): string =>
+  new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Jakarta",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now);
+
 export type PayoutReconReason =
   | "attestation_count"
   | "attestation_same_person"
@@ -81,7 +94,7 @@ export type PayoutReconReason =
   | "evidence_record_missing"
   | "evidence_missing"
   | "evidence_hash_mismatch"
-  | "evidence_read_locked"
+  | `evidence_read_locked:${string}`
   | "posting_missing"
   | "journal_missing"
   | "journal_reversed"
@@ -1566,6 +1579,7 @@ function evaluate(
   op: Operation,
   facts: Facts,
   fileOf: ReadonlyMap<string, FileState>, // by operation id
+  now: Date,
 ): Flag[] {
   if (op.missing)
     return op.terminalItemIds.map((itemId) => ({
@@ -1726,7 +1740,7 @@ function evaluate(
     const file = fileOf.get(op.operationId);
     if (file === "missing") addAll("evidence_missing");
     if (file === "mismatch") addAll("evidence_hash_mismatch");
-    if (file === "locked") addAll("evidence_read_locked");
+    if (file === "locked") addAll(`evidence_read_locked:${jakartaDay(now)}`);
   }
 
   // Journals against the decrypted nets.
@@ -2404,7 +2418,9 @@ export async function reconcileTrustedPayouts(
     facts === null
       ? []
       : operations
-          .flatMap((op) => evaluate(op, facts, fileOf))
+          .flatMap((op) =>
+            evaluate(op, facts, fileOf, options.now ?? new Date()),
+          )
           .concat(evaluateGrants(facts))
   )
     .concat(
