@@ -2302,3 +2302,6 @@ Langkah berikut CTO baru:
 - 21:22 CTO: Q56 diterapkan (ram-guard merah swap>4096 hanya bila free<70%; heavy tsc jalur 2 boleh free>=70% swap<4096; main.md). Uji angka palsu lolos; backup *.bak-q56.
 - 21:24 CTO: founder pindah ke Claude Code langsung. Handoff docs/HANDOFF-2026-11-19.md. Thread 1199/batch98/1203 diminta titik aman + status lalu berhenti. 1199 titik aman f5db9e686.
 - 21:38 CTO: semua thread berhenti di titik aman (batch98 int a1c5696d1 belum mendarat, 1199 69470a60d belum SIAP, 1203 492309a2b test saja). Keputusan 1203: ikat versi ledger poin di token. Handoff lengkap di docs/HANDOFF-2026-11-19.md. CTO Ghostex berhenti.
+- 20 Nov 06:50 CTO (Claude Code langsung): founder: Ghostex dan Codex tidak dipakai lagi; SO = architect Claude konteks segar. Claude #1 7d 78% (reset 24 Nov): hemat. RAM merah (swap 3,4 GB), disk 23 GB.
+- 07:05 CTO: batch98 kontrak lulus (873). db:generate tidak kosong: snapshot 0506-0508 (1179/1198) basi tanpa tabel m1, 0504-0505 tanpa settle_waived. SQL benar. Snapshot dibangun ulang merge 3-arah, b9990c6fa di int/batch98, db:generate kosong. Full run diulang.
+- 07:10 CTO: paralel: SO refund hold 1200 + SO akses jam DB 1201 (architect), 1199 fail-first + architect ulang, 1203 test tambahan (sonnet) + implementasi (opus), merge train batch99 (brief docs/briefs/1204-merge-train-batch99.md).
