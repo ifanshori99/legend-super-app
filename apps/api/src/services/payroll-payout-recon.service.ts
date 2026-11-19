@@ -2185,18 +2185,37 @@ function isLockNotAvailable(error: unknown): boolean {
 /** Known flags raised again per transaction (each call keeps an advisory lock). */
 export const PAYOUT_RECON_RERAISE_CHUNK = 100;
 
+/** First pg error code in an error's cause chain (name and code only are ever logged). */
+function pgCodeOf(error: unknown): string | undefined {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current; depth += 1) {
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === "string") return code;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return undefined;
+}
+
+type FlagFailure = { name: string; code: string | undefined };
+
 /**
  * Raises each flag in its own savepoint (nested transaction), so a row that
  * fails rolls back alone and the other rows of the transaction stay. Returns the
- * number of rows that failed (logged without personal data).
+ * number of rows that failed (logged without personal data), the flags that
+ * failed, and the name and code of the first error (never the error itself: its
+ * cause can carry query parameters).
  */
 async function raiseFlagsPerRow(
   tx: Tx,
   tenantId: string,
   flags: readonly Flag[],
-): Promise<{ failed: number; firstError: unknown }> {
-  let failed = 0;
-  let firstError: unknown;
+): Promise<{
+  failed: number;
+  failedFlags: Flag[];
+  firstError: FlagFailure | undefined;
+}> {
+  const failedFlags: Flag[] = [];
+  let firstError: FlagFailure | undefined;
   for (const flag of flags) {
     try {
       await tx.transaction(async (row) => {
@@ -2205,18 +2224,79 @@ async function raiseFlagsPerRow(
         );
       });
     } catch (error) {
-      if (failed === 0) firstError = error;
-      failed += 1;
+      const name = error instanceof Error ? error.name : "unknown";
+      const code = pgCodeOf(error);
+      if (failedFlags.length === 0) firstError = { name, code };
+      failedFlags.push(flag);
       logger.error(
-        {
-          errorName: error instanceof Error ? error.name : "unknown",
-          kind: flag.kind,
-        },
+        { errorName: name, errorCode: code, kind: flag.kind },
         "payout recon: raising a flag failed, the row was rolled back alone",
       );
     }
   }
-  return { failed, firstError };
+  return { failed: failedFlags.length, failedFlags, firstError };
+}
+
+/**
+ * The error of a page whose flags could not be written. No `cause`: it can carry
+ * the query and its parameters into any log that prints the error. Name and pg
+ * code only.
+ */
+function flagWriteError(failure: FlagFailure | undefined): Error {
+  const error = new Error(
+    `Payout recon flags could not be written (${failure?.name ?? "unknown"}${failure?.code ? ` ${failure.code}` : ""})`,
+  );
+  return Object.assign(error, { code: failure?.code });
+}
+
+/**
+ * The flags that could not be written hold their slips anyway (legend-t1ufu round
+ * 3, migration 0709): once the transaction of the flags is committed,
+ * app.payout_recon_hold_unwritten records one hold per item, per (kind,
+ * operation), in a transaction of its own. A failure here is logged (name and code
+ * only); the page fails either way.
+ */
+async function holdUnwrittenFlags(
+  context: ScopedTenantContext,
+  failedFlags: readonly Flag[],
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const groups = new Map<
+    string,
+    { kind: string; operationId: string; reason: string; itemIds: Set<string> }
+  >();
+  for (const flag of failedFlags) {
+    const key = `${flag.kind}|${flag.operationId}|${flag.reason}`;
+    const group = groups.get(key) ?? {
+      kind: flag.kind,
+      operationId: flag.operationId,
+      reason: String(flag.reason),
+      itemIds: new Set<string>(),
+    };
+    group.itemIds.add(flag.itemId);
+    groups.set(key, group);
+  }
+  for (const group of groups.values()) {
+    try {
+      await withTenant(db, context, async (tx) => {
+        // Only the role legend_payout_recon may record a hold (like observe_ok).
+        await asReconRole(tx, () =>
+          tx.execute(
+            sql`SELECT app.payout_recon_hold_unwritten(${tenantId}::uuid, ${group.kind}::text, ${group.operationId}::uuid, ARRAY[${uuidList([...group.itemIds])}]::uuid[], ${group.reason}::text)`,
+          ),
+        );
+      });
+    } catch (error) {
+      logger.error(
+        {
+          errorName: error instanceof Error ? error.name : "unknown",
+          errorCode: pgCodeOf(error),
+          kind: group.kind,
+        },
+        "payout recon: holding the slips of an unwritten flag failed",
+      );
+    }
+  }
 }
 
 /**
@@ -2531,13 +2611,24 @@ export async function reconcileTrustedPayouts(
   );
   const firstWrite = [...fresh, ...knownLocked];
   if (firstWrite.length > 0) {
-    const written = await withTenant(db, context, (tx) =>
-      raiseFlagsPerRow(tx, tenantId, firstWrite),
-    );
-    if (written.failed > 0)
-      throw new Error("Payout recon flags could not be written", {
-        cause: written.firstError,
+    let written: Awaited<ReturnType<typeof raiseFlagsPerRow>>;
+    try {
+      written = await withTenant(db, context, (tx) =>
+        raiseFlagsPerRow(tx, tenantId, firstWrite),
+      );
+    } catch (error) {
+      // The transaction of the flags itself failed (connection lost, COMMIT
+      // refused): none of its flags is known to be written, so hold them all.
+      await holdUnwrittenFlags(context, firstWrite);
+      throw flagWriteError({
+        name: error instanceof Error ? error.name : "unknown",
+        code: pgCodeOf(error),
       });
+    }
+    if (written.failed > 0) {
+      await holdUnwrittenFlags(context, written.failedFlags);
+      throw flagWriteError(written.firstError);
+    }
   }
   // The other known flags are raised again in small chunks of their own (each
   // call holds an advisory lock until its transaction ends). A failed row is
