@@ -14,6 +14,7 @@ import { inventoryItems } from "../db/schema/inventory.ts";
 import {
   itemVariants,
   menuCategories,
+  menuItemModifierGroups,
   menuItems,
   modifierGroups,
   modifiers,
@@ -36,9 +37,9 @@ type Switch = {
 
 /**
  * Streams with a safe off-switch column. Skipped on purpose: printers
- * (removal is a versioned tombstone table), vouchers (a voucher only applies
- * through its promotion) and menu_item_modifier_groups (a link row without
- * either column).
+ * (removal is a versioned tombstone table) and vouchers (a voucher only
+ * applies through its promotion). menu_item_modifier_groups is a link row
+ * with `deleted_at`: a link the restored cloud no longer has is tombstoned.
  *
  * promotions: the promo engine only applies `status = 'active'` rows, so a
  * promotion the restored cloud no longer has must leave `active` or it keeps
@@ -66,6 +67,11 @@ const SWITCHES: Readonly<Partial<Record<CatalogSyncStream, Switch>>> = {
     hasUpdatedAt: true,
   },
   modifiers: { table: modifiers, mode: "tombstone", hasUpdatedAt: true },
+  menu_item_modifier_groups: {
+    table: menuItemModifierGroups,
+    mode: "tombstone",
+    hasUpdatedAt: true,
+  },
   price_lists: { table: priceLists, mode: "tombstone", hasUpdatedAt: true },
   recipes: { table: recipes, mode: "flag", hasUpdatedAt: false },
   promotions: { table: promotions, mode: "status", hasUpdatedAt: true },

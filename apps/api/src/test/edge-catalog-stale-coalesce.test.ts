@@ -540,13 +540,19 @@ describe("7r7q6 R3 cloud: alerts dedupe per episode, durable across restart and 
     const cloud = await startCloud();
     const clients: Array<ReturnType<typeof createEdgeLinkClient>> = [];
     try {
+      // Earlier tests already left owner rows, and the alert commits after the
+      // heartbeat is recorded: wait for this alert itself, not for any row.
+      const beforeFirst = await ownerRows();
       await sendHeartbeat(
         [entry("price_lists", t), entry("menu_categories", t)],
         cloud.handle,
         cloud.url,
       );
-      await until(async () => (await ownerRows()) >= 1);
+      await until(async () => (await ownerRows()) >= beforeFirst + 1);
       const ownerBase = await ownerRows();
+      expect(ownerBase, "the first heartbeat is one alert").toBe(
+        beforeFirst + 1,
+      );
 
       // The cloud throttles heartbeats per edge, so 1024 distinct episodes
       // (> 1000) are spread over 64 edges (16 per heartbeat, the wire maximum),
@@ -636,6 +642,7 @@ describe("7r7q6 R3 cloud: alerts dedupe per episode, durable across restart and 
 
       // B@t was reported before the cache was evicted: still nothing new.
       const afterFillers = await ownerRows();
+      expect(afterFillers, "one alert per filler edge").toBe(ownerBase + EDGES);
       await sendHeartbeat(
         [entry("menu_categories", t)],
         cloud.handle,
