@@ -5,16 +5,22 @@
 // active zones so the zone-dependent policy (private-room minimum spend and the
 // 48-hour cancellation window, RSV-03) is visible in the demo, marked by the
 // page's "Contoh data" badge.
-import { cafeLegendQrOrderFixtures } from "@starter/shared/qr-order/sample";
 import { API_MOCK } from "@/lib/api/mock-flag.ts";
 
 export type ZoneOption = { id: string; name: string };
 
-const MOCK_ZONE_OPTIONS: readonly ZoneOption[] = cafeLegendQrOrderFixtures.zones
-  .filter((zone) => zone.status === "active")
-  .slice()
-  .sort((left, right) => left.sortOrder - right.sortOrder)
-  .map((zone) => ({ id: zone.id, name: zone.name }));
+// Minimal sample zones (same ids and names as the sample outlet, sorted by
+// floor order). Kept local so the QR-order sample module, which carries demo
+// menu names, stays out of the production bundle.
+const MOCK_ZONE_OPTIONS: readonly ZoneOption[] = [
+  { id: "00000000-0000-4000-8000-000000000100", name: "Indoor Reguler" },
+  { id: "00000000-0000-4000-8000-000000000101", name: "Taman Outdoor" },
+  {
+    id: "00000000-0000-4000-8000-000000000102",
+    name: "Private Room Nusantara",
+  },
+  { id: "00000000-0000-4000-8000-000000000103", name: "WFC Corner" },
+];
 
 /** Zones the form may offer; empty when only a real API could supply names. */
 export function zoneOptions(): readonly ZoneOption[] {

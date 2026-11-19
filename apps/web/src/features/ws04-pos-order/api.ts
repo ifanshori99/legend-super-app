@@ -5,7 +5,7 @@
 // of showing made-up data.
 import { ApiError } from "@/lib/api/errors";
 import { API_MOCK } from "@/lib/api/mock-flag";
-import { demoMenuPhoto } from "@/lib/demo-media";
+import { demoMenuPhoto, demoMenuPhotoRef } from "@/lib/demo-media";
 import { DEMO_PHOTO_NAMES } from "./fixtures";
 import { runPosOrderMock, type PosOrderEngine } from "./mock-engine";
 import {
@@ -51,7 +51,10 @@ export async function fetchCatalog(): Promise<Catalog> {
     ...catalog,
     items: catalog.items.map((item) => ({
       ...item,
-      imageUrl: item.imageUrl ?? demoMenuPhoto(DEMO_PHOTO_NAMES[item.id] ?? ""),
+      imageUrl:
+        item.imageUrl ??
+        demoMenuPhoto(DEMO_PHOTO_NAMES[item.id] ?? "") ??
+        demoMenuPhotoRef(item.id),
     })),
   };
 }

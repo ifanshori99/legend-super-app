@@ -28,7 +28,7 @@ export const sampleMenu = [
   },
   {
     id: "nasi-goreng-kampung",
-    name: "Nasi Goreng Kampung",
+    name: "Nasi Goreng Rumahan",
     description: "Nasi goreng terasi, telur mata sapi, kerupuk.",
     category: "food",
     price: 45000,

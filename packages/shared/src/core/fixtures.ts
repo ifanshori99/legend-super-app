@@ -9,48 +9,12 @@
 
 import { z } from "zod";
 import { apiErrorBody } from "./errors.ts";
-import {
-  brandIdSchema,
-  outletIdSchema,
-  tenantIdSchema,
-  ulidIdSchema,
-} from "./ids.ts";
+import { ulidIdSchema } from "./ids.ts";
 import { decimal4Schema, idrSchema } from "./money.ts";
 import { encodeCursor } from "./pagination.ts";
-import {
-  DEFAULT_BUSINESS_DAY_CUTOFF,
-  DEFAULT_TIME_ZONE,
-  businessDayCutoffSchema,
-  timeZoneSchema,
-} from "./time.ts";
+import { cafeLegendCoreSample } from "./sample.ts";
 
-export const tenantRefSchema = z.object({
-  id: tenantIdSchema,
-  slug: z.string().regex(/^[a-z0-9-]{2,60}$/),
-  name: z.string().min(1).max(150),
-});
-export const brandRefSchema = z.object({
-  id: brandIdSchema,
-  tenantId: tenantIdSchema,
-  slug: z.string().regex(/^[a-z0-9-]{2,60}$/),
-  name: z.string().min(1).max(150),
-});
-export const outletRefSchema = z.object({
-  id: outletIdSchema,
-  tenantId: tenantIdSchema,
-  brandId: brandIdSchema,
-  code: z.string().min(1).max(20),
-  name: z.string().min(1).max(150),
-  timeZone: timeZoneSchema,
-  /** Owner Q39 business-day start; older producers omit it (default 04:00). */
-  businessDayCutoff: businessDayCutoffSchema.default(
-    DEFAULT_BUSINESS_DAY_CUTOFF,
-  ),
-  status: z.enum(["preopening", "active", "closed"]),
-});
-export type TenantRef = z.infer<typeof tenantRefSchema>;
-export type BrandRef = z.infer<typeof brandRefSchema>;
-export type OutletRef = z.infer<typeof outletRefSchema>;
+export * from "./refs.ts";
 
 /**
  * Illustrates the wire conventions on one row: ULID id, *Idr whole rupiah,
@@ -65,38 +29,6 @@ export const moneyLineFixtureSchema = z.strictObject({
   lineTotalIdr: idrSchema,
   coffeeGrams: decimal4Schema.nullable(),
 });
-
-const tenant = tenantRefSchema.parse({
-  id: "0b6f1c2e-7d4a-4c1e-9a3b-2f5d8e1a4c70",
-  slug: "cafe-legend",
-  name: "Cafe Legend",
-});
-const brand = brandRefSchema.parse({
-  id: "3c9e5a71-2b84-4f6d-8e10-5a7b9c2d4e61",
-  tenantId: tenant.id,
-  slug: "cafe-legend",
-  name: "Cafe Legend",
-});
-const outlets = [
-  outletRefSchema.parse({
-    id: "6a2d4f80-1c3e-4b5a-9d7f-8e0c2b4a6d13",
-    tenantId: tenant.id,
-    brandId: brand.id,
-    code: "BDG-01",
-    name: "Cafe Legend Bandung",
-    timeZone: DEFAULT_TIME_ZONE,
-    status: "active",
-  }),
-  outletRefSchema.parse({
-    id: "9e4b7c21-5d6f-4a8b-b3c0-1f2e3d4c5b6a",
-    tenantId: tenant.id,
-    brandId: brand.id,
-    code: "BDG-02",
-    name: "Cafe Legend Bandung 2 (contoh)",
-    timeZone: DEFAULT_TIME_ZONE,
-    status: "preopening",
-  }),
-] as const;
 
 const orderLines = [
   {
@@ -125,10 +57,12 @@ const orderLines = [
   },
 ].map((line) => moneyLineFixtureSchema.parse(line));
 
+const { tenant, brand, outlets } = cafeLegendCoreSample;
+
 export const cafeLegendFixtures = {
   tenant,
   brand,
-  legalEntityName: "PT Sultan Solusi Nusantara",
+  legalEntityName: cafeLegendCoreSample.legalEntityName,
   outlets,
   /** A cashier assigned to the Bandung outlet only. */
   cashierScope: { kind: "outlets" as const, outletIds: [outlets[0].id] },

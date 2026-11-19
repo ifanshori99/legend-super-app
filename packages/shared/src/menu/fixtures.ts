@@ -5,6 +5,7 @@ import {
   priceListItemSchema,
 } from "./schemas.ts";
 import type { MenuItem, PriceListItem } from "./schemas.ts";
+import { cafeLegendStationRefs } from "./sample.ts";
 
 // Illustrative mock catalog; not the owner's confirmed menu or prices. Prices
 // are exclusive of tax and service charge (owner decision 2026-11-01): the WS-05
@@ -54,8 +55,7 @@ const stationBase = {
 };
 const stations = [
   ...groups.map(([name], i) => ({
-    ...base(200 + i),
-    outletId: outlets[0].id,
+    ...cafeLegendStationRefs[i],
     name,
     type: (["coffee_bar", "beverage_bar", "hot_kitchen", "pastry"] as const)[i],
     ...stationBase,
@@ -63,8 +63,7 @@ const stations = [
   // Extra station (id 205, outlet 2) so every access fixture station (bead
   // legend-7art) exists here with the same id and outlet. Items only use 200-203.
   {
-    ...base(205),
-    outletId: outlets[1].id,
+    ...cafeLegendStationRefs[4],
     name: "Kopi",
     type: "coffee_bar" as const,
     ...stationBase,

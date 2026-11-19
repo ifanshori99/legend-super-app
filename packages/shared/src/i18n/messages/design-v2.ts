@@ -199,7 +199,7 @@ export const designV2Messages = {
     text007: "Double shot dengan foam susu lembut.",
     text008: "Kopi Tubruk",
     text009: "Robusta Temanggung diseduh langsung di gelas.",
-    text010: "Nasi Goreng Kampung",
+    text010: "Nasi Goreng Rumahan",
     text011: "Telur mata sapi, kerupuk, dan acar.",
     text012: "Pedas",
     text013: "Roti Telur Alpukat",

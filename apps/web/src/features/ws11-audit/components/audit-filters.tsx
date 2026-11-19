@@ -4,7 +4,7 @@
 import { cn } from "cn";
 import { CircleAlert, Filter } from "lucide-react";
 import { useId, useState, type FormEvent, type ReactNode } from "react";
-import { cafeLegendFixtures } from "@starter/shared/core";
+import { cafeLegendCoreSample } from "@starter/shared/core/sample";
 import type { AuditActorType } from "@starter/shared/audit";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
@@ -34,7 +34,7 @@ export type OutletOption = { id: string; name: string };
 
 /** Outlets of the demo tenant; the real list comes with the outlet context. */
 export const MOCK_OUTLET_OPTIONS: readonly OutletOption[] =
-  cafeLegendFixtures.outlets.map((outlet) => ({
+  cafeLegendCoreSample.outlets.map((outlet) => ({
     id: outlet.id,
     name: outlet.name,
   }));

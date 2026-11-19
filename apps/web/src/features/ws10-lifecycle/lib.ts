@@ -7,12 +7,8 @@
 // The contract owns the task lifecycle: `transitionChecklistTask` decides which
 // action is legal and `isChecklistComplete` decides when a checklist closes, so
 // this file never re-implements either rule.
-import {
-  cafeLegendFixtures,
-  idr,
-  type BusinessDate,
-  type Idr,
-} from "@starter/shared/core";
+import { idr, type BusinessDate, type Idr } from "@starter/shared/core";
+import { cafeLegendCoreSample } from "@starter/shared/core/sample";
 import {
   cafeLegendHrisFixtures,
   checklistCategorySchema,
@@ -258,8 +254,8 @@ export function orgUnitName(
  */
 export function outletName(outletId: string): string {
   return (
-    cafeLegendFixtures.outlets.find((outlet) => outlet.id === outletId)?.name ??
-    "—"
+    cafeLegendCoreSample.outlets.find((outlet) => outlet.id === outletId)
+      ?.name ?? "—"
   );
 }
 
@@ -458,7 +454,7 @@ export function certificateFor(
     positionName: positionName(positions, employee.positionId),
     outletName: outletName(employee.homeOutletId),
     managerName: manager?.fullName ?? null,
-    company: cafeLegendFixtures.legalEntityName,
+    company: cafeLegendCoreSample.legalEntityName,
   };
 }
 

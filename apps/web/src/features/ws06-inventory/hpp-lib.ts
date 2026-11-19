@@ -14,7 +14,6 @@ import {
   type Decimal4,
 } from "@starter/shared/core";
 import { formatNumber } from "@starter/shared/i18n";
-import { cafeLegendMenuFixtures } from "@starter/shared/menu";
 import type {
   FoodCostComparison,
   MenuCost,
@@ -85,9 +84,17 @@ export function formatBasisPoints(value: number): string {
 
 // ---- Menu catalog joins --------------------------------------------------
 
-const MENU_NAMES = new Map(
-  cafeLegendMenuFixtures.items.map((item) => [item.id, item.name]),
-);
+const MENU_NAMES = new Map<string, string>();
+
+/**
+ * Feeds the menu id -> name lookup. Only the HPP mock (hpp-mock.ts) calls it,
+ * so the sample menu names stay out of the production bundle.
+ */
+export function registerMenuNames(
+  items: readonly { id: string; name: string }[],
+): void {
+  for (const item of items) MENU_NAMES.set(item.id, item.name);
+}
 
 /**
  * Menu name for a report row. Report rows carry `menuItemId` only, so the

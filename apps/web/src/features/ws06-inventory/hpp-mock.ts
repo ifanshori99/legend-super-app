@@ -16,8 +16,13 @@ import {
   listMenuEngineering,
   listRecipeCoverage,
 } from "@starter/shared/inventory";
+import { cafeLegendMenuFixtures } from "@starter/shared/menu";
+import { registerMenuNames } from "./hpp-lib.ts";
 
 const fixtures = cafeLegendInventoryFixtures;
+
+// The report rows carry menu ids only; the screens look names up in hpp-lib.
+registerMenuNames(cafeLegendMenuFixtures.items);
 
 /** A cost or coverage row is unique per menu item + variant + modifier. */
 function itemScopeKey(row: {

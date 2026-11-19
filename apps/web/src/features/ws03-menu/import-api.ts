@@ -6,8 +6,8 @@ import { queryOptions } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api/client";
 import { callEndpoint } from "@/lib/api/endpoint";
 import { ApiError } from "@/lib/api/errors";
+import { idr } from "@starter/shared/core";
 import {
-  cafeLegendMenuFixtures,
   createItem as createItemEndpoint,
   listCategories,
   listPriceListItems,
@@ -146,18 +146,31 @@ export const importReferencesQuery = queryOptions({
   queryFn: fetchImportReferences,
 });
 
+const TEMPLATE_EXAMPLE_ROWS: readonly MenuImportRow[] = [
+  {
+    category: "Kopi",
+    name: "Espresso",
+    description: "Espresso",
+    type: "single",
+    priceIdr: idr(20000),
+    station: "Kopi",
+    course: "drink",
+    labels: [],
+    allergens: [],
+  },
+];
+
 /**
  * The template is generated in the browser: no server endpoint exists for it.
- * The header is exactly the nine `importRowSchema` columns; the example rows
- * are the shared fixtures (`cafeLegendMenuFixtures.importRows`). The UTF-8 BOM
+ * The header is exactly the nine `importRowSchema` columns; the example row is
+ * an inline sample (`TEMPLATE_EXAMPLE_ROWS`, same content the shared fixtures
+ * held), so the template never loads the fixture catalog. The UTF-8 BOM
  * keeps Excel from mangling the Indonesian text; `analyzeImport` strips it.
  */
 export function templateCsvText(): string {
   return toCsvText([
     [...IMPORT_COLUMNS],
-    ...cafeLegendMenuFixtures.importRows.map((row: MenuImportRow) =>
-      importRowToCells(row),
-    ),
+    ...TEMPLATE_EXAMPLE_ROWS.map((row) => importRowToCells(row)),
   ]);
 }
 

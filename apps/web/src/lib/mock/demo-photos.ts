@@ -87,6 +87,16 @@ export const demoPhotos: Record<string, string> = {
   "Paket Kopi dan Croissant": "/sample/menu/combo.jpg",
 };
 
+/**
+ * Photo name per stable sample reference, for screens whose own copy must not
+ * carry a fixture item name (legend-n64n): the name lives only in this
+ * mock/demo module, so a normal build ships none of it.
+ */
+export const demoPhotoRefs: Record<string, string> = {
+  "nasi-goreng": "Nasi Goreng Kampung",
+  "menu-nasi-goreng": "Nasi Goreng Kampung",
+};
+
 /** Demo photo for a fixture item name, or null when the demo has none. */
 export function demoMenuPhoto(name: string): string | null {
   return demoPhotos[name] ?? null;

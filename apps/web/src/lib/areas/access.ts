@@ -18,8 +18,8 @@ import {
   type RoleTemplateKey,
   type StationId,
 } from "@starter/shared/access";
-import { cafeLegendFixtures } from "@starter/shared/core";
-import { cafeLegendMenuFixtures } from "@starter/shared/menu";
+import { cafeLegendCoreSample } from "@starter/shared/core/sample";
+import { cafeLegendStationRefs } from "@starter/shared/menu/sample";
 
 export type AreaAccess = {
   readonly authenticated: boolean;
@@ -153,8 +153,8 @@ export function parseMockRole(value: string | undefined | null): MockRole {
  * Mock station reach: the menu fixture stations of the mock session's outlet
  * (the first fixture outlet, ids 200-203); other outlets' stations are out of reach.
  */
-const MOCK_STATIONS: readonly StationId[] = cafeLegendMenuFixtures.stations
-  .filter((station) => station.outletId === cafeLegendFixtures.outlets[0].id)
+const MOCK_STATIONS: readonly StationId[] = cafeLegendStationRefs
+  .filter((station) => station.outletId === cafeLegendCoreSample.outlets[0].id)
   .map((station) => stationIdSchema.parse(station.id));
 
 function mockStationsFor(role: RoleTemplateKey): readonly StationId[] {
@@ -173,7 +173,7 @@ function mockStationsFor(role: RoleTemplateKey): readonly StationId[] {
  * Mock outlet reach: the first Cafe Legend fixture outlet (BDG-01), the same
  * one lib/mock/tenant-context.ts runs the shells on.
  */
-const MOCK_OUTLETS: readonly MyOutlet[] = cafeLegendFixtures.outlets
+const MOCK_OUTLETS: readonly MyOutlet[] = cafeLegendCoreSample.outlets
   .slice(0, 1)
   .map((outlet) => ({
     id: outlet.id,

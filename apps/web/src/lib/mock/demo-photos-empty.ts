@@ -7,6 +7,8 @@
 // `src/lib/mock/demo-photos.ts`, the single source of truth.
 export const demoPhotos: Record<string, string> = {};
 
+export const demoPhotoRefs: Record<string, string> = {};
+
 export function demoHeroPhoto(): string | null {
   return null;
 }

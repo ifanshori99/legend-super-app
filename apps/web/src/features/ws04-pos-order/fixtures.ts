@@ -142,7 +142,6 @@ export const menuItems: MenuItem[] = [
  * resolves it (mock mode only), so no sample path enters a normal build.
  */
 export const DEMO_PHOTO_NAMES: Record<string, string> = {
-  "menu-nasi-goreng": "Nasi Goreng Kampung",
   "menu-ayam-geprek": "Ayam Geprek",
   "menu-sate-ayam": "Sate Ayam",
   "menu-es-teh": "Teh Tarik",

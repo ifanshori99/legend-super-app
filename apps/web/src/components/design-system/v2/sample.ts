@@ -4,7 +4,7 @@
 // every frame carries the "Contoh data" label. Photos: Unsplash License
 // sample images in apps/web/demo/sample/menu (see DESIGN.md §4 Media).
 import { createTranslator } from "@starter/shared/i18n";
-import { demoMenuPhoto } from "@/lib/demo-media";
+import { demoMenuPhoto, demoMenuPhotoRef } from "@/lib/demo-media";
 import type { LucideIcon } from "lucide-react";
 import { Coffee, CupSoda, Soup, UtensilsCrossed } from "lucide-react";
 
@@ -25,13 +25,13 @@ const photoNames: Record<string, string> = {
   "es-kopi-susu": "Kopi Susu Aren",
   "es-latte-aren": "Cafe Latte",
   cappuccino: "Cappuccino",
-  "nasi-goreng": "Nasi Goreng Kampung",
   "roti-telur": "Roti Telur Alpukat",
   "mie-kuah": "Mie Kuah",
   pancake: "Pancake Madu",
   "teh-melati": "Teh Tarik",
 };
-const photo = (name: string) => demoMenuPhoto(photoNames[name] ?? name);
+const photo = (name: string) =>
+  demoMenuPhotoRef(name) ?? demoMenuPhoto(photoNames[name] ?? name);
 
 export const v2Coffee: SampleItem[] = [
   {
