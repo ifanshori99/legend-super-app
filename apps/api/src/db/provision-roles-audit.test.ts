@@ -23,6 +23,10 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { provisionMigrator } from "./migrator-role";
 import { auditRoles, provisionRoles } from "./provision-roles";
+import {
+  dropTestDatabase,
+  endTestPool,
+} from "../test/helpers/database-cleanup.ts";
 
 const drizzleFolder = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -48,19 +52,6 @@ function assertDisposableServer() {
     throw new Error(
       "Run this suite through pnpm test so it gets the disposable PostgreSQL server.",
     );
-}
-
-// Pool.end() resolves before the server has closed the sessions; wait them out
-// so DROP DATABASE ... WITH (FORCE) does not race a closing client (57P01).
-async function waitForNoSessions(admin: Pool, database: string) {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const { rows } = await admin.query<{ n: number }>(
-      "SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = $1",
-      [database],
-    );
-    if (rows[0]?.n === 0) return;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
 }
 
 // Best effort: the whole server is disposable.
@@ -102,7 +93,7 @@ describe("legend-sdqni audit demands idle_in_transaction_session_timeout on app 
     try {
       await migrate(drizzle(migrator), { migrationsFolder: drizzleFolder });
     } finally {
-      await migrator.end();
+      await endTestPool(migrator);
     }
     // legend_maintenance is cluster-wide: another suite on this server usually
     // created it first, so this migrator did not get the implicit ADMIN that
@@ -115,10 +106,12 @@ describe("legend-sdqni audit demands idle_in_transaction_session_timeout on app 
 
   afterAll(async () => {
     if (admin) {
-      await waitForNoSessions(admin, database);
-      await admin.query(`DROP DATABASE IF EXISTS "${database}" WITH (FORCE)`);
-      await dropRoles(admin, [appUser, workerUser, maintUser, migratorUser]);
-      await admin.end();
+      try {
+        await dropTestDatabase(admin, database);
+        await dropRoles(admin, [appUser, workerUser, maintUser, migratorUser]);
+      } finally {
+        await endTestPool(admin);
+      }
     }
   });
 
@@ -237,7 +230,7 @@ describe("legend-qh11l audit demands legend_payout_recon to stay SET-only", () =
     try {
       await migrate(drizzle(migrator), { migrationsFolder: drizzleFolder });
     } finally {
-      await migrator.end();
+      await endTestPool(migrator);
     }
     await admin.query(
       `GRANT legend_maintenance TO "${migratorUser}" WITH ADMIN OPTION, INHERIT FALSE, SET FALSE`,
@@ -247,10 +240,12 @@ describe("legend-qh11l audit demands legend_payout_recon to stay SET-only", () =
   afterAll(async () => {
     if (admin) {
       await restore();
-      await waitForNoSessions(admin, database);
-      await admin.query(`DROP DATABASE IF EXISTS "${database}" WITH (FORCE)`);
-      await dropRoles(admin, [appUser, workerUser, maintUser, migratorUser]);
-      await admin.end();
+      try {
+        await dropTestDatabase(admin, database);
+        await dropRoles(admin, [appUser, workerUser, maintUser, migratorUser]);
+      } finally {
+        await endTestPool(admin);
+      }
     }
   });
 
@@ -329,7 +324,7 @@ describe("legend-qh11l audit demands legend_payout_recon to stay SET-only", () =
         await inDatabase.query(
           `REVOKE EXECUTE ON FUNCTION ${fn} FROM legend_app`,
         );
-        await inDatabase.end();
+        await endTestPool(inDatabase);
       }
       await expect(auditRoles(urls())).resolves.not.toThrow();
     }, 120_000);
@@ -391,7 +386,7 @@ describe("legend-1081 audit rejects su9c, ecgfy and eyscy drift", () => {
     try {
       await migrate(drizzle(migrator), { migrationsFolder: drizzleFolder });
     } finally {
-      await migrator.end();
+      await endTestPool(migrator);
     }
     // Same reason as the idle-timeout describe above.
     await admin.query(
@@ -403,13 +398,15 @@ describe("legend-1081 audit rejects su9c, ecgfy and eyscy drift", () => {
   }, 240_000);
 
   afterAll(async () => {
-    await mig?.end();
-    await sup?.end();
+    if (mig) await endTestPool(mig);
+    if (sup) await endTestPool(sup);
     if (admin) {
-      await waitForNoSessions(admin, database);
-      await admin.query(`DROP DATABASE IF EXISTS "${database}" WITH (FORCE)`);
-      await dropRoles(admin, [appUser, workerUser, maintUser, migratorUser]);
-      await admin.end();
+      try {
+        await dropTestDatabase(admin, database);
+        await dropRoles(admin, [appUser, workerUser, maintUser, migratorUser]);
+      } finally {
+        await endTestPool(admin);
+      }
     }
   });
 

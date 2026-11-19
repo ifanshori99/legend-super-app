@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { captureScreenshot } from "./screenshots.ts";
+import { waitForHydration } from "./hydration.ts";
 
 // WS-14 FE — equipment registry, breakdown tickets (OPS-04) and shift handover
 // confirmation (OPS-05). Mock mode only: the screens read
@@ -25,6 +26,7 @@ async function openRegistry(page: Page) {
     page.getByRole("heading", { name: "Peralatan & perawatan", level: 1 }),
   ).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText("9 baris")).toBeVisible({ timeout: 30_000 });
+  await waitForHydration(page);
 }
 
 async function openHandover(page: Page) {
@@ -36,6 +38,7 @@ async function openHandover(page: Page) {
   await expect(page.locator('[data-slot="handover-card"]').first()).toBeVisible(
     { timeout: 30_000 },
   );
+  await waitForHydration(page);
 }
 
 test("OPS-04 registry shows down equipment, due service and its disabled menu items", async ({
@@ -254,14 +257,20 @@ test("OPS-04 and OPS-05 error states offer a retry", async ({ page }) => {
   await expect(
     page.getByRole("heading", { name: "Peralatan & perawatan", level: 1 }),
   ).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByText("Data tidak dapat dimuat")).toBeVisible();
+  await expect(page.getByText("Data tidak dapat dimuat")).toBeVisible({
+    timeout: 30_000,
+  });
+  await waitForHydration(page);
   await expect(page.getByRole("button", { name: "Coba lagi" })).toBeVisible();
 
   await page.goto("/operasional/serah-terima?mock=error");
   await expect(
     page.getByRole("heading", { name: "Serah terima shift", level: 1 }),
   ).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByText("Data tidak dapat dimuat")).toBeVisible();
+  await expect(page.getByText("Data tidak dapat dimuat")).toBeVisible({
+    timeout: 30_000,
+  });
+  await waitForHydration(page);
 });
 
 for (const width of [390, 1440]) {
