@@ -70,7 +70,8 @@ Belum ada kode produksi diubah. Yang selesai: brief ini, peta kode (di bawah), t
 
 `apps/api/src/test/member-points-redeem-1203.test.ts`, 39 test (1203-01..61): 01-06 open-bills, 10-18 quote, 20-27 status, 30-37 mint, 40-42 idempotensi, 50-52 quote basi, 60-61 void. Di base: 38 merah, 1 hijau (1203-37 mint tanpa sesi 401, penjaga regresi). Sebab merah: 32 test 404 "Route not found" (endpoint belum ada); 1203-31/33/34/35/36 mint menjawab 200 padahal harus ditolak (poin > saldo, bill member lain, tenant lain/tidak dikenal, bill lunas/void, PT lain); 1203-30/32/52 baru jalan setelah quote ada. Tanpa 422 atau error setup.
 Asumsi test: mint/quote ditolak = 4xx tanpa `data`; bill terlihat tapi tak bisa dipakai = 200 + `refusal` + maxPoints 0; token rusak/asing = 200 state `invalid`; tender captured points/tunai dihitung terbayar; `order_not_eligible` longgar (disembunyikan, atau ditolak dengan max 0).
-Belum tercakup: token hidup kedua per bill, refusal `outlet_offline`, void bill campuran points+tunai (celah 3), retry `pwa_session` (celah 4). Tambahkan sebelum implementasi.
+Putaran 2 (20 Nov): 1203-70..82 ditambah (51 test: 48 merah, 3 hijau = 37, 76, 77). 70 token hidup kedua; 71 outlet_offline (node edge + alert edge_offline terbuka); 72-73 token mengikat saldo saat mint (saldo naik/turun tetap ditolak); 75 void dengan tender tunai batal; 76-77 penjaga void/refund campuran; 78-79 retry pwa_session; 80-82 invarian uang. Detail dan asumsi: `docs/briefs/.1203-tests-ready`. Bill campuran dengan tunai captured tetap ditolak (SO-R-09), butuh konfirmasi CTO.
+(Dulu belum tercakup: token hidup kedua per bill, refusal `outlet_offline`, void bill campuran points+tunai (celah 3), retry `pwa_session` (celah 4). Tambahkan sebelum implementasi.)
 
 ### Langkah berikut
 

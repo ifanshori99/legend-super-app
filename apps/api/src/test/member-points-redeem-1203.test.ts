@@ -38,8 +38,24 @@
 //   the caller's it answers 4xx or "invalid" with no points, no discount.
 // - "pending" = minted, not yet redeemed; "consumed" also covers a bill the
 //   cashier redeemed without QR (pwa_session) after the member minted a token.
-// - Not tested (ambiguous): the second live token for one bill ("bila desain
-//   memungkinkan"), and the outlet_offline refusal (no fixture).
+// - 1203-70..82 (second round, CTO decisions of 20 Nov):
+//   * one live token per bill: a second mint for a bill that already has a live
+//     (minted, unexpired, unconsumed) token is refused; another bill still mints.
+//     Whether a new mint is allowed while the old token is stale (balance changed)
+//     is NOT tested (ambiguous).
+//   * outlet_offline = the bill's outlet has an active edge node with an OPEN
+//     `edge_offline` alert (edge_node_alerts, docs/design/edge-status-cloud.md D11:
+//     30 minutes without heartbeat while open). The brief does not define it.
+//   * the token binds the member's balance (ledger version) at mint: if the
+//     balance changed afterwards, even upward or still enough, the till refuses
+//     the whole redeem (4xx) and nothing is spent. State shown to the member is
+//     only asserted "not consumed".
+//   * mixed bill void: brief 1048 (Group R) and SO-R-09 keep a bill with CAPTURED
+//     points + cash refused (409). So 1203-75 (fail-first) uses a points bill with a
+//     non-captured (voided) cash row; 1203-76 and 1203-77 are guards that accept
+//     "refused, nothing changes" or "restored exactly once". A refund of a bill
+//     with a captured points tender is refused today (REFUND_POINTS_TENDER_UNSUPPORTED,
+//     POS-936-PTS-60); the guard only demands points never come back twice.
 
 import { randomUUID } from "node:crypto";
 import type { Express } from "express";
@@ -89,6 +105,7 @@ import {
 import {
   asTenant,
   balanceOf,
+  hex64,
   ledgerOf,
   owner as memberOwner,
   seedConsent,
@@ -1421,5 +1438,418 @@ describe("1203 void after redeem", () => {
     expect(again.status).toBeLessThan(500);
     expect(await balanceNow(member)).toBe(1_000);
     expect((await statusOk(member, order.id, token)).balancePoints).toBe(1_000);
+  });
+});
+
+// ================================================================================
+// Second round (20 Nov): one live token per bill, outlet_offline, balance bound
+// to the token, void / refund give-back, pwa_session retry, money invariant
+// ================================================================================
+
+/** The cashier refuses (4xx), never a crash and never a success. */
+function expectTillRefused(response: { status: number; body: unknown }) {
+  const text = JSON.stringify(response.body);
+  expect(response.status, text).toBeGreaterThanOrEqual(400);
+  expect(response.status, text).toBeLessThan(500);
+}
+
+describe("1203 one live token per bill", () => {
+  it("1203-70 a second token for a bill that already has a live one is refused at mint; the first stays pending; another bill still mints", async () => {
+    const member = await newMember(5_000);
+    const billA = await newOrder(member);
+    const billB = await newOrder(member);
+    const first = await mintOk(member, billA.id, 100);
+
+    expectRefused(await postMint(member.client, billA.id, 50));
+    expectRefused(await postMint(member.client, billA.id, 100));
+
+    // The refusals took nothing, and the first token is untouched and usable.
+    expect(await balanceNow(member)).toBe(5_000);
+    expect((await statusOk(member, billA.id, first)).state).toBe("pending");
+    // The rule is per bill, not per member: a second bill mints (control).
+    await mintOk(member, billB.id, 100);
+    const done = await cashierRedeem(billA, 100, { token: first });
+    expect(redeemed(done.status), JSON.stringify(done.body)).toBe(true);
+    expect(await balanceNow(member)).toBe(4_900);
+  });
+});
+
+describe("1203 outlet_offline refusal", () => {
+  it("1203-71 an outlet whose edge node has an open edge_offline alert quotes outlet_offline with max 0 and refuses mint; when the alert resolves the quote is normal again", async () => {
+    const member = await newMember(1_000);
+    const order = await newOrder(member);
+
+    const nodeId = randomUUID();
+    const alertId = randomUUID();
+    const tenantId = world.tenant.tenantId;
+    await asTenant(tenantId, async (client) => {
+      await client.query(
+        `INSERT INTO edge_nodes (id, tenant_id, outlet_id, role, label, credential_hash, last_heartbeat_at)
+         VALUES ($1, $2, $3, 'primary', 'Mini PC 1203', $4, now() - interval '2 hours')`,
+        [nodeId, tenantId, world.tenant.outletId, hex64()],
+      );
+      await client.query(
+        `INSERT INTO edge_node_alerts (id, tenant_id, outlet_id, edge_node_id, kind, raised_at, last_seen_at)
+         VALUES ($1, $2, $3, $4, 'edge_offline', now() - interval '90 minutes', now() - interval '2 hours')`,
+        [alertId, tenantId, world.tenant.outletId, nodeId],
+      );
+    });
+    try {
+      // The fixture is in place (checked before any HTTP call).
+      const open = await asTenant(tenantId, (client) =>
+        client.query(
+          "SELECT 1 FROM edge_node_alerts WHERE tenant_id = $1 AND id = $2 AND resolved_at IS NULL",
+          [tenantId, alertId],
+        ),
+      );
+      expect(open.rowCount).toBe(1);
+      const quote = await quoteOk(member, order.id);
+      expect(quote).toMatchObject({
+        refusal: "outlet_offline",
+        maxPoints: 0,
+      });
+      expectRefused(await postMint(member.client, order.id, 10));
+      expect(await balanceNow(member)).toBe(1_000);
+
+      await asTenant(tenantId, (client) =>
+        client.query(
+          "UPDATE edge_node_alerts SET resolved_at = now() WHERE tenant_id = $1 AND id = $2",
+          [tenantId, alertId],
+        ),
+      );
+      const back = await quoteOk(member, order.id);
+      expect(back.refusal).toBeNull();
+      expect(back.maxPoints).toBeGreaterThan(0);
+      await mintOk(member, order.id, 10);
+    } finally {
+      // Edge nodes are revoked, never deleted (DB rule); alerts are resolved.
+      await asTenant(tenantId, async (client) => {
+        await client.query(
+          "UPDATE edge_node_alerts SET resolved_at = COALESCE(resolved_at, now()) WHERE tenant_id = $1 AND id = $2",
+          [tenantId, alertId],
+        );
+        await client.query(
+          "UPDATE edge_nodes SET status = 'revoked', revoked_at = now() WHERE tenant_id = $1 AND id = $2",
+          [tenantId, nodeId],
+        );
+      });
+    }
+  });
+});
+
+describe("1203 the token binds the balance at mint (CTO decision): a changed balance is refused, never adjusted", () => {
+  it("1203-72 the balance rose after mint (still enough for the token): the redeem is refused whole; a token minted after the change works", async () => {
+    const member = await newMember(1_000);
+    const order = await newOrder(member);
+    const stale = await mintOk(member, order.id, 100);
+    expect((await statusOk(member, order.id, stale)).state).toBe("pending");
+
+    await grantPoints(world.tenant.tenantId, member.profile.id, 500);
+    expect(await balanceNow(member)).toBe(1_500);
+
+    const refused = await cashierRedeem(order, 100, { token: stale });
+    expectTillRefused(refused);
+    expect(await balanceNow(member)).toBe(1_500);
+    expect(await pointsTenders(order)).toEqual([]);
+    expect(await redeemRows(member)).toHaveLength(0);
+    const status = await statusOk(member, order.id, stale);
+    expect(status.state).not.toBe("consumed");
+    expect(status.remainingIdr).toBe(ORDER_TOTAL_IDR);
+
+    // Control: a token minted at the new balance (on a second bill) redeems.
+    const other2 = await newOrder(member);
+    const fresh = await mintOk(member, other2.id, 100);
+    const done = await cashierRedeem(other2, 100, { token: fresh });
+    expect(redeemed(done.status), JSON.stringify(done.body)).toBe(true);
+    expect(await balanceNow(member)).toBe(1_400);
+  });
+
+  it("1203-73 the balance fell after mint but still covers the token (another bill was redeemed): the redeem is refused whole, not adjusted", async () => {
+    const member = await newMember(1_000);
+    const billA = await newOrder(member);
+    const billB = await newOrder(member);
+    const tokenA = await mintOk(member, billA.id, 500);
+    const tokenB = await mintOk(member, billB.id, 300);
+    const paidB = await cashierRedeem(billB, 300, { token: tokenB });
+    expect(redeemed(paidB.status), JSON.stringify(paidB.body)).toBe(true);
+    // 700 left: more than token A's 500, yet the balance is no longer the one it was minted at.
+    expect(await balanceNow(member)).toBe(700);
+
+    const refused = await cashierRedeem(billA, 500, { token: tokenA });
+    expectTillRefused(refused);
+    expect(await balanceNow(member)).toBe(700);
+    expect(await pointsTenders(billA)).toEqual([]);
+    expect(await redeemRows(member)).toHaveLength(1);
+    const status = await statusOk(member, billA.id, tokenA);
+    expect(status.state).not.toBe("consumed");
+    expect(status.balancePoints).toBe(700);
+    expect(status.remainingIdr).toBe(ORDER_TOTAL_IDR);
+  });
+});
+
+describe("1203 give-back on void and refund (exactly once)", () => {
+  async function seedVoidedCashTender(order: CreatedOrder, amountIdr: number) {
+    await asTenant(world.tenant.tenantId, (client) =>
+      client.query(
+        `INSERT INTO pos_order_tenders
+           (tenant_id, outlet_id, order_id, method, provider, amount_idr,
+            received_idr, change_idr, points_used, payment_intent_id, reference, status,
+            requested_at, resolved_at)
+         VALUES ($1, $2, $3, 'cash', 'manual', $4, $4, 0, NULL, NULL, NULL, 'voided', now(), now())`,
+        [
+          world.tenant.tenantId,
+          order.outletId,
+          ulidToUuid(order.id),
+          amountIdr,
+        ],
+      ),
+    );
+  }
+
+  it("1203-75 a bill with a points tender and a cash tender that never captured (voided): void gives the points back exactly once, twice too", async () => {
+    const member = await newMember(1_000);
+    const order = await newOrder(member);
+    await seedVoidedCashTender(order, 20_000);
+    const token = await mintOk(member, order.id, 100);
+    const done = await cashierRedeem(order, 100, { token });
+    expect(redeemed(done.status), JSON.stringify(done.body)).toBe(true);
+    expect(await balanceNow(member)).toBe(900);
+
+    const first = await voidNow(order);
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    const second = await voidNow(order);
+    expect(second.status).toBeLessThan(500);
+
+    expect(await balanceNow(member)).toBe(1_000);
+    expect(await restoreRows(member)).toHaveLength(1);
+    expect((await pointsTenders(order)).map((row) => row.status)).toEqual([
+      "voided",
+    ]);
+    expect(await listedBills(member)).toEqual([]);
+  });
+
+  it("1203-76 guard: a bill with points and captured cash: void is refused with nothing changed, or gives the points back exactly once (never lost, never twice)", async () => {
+    const member = await newMember(1_000);
+    const order = await newOrder(member);
+    await seedCashTender(order, 20_000);
+    const token = await mintOk(member, order.id, 100);
+    const done = await cashierRedeem(order, 100, { token });
+    expect(redeemed(done.status), JSON.stringify(done.body)).toBe(true);
+    expect(await balanceNow(member)).toBe(900);
+
+    const first = await voidNow(order);
+    expect(first.status, JSON.stringify(first.body)).toBeLessThan(500);
+    const second = await voidNow(order);
+    expect(second.status).toBeLessThan(500);
+
+    const restores = await restoreRows(member);
+    expect(restores.length).toBeLessThanOrEqual(1);
+    expect(await balanceNow(member)).toBe(900 + 100 * restores.length);
+    const tenderStates = (await pointsTenders(order)).map((row) => row.status);
+    expect(tenderStates).toEqual([
+      restores.length === 1 ? "voided" : "captured",
+    ]);
+    // A restore only ever goes with a bill that really left the till.
+    if (restores.length === 1) expect(first.status).toBe(200);
+  });
+
+  it("1203-77 guard: refund of a paid bill that took points and cash never returns the points twice, and the balance always matches the ledger", async () => {
+    const member = await newMember(5_000);
+    const order = await newOrder(member);
+    // Rp50 cash first so that 785 points (Rp54.950) settle the rest exactly.
+    await seedCashTender(
+      order,
+      ORDER_TOTAL_IDR - MAX_POINTS_FULL_BILL * POINT_VALUE_IDR,
+    );
+    const token = await mintOk(member, order.id, MAX_POINTS_FULL_BILL);
+    const paid = await cashierRedeem(order, MAX_POINTS_FULL_BILL, { token });
+    expect(redeemed(paid.status), JSON.stringify(paid.body)).toBe(true);
+    const expectedStatus = await posStatusOf(order);
+    const completed = await world.cashier.client
+      .post(
+        `/api/outlets/${encodeURIComponent(order.outletId)}/pos/orders/${order.id}/complete`,
+      )
+      .set(world.headers)
+      .set(originHeader)
+      .set(DEVICE_TOKEN_HEADER, deviceToken())
+      .send({ idempotencyKey: randomUUID(), expectedStatus });
+    expect(completed.status, JSON.stringify(completed.body)).toBe(200);
+    const afterSale = 5_000 - MAX_POINTS_FULL_BILL;
+    expect(await balanceNow(member)).toBe(afterSale);
+
+    const { override } = await createPosOverride(
+      tenantContext(world.tenant.tenantId),
+      world.cashier.userId,
+      {
+        outletId: order.outletId,
+        action: "refund",
+        valueIdr: 10_000,
+        reason: "Pelanggan salah pesan",
+        objectType: "order",
+        objectId: order.id,
+        approval: {
+          method: "supervisor_pin",
+          approverUserId: userIdSchema.parse(world.supervisor.userId),
+          pin: PIN,
+        },
+      } as Parameters<typeof createPosOverride>[2],
+      { idempotencyKey: randomUUID() },
+    );
+    expect(override.status).toBe("approved");
+    const refundBody = {
+      idempotencyKey: randomUUID(),
+      amountIdr: 10_000,
+      reason: "customer_cancelled",
+      reasonNote: "Pelanggan salah pesan",
+      approvedBy: world.supervisor.userId,
+      overrideId: override.id,
+    };
+    const send = () =>
+      world.cashier.client
+        .post(
+          `/api/outlets/${encodeURIComponent(order.outletId)}/pos/orders/${order.id}/corrections/refund`,
+        )
+        .set(world.headers)
+        .set(originHeader)
+        .set(DEVICE_TOKEN_HEADER, deviceToken())
+        .send(refundBody);
+    const first = await send();
+    expect(first.status).toBeLessThan(500);
+    const replay = await send();
+    expect(replay.status).toBeLessThan(500);
+
+    const restores = await restoreRows(member);
+    expect(restores.length).toBeLessThanOrEqual(1);
+    expect(await balanceNow(member)).toBe(
+      afterSale + MAX_POINTS_FULL_BILL * restores.length,
+    );
+    expect(await redeemRows(member)).toHaveLength(1);
+  });
+});
+
+describe("1203 pwa_session bill redeemed by the cashier without QR: a retry never deducts twice", () => {
+  it("1203-78 the same idempotency key sent again is one debit; the member sees the bill redeemed once and the status consumed", async () => {
+    const member = await newMember(1_000);
+    const order = await newOrder(member, "pwa_session");
+    const token = await mintOk(member, order.id, 100);
+    const key = randomUUID();
+    const first = await cashierRedeem(order, 100, { key });
+    const retry = await cashierRedeem(order, 100, { key });
+    expect(redeemed(first.status), JSON.stringify(first.body)).toBe(true);
+    expect(retry.status, JSON.stringify(retry.body)).toBeLessThan(500);
+
+    expect(await balanceNow(member)).toBe(900);
+    expect(await redeemRows(member)).toHaveLength(1);
+    expect(await pointsTenders(order)).toEqual([
+      { points_used: 100, status: "captured" },
+    ]);
+    const [bill] = await listedBills(member);
+    expect(bill!.pointsRedeemed).toMatchObject({
+      points: 100,
+      discountIdr: 7_000,
+    });
+    expect(bill!.remainingIdr).toBe(ORDER_TOTAL_IDR - 7_000);
+    expect(await statusOk(member, order.id, token)).toMatchObject({
+      state: "consumed",
+      points: 100,
+      balancePoints: 900,
+    });
+  });
+
+  it("1203-79 the same key sent twice at once, and the same key with other points, still make one debit", async () => {
+    const member = await newMember(1_000);
+    const order = await newOrder(member, "pwa_session");
+    const key = randomUUID();
+    const both = await Promise.all([
+      cashierRedeem(order, 100, { key }),
+      cashierRedeem(order, 100, { key }),
+    ]);
+    for (const result of both) expect(result.status).toBeLessThan(500);
+    expect(
+      both.some((result) => redeemed(result.status)),
+      JSON.stringify(both.map((result) => result.body)),
+    ).toBe(true);
+    const changed = await cashierRedeem(order, 200, { key });
+    expect(changed.status).toBeLessThan(500);
+
+    expect(await balanceNow(member)).toBe(900);
+    expect(await redeemRows(member)).toHaveLength(1);
+    expect(await pointsTenders(order)).toEqual([
+      { points_used: 100, status: "captured" },
+    ]);
+    const [bill] = await listedBills(member);
+    expect(bill!.pointsRedeemed).toMatchObject({ points: 100 });
+  });
+});
+
+describe("1203 money invariant: points never pay more than the bill, the balance never goes below zero", () => {
+  it("1203-80 a redeem worth more than the bill is refused; after the biggest allowed one nothing more can be minted or redeemed", async () => {
+    const member = await newMember(5_000);
+    const tooMuch = await newOrder(member, "pwa_session");
+    // 786 points = Rp55.020 > Rp55.000.
+    expectTillRefused(await cashierRedeem(tooMuch, MAX_POINTS_FULL_BILL + 1));
+    expect(await balanceNow(member)).toBe(5_000);
+    expect(await pointsTenders(tooMuch)).toEqual([]);
+
+    const order = await newOrder(member, "pwa_session");
+    const done = await cashierRedeem(order, MAX_POINTS_FULL_BILL);
+    expect(redeemed(done.status), JSON.stringify(done.body)).toBe(true);
+    const value = MAX_POINTS_FULL_BILL * POINT_VALUE_IDR;
+    expect(value).toBeLessThanOrEqual(ORDER_TOTAL_IDR);
+    expect(await balanceNow(member)).toBe(5_000 - MAX_POINTS_FULL_BILL);
+
+    // Rp50 is still owed: not worth one whole point (Rp70).
+    const quote = await quoteOk(member, order.id);
+    expect(quote.remainingIdr).toBe(ORDER_TOTAL_IDR - value);
+    expect(quote.maxPoints).toBe(0);
+    expectRefused(await postMint(member.client, order.id, 1));
+    expectTillRefused(await cashierRedeem(order, 1));
+    expect(await balanceNow(member)).toBe(5_000 - MAX_POINTS_FULL_BILL);
+    expect(await redeemRows(member)).toHaveLength(1);
+  });
+
+  it("1203-81 two cashiers redeeming big amounts on one bill at once: the points value taken never exceeds the bill", async () => {
+    const member = await newMember(5_000);
+    const order = await newOrder(member, "pwa_session");
+    // 500 points = Rp35.000 each: both would be Rp70.000 on a Rp55.000 bill.
+    const results = await Promise.all([
+      cashierRedeem(order, 500),
+      cashierRedeem(order, 500),
+    ]);
+    for (const result of results) expect(result.status).toBeLessThan(500);
+    expect(
+      results.filter((result) => redeemed(result.status)),
+      JSON.stringify(results.map((result) => result.body)),
+    ).toHaveLength(1);
+    expect(await balanceNow(member)).toBe(4_500);
+    expect(await pointsTenders(order)).toEqual([
+      { points_used: 500, status: "captured" },
+    ]);
+    const [bill] = await listedBills(member);
+    expect(bill!.remainingIdr).toBe(ORDER_TOTAL_IDR - 500 * POINT_VALUE_IDR);
+    expect(bill!.remainingIdr).toBeGreaterThanOrEqual(0);
+  });
+
+  it("1203-82 two bills redeemed at once with a balance that covers only one: one succeeds, the balance is 20 and never negative", async () => {
+    const member = await newMember(100);
+    const billA = await newOrder(member, "pwa_session");
+    const billB = await newOrder(member, "pwa_session");
+    const results = await Promise.all([
+      cashierRedeem(billA, 80),
+      cashierRedeem(billB, 80),
+    ]);
+    for (const result of results) expect(result.status).toBeLessThan(500);
+    expect(
+      results.filter((result) => redeemed(result.status)),
+      JSON.stringify(results.map((result) => result.body)),
+    ).toHaveLength(1);
+    expect(await balanceNow(member)).toBe(20);
+    expect(await redeemRows(member)).toHaveLength(1);
+    const quoteA = await quoteOk(member, billA.id);
+    const quoteB = await quoteOk(member, billB.id);
+    for (const quote of [quoteA, quoteB]) {
+      expect(quote.balancePoints).toBe(20);
+      expect(quote.maxPoints).toBeLessThanOrEqual(20);
+    }
   });
 });

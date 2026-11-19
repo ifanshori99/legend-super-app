@@ -1,0 +1,16 @@
+legend-0ne0z 1203 extra fail-first tests (20 Nov), file apps/api/src/test/member-points-redeem-1203.test.ts, 51 tests: 48 red, 3 green (37, 76, 77).
+New ids 1203-70..82 (no 74):
+- 70 second live token per bill: RED, second mint answers 200 (missing: one live token per bill).
+- 71 outlet_offline: RED, quote route 404 (fixture = active edge node + OPEN edge_offline alert; setup/cleanup verified).
+- 72 balance rose after mint: RED, status route 404 first (then till must refuse; unverified on base).
+- 73 balance fell but still enough: RED, till accepts the redeem (200) (missing: token binds balance).
+- 75 void of points + voided cash tender: RED only because open-bills 404 at the end; void restore itself already works on base.
+- 76 guard captured cash + points void: GREEN (SO-R-09 keeps 409; points never lost/twice).
+- 77 guard refund of points bill: GREEN (REFUND_POINTS_TENDER_UNSUPPORTED today; points never back twice).
+- 78, 79 pwa_session retry: RED, open-bills 404 (debit itself is idempotent on base).
+- 80, 81, 82 money invariant: RED, quote/open-bills 404 (POS-side invariants already hold).
+Assumptions for the implementer:
+- Mixed bill with CAPTURED cash + points stays refused (brief 1048, SO-R-09 409): not changed. Conflicts with the card text "void of mixed bill returns points"; CTO to confirm.
+- Token binds balance: ANY balance change after mint (up or down) => till redeem refused 4xx, nothing spent, status not "consumed". Mint on a bill with a stale token is not tested.
+- One live token = minted, unexpired, unconsumed token for the same bill; refusal is 4xx without data.
+- outlet_offline = outlet has an active edge node with an open edge_offline alert (edge_node_alerts); mint also refused.
