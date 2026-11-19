@@ -1,0 +1,43 @@
+# Second opinion 1186 — reservasi DP ronde 2
+
+- Target: `15e1fa0eaef3575a5839a23a9f51fc6d379c615d` (`origin/ws/1178-reservasi-so1171-fix`, sesudah `git fetch origin`).
+- Base: `cca06c1a6cb2021fdf36f6c65be8c0cebe32b4e4`, yaitu `origin/ws/1163-reservasi-slot-pickup`. Nama singkat literal `origin/ws/1163` tidak ada; cabang 1163 dengan nama lengkap tersedia. Pembanding fallback `git merge-base origin/milestone/m1 15e1fa0ea` menghasilkan `6b3288bc25a04ff78dda1c4e30d5dad5835ee3d8`.
+- Rentang delta: `git diff origin/ws/1163-reservasi-slot-pickup...15e1fa0ea -- apps/api`: empat service dan enam berkas test, 3.899 penambahan dan sembilan penghapusan. Kode sebelumnya hanya dibaca untuk membuktikan jalur dan kompatibilitas data.
+- Metode: pemeriksaan statis `git diff`/`git show` dari folder utama, tanpa checkout atau worktree. Tiga subagent read-only, puncak tiga bersamaan, untuk DOIT, Duitku, dan sweep/race; agent utama memverifikasi ulang temuan dan riwayat penulis datanya. Nomor baris berikut merujuk target kecuali disebut lain.
+- Hasil: **Satu temuan P2 baru; P0: 0, P1: 0, P2: 1, P3: 0.** Dua skenario asli SO 1171 tertutup secara statis, tetapi guard refund baru belum memenuhi invariant untuk fund legacy.
+
+## Temuan
+
+1. **P2 — Fund legacy untuk surplus saja dapat menghilangkan permintaan refund DP.** `apps/api/src/services/reservation-consumers.ts:143` dan `:157`: cabang `isNull(paymentUnallocatedFunds.evidenceId)` melewati refund untuk fund apa pun pada intent, tanpa memeriksa `reason`, jumlah, atau hubungan dengan transaksi settlement. Pembatasan `reason = double_payment` hanya berlaku pada cabang evidence non-null. Karena itu, ketiadaan evidence diperlakukan sebagai bukti bahwa seluruh uang settlement sudah diparkir, padahal fund tersebut dapat hanya berisi surplus atau transaksi lain.
+
+   **Skenario konkret:** booking DP Rp100.000 sudah dibatalkan sweep tanpa `depositPaymentId`; DOIT kemudian menerima Rp150.000. Writer lama mengalokasikan Rp100.000, menyimpan surplus Rp50.000 sebagai fund `overpayment` tanpa evidence, dan menulis `payment.paid`. Event tertunda sampai aplikasi diperbarui. Saat event diproses target ini, `refundLateDeposit` menemukan fund Rp50.000 ber-`evidence_id = NULL`, mengembalikan `null`, dan `handlePaymentPaid` mengembalikan `unchanged`. DP Rp100.000 tidak memiliki permintaan refund maupun fund yang mewakilinya; refund status booking tetap tidak diminta. Replay event selalu melewati cabang yang sama.
+
+   **Bukti ketercapaian data:** commit historis `7c04f64dc09dbf665a58bd97f13c7f3777429cdc` (`093852662^`), `apps/api/src/services/payment.service.ts:1196`, `:1248`, dan `:1256`, menghitung alokasi/surplus, menulis fund tanpa `evidenceId`, lalu menerbitkan event settlement. `apps/api/src/services/reservation-core.ts:840` pada commit itu membatalkan booking ketika jendela habis. Pada target, `apps/api/drizzle/0079_strange_iron_monger.sql:1` menambah kolom evidence nullable tanpa backfill; bentuk legacy tersebut tetap didukung. Ini skenario upgrade yang dapat dicapai, bukan klaim bahwa datanya ditemukan di production.
+
+   **Saran:** lewati refund hanya bila ada bukti bahwa transaksi settlement yang sama diparkir seluruhnya sebagai `double_payment`. Jangan menyamakan seluruh fund legacy dengan kondisi itu. Rekonsiliasikan legacy dari bukti settlement/outbox; bila tidak dapat dipastikan, catat tindak lanjut yang terlihat agar nominal DP tetap terutang dan tidak berakhir sebagai no-op tanpa penanganan. Pertahankan pencegahan refund ganda untuk transaksi yang benar-benar sudah diparkir penuh.
+
+   **Usul test:** tambahkan varian `apps/api/src/test/reservation-1178-overpayment-fund-db.test.ts:417` memakai snapshot legacy: intent paid Rp100.000, evidence/event penerimaan Rp150.000, booking batal tanpa DP tercatat, serta fund surplus Rp50.000 dengan `evidence_id = NULL`. Konsumsi/replay `payment.paid`; harapkan satu refund DP Rp100.000, fund surplus tetap Rp50.000, dan refund ditambah fund tidak melebihi Rp150.000. Tambahkan legacy fund transaksi kedua pada kode yang sama: fund transaksi kedua tidak boleh menghapus kewajiban refund transaksi pertama. Untuk legacy yang tidak dapat dibuktikan identitasnya, harapkan tindak lanjut eksplisit dan tanpa pembayaran berlebih.
+
+## Status setiap temuan SO 1171
+
+| Temuan 1171 | Status ronde 2 | Bukti pada target |
+| --- | --- | --- |
+| P2 #1: DP sesudah cap tidak selalu masuk refund RSV-02 | **Tertutup secara statis untuk skenario asli dan data baru.** Ada P2 kompatibilitas legacy baru di atas. | `payment-late-settlement.ts:186` memutuskan pasca-cap dari booking/link/intent berkunci; `payment.service.ts:3021` membatalkan booking pending, melewati dua guard parkir/closed-bill khusus kasus ini, lalu menulis settlement dan satu `payment.paid` di `:3257`. Consumer meminta refund melalui `reservation-consumers.ts:161` dan `:207`. |
+| P2 #2: legacy unresolved tanpa link memenuhi batch sweep terus-menerus | **Tertutup secara statis.** | `reservation-sweeps.ts:78` mengecualikan legacy tanpa link selama provider belum final tanpa batas cap; pengecualian paid di `:85` tetap membuat legacy paid dapat direkonsiliasi. Selaras dengan guard `reservation-core.ts:937` dan `depositIntentMayStillPay`. |
+
+## Pemeriksaan invariant dan test yang tersedia
+
+- DP setelah cap: test `reservation-1178-late-dp-cap-db.test.ts:439` mencakup DOIT/Duitku, callback/polling, sebelum/sesudah sweep, satu event, satu refund penuh, holds nol, dan replay. Cabang sebelum cap di `:532` tetap menguji parkir; sibling yang sudah paid diperiksa di `:605`.
+- Race sweep/callback: transaksi settlement mengambil kunci owner → link → intent (`payment.service.ts:2900`), sedangkan sweep merekonsiliasi dengan kunci reservasi → link → intent (`reservation-core.ts:753`). Test barrier dua koneksi ada di `reservation-1178-barrier-db.test.ts:455`. Tidak menemukan urutan konkret yang menggandakan refund atau mengonfirmasi booking yang dibatalkan pada jalur yang diperiksa.
+- Dua kode terlambat dan satu kode dibayar dua kali: `reservation-1178-two-late-codes-db.test.ts:420` dan `:653` menguji urutan consumer, transaksi berbeda, serta replay. Guard evidence non-null di `reservation-consumers.ts:121` mengidentifikasi transaksi settlement, sehingga fund transaksi kedua tidak menahan refund transaksi pertama. Pengecualian legacy tetap menjadi temuan di atas.
+- Overpayment baru: `reservation-1178-overpayment-fund-db.test.ts:417` menguji refund bagian DP teralokasi sambil mempertahankan fund surplus. Assertion `:453` justru mewajibkan evidence non-null; kompatibilitas fund surplus legacy belum diuji.
+- Duitku kode kedua: `reservation-1178-duitku-second-code-db.test.ts:564` memakai handler webhook sesungguhnya dan mengharuskan `BILL_CLOSED` menghasilkan tepat satu fund. Penanganan callback ada di `payment-duitku-webhook.service.ts:254`; polling di `payment.service.ts:3690` juga memarkir uang sebelum finalisasi. Rejection dari pemanggilan `confirmPayment` langsung bukan pengganti pengujian caller yang melakukan parkir.
+- Sweep legacy: `reservation-1178-legacy-sweep-db.test.ts:383` menanam 120 legacy unresolved, booking baru jatuh tempo, legacy paid, dan outlet lain. Predicate produksi mengikuti status provider belum final; tidak menemukan skenario tambahan lintas tenant/outlet dari delta. Query baru memakai tenant context dan identitas link/intent. Test eksplisit tenant kedua belum dibuktikan melalui runtime pada review ini.
+
+## Batas dan validasi
+
+- Tidak menjalankan test, build, typecheck, aplikasi, database, atau koneksi penyedia. Test yang disebut di atas dibaca, bukan dilaporkan lulus. Reproduksi legacy adalah penelusuran statis kode historis dan migrasi; belum diuji runtime.
+- Tidak menemukan skenario konkret tambahan P0/P1/P3 untuk refund melebihi penerimaan, kebocoran tenant, atau replay pada delta yang ditunjuk. Ini bukan bukti runtime bahwa seluruh urutan aman.
+- Validasi artefak: pemeriksaan SHA, status kedua temuan 1171, skenario/usul test, dan whitespace akhir lulus; commit writer historis terbukti ancestor target. `git diff --exit-code`, `git diff --cached --exit-code`, dan `git diff --check` lulus. Laporan muncul sebagai satu file untracked baru.
+- `pnpm exec prettier --check docs/qa/second-opinion-reservasi-dp-1186.md` gagal sebelum memeriksa format karena `node_modules/prettier/bin/prettier.cjs` tidak tersedia (`MODULE_NOT_FOUND`). Dependensi tidak dipasang atau diubah; format Prettier belum terverifikasi.
+- Artefak yang ditulis hanya `docs/qa/second-opinion-reservasi-dp-1186.md`; tanpa commit, push, merge, checkout, atau perubahan file lain oleh review ini.
