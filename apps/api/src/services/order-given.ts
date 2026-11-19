@@ -392,6 +392,60 @@ export function lineRoomIdr(
   return room;
 }
 
+/**
+ * 1145b (SO round 4 P2): what each original line of the bill paid, by LARGEST
+ * REMAINDER so the shares add up to exactly `order.totalIdr`: every line gets
+ * floor(line total x total / subtotal), then the IDR left over go one each to
+ * the lines with the biggest remainders (ties: the smaller line id first, so
+ * every caller gets the same split). Replacement lines of a swap are not
+ * original lines and get no share. When the original lines do not add up to
+ * the subtotal the split is not trusted: plain floor, never more than paid.
+ */
+function lineSharesIdr(
+  order: { totalIdr: number; subtotalIdr: number },
+  items: readonly LineItem[],
+  toOriginal: (lineId: string) => string,
+): Map<string, number> {
+  const shares = new Map<string, number>();
+  if (order.subtotalIdr <= 0) return shares;
+  const total = BigInt(order.totalIdr);
+  const subtotal = BigInt(order.subtotalIdr);
+  const lines = items
+    .filter((item) => toOriginal(item.id as string) === (item.id as string))
+    .map((item) => {
+      const exact = BigInt(item.lineTotalIdr) * total;
+      return {
+        id: item.id as string,
+        lineTotal: BigInt(item.lineTotalIdr),
+        floor: exact / subtotal,
+        remainder: exact % subtotal,
+      };
+    });
+  let left = total;
+  for (const line of lines) left -= line.floor;
+  const trusted =
+    lines.reduce((sum, line) => sum + line.lineTotal, 0n) === subtotal;
+  const ranked = [...lines].sort((a, b) =>
+    a.remainder === b.remainder
+      ? a.id < b.id
+        ? -1
+        : 1
+      : a.remainder > b.remainder
+        ? -1
+        : 1,
+  );
+  const bonus = new Set<string>();
+  if (trusted)
+    for (const line of ranked) {
+      if (left <= 0n) break;
+      bonus.add(line.id);
+      left -= 1n;
+    }
+  for (const line of lines)
+    shares.set(line.id, Number(line.floor) + (bonus.has(line.id) ? 1 : 0));
+  return shares;
+}
+
 /** The per-line balance behind `lineRoomIdr`, not clamped at zero. */
 function lineBalancesIdr(
   order: { totalIdr: number; subtotalIdr: number },
@@ -430,16 +484,10 @@ function lineBalancesIdr(
   const lines = new Set(
     requested.map((entry) => given.toOriginal(entry.itemId)),
   );
+  const shares = lineSharesIdr(order, items, given.toOriginal);
   const balances = new Map<string, number>();
   for (const line of lines) {
-    const item = byId.get(line);
-    const paid =
-      item && order.subtotalIdr > 0
-        ? Number(
-            (BigInt(item.lineTotalIdr) * BigInt(order.totalIdr)) /
-              BigInt(order.subtotalIdr),
-          )
-        : 0;
+    const paid = shares.get(line) ?? 0;
     balances.set(
       line,
       paid - (given.lineGivenIdr.get(line) ?? 0) - (priorPos.get(line) ?? 0),
@@ -686,9 +734,8 @@ export async function assertChargeChainBudget(
  * refunds), plus at most a few IDR of rounding, never past what the chain paid.
  * It never borrows the share of another item the guest keeps. A line outside a
  * swap chain holds its share of the bill less what was given for it (same rule
- * as `voucherRoomIdr`, order-voucher-room.ts); nothing given yet always fits
- * there (its pro-rata amount is rounded half up per component, its share
- * floored, a promo recompute may differ), the order budget bounds that case.
+ * as `voucherRoomIdr`, order-voucher-room.ts); no escape when nothing was given
+ * yet: a refund above the line's share is refused (legend-wpn5v).
  * The caller holds the order lock.
  */
 export async function lineFitsIdr(
@@ -705,11 +752,8 @@ export async function lineFitsIdr(
       wantedIdr <=
       Math.min(chain.paidIdr, chain.balanceIdr + CHAIN_ROUNDING_IDR)
     );
-  // Outside a swap the chain paid only the line's share.
-  return (
-    chain.balanceIdr >= chain.paidIdr ||
-    wantedIdr <= Math.max(0, chain.balanceIdr)
-  );
+  // Outside a swap the chain paid only the line's share, no slack (legend-wpn5v).
+  return wantedIdr <= Math.max(0, chain.balanceIdr);
 }
 
 /** Throws 422 `REFUND_OVER_ORDER_ROOM` when `wantedIdr` does not fit the line. */

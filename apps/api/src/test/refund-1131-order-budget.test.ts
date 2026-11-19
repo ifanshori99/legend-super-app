@@ -1039,33 +1039,35 @@ describe("1131 per-line rule (Q25): the money of one line is given once, whichev
 });
 
 describe("1131 no over-refusal: a discounted order lets every line's ORD-09 through up to paid", () => {
-  it("promo order (discount 18.000, paid 42.735): the ORD-09 of the kopi and then of the teh are both filed, total <= paid", async () => {
+  it("promo order (discount 18.000, paid 42.735): the ORD-09 of the kopi is filed (8.085); the teh (9.325 by component rounding) is refused over its line share 9.324 (legend-wpn5v)", async () => {
     const paid = await p.paidPromoOrder();
     const kopi = await ord09Attempt(paid.kopiLine, KOPI_PRICE);
     const teh = await ord09Attempt(paid.tehLine, PRICES.teh);
     expect(kopi, "kopi report accepted").not.toBeNull();
     expect(teh, "teh report accepted").not.toBeNull();
     expect(kopi!.resolveStatus, "kopi resolved").toBe(200);
-    expect(teh!.resolveStatus, "teh resolved").toBe(200);
     expect(kopi!.consumerError, "kopi consumer").toBeNull();
-    expect(teh!.consumerError, "teh consumer").toBeNull();
-    expect(kopi!.filedIdr, "kopi refund filed (not refused)").toBeGreaterThan(
-      0,
-    );
-    expect(teh!.filedIdr, "teh refund filed (not refused)").toBeGreaterThan(0);
     // Exact: a failed kopi withdraws the promo, so it refunds 8.085 (order-recovery-refund-promo H3).
     expect(kopi!.filedIdr, "kopi refund is its own paid share").toBe(8_085);
+    // Strict plain line (legend-wpn5v): teh share = 12.000 x 42.735 / 55.000 =
+    // 9.324; its pro-rata refund rounds to 9.325, over the share: refused at
+    // the resolve gate, nothing filed.
+    expect(teh!.resolveStatus, "teh refused").toBe(422);
+    expect(teh!.resolveCode).toBe(ROOM_CODE);
+    expect(teh!.filedIdr).toBe(0);
     expect(kopi!.filedIdr + teh!.filedIdr).toBeLessThanOrEqual(PROMO_PAID);
   });
 
-  it("promo order: the ORD-09 of the kopi (8.085), then of the roti (20.790) are both filed in full, never cut", async () => {
+  it("promo order: the ORD-09 of the kopi (8.085) is filed; the roti (promo recompute 20.790 > its share 13.986) is blocked at the consumer, nothing filed (legend-wpn5v)", async () => {
     const paid = await p.paidPromoOrder();
     const kopi = await ord09Attempt(paid.kopiLine, KOPI_PRICE);
     const roti = await ord09Attempt(paid.rotiLine, ROTI_PRICE);
     expect(kopi?.resolveStatus, "kopi resolved").toBe(200);
     expect(roti?.resolveStatus, "roti resolved").toBe(200);
     expect(kopi!.filedIdr).toBe(8_085);
-    expect(roti!.filedIdr).toBe(ROTI_PAID);
+    // roti share = 18.000 x 42.735 / 55.000 = 13.986 < 20.790: refused, never cut.
+    expect(roti!.consumerError).toBeNull();
+    expect(roti!.filedIdr).toBe(0);
     expect(kopi!.filedIdr + roti!.filedIdr).toBeLessThanOrEqual(PROMO_PAID);
   });
 });
