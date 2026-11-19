@@ -475,6 +475,7 @@ async function recordProviderRefund(intent: Intent, amountIdr: number) {
         {
           provider: "doit",
           providerRefundId: `rf_${randomUUID().slice(0, 12)}`,
+          refundIdKind: "provider",
           providerPaymentRef,
           amountIdr,
           source: "payment_webhook",

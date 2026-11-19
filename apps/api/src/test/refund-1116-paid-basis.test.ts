@@ -258,6 +258,7 @@ async function recordProviderRefund(
         {
           provider: "doit",
           providerRefundId,
+          refundIdKind: "provider",
           providerPaymentRef,
           amountIdr,
           source: "payment_webhook",

@@ -633,10 +633,8 @@ describe("1118 release gate SQL: runner files (legend-gwqjp)", () => {
       try {
         await client.query("BEGIN READ ONLY");
         await client.query("SET LOCAL row_security = off");
-        const result = await client.query({
-          text: gate.sql,
-          queryMode: "extended",
-        });
+        const config = { text: gate.sql, queryMode: "extended" as const };
+        const result = await client.query(config);
         expect(Array.isArray(result.rows)).toBe(true);
       } finally {
         await client.query("ROLLBACK");
