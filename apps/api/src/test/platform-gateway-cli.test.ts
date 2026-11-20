@@ -191,11 +191,12 @@ describe("setPlatformGatewayFromCli", () => {
     expect(await changes()).toHaveLength(0);
   });
 
-  it("rejects disabling the only active gateway", async () => {
+  it("rejects disabling the only active gateway and changes nothing", async () => {
+    // The default is also protected on its own.
     await expect(run("doit", "--disabled")).rejects.toMatchObject({
-      code: "GATEWAY_LAST_ACTIVE",
+      code: "GATEWAY_IS_DEFAULT",
     });
-    // Also when it is not the default (direct SQL state, no default set).
+    // No default set (direct SQL state): the last-active guard answers.
     await owner.query(
       "UPDATE platform_payment_gateways SET is_default = false",
     );
@@ -207,6 +208,42 @@ describe("setPlatformGatewayFromCli", () => {
       (await state()).find((row) => row.provider === "doit"),
     ).toMatchObject({ enabled: true });
     expect(await changes()).toHaveLength(0);
+  });
+
+  it("does not overwrite a webhook window changed after the CLI's last read", async () => {
+    await listPlatformGateways(); // warm the process cache (stale from here)
+    await owner.query(
+      "UPDATE platform_payment_gateways SET webhook_tolerance_past_sec = 4000, webhook_tolerance_future_sec = 120, secret_grace_hours = 12 WHERE provider = 'duitku'",
+    );
+    await run("duitku", "--enabled");
+    const { rows } = await owner.query(
+      "SELECT webhook_tolerance_past_sec AS p, webhook_tolerance_future_sec AS f, secret_grace_hours AS g FROM platform_payment_gateways WHERE provider = 'duitku'",
+    );
+    expect(rows[0]).toEqual({ p: 4000, f: 120, g: 12 });
+    const [row] = await changes();
+    expect(row.before).toMatchObject({
+      webhookTolerancePastSec: 4000,
+      webhookToleranceFutureSec: 120,
+      secretGraceHours: 12,
+      enabled: false,
+    });
+    // Only the flagged field differs in the audit row.
+    const differing = Object.keys(row.after).filter(
+      (key) => row.after[key] !== row.before[key],
+    );
+    expect(differing).toEqual(["enabled"]);
+  });
+
+  it("does not re-enable a gateway disabled after the CLI's last read", async () => {
+    await run("duitku", "--enabled");
+    await listPlatformGateways(); // warm the cache: duitku looks enabled
+    await owner.query(
+      "UPDATE platform_payment_gateways SET enabled = false WHERE provider = 'duitku'",
+    );
+    await expect(run("duitku", "--default")).rejects.toThrow(/enabled/i);
+    expect(
+      (await state()).find((row) => row.provider === "duitku"),
+    ).toMatchObject({ enabled: false, is_default: false });
   });
 
   it("rejects disabling the default while another gateway is active", async () => {

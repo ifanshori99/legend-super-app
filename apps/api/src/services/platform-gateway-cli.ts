@@ -11,10 +11,7 @@ import {
   type PlatformGateway,
 } from "@starter/shared/platform";
 import { HttpError } from "../lib/http-error";
-import {
-  listPlatformGateways,
-  updatePlatformGateway,
-} from "./platform-payment-gateway.service";
+import { updatePlatformGateway } from "./platform-payment-gateway.service";
 
 export const GATEWAY_SET_USAGE =
   "Usage: pnpm --filter @starter/api gateway:set <doit|duitku> [--enabled|--disabled] [--default] [--actor <operator email>]\n" +
@@ -68,47 +65,20 @@ export function parseGatewaySetArgs(argv: readonly string[]): GatewaySetArgs {
 }
 
 /**
- * Applies the change through the shared writer. Rejects the combinations the
- * API would let through only by accident: default on a disabled gateway, and
- * switching off the last active gateway (every new payment would fail).
+ * Sends only the fields named by the flags to the shared writer, which merges
+ * them onto the row it locks (webhook window and secret grace stay as they
+ * are) and enforces the guards: default needs an enabled gateway, the last
+ * active gateway and the current default cannot be disabled.
  */
 export async function setPlatformGatewayFromCli(
   args: GatewaySetArgs,
 ): Promise<PlatformGateway> {
-  const rows = await listPlatformGateways();
-  const current = rows.find((row) => row.provider === args.provider);
-  if (!current)
-    throw new HttpError(404, "NOT_FOUND", "Payment gateway not found.");
-  const enabled = args.enabled ?? current.enabled;
-  if (args.makeDefault && !enabled)
-    throw usage(
-      "The default gateway must be enabled: add --enabled to enable it too.",
-    );
-  if (
-    current.enabled &&
-    !enabled &&
-    !rows.some((row) => row.provider !== args.provider && row.enabled)
-  )
-    throw new HttpError(
-      422,
-      "GATEWAY_LAST_ACTIVE",
-      "This is the only active gateway; enable another one first.",
-    );
-  if (current.isDefault && !enabled)
-    throw new HttpError(
-      422,
-      "GATEWAY_IS_DEFAULT",
-      "Pick another default gateway before disabling this one.",
-    );
   return updatePlatformGateway(
     args.provider,
     {
-      enabled,
+      ...(args.enabled === null ? {} : { enabled: args.enabled }),
       // Unsetting the default alone is not offered: pick a new default.
-      isDefault: current.isDefault || args.makeDefault,
-      webhookTolerancePastSec: current.webhookTolerancePastSec,
-      webhookToleranceFutureSec: current.webhookToleranceFutureSec,
-      secretGraceHours: current.secretGraceHours,
+      ...(args.makeDefault ? { isDefault: true } : {}),
       reason: "CLI gateway:set",
     },
     args.actor,

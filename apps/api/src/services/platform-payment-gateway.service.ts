@@ -9,7 +9,7 @@ import {
   type PlatformGateway,
   type UpdatePlatformGatewayInput,
 } from "@starter/shared/platform";
-import { asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, ne, sql } from "drizzle-orm";
 import { db } from "../db";
 import {
   platformPaymentGatewayChanges,
@@ -118,14 +118,22 @@ export async function gatewaySecretGraceMs(provider: string): Promise<number> {
   return row ? row.secretGraceHours * 3_600_000 : DEFAULT_SECRET_GRACE_MS;
 }
 
+/** A full update (API) or a partial one (CLI): fields left out keep the value
+ * read under the lock, so a stale caller cannot overwrite a newer change. */
+export type PlatformGatewayPatch = Partial<
+  Omit<UpdatePlatformGatewayInput, "reason">
+> &
+  Pick<UpdatePlatformGatewayInput, "reason">;
+
 /**
- * Super Admin update. One transaction: lock, validate, clear the old default
- * (the partial unique index allows one), write the row and append the change
- * history. The caller (route) already ran the platform guards.
+ * Super Admin update. One transaction: lock, merge the patch onto the locked
+ * row, validate, clear the old default (the partial unique index allows one),
+ * write the row and append the change history. The caller (route or CLI)
+ * already ran its own guards.
  */
 export async function updatePlatformGateway(
   provider: string,
-  input: UpdatePlatformGatewayInput,
+  patch: PlatformGatewayPatch,
   actorUserId: string,
 ): Promise<PlatformGateway> {
   const updated = await db.transaction(async (tx) => {
@@ -139,7 +147,17 @@ export async function updatePlatformGateway(
       .for("update");
     if (!current)
       throw new HttpError(404, "NOT_FOUND", "Payment gateway not found.");
-    if (input.isDefault && !input.enabled)
+    const input = {
+      enabled: patch.enabled ?? current.enabled,
+      isDefault: patch.isDefault ?? current.isDefault,
+      webhookTolerancePastSec:
+        patch.webhookTolerancePastSec ?? current.webhookTolerancePastSec,
+      webhookToleranceFutureSec:
+        patch.webhookToleranceFutureSec ?? current.webhookToleranceFutureSec,
+      secretGraceHours: patch.secretGraceHours ?? current.secretGraceHours,
+      reason: patch.reason,
+    };
+    if (input.isDefault && !input.enabled && !current.isDefault)
       throw new HttpError(
         422,
         "VALIDATION_ERROR",
@@ -151,6 +169,25 @@ export async function updatePlatformGateway(
         "GATEWAY_IS_DEFAULT",
         "Pick another default gateway before disabling or unsetting this one.",
       );
+    // Never leave the platform without an active gateway (every new payment
+    // would fail). Counted under the same lock as the write.
+    if (current.enabled && !input.enabled) {
+      const [others] = await tx
+        .select({ n: sql<number>`count(*)::int` })
+        .from(platformPaymentGateways)
+        .where(
+          and(
+            eq(platformPaymentGateways.enabled, true),
+            ne(platformPaymentGateways.provider, provider),
+          ),
+        );
+      if (!others || others.n === 0)
+        throw new HttpError(
+          422,
+          "GATEWAY_LAST_ACTIVE",
+          "This is the only active gateway; enable another one first.",
+        );
+    }
     if (input.enabled && !registeredGatewayProviders().includes(provider))
       throw new HttpError(
         422,
