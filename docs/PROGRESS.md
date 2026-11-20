@@ -2318,3 +2318,9 @@ Langkah berikut CTO baru:
 - ws/1203 tukar poin: P3 1/3/7 di 059d155fa (55/55). Mendarat bersama ws/1165 di batch100; migrasi 0733 wajib renumber. Sisa P3 di bead terpisah.
 - Checklist kredensial: storage cukup STORAGE_S3_* sesudah 1205b mendarat. Keputusan refund P3-a/P3-b dicatat di docs/qa/second-opinion-refund-hold-1200.md.
 - Berikut: SO edge catalog (jalan), full run batch99, batch100 (1165+1203), SO area lain sebelum gerbang rilis.
+
+## 20 Nov siang-2: evaluasi workflow (Retro 54)
+- Biaya sesi 1c59368e (23:38-03:49 UTC): total 17,5M unit; utama Opus 31%, subagent Opus 40% (architect), Sonnet 27%, Haiku 2%. 34 subagent.
+- Bug yang tertangkap sebelum produksi: guard payout 0504 basi (kunci kas hilang), refund overpay, promo bocor offline sesudah restore, storage env/region.
+- Pemborosan: 3 full run batch98 (masing-masing 1 masalah), 2 run test kosong (path salah), 5 agent kena batas langkah.
+- Perbaikan: satu full run gabungan batch100 (memuat 98+99); aturan Retro 54 di roles merge-train.md + cto.md; tooling 1207 (cek fungsi DB ditulis ulang, normalisasi LEGEND_TEST_FILES, affected-tests) sedang dibuat.
