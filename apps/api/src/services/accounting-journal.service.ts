@@ -1163,7 +1163,9 @@ async function assertReversalDoesNotRaiseProfit(
       ),
     );
   const typeOf = new Map(accounts.map((account) => [account.id, account.type]));
-  let originalProfit = 0n;
+  // Judged per outlet (null = entity level): moving an expense from outlet A
+  // to B nets to zero on the entity but raises A's profit share (1218 r4).
+  const profitByOutlet = new Map<string | null, bigint>();
   for (const line of lines) {
     const type = typeOf.get(line.accountId);
     // An account missing from the COA cannot be judged: fail closed.
@@ -1174,10 +1176,15 @@ async function assertReversalDoesNotRaiseProfit(
         "Akun jurnal ini tidak ditemukan di bagan akun; pembalikan manual ditolak.",
       );
     if (type !== "revenue" && type !== "expense") continue;
-    originalProfit +=
-      BigInt(String(line.creditIdr)) - BigInt(String(line.debitIdr));
+    const outlet = line.outletId ?? null;
+    profitByOutlet.set(
+      outlet,
+      (profitByOutlet.get(outlet) ?? 0n) +
+        BigInt(String(line.creditIdr)) -
+        BigInt(String(line.debitIdr)),
+    );
   }
-  if (originalProfit < 0n)
+  if ([...profitByOutlet.values()].some((profit) => profit < 0n))
     throw new HttpError(
       409,
       "AUTO_JOURNAL_LOCKED",
@@ -1295,7 +1302,8 @@ async function assertAutoCashOutSourceNotPaid(
               ),
             )
             .limit(1);
-    paid = !claim || (claim.status === "paid" && claim.payout === "cash");
+    // Only a claim that is no longer paid opens the exception (1218 r4).
+    paid = !claim || claim.status === "paid";
   } else if (payoutSettle) {
     // Cash payroll settle journal: its posting row (journal_key) in kind settle.
     const [posting] = await tx
@@ -1352,6 +1360,7 @@ async function assertReturnBackingNotPaidOut(
   tx: TenantTransaction,
   tenantId: TenantId,
   row: EntryRow,
+  lines: readonly LineRow[],
 ): Promise<boolean> {
   if (
     row.sourceType !== "refund" ||
@@ -1366,9 +1375,15 @@ async function assertReturnBackingNotPaidOut(
   // Follow all historical credit-use edges too: Q82 can move the same DP to
   // another session, where a different intent's payout consumes shared room.
   // Refuse conservatively once any later payout of that component was booked.
-  const paid = await tx.execute(sql`
+  const [verdict] = (
+    await tx.execute<{
+      release_count: string;
+      release_sum: string;
+      booked_payout: boolean;
+      completed_refund: boolean;
+    }>(sql`
     WITH RECURSIVE releases AS (
-      SELECT payment_intent_id, released_at
+      SELECT payment_intent_id, released_at, amount_idr
         FROM pos_deposit_refunds
        WHERE tenant_id = ${tenantId}::uuid
          AND pos_refund_id = ${sourceId.data}::uuid
@@ -1392,23 +1407,66 @@ async function assertReturnBackingNotPaidOut(
         JOIN sources s ON c.node = 's:' || s.session_id::text
                        OR c.node = 'i:' || s.intent_id::text
     )
-    SELECT 1 FROM payment_refunds p
-      JOIN journal_entries j
-        ON j.tenant_id = p.tenant_id
-       AND j.idempotency_key = 'aj:payout:' || p.id::text
-     WHERE p.tenant_id = ${tenantId}::uuid
-       AND p.status = 'completed' AND p.unallocated_fund_id IS NULL
-       AND 'i:' || p.payment_intent_id::text IN (SELECT node FROM connected)
-       AND p.completed_at >= (SELECT min(released_at) FROM releases)
-     LIMIT 1
-  `);
-  if (paid.rows.length > 0)
+    SELECT (SELECT count(*) FROM releases)::text AS release_count,
+           (SELECT coalesce(sum(amount_idr), 0) FROM releases)::text AS release_sum,
+           EXISTS (
+             SELECT 1 FROM payment_refunds p
+               JOIN journal_entries j
+                 ON j.tenant_id = p.tenant_id
+                AND j.idempotency_key = 'aj:payout:' || p.id::text
+              WHERE p.tenant_id = ${tenantId}::uuid
+                AND p.status = 'completed' AND p.unallocated_fund_id IS NULL
+                AND 'i:' || p.payment_intent_id::text IN (SELECT node FROM connected)
+                AND p.completed_at >= (SELECT min(released_at) FROM releases)
+           ) AS booked_payout,
+           EXISTS (
+             SELECT 1 FROM payment_refunds p
+              WHERE p.tenant_id = ${tenantId}::uuid
+                AND p.status = 'completed'
+                AND 'i:' || p.payment_intent_id::text IN (SELECT node FROM connected)
+           ) AS completed_refund
+  `)
+  ).rows;
+  if (verdict?.booked_payout === true)
     throw new HttpError(
       409,
       "JOURNAL_BACKING_IN_USE",
       "DP return journal backs a completed payout; reconcile that refund before correcting its backing.",
     );
-  return true;
+  // Applied and passed (opens a profit-raising reversal) only when the refund
+  // went back to the DP and no money left (1218 r4): (a) the refund released
+  // DP; (b) every credit line is on customer_deposit, in total no more than
+  // the released DP, so no cash or bank credit hides in it; (c) no completed
+  // payment refund in the DP component, booked or not.
+  if (verdict === undefined || BigInt(verdict.release_count) === 0n)
+    return false;
+  if (verdict.completed_refund) return false;
+  const depositIds = new Set<string>();
+  const snapshotDepositId = row.postingAccountSnapshot?.customer_deposit;
+  if (typeof snapshotDepositId === "string") depositIds.add(snapshotDepositId);
+  const [mapping] = await tx
+    .select({ accountId: accountMappings.accountId })
+    .from(accountMappings)
+    .where(
+      and(
+        eq(accountMappings.tenantId, tenantId),
+        eq(accountMappings.legalEntityId, row.legalEntityId),
+        eq(accountMappings.role, "customer_deposit"),
+      ),
+    )
+    .limit(1);
+  if (mapping) depositIds.add(mapping.accountId);
+  // The snapshot and today's mapping must agree on one account.
+  if (depositIds.size !== 1) return false;
+  const [depositId] = [...depositIds];
+  let credited = 0n;
+  for (const line of lines) {
+    const credit = BigInt(String(line.creditIdr));
+    if (credit === 0n) continue;
+    if (line.accountId !== depositId) return false;
+    credited += credit;
+  }
+  return credited > 0n && credited <= BigInt(verdict.release_sum);
 }
 
 /**
@@ -1514,7 +1572,9 @@ export async function reverseJournalInTransaction(
   )
     passedGuards.push("petty-cash-out-source-not-paid");
   assertReversible(row, reversal?.id ?? null);
-  if (await assertReturnBackingNotPaidOut(tx, context.tenant.tenantId, row))
+  if (
+    await assertReturnBackingNotPaidOut(tx, context.tenant.tenantId, row, lines)
+  )
     passedGuards.push("order-refund-backing-not-paid-out");
   // After the source guards: only a guard on the allow list that applied and
   // passed opens a profit-raising reversal.

@@ -1,11 +1,13 @@
 // Card 1218 (SO 1216 F-P1b, docs/briefs/1217-1220-fix-so1216.md): the manual
-// reversal endpoint (`reverseJournal`) refuses an automatic expense accrual
-// that has its own correction flow: the payroll run-lock accrual
-// (`payroll-gl:locked:*`, corrected by cancelling the run) and the inventory
-// GL journals (HPP `cogs`, waste/count `stock_adjustment`, corrected through
-// the stock movement). Reversing them by hand removes the expense, raises the
-// profit and so the profit share. Sales, receipts, payouts and manual
-// journals stay reversible (CTO decision: deny list, option b).
+// reversal endpoint (`reverseJournal`) refuses any automatic journal (source
+// other than manual/recurring) whose mirror raises profit, judged per outlet
+// from the COA income and expense lines: the payroll run-lock accrual, HPP,
+// waste, a drawer cash-out, a fee. That would overpay the profit share; the
+// correction goes through the source flow or a manual journal. The only
+// exceptions are the source guards on the allow list that applied and passed
+// (an unpaid DP-only POS refund, a petty cash 1102 source no longer paid).
+// Sales, receipts, payouts and manual journals stay reversible (CTO decision:
+// profit rule with explicit allow list).
 
 import { randomBytes, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -93,6 +95,26 @@ async function expenseAccount(fx: Fx): Promise<string> {
   return rows[0]!.id;
 }
 
+let brandId: string | null = null;
+
+/** An outlet of the fixture entity (lines may carry it). */
+async function outletOf(fx: Fx): Promise<string> {
+  if (brandId === null) {
+    brandId = randomUUID();
+    await owner.query(
+      "INSERT INTO brands (id, tenant_id, slug, name) VALUES ($1, $2, $3, 'Uji 1218')",
+      [brandId, tenantId, `uji-1218-${brandId.slice(0, 8)}`],
+    );
+  }
+  const id = randomUUID();
+  await owner.query(
+    `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, business_day_cutoff, opening_hours, status)
+     VALUES ($1, $2, $3, $4, $5, 'Outlet 1218', 'Jl. 1218', 'Asia/Jakarta', '04:00', '{}', 'active')`,
+    [id, tenantId, brandId, fx.entity, `O18-${id.slice(0, 6)}`.toUpperCase()],
+  );
+  return id;
+}
+
 const manualReverse = (journalId: string) =>
   reverseJournal(
     tenantScope(),
@@ -159,6 +181,37 @@ describe("1218 manual reversal of an automatic expense accrual", () => {
       `cash-out-${randomUUID()}`,
       "expense",
     );
+    await expectLocked(journal);
+  });
+
+  it("1218-OUTLET an expense moved from outlet A to outlet B nets to zero on the entity but raises A's profit: refused", async () => {
+    const fx = await makeFixture();
+    const expense = await expenseAccount(fx);
+    const [outletA, outletB] = [await outletOf(fx), await outletOf(fx)];
+    const journal = await withOwner(async (client) => {
+      const { rows } = await client.query<{ id: string }>(
+        `INSERT INTO journal_entries
+           (tenant_id, legal_entity_id, entry_date, fiscal_period_id, source_type,
+            source_id, description, reversal_of, idempotency_key, request_fingerprint)
+         VALUES ($1, $2, '2025-01-15', $3, 'sale', NULL, 'Jurnal 1218 outlet', NULL, $4, $5)
+         RETURNING id`,
+        [
+          tenantId,
+          fx.entity,
+          fx.jan,
+          `sale-${randomUUID()}`,
+          randomBytes(32).toString("hex"),
+        ],
+      );
+      const entryId = rows[0]!.id;
+      await client.query(
+        `INSERT INTO journal_lines
+           (tenant_id, entry_id, account_id, outlet_id, line_no, debit_idr, credit_idr)
+         VALUES ($1, $2, $3, $4, 1, 1000000, 0), ($1, $2, $3, $5, 2, 0, 1000000)`,
+        [tenantId, entryId, expense, outletB, outletA],
+      );
+      return entryId;
+    });
     await expectLocked(journal);
   });
 
