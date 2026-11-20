@@ -21,6 +21,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { API_MOCK } from "@/lib/api/mock-flag";
 import { useRouteAvailable } from "@/lib/use-route-available";
 import {
   REPORT_FAMILIES,
@@ -28,12 +29,15 @@ import {
   type ReportDefinition,
 } from "@starter/shared/dashboard";
 import { useReportCatalog } from "../hooks";
+import { reportFamilyHasData } from "../lib";
 
 const ALL = "all";
 
 function ReportRow({ report }: { report: ReportDefinition }) {
   const t = useT();
-  const available = useRouteAvailable()(report.route);
+  const available =
+    useRouteAvailable()(report.route) &&
+    reportFamilyHasData(report.family, { mock: API_MOCK });
   const body = (
     <>
       <span className="min-w-0">

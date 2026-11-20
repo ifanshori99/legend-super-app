@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { ApiError } from "@/lib/api/errors";
+import { API_MOCK } from "@/lib/api/mock-flag";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CardShell, CardShellBody } from "@/components/ui/card";
@@ -47,6 +48,7 @@ import {
   clockBusinessDate,
   isChartable,
   isResultEmpty,
+  reportExportOffered,
   resolvePeriod,
   resolveSplit,
   resultFinality,
@@ -228,6 +230,7 @@ export function ReportViewerPage({ reportCode }: { reportCode: string }) {
           : REPORT_EXPORT_PERMISSION,
       ])
     : false;
+  const exportOffered = reportExportOffered({ mock: API_MOCK });
   const refreshing = run.isFetching || totals.isFetching;
   const refresh = () => {
     void run.refetch();
@@ -280,16 +283,18 @@ export function ReportViewerPage({ reportCode }: { reportCode: string }) {
               <RotateCw aria-hidden="true" />
               {t("reportViewer.refresh")}
             </Button>
-            <Button
-              type="button"
-              size="sm"
-              disabled={!canExport || !selection || empty}
-              title={canExport ? undefined : t("reportViewer.exportDenied")}
-              onClick={() => setExportOpen(true)}
-            >
-              <Download aria-hidden="true" />
-              {t("reportViewer.export.open")}
-            </Button>
+            {exportOffered && (
+              <Button
+                type="button"
+                size="sm"
+                disabled={!canExport || !selection || empty}
+                title={canExport ? undefined : t("reportViewer.exportDenied")}
+                onClick={() => setExportOpen(true)}
+              >
+                <Download aria-hidden="true" />
+                {t("reportViewer.export.open")}
+              </Button>
+            )}
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -384,7 +389,7 @@ export function ReportViewerPage({ reportCode }: { reportCode: string }) {
         </>
       )}
 
-      {selection && (
+      {selection && exportOffered && (
         <ExportDialog
           // A new selection starts a new export attempt.
           key={`${selection.period.startDate}|${selection.period.endDate}|${selection.groupBy ?? ""}`}

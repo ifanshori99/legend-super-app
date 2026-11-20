@@ -6,6 +6,7 @@ import { nitro } from "nitro/vite";
 import viteReact from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { i18nChunks } from "./vite-i18n-chunks.ts";
+import { assertNoMockInDeployedBuild } from "./vite-mock-guard.ts";
 
 // Both apps share the repository root's .env.local / .env.
 const envDir = resolve(import.meta.dirname, "../..");
@@ -77,7 +78,16 @@ export default defineConfig(({ command, mode }) => {
     for (const [key, value] of Object.entries(loadEnv(mode, envDir, "")))
       if (process.env[key] === undefined) process.env[key] = value;
   }
-  const demo = (process.env.VITE_API_MOCK ?? fileEnv.VITE_API_MOCK) === "true";
+  const mockFlag = process.env.VITE_API_MOCK ?? fileEnv.VITE_API_MOCK;
+  const demo = mockFlag === "true";
+  // A mock bundle must never be built for staging or production (legend-x73li).
+  assertNoMockInDeployedBuild({
+    command,
+    mock: mockFlag,
+    deploymentMode:
+      process.env.DEPLOYMENT_MODE ??
+      loadEnv(mode, envDir, "DEPLOYMENT_MODE").DEPLOYMENT_MODE,
+  });
   // The dev server listens on WEB_URL's port, so the origin the API trusts
   // and the address you open always match.
   const port =
