@@ -55,6 +55,7 @@ BEGIN
         USING ERRCODE = '23514';
     END IF;
     IF NEW.type = 'adjustment' THEN
+      -- redefine-drops: target SELECT now locks FOR SHARE (0518)
       SELECT r.status, r.type, r.profit_entity_id, r.share_version INTO target
       FROM public.distribution_runs r
       WHERE r.tenant_id = NEW.tenant_id AND r.id = NEW.adjusts_run_id
