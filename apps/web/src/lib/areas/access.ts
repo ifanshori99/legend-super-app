@@ -66,7 +66,8 @@ export type AreaAccess = {
   readonly canManageStationConfig?: boolean;
   /**
    * The request comes from a shared tablet (GET /api/me/access `sharedDevice`,
-   * founder Q29): only POS, tables, KDS and Tanya AI in KDS open. Absent =
+   * founder Q29): only POS, tables and KDS open (reservations and Tanya AI in KDS
+   * are hidden in release 1). Absent =
    * false (an older API). Presentation only; the API refuses the other screens.
    */
   readonly sharedDevice?: boolean;

@@ -10,10 +10,10 @@
 /**
  * Route prefixes open on a shared tablet, matched per path segment (`/pos`
  * opens `/pos` and `/pos/kasir`, never `/posx`).
- * - POS / cashier, including Reservasi (`/pos/reservasi`), tables, and the
- *   staff PIN switch (`/pos/ganti-pengguna`).
- * - Kitchen: KDS, Tanya AI in KDS (`/kds/tanya-ai`), `/kds/ganti-pengguna`,
- *   expo and pickup.
+ * - POS / cashier, tables, and the staff PIN switch (`/pos/ganti-pengguna`).
+ *   Reservasi (`/pos/reservasi`) is hidden in release 1, see CLOSED_PREFIXES.
+ * - Kitchen: KDS, `/kds/ganti-pengguna`, expo and pickup. Tanya AI in KDS
+ *   (`/kds/tanya-ai`) is hidden in release 1, see CLOSED_PREFIXES.
  * - Sign-in pages the tablet needs.
  */
 const OPEN_PREFIXES: readonly string[] = [
@@ -24,6 +24,15 @@ const OPEN_PREFIXES: readonly string[] = [
   "/sign-in",
   "/sign-up",
 ];
+
+/**
+ * Hidden on a shared tablet in release 1 (founder 21 Nov, decision no.14, bead
+ * legend-ff393): the reservation desk and Tanya AI at KDS. Checked before
+ * OPEN_PREFIXES, so they stay closed under the `/pos` and `/kds` wildcards.
+ * Facility (`/fasilitas`) and operations (`/operasional`) are not in the open
+ * list and so are closed already. Remove an entry here to open a screen again.
+ */
+const CLOSED_PREFIXES: readonly string[] = ["/pos/reservasi", "/kds/tanya-ai"];
 
 /**
  * Public pages that need no session (home, public menu, guest sign-in and
@@ -59,6 +68,8 @@ export function isSharedDeviceScreenAllowed(pathname: string): boolean {
   if (ENCODED_TRICK.test(bare)) return false;
   const path = bare.length > 1 ? bare.replace(/\/+$/, "") : bare;
   const lower = path.toLowerCase();
+  if (CLOSED_PREFIXES.some((prefix) => matchesPrefix(lower, prefix)))
+    return false;
   return (
     OPEN_PREFIXES.some((prefix) => matchesPrefix(lower, prefix)) ||
     PUBLIC_PREFIXES.some((prefix) => matchesPrefix(lower, prefix))
