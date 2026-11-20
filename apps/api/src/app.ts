@@ -33,6 +33,7 @@ import { ssrVisitorIp } from "./middleware/ssr-visitor-ip";
 import { tenantContext } from "./middleware/tenant";
 import { errorHandler, notFound } from "./middleware/error-handler";
 import { identityAuthRouter } from "./routes/identity.routes";
+import { passwordResetRouter } from "./routes/password-reset.routes";
 import { apiRouter } from "./routes";
 import { createStorageApiRouter } from "./routes/storage-api.routes";
 import { setPayoutEvidenceStorage } from "./services/payroll-payout-evidence";
@@ -390,6 +391,8 @@ export function createApp({
   // catch-all, so it does not swallow them; every other path falls through
   // unchanged because each route authenticates on its own.
   app.use("/api/auth", identityAuthRouter);
+  // legend-1255: public flag for the "Lupa kata sandi" link (GET only).
+  app.use("/api/auth/password-reset", passwordResetRouter);
 
   // Better Auth owns /api/auth/*: sign-up, sign-in, session, sign-out, admin.
   // It reads the raw body itself, so no JSON parser may run before it, and

@@ -45,6 +45,11 @@ import { resolveHostname } from "../services/org-resolve.service";
 import { sharedDeviceIdsFromToken } from "../services/shared-device.service";
 import { logger } from "./logger";
 import { sealSecret } from "./secrets";
+import {
+  PASSWORD_RESET_TOKEN_SECONDS,
+  passwordResetAvailable,
+  sendPasswordResetEmail,
+} from "./password-reset";
 
 const authLog = logger.child({ module: "better-auth" });
 
@@ -356,6 +361,14 @@ export const auth = betterAuth({
   database: drizzleAdapter(db, { provider: "pg", schema }),
   hooks: {
     before: createAuthMiddleware(async (ctx) => {
+      // legend-1255: without a mail sender the reset request says so (503)
+      // instead of pretending a mail left; the web hides the link by the
+      // status route. Answered before any user lookup, so it leaks nothing.
+      if (ctx.path === "/request-password-reset" && !passwordResetAvailable())
+        throw new APIError("SERVICE_UNAVAILABLE", {
+          code: "EMAIL_NOT_CONFIGURED",
+          message: "Password reset by email is not available.",
+        });
       if (!ctx.path.startsWith("/admin/")) return;
       if (ctx.path === "/admin/stop-impersonating") return;
       if (ctx.path === "/admin/has-permission" && !ctx.request) return;
@@ -724,8 +737,14 @@ export const auth = betterAuth({
     enabled: true,
     minPasswordLength: 8,
     maxPasswordLength: 128,
-    // Add an email provider before enabling verification or password recovery.
+    // Email verification stays off (a separate bead if it is ever needed).
     requireEmailVerification: false,
+    // legend-1255: reset by email. Token is single use and lasts one hour;
+    // the answer is the same for a known and an unknown address (Better Auth
+    // answers both alike; sendPasswordResetEmail does not wait for the mail).
+    resetPasswordTokenExpiresIn: PASSWORD_RESET_TOKEN_SECONDS,
+    sendResetPassword: async ({ user, token }, request) =>
+      sendPasswordResetEmail({ user, token }, request),
     // legend-ofq4f (second opinion P1-1): a password reset by token has no
     // current session, so every push subscription of the user goes, orphans
     // included (no session row needs to exist for this to run). The password

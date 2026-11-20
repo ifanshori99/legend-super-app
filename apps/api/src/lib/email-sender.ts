@@ -163,6 +163,17 @@ export async function resolveTenantEmailFrom(
   );
 }
 
+/**
+ * The sender address for mail that belongs to no tenant (account recovery:
+ * the visitor has no session and the user row carries no tenant). Same
+ * platform-wide address as resolveTenantEmailFrom; null = not configured.
+ */
+export async function resolveAccountEmailFrom(): Promise<string | null> {
+  return (
+    env.EMAIL_FROM ?? (env.isProduction ? null : "noreply@legend.localhost")
+  );
+}
+
 /** Test seam for the resolver; undefined resets it. */
 export function setEmailFromResolverForTests(
   fn: EmailFromResolver | undefined,
