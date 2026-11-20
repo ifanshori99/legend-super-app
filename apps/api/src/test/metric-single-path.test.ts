@@ -34,6 +34,9 @@ const ACCOUNTING_DOMAIN = [
   // Payout reconciliation checks posted journal lines for accounting
   // consistency, not registry metrics.
   /^services\/payroll-payout-recon\.service\.ts$/,
+  // Payout holds (legend-1184) prove the settle journal debited the frozen
+  // payable account before a release: ledger bookkeeping, not a metric.
+  /^services\/payroll-payout-gl-holds\.service\.ts$/,
   // Profit share (legend-2ljb) is accounting: it derives distributable net
   // profit straight from the posted journal, which is the ledger of record.
   /^services\/profit-share-net-profit\.ts$/,
