@@ -1,5 +1,7 @@
 # PROGRESS — Legend Super App
 
+> 20 Nov 2026: keadaan terbaru di `docs/HANDOFF-2026-11-20.md` (batch98-101, kartu 1207-1214, keputusan founder yang ditunggu).
+
 Diperbarui 2026-11-08 ±19:50 oleh CTO (sesi G4tde "CTO baru"), serah terima ke CTO berikutnya.
 
 ## CTO G4j04 mulai 15 Nov 01:15
