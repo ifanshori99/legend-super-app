@@ -145,8 +145,10 @@ async function sessionSnapshot(req: Request) {
   // judged by the trusted monotonic clock (`now`), never the edge box's wall
   // clock behind statement_timestamp(). includeInactive returns every row and
   // no DB `clock`, so `now` decides each assignment's valid_from/valid_until.
+  // Before the trusted clock is installed (or after stop) `now` is only the app
+  // wall clock, so the status read keeps the DB clock path as before.
   const data = await loadTenantAccess(tenantWide, userId, {
-    includeInactive: true,
+    includeInactive: isCatalogOverrideClockReady(),
   });
   return resolveAccessSnapshot({
     tenant: identity.context.tenant,
