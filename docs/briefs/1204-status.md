@@ -20,6 +20,16 @@ Cabang ghostex/26e97de4 dibuat di atas 1172 (readDbClock di access.service.ts) t
 - platform-approval.service.ts: HEAD memakai `lockedCaller`/`checkAt`, cabang memakai `caller.data.clock ?? now`. Dipadukan: `now: lockedCaller.data.clock ?? checkAt` (sama dengan perlakuan `reachContext`).
 - platform-tenant-owner.service.ts: hilang sendiri sesudah 1172 dikembalikan.
 
+## Langkah 4-6 (CTO menambah: merge int/batch98 0940e5351, faf6f7394, b9e1a6856 legend-7zwmv; tip awal 24c5b7dfe)
+| Langkah | Cabang | SHA |
+|---|---|---|
+| 4a | ws/1199-edge-catalog-so1197 7dd1c996b (tanpa migrasi) | 970b21ac1 |
+| 4b | ws/1199 3f094d767 (legend-bg5wy) | 6b1257918 |
+| 5 | ws/1205a-refund-echo 958fe014e (tanpa migrasi) | 8c848f8a9 |
+| 6 | ws/1205b-storage-env 874471cbd (tanpa migrasi) | d0d2fd24f |
+
+Konflik langkah 4-6: hanya `docs/PROGRESS.md` di 4a (dua bagian dipertahankan); sisanya merge otomatis. Tidak ada tests/doctor*.test.mjs di repo.
+
 ## Gate (bukan full run)
 - check-workspace-links: lulus. prettier: hijau kecuali `docs/review/img/ui1192-check.json` (artefak cabang 1192, tidak diubah).
 - `heavy pnpm run lint`: 0 error (2 warning lama di web). `heavy pnpm run typecheck`: shared, web, api hijau.
@@ -28,3 +38,9 @@ Cabang ghostex/26e97de4 dibuat di atas 1172 (readDbClock di access.service.ts) t
 - Test terarah 30 berkas / 311 tes hijau (25 berkas test diff + data-import-registry, platform-access-api, platform-tenant-owner, platform-approval*, berkas 1192/recon-hold).
 - Belum: full run (CTO sesudah batch98 mendarat), e2e, reviewer sonnet atas hunk konflik (tidak ada tool subagent di thread ini).
 - Langkah 4 (ws/1199) belum dikerjakan, menunggu pesan CTO. Perbaikan batch98 tambahan (reseal role grants) belum masuk.
+
+## Gate langkah 4-6 (tip d0d2fd24f, bukan full run)
+- lint 0 error (2 warning lama), typecheck shared/web/api hijau, prettier hijau di berkas berubah, `db:generate` "No schema changes".
+- `node --test tests/text-contract.test.mjs tests/*-contract.test.mjs tests/dev-public-site-setup.test.mjs`: 885 lulus, 0 gagal.
+- Test terarah 37 berkas / 483 lulus, 1 skip: edge-catalog-*, edge-link-heartbeat-compat, access-read-db-clock, refund-1205-a, refund-1191, refund-1144, storage-env, config/env.test, profit-share-statement-ports, core-storage-runtime, health-scanner, core-storage-pdf-scanner.
+- Belum: full run, e2e, merge perbaikan batch98 berikutnya (tunggu CTO).
