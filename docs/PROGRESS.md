@@ -8505,3 +8505,24 @@ Pemakaian (`session-usage.py`, sesi 81d47474): 54 menit sejak 10:53, puncak kont
 - Dipakai `statement_timestamp()` bukan `now()`: `now()` = awal transaksi dan mendahului tunggu kunci tenant (lihat `readDbClock`).
 - Tunda (bead lanjutan): accounting-bank-recon-cases, operations-checklist(+scheduler), inventory-staff-read-model, identity-invitation, platform-usage, order-issues, ai-insights-notify, report-schedule-recipients masih jam app.
 - Bukti: `access-read-db-clock.test.ts` merah di c3d5ca1bc (9 kasus: 8 gagal untuk sebab benar), hijau sesudah; 21 berkas terarah 245/245 hijau; typecheck api, prettier, eslint hijau; architect review (3 temuan A/B/C dibetulkan) + reviewer putaran 2 (1 temuan dibetulkan).
+
+## 1190 Edge catalog sync hardening (19 Nov 2026, cabang `ws/1190-edge-catalog-hardening`)
+
+Tanpa migrasi.
+
+- legend-75kly: penolakan kursor katalog diberi penanda header `X-Edge-Error: CATALOG_CURSOR_REJECTED`; 400 tanpa penanda tidak lagi mereset `sync_txid`; logika probe ditambah.
+- legend-y9y8y (sebagian): cloud menolak kursor dengan txid > `pg_snapshot_xmax`; runbook restore ada di `docs/deployment.md`. Tanpa cat3/epoch karena merusak edge lama. Tidak ada deteksi otomatis bila txid hasil restore masih >= kursor edge.
+- legend-ssnf9: satu notifikasi stale per edge per heartbeat, id = hash seluruh set stale.
+- legend-n6mkr: frame heartbeat toleran terhadap field tak dikenal; edge menahan `catalogStale` 1 jam setelah close 1008 "Invalid frame" dalam 10 dtk.
+- legend-jcgbk: sudah terisolasi sejak `5c7fc0ad6`, tanpa perubahan.
+- Bukti: 4 berkas test baru + stub `edge-catalog-rewind.test.ts` diperbarui; 78 test hijau di 7 berkas; prettier dan eslint berkas berubah hijau.
+- Belum: typecheck (tertunda saat catatan ini ditulis), suite penuh `pnpm test`/`pnpm check`.
+
+## 1199 fix SO 1197 edge catalog (legend-7r7q6, cabang ws/1199-edge-catalog-so1197)
+- R1: rewind (watermark `'rewind'` atau cursor ditolak cloud) menaikkan floor receipt per edge (`catalog:receipt-floor`); receipt lama tidak menahan apply. Akar jalur cursor-ditolak: puller mengabaikan `nextCursor` di halaman kosong (diperbaiki).
+- R2: item hilang sesudah restore dinonaktifkan (soft, tanpa DELETE; promosi jadi `paused`) lewat dua pull lengkap: marker `1` -> `h:<horizon>` -> nonaktif bila `visibleBelow >= horizon`. Field `visibleBelow`/`horizon` hanya dikirim ke edge yang meminta `protocolVersion`; cloud lama tanpa field = tidak pernah menonaktifkan. Setiap rewind/reset mengulang marker ke `1`.
+- R3: dedupe alert stale tahan restart cloud (marker di notification_outbox).
+- Tanpa migrasi. docs/deployment.md langkah 4 diperbarui.
+- Bukti: 15 berkas test edge-catalog/link-heartbeat hijau (265 lulus, 1 skip by design); typecheck api exit 0; prettier + eslint hijau. Architect review ronde 2: P1/P2/P3 lama beres; P2 baru (keepsPin) diperbaiki sesuai saran architect + test; belum direview ulang.
+- Belum: bukti gagal-dulu terhadap acf1edca3 tidak dijalankan eksplisit; review architect atas perbaikan P2 terakhir; suite penuh/`pnpm check`.
+- Catatan: P3 architect diterima: baris yang masih in-flight saat replay lalu diedit lagi saat pull konfirmasi bisa tersembunyi satu pull.

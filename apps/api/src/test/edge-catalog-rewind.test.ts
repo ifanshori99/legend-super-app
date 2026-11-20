@@ -40,6 +40,7 @@ import {
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { cafeLegendAccessFixtures } from "@starter/shared/access";
 import { db } from "../db/index.ts";
+import { CATALOG_CURSOR_REJECTED_MARKER } from "../edge/catalog-cursor-marker.ts";
 import { EdgeCloudHttpError } from "../edge/cloud-http.ts";
 import { pullCatalog } from "../edge/catalog-puller.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
@@ -203,7 +204,8 @@ function restoredCloud(opts: {
     asked.push(since);
     if (since === opts.oldCursor) {
       rejections += 1;
-      throw new EdgeCloudHttpError("HTTP_400");
+      // legend-75kly: the cloud marks a rejected cursor; an unmarked 400 no longer resets the checkpoint.
+      throw new EdgeCloudHttpError("HTTP_400", CATALOG_CURSOR_REJECTED_MARKER);
     }
     if (since === null)
       return {

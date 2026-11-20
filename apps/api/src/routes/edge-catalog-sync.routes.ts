@@ -16,10 +16,15 @@ import { CoreError } from "@starter/shared/core";
 import { db } from "../db/index.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { findTenantContext } from "../middleware/tenant.ts";
+import {
+  CATALOG_CURSOR_REJECTED_MARKER,
+  EDGE_ERROR_HEADER,
+} from "../edge/catalog-cursor-marker.ts";
 import { isCatalogDeliveryRefused } from "../services/edge-master-data-publisher.ts";
 import {
   BRAND_DEPENDENT_CATALOG_STREAMS,
   catalogSyncQuerySchema,
+  isCatalogSyncCursorError,
   listCatalogRecordsForNode,
 } from "../services/edge-catalog-sync.ts";
 import {
@@ -59,12 +64,20 @@ catalogRecordSyncRouter.get("/", async (req, res) => {
       "Edge node diblokir: brand outlet berubah, provisi ulang node.",
     );
   res.setHeader("Cache-Control", "private, no-store");
-  res.json(
-    await listCatalogRecordsForNode(db, {
-      tenantId: node.tenantId,
-      outletId: node.outletId,
-      edgeNodeId: node.edgeNodeId,
-      query,
-    }),
-  );
+  try {
+    res.json(
+      await listCatalogRecordsForNode(db, {
+        tenantId: node.tenantId,
+        outletId: node.outletId,
+        edgeNodeId: node.edgeNodeId,
+        query,
+      }),
+    );
+  } catch (error) {
+    // legend-75kly: tell the edge the cursor itself was refused (header only;
+    // the status and body stay as an older edge expects).
+    if (isCatalogSyncCursorError(error))
+      res.setHeader(EDGE_ERROR_HEADER, CATALOG_CURSOR_REJECTED_MARKER);
+    throw error;
+  }
 });

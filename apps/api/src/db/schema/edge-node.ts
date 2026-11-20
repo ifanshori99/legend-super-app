@@ -503,6 +503,12 @@ export const edgePullCheckpoints = pgTable(
         | "catalog:menu_categories:parents"
         // Pending printers fallback links of the catalog pull (legend-fbf4v).
         | "catalog:printers:fallbacks"
+        // Receipts at or before this time no longer protect catalog rows after
+        // a rewind (legend-7r7q6). Per node.
+        | "catalog:receipt-floor"
+        // A rewound stream whose full replay has not finished: absent items are
+        // deactivated when it does (legend-7r7q6, max 40 chars).
+        | `catalog:replay:${CatalogSyncStream}`
       >()
       .notNull(),
     watermark: text("watermark"),

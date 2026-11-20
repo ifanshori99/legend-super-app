@@ -50,6 +50,7 @@ import {
   neutralizeCatalogRowsIfRefused,
   type EdgeTx,
 } from "../services/edge-queue.service.ts";
+import { receiptAfterCatalogFloor } from "./catalog-receipt-floor.ts";
 import { decideInbound, type EdgeConflictReason } from "./conflict.ts";
 import { redactEdgeEnvelopeSecrets } from "./envelope-secrets.ts";
 import {
@@ -115,8 +116,14 @@ export async function defaultLastSequence(
 ): Promise<number> {
   if (kind === "master_data") {
     // Cloud wins: only what the cloud already sent counts.
+    // Receipts from before a catalog rewind (receipt floor, legend-7r7q6) of a
+    // catalog record no longer count: the restored cloud history replaces them.
+    const afterFloor =
+      event.aggregateType === "catalog_record"
+        ? sql`AND ${receiptAfterCatalogFloor("i", edgeNodeId)}`
+        : sql``;
     const result = await tx.execute(
-      sql`SELECT COALESCE(MAX(i.aggregate_sequence), 0) AS last FROM edge_inbound_events i WHERE i.edge_node_id = ${edgeNodeId}::uuid AND i.direction = ${direction} AND i.aggregate_type = ${event.aggregateType} AND i.aggregate_id = ${event.aggregateId} AND ${heldReceipt("i")}`,
+      sql`SELECT COALESCE(MAX(i.aggregate_sequence), 0) AS last FROM edge_inbound_events i WHERE i.edge_node_id = ${edgeNodeId}::uuid AND i.direction = ${direction} AND i.aggregate_type = ${event.aggregateType} AND i.aggregate_id = ${event.aggregateId} AND ${heldReceipt("i")} ${afterFloor}`,
     );
     return Number(result.rows[0]?.last ?? 0);
   }

@@ -91,7 +91,17 @@ export type EdgeLinkClientOptions = {
   onServerTime?: (serverTime: Date) => void;
   /** Only a disabled purge is reported; normal heartbeats omit the field. */
   auditRetentionDisabled?: () => boolean;
+  /** Test seam: clock in epoch ms for the catalogStale hold (legend-n6mkr). */
+  now?: () => number;
 };
+
+// A cloud from before legend-n6mkr refuses a heartbeat with catalogStale by
+// closing 1008. The edge then drops the field for an hour instead of looping.
+const CATALOG_STALE_REFUSAL_WINDOW_MS = 10_000;
+const CATALOG_STALE_HOLD_MS = 60 * 60 * 1000;
+// Close reason the cloud's link peer gives an undecodable frame (link-peer.ts).
+// Other 1008 closes (binary frame, proof refusal) must not hold catalogStale.
+const LINK_INVALID_FRAME_REASON = "Invalid frame";
 
 export type EdgeLinkClient = {
   state(): EdgeLinkClientState;
@@ -109,6 +119,9 @@ export function createEdgeLinkClient(
   let stopped = false;
   let retry: ReturnType<typeof setTimeout> | undefined;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
+  const clock = () => (options.now ?? Date.now)();
+  // Epoch ms until which catalogStale is left out of heartbeats (legend-n6mkr).
+  let catalogStaleHeldUntil = 0;
   let state: EdgeLinkClientState = {
     cloudLink: "disconnected",
     refused: false,
@@ -174,6 +187,8 @@ export function createEdgeLinkClient(
       handshakeTimeout: 10_000,
     });
     socket = ws;
+    // When this connection last sent a heartbeat carrying catalogStale.
+    let catalogStaleSentAt: number | null = null;
     const linkPeer = createLinkPeer({
       scope: options.scope,
       outboundDirection: "edge_to_cloud",
@@ -230,7 +245,8 @@ export function createEdgeLinkClient(
         if (ws.readyState !== WebSocket.OPEN) return;
         let catalogStale: CatalogStale = [];
         try {
-          catalogStale = options.catalogStale?.() ?? [];
+          if (clock() >= catalogStaleHeldUntil)
+            catalogStale = options.catalogStale?.() ?? [];
         } catch {
           // A broken status source must not stop the heartbeat.
         }
@@ -240,6 +256,7 @@ export function createEdgeLinkClient(
         } catch {
           // An unavailable maintenance status must not stop sync traffic.
         }
+        if (catalogStale.length > 0) catalogStaleSentAt = clock();
         ws.send(
           encodeFrame({
             type: "heartbeat",
@@ -283,6 +300,15 @@ export function createEdgeLinkClient(
       const closeReason = reason.toString("utf8");
       options.onClose?.(code, closeReason);
       linkPeer.stop();
+      // An older cloud refuses the catalogStale field with 1008 right after
+      // the heartbeat (legend-n6mkr): stop sending it for an hour, then re-probe.
+      if (
+        code === LINK_CLOSE.protocol &&
+        closeReason === LINK_INVALID_FRAME_REASON &&
+        catalogStaleSentAt !== null &&
+        clock() - catalogStaleSentAt <= CATALOG_STALE_REFUSAL_WINDOW_MS
+      )
+        catalogStaleHeldUntil = clock() + CATALOG_STALE_HOLD_MS;
       // The cloud can refuse the proof too (a replayed slot holding another
       // event): no fast reconnect loop either (legend-tmar2).
       if (closeReason.startsWith(LINK_RESTORE_PROOF_REFUSAL))

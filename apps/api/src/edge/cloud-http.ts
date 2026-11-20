@@ -18,6 +18,7 @@ import {
   type ReceiptRunReport,
 } from "@starter/shared/edge";
 import { logger } from "../lib/logger.ts";
+import { EDGE_ERROR_HEADER } from "./catalog-cursor-marker.ts";
 
 const DEVICE_RECORDS_PATH = "/api/edge-sync/device-records";
 const STAFF_PIN_RECORDS_PATH = "/api/edge-sync/staff-pin-records";
@@ -42,15 +43,28 @@ export function cloudHttpBaseUrl(linkUrl: string): string {
   throw new Error("EDGE_CLOUD_URL must be a ws:// or wss:// URL");
 }
 
+const EDGE_ERROR_REASON_PATTERN = /^[A-Z_]{1,64}$/;
+
 /** Status and local validation codes only; never response or request contents. */
 export class EdgeCloudHttpError extends Error {
   readonly code: string;
+  /** legend-75kly: the `X-Edge-Error` marker of a non-2xx response, if well-formed. */
+  readonly reason?: string;
 
-  constructor(code: string) {
+  constructor(code: string, reason?: string) {
     super(`Edge cloud request failed (${code})`);
     this.name = "EdgeCloudHttpError";
     this.code = code;
+    if (reason !== undefined) this.reason = reason;
   }
+}
+
+/** The marker header value when it is a plain `[A-Z_]{1,64}` token, else undefined. */
+function edgeErrorReason(headers: Headers): string | undefined {
+  const value = headers.get(EDGE_ERROR_HEADER);
+  return value !== null && EDGE_ERROR_REASON_PATTERN.test(value)
+    ? value
+    : undefined;
 }
 
 export type CloudGetOptions = {
@@ -162,7 +176,10 @@ async function cloudGet(
     }
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
-      throw new EdgeCloudHttpError(`HTTP_${response.status}`);
+      throw new EdgeCloudHttpError(
+        `HTTP_${response.status}`,
+        edgeErrorReason(response.headers),
+      );
     }
     let body: unknown;
     try {

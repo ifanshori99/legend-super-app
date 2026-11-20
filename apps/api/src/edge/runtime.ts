@@ -173,7 +173,11 @@ import {
   type DeviceRegistrySyncState,
 } from "./device-registry-puller.ts";
 
-/** Episodes already alerted by this process; the notification tables dedupe too. */
+/**
+ * Fast path only: episodes this process already alerted. The durable dedupe is
+ * the per-episode marker in notifyEdgeCatalogStale, so clearing this never
+ * re-alerts (legend-7r7q6).
+ */
 const catalogStaleAlerted = new Set<string>();
 
 /**
@@ -272,7 +276,9 @@ export async function reportEdgeAuditRetentionStatus(
 /**
  * legend-10nex: the edge says critical catalog streams are stale for over 30
  * minutes while it reaches the cloud. Notify the outlet's supervisors and
- * owners once per edge, stream and episode (stable alert id).
+ * owners once per edge, stream and stale episode (durable marker per episode,
+ * legend-7r7q6). legend-ssnf9: one notification per heartbeat covers the new
+ * entries only; it is sent only when at least one entry is new.
  */
 async function notifyCatalogStale(
   identity: AuthenticatedEdgeNode & EdgeLinkIdentity,
@@ -280,19 +286,24 @@ async function notifyCatalogStale(
 ): Promise<void> {
   if (!stale || stale.length === 0) return;
   const outletId = outletIdSchema.parse(identity.scope.outletId);
-  for (const entry of stale) {
-    const key = `${identity.scope.edgeNodeId}:${entry.stream}:${entry.staleSince}`;
-    if (catalogStaleAlerted.has(key)) continue;
-    await withTenant(db, identity.context, (tx) =>
-      notifyEdgeCatalogStale(tx, identity.context, {
-        tenantId: identity.context.tenant.tenantId,
-        outletId,
-        edgeNodeId: identity.scope.edgeNodeId,
-        stream: entry.stream,
-        staleSince: entry.staleSince,
-        reason: entry.reason,
-      }),
-    );
+  const keyed = stale.map((entry) => ({
+    entry,
+    key: `${identity.scope.edgeNodeId}:${entry.stream}:${entry.staleSince}`,
+  }));
+  if (keyed.every(({ key }) => catalogStaleAlerted.has(key))) return;
+  const first = keyed[0]!;
+  await withTenant(db, identity.context, (tx) =>
+    notifyEdgeCatalogStale(tx, identity.context, {
+      tenantId: identity.context.tenant.tenantId,
+      outletId,
+      edgeNodeId: identity.scope.edgeNodeId,
+      stream: first.entry.stream,
+      staleSince: first.entry.staleSince,
+      reason: first.entry.reason,
+      streams: keyed.map(({ entry }) => entry),
+    }),
+  );
+  for (const { key } of keyed) {
     if (catalogStaleAlerted.size >= 1000) catalogStaleAlerted.clear();
     catalogStaleAlerted.add(key);
   }

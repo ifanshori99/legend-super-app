@@ -18,7 +18,18 @@
 //   `sync_txid` stamps are normalized once: local transaction ids are not
 //   comparable with the cloud's. A separate durable initialization marker
 //   prevents an initial pull from zeroing newer event stamps; held receipts
-//   also protect event-backed documents when a rejected HTTP cursor rewinds.
+//   also protect event-backed documents in normal operation.
+// - A rewind (the cloud refused the cursor, or the watermark is the operator's
+//   `CATALOG_REWIND_MARK`) means the cloud history was restored (legend-7r7q6):
+//   in the first page's transaction the node's receipt floor is raised, so
+//   receipts from before the rewind stop protecting rows (catalog-receipt-floor.ts),
+//   and a durable `catalog:replay:<stream>` marker is set. On the replay's last
+//   page the marker pins the cloud's snapshot horizon; a later last page that
+//   reports every row up to it visible deactivates the rows the snapshot did
+//   not touch (never deleted) in the same transaction and clears the marker.
+//   A replay cut at maxPages, or a cloud without the snapshot fields, keeps the
+//   marker. A stored `CATALOG_REWIND_MARK` survives a pull that was running
+//   when the operator set it.
 // - A stream whose rows another stream's rows point at (stations for
 //   menu_items and modifiers, inventory_items for recipes, recipes for
 //   menu_items and item_variants; modifiers have no recipe key on the edge)
@@ -34,8 +45,10 @@
 //   checkpoint is saved page by page, so a bigger backlog just continues from
 //   the last page: the stream reports `backlog: true` and the next pull
 //   goes on (no error, no repeated page).
-// - A cursor the cloud refuses on the first request of a stream (HTTP 400 or
-//   the cursor error): one more pull of that stream from the start.
+// - A cursor the cloud refuses on the first request of a stream (the cursor
+//   error, or HTTP 400 with the `X-Edge-Error: CATALOG_CURSOR_REJECTED` marker,
+//   legend-75kly): one more pull of that stream from the start. A 400 without
+//   the marker never resets; it is probed once (see pullStream).
 // - Read only: nothing here writes to the cloud. Errors carry codes, never
 //   record data.
 // - Promotions/vouchers fail closed while a pull is incomplete. Their cursor
@@ -61,6 +74,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { db } from "../db/index.ts";
 import { edgeNodes, edgePullCheckpoints } from "../db/schema/edge-node.ts";
 import { withTenant } from "../db/tenant.ts";
+import { deactivateAbsentCatalogRows } from "../services/edge-catalog-restore-membership.ts";
 import { isCatalogSyncCursorError } from "../services/edge-catalog-sync.ts";
 import {
   applyCatalogRecords,
@@ -76,6 +90,11 @@ import {
   type CatalogApplyResult,
   type DeferredCategoryParent,
 } from "../services/edge-catalog-apply.ts";
+import { CATALOG_CURSOR_REJECTED_MARKER } from "./catalog-cursor-marker.ts";
+import {
+  CATALOG_RECEIPT_FLOOR_CHECKPOINT,
+  catalogReceiptFloorValue,
+} from "./catalog-receipt-floor.ts";
 import { EdgeCloudHttpError } from "./cloud-http.ts";
 import {
   completePromoCatalogStream,
@@ -116,6 +135,21 @@ const PARENT_STREAMS: Readonly<
 const PROMO_INVALIDATED_AT = new Date(0);
 const isPromoStream = (stream: CatalogSyncStream): boolean =>
   stream === "promotions" || stream === "vouchers";
+
+/**
+ * Watermark an operator sets on `catalog:<stream>` to rewind that stream after
+ * a cloud restore (docs/deployment.md). It is not a cursor, so the stream is
+ * pulled from the start, and unlike a cleared watermark it also lifts the
+ * protection of link receipts from before the rewind (see catalog-receipt-floor.ts).
+ */
+export const CATALOG_REWIND_MARK = "rewind";
+
+/** Durable "full replay pending" marker of a rewound stream (legend-7r7q6). */
+function catalogReplayCheckpoint(
+  stream: CatalogSyncStream,
+): `catalog:replay:${CatalogSyncStream}` {
+  return `catalog:replay:${stream}`;
+}
 
 /** Key of a stream's row in `edge_pull_checkpoints` (varchar(40)). */
 export function catalogCheckpointStream(
@@ -325,6 +359,10 @@ async function saveCheckpointRow(
     stored = row?.watermark ?? null;
   }
   const rewinding = rewindFrom !== null && stored === rewindFrom;
+  // The operator's rewind mark set while a pull was running: this pull's later
+  // pages must not overwrite it with their cursor (the next pull rewinds).
+  const keepsRewindMark =
+    monotonic && !rewinding && stored === CATALOG_REWIND_MARK;
   const stale =
     monotonic && !rewinding && isOlderCatalogCursor(watermark, stored);
   await tx
@@ -343,9 +381,11 @@ async function saveCheckpointRow(
         edgePullCheckpoints.edgeNodeId,
         edgePullCheckpoints.stream,
       ],
-      set: stale
-        ? { lastSuccessAt: succeededAt, updatedAt: new Date() }
-        : { watermark, lastSuccessAt: succeededAt, updatedAt: new Date() },
+      set: keepsRewindMark
+        ? { updatedAt: new Date() }
+        : stale
+          ? { lastSuccessAt: succeededAt, updatedAt: new Date() }
+          : { watermark, lastSuccessAt: succeededAt, updatedAt: new Date() },
       ...(monotonic
         ? {
             setWhere: sql`${edgePullCheckpoints.watermark} is not distinct from ${stored}::text`,
@@ -542,6 +582,27 @@ export async function ensureCatalogStreamInitialized(
   await saveCheckpointRow(tx, edgeNodeId, marker, "1", at);
 }
 
+/**
+ * Raises the node's receipt floor to now (monotonic): receipts received so far
+ * stop protecting catalog rows. The ISO text keeps microsecond precision.
+ */
+async function raiseCatalogReceiptFloor(
+  tx: Tx,
+  edgeNodeId: string,
+  at: Date,
+): Promise<void> {
+  const result = await tx.execute(
+    sql`SELECT to_char(GREATEST(clock_timestamp(), COALESCE(${catalogReceiptFloorValue(edgeNodeId)}, '-infinity'::timestamptz)) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS floor`,
+  );
+  await saveCheckpointRow(
+    tx,
+    edgeNodeId,
+    CATALOG_RECEIPT_FLOOR_CHECKPOINT,
+    String(result.rows[0]?.floor),
+    at,
+  );
+}
+
 /** Pending category parents / printer fallbacks (JSON in the watermark); unreadable = none. */
 export async function loadPendingParents(
   tx: Tx,
@@ -595,11 +656,17 @@ export function savePendingParents(
   );
 }
 
-/** The cloud no longer understands the stored cursor (HTTP 400 / cursor error). */
+/**
+ * The cloud refused the stored cursor: the cursor error itself, or an HTTP 400
+ * carrying the cloud's marker (legend-75kly). A 400 without the marker is
+ * ambiguous and must not reset the checkpoint.
+ */
 function isRejectedCursor(error: unknown): boolean {
   return (
     isCatalogSyncCursorError(error) ||
-    (error instanceof EdgeCloudHttpError && error.code === "HTTP_400")
+    (error instanceof EdgeCloudHttpError &&
+      error.code === "HTTP_400" &&
+      error.reason === CATALOG_CURSOR_REJECTED_MARKER)
   );
 }
 
@@ -695,6 +762,24 @@ async function pullStream(
         error.code === "HTTP_400"
       )
         throw new CatalogCloudOutdatedError();
+      // legend-75kly: a 400 without the cursor marker is ambiguous (an old
+      // cloud refusing `protocolVersion`, or any other 400). Never reset the
+      // checkpoint on it. Probe once from the start and discard the result:
+      // a 400 there too means an outdated cloud; a clean page means the
+      // cursor was not the problem, so the original error stands.
+      if (
+        since !== null &&
+        error instanceof EdgeCloudHttpError &&
+        error.code === "HTTP_400"
+      ) {
+        try {
+          await options.fetchPage(stream, null);
+        } catch (probe) {
+          if (probe instanceof EdgeCloudHttpError && probe.code === "HTTP_400")
+            throw new CatalogCloudOutdatedError();
+          throw probe;
+        }
+      }
       throw error;
     }
     first = false;
@@ -713,8 +798,7 @@ async function pullStream(
       throw new Error("Catalog page is of another stream");
     progress.pages += 1;
 
-    if (page.records.length > 0 && page.nextCursor !== null)
-      watermark = page.nextCursor;
+    if (page.nextCursor !== null) watermark = page.nextCursor;
     // Revocations may be on a later page. Until the whole discount stream is
     // applied its cursor may advance, but its freshness must remain closed.
     const succeededAt =
@@ -745,16 +829,49 @@ async function pullStream(
           )
           .limit(1);
         const current = row?.watermark ?? null;
-        // A rewind only while the checkpoint is still the refused cursor: a
-        // concurrent pull that already moved it must not be undone.
+        // A rewind only while the checkpoint is still the refused cursor (or
+        // the operator's rewind mark): a concurrent pull that already moved it
+        // must not be undone.
         if (rejectedCursor !== null && current === rejectedCursor)
           rewindFrom = rejectedCursor;
+        else if (current === CATALOG_REWIND_MARK) rewindFrom = current;
+        if (rewindFrom !== null) {
+          // The history before the rewind is gone: its link receipts stop
+          // protecting rows (before the reset and the receipt filter below),
+          // and the full replay that follows decides which items are absent.
+          await raiseCatalogReceiptFloor(tx, options.edgeNodeId, succeededAt);
+          // Every rewind starts the two-step replay over: an older pinned
+          // horizon must not let this replay's own last page deactivate.
+          await saveCheckpointRow(
+            tx,
+            options.edgeNodeId,
+            catalogReplayCheckpoint(stream),
+            "1",
+            succeededAt,
+          );
+        }
         if (
           rewindFrom !== null ||
           current === null ||
           !isCurrentCursor(current)
-        )
+        ) {
           await resetCatalogSyncTxid(tx, tenantId, stream, options.edgeNodeId);
+          // A reset restarts the replay: a pinned horizon from before it no
+          // longer proves anything (only an existing marker is touched).
+          if (rewindFrom === null)
+            await tx
+              .update(edgePullCheckpoints)
+              .set({ watermark: "1", updatedAt: new Date() })
+              .where(
+                and(
+                  eq(edgePullCheckpoints.edgeNodeId, options.edgeNodeId),
+                  eq(
+                    edgePullCheckpoints.stream,
+                    catalogReplayCheckpoint(stream),
+                  ),
+                ),
+              );
+        }
       }
       // Canonical station events carry the original v3 shape. An equal-version
       // HTTP row can fill only its optional KDS settings before receipt filtering.
@@ -808,6 +925,65 @@ async function pullStream(
           succeededAt,
           FALLBACKS_CHECKPOINT,
         );
+      }
+      // The last page of a rewound stream (legend-7r7q6). The cloud exports
+      // only rows below its snapshot xmin, so the replay may have missed rows
+      // still in flight there; deactivating on its last page could hide items
+      // the cloud still has. The marker therefore moves in two steps: "1" (set
+      // at the rewind) becomes `h:<horizon>` (the snapshot xmax of this page);
+      // once a later last page reports `visibleBelow >= horizon`, every row
+      // that existed at the replay is visible and applied, and the items the
+      // snapshot never touched are deactivated (never deleted) in the same
+      // commit as the page. A page without the fields (an older cloud) or an
+      // incremental pull, a first boot or a replay cut at maxPages (marker
+      // stays) deactivates nothing.
+      if (!page.hasMore) {
+        const [replay] = await tx
+          .select({ watermark: edgePullCheckpoints.watermark })
+          .from(edgePullCheckpoints)
+          .where(
+            and(
+              eq(edgePullCheckpoints.edgeNodeId, options.edgeNodeId),
+              eq(edgePullCheckpoints.stream, catalogReplayCheckpoint(stream)),
+            ),
+          )
+          .limit(1);
+        if (
+          replay &&
+          page.horizon !== undefined &&
+          page.visibleBelow !== undefined
+        ) {
+          const pinned = /^h:([0-9]{1,20})$/.exec(replay.watermark ?? "");
+          if (replay.watermark === "1") {
+            await saveCheckpointRow(
+              tx,
+              options.edgeNodeId,
+              catalogReplayCheckpoint(stream),
+              `h:${page.horizon}`,
+              succeededAt,
+            );
+          } else if (
+            pinned !== null &&
+            BigInt(page.visibleBelow) >= BigInt(pinned[1] ?? "0")
+          ) {
+            await deactivateAbsentCatalogRows(tx, {
+              tenantId,
+              stream,
+              at: succeededAt,
+            });
+            await tx
+              .delete(edgePullCheckpoints)
+              .where(
+                and(
+                  eq(edgePullCheckpoints.edgeNodeId, options.edgeNodeId),
+                  eq(
+                    edgePullCheckpoints.stream,
+                    catalogReplayCheckpoint(stream),
+                  ),
+                ),
+              );
+          }
+        }
       }
       await saveCatalogCheckpoint(
         tx,

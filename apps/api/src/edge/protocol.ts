@@ -92,16 +92,22 @@ export const linkFrameSchema = z.discriminatedUnion("type", [
     direction: syncDirectionSchema,
     fromCursor: linkCursorSchema,
   }),
-  /** Edge -> cloud liveness and reported version (PRD §3 F5 heartbeat). */
-  z.strictObject({
+  /**
+   * Edge -> cloud liveness and reported version (PRD §3 F5 heartbeat). Unknown
+   * fields are stripped, not refused (legend-n6mkr): a newer edge may add
+   * heartbeat extras without the cloud closing the link. Known fields stay
+   * strictly validated.
+   */
+  z.object({
     type: z.literal("heartbeat"),
     version: text,
     occurredAt: isoDateTimeSchema,
     /**
      * Optional and omitted when empty: an older edge never sends it. Release
-     * order: cloud first, then edge (the frame is strict, an older cloud
-     * refuses the field; the edge holds it back while its catalog pull says
-     * the cloud is outdated).
+     * order: cloud first, then edge. A cloud from before legend-n6mkr refuses
+     * the field (strict frame) and closes 1008; the edge then holds
+     * catalogStale back for an hour (link-client) and also holds it back
+     * while its catalog pull says the cloud is outdated.
      */
     catalogStale: catalogStaleSchema.optional(),
     /** Missing local maintenance configuration; roll out cloud before edge. */

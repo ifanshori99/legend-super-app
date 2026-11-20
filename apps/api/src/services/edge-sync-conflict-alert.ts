@@ -323,19 +323,31 @@ export type EdgeCatalogStale = {
   /** Start of the stale episode as the edge reported it (ISO). */
   staleSince: string;
   reason: string;
+  /**
+   * legend-ssnf9: the whole stale set of one heartbeat, including the entry
+   * above. With two or more, one notification covers them all.
+   */
+  streams?: readonly { stream: string; staleSince: string; reason: string }[];
 };
 
 /**
- * Stable alert id for one edge, stream and stale episode: the same heartbeat
- * repeated every few seconds maps to the same ULID, and the notification
- * consumer ignores an event id it has seen. A new episode (a later success
- * moves `staleSince`) notifies again.
+ * Stable alert id for one edge and stale episode: the same heartbeat repeated
+ * every few seconds maps to the same ULID, and the notification consumer
+ * ignores an event id it has seen. A new episode (a later success moves
+ * `staleSince`) notifies again. One stream: id of that stream and episode.
+ * Several streams (legend-ssnf9): id of the sorted set, so the same set is
+ * one alert and a set with a new stream is another.
  */
 export function edgeCatalogStaleAlertId(stale: EdgeCatalogStale): string {
+  const group =
+    stale.streams && stale.streams.length > 1
+      ? [...stale.streams]
+          .map((entry) => `${entry.stream}\0${entry.staleSince}`)
+          .sort()
+          .join("\0")
+      : `${stale.stream}\0${stale.staleSince}`;
   const hex = createHash("sha256")
-    .update(
-      `edge_catalog.stale\0${stale.edgeNodeId}\0${stale.stream}\0${stale.staleSince}`,
-    )
+    .update(`edge_catalog.stale\0${stale.edgeNodeId}\0${group}`)
     .digest("hex")
     .slice(0, 32);
   return uuidToUlid(
@@ -343,12 +355,33 @@ export function edgeCatalogStaleAlertId(stale: EdgeCatalogStale): string {
   );
 }
 
+/** Durable per-episode marker id; distinct from any alert id (own hash prefix). */
+function edgeCatalogStaleMarkerId(
+  edgeNodeId: string,
+  stream: string,
+  staleSince: string,
+): string {
+  const hex = createHash("sha256")
+    .update(
+      `edge_catalog.stale_marker\0${edgeNodeId}\0${stream}\0${staleSince}`,
+    )
+    .digest("hex")
+    .slice(0, 32);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 /**
  * Notify the outlet's supervisors AND owners that an edge's critical catalog
  * stream (prices, product status) has failed to sync for a few minutes while
  * the edge reaches the cloud, with no extra age condition (legend-10nex).
- * Called from the cloud when a heartbeat carries `catalogStale`; idempotent per edge, stream and episode
- * (see `edgeCatalogStaleAlertId`). Carries stream and reason code only.
+ * Called from the cloud when a heartbeat carries `catalogStale`.
+ *
+ * legend-7r7q6 (R3): dedupe is per (edge, stream, staleSince) episode and
+ * durable. Each episode leaves a `notification_outbox` marker row in the
+ * caller's transaction (also when nobody can receive the alert), so a cloud
+ * restart or cache eviction never re-alerts. Only the episodes whose marker is
+ * new are sent, as ONE notification per heartbeat whose id hashes that new
+ * subset (see `edgeCatalogStaleAlertId`). Carries stream and reason code only.
  */
 export async function notifyEdgeCatalogStale(
   tx: EdgeTx,
@@ -356,8 +389,69 @@ export async function notifyEdgeCatalogStale(
   stale: EdgeCatalogStale,
   now: Date = new Date(),
 ): Promise<void> {
-  const id = edgeCatalogStaleAlertId(stale);
-  const elapsedTimeUnproven = stale.reason === "CLOCK_ELAPSED_UNPROVEN";
+  const entries = new Map<
+    string,
+    { stream: string; staleSince: string; reason: string }
+  >();
+  for (const entry of stale.streams ?? [
+    {
+      stream: stale.stream,
+      staleSince: stale.staleSince,
+      reason: stale.reason,
+    },
+  ]) {
+    entries.set(
+      edgeCatalogStaleMarkerId(
+        stale.edgeNodeId,
+        entry.stream,
+        entry.staleSince,
+      ),
+      entry,
+    );
+  }
+  // The unique (tenant, source event) key makes the claim race-safe: a
+  // concurrent heartbeat waits, then sees the conflict and drops the entry.
+  const claimed = await tx
+    .insert(notificationOutbox)
+    .values(
+      [...entries].map(([sourceEventId, entry]) => ({
+        tenantId: stale.tenantId,
+        outletId: stale.outletId,
+        id: ulidToUuid(createUlid()),
+        sourceEventId,
+        eventType: "edge_catalog.stale_marker",
+        payload: {
+          edgeNodeId: stale.edgeNodeId,
+          stream: entry.stream,
+          staleSince: entry.staleSince,
+        },
+        status: "done",
+        attempts: 1,
+      })),
+    )
+    .onConflictDoNothing()
+    .returning({ sourceEventId: notificationOutbox.sourceEventId });
+  const fresh = claimed.flatMap(({ sourceEventId }) => {
+    const entry = entries.get(sourceEventId);
+    return entry ? [entry] : [];
+  });
+  if (fresh.length === 0) return;
+  const first = fresh[0]!;
+  const group: EdgeCatalogStale = {
+    ...stale,
+    stream: first.stream,
+    staleSince: first.staleSince,
+    reason: first.reason,
+    streams: fresh,
+  };
+  const id = edgeCatalogStaleAlertId(group);
+  const grouped = fresh.length > 1 ? fresh : null;
+  const elapsedTimeUnproven = grouped
+    ? grouped.every((entry) => entry.reason === "CLOCK_ELAPSED_UNPROVEN")
+    : first.reason === "CLOCK_ELAPSED_UNPROVEN";
+  const names = grouped
+    ? [...new Set(grouped.map((entry) => entry.stream))].sort().join(", ")
+    : null;
   await notifyOutletSupervisors(
     tx,
     context,
@@ -371,16 +465,19 @@ export async function notifyEdgeCatalogStale(
       aggregateId: id,
       payload: {
         edgeNodeId: stale.edgeNodeId,
-        stream: stale.stream,
-        staleSince: stale.staleSince,
-        reason: stale.reason,
+        stream: first.stream,
+        staleSince: first.staleSince,
+        reason: first.reason,
+        ...(names
+          ? { streams: names, streamCount: String(grouped!.length) }
+          : {}),
       },
       title: elapsedTimeUnproven
         ? "Usia katalog edge sempat belum dapat dibuktikan"
         : "Katalog edge belum diperbarui",
       body: elapsedTimeUnproven
-        ? `Alarm ini tercatat pada ${stale.staleSince}: usia katalog server lokal belum dapat dibuktikan setelah perangkat menyala kembali. Jika tidak ada alasan lain yang menahan penjualan, penjualan boleh berjalan dengan harga normal; promo dan voucher dimatikan selama usia data belum dapat dibuktikan. Alarm dapat tertunda saat offline; periksa status terbaru karena jam mundur atau katalog yang terbukti basi tetap dapat menahan penjualan.`
-        : "Harga atau status produk di server lokal gagal diperbarui padahal internet tersambung. Jika belum tersinkron lebih dari 24 jam, penjualan ditahan sampai owner mengizinkan; periksa sinkronisasi.",
+        ? `Alarm ini tercatat pada ${first.staleSince}: usia katalog server lokal belum dapat dibuktikan setelah perangkat menyala kembali. Jika tidak ada alasan lain yang menahan penjualan, penjualan boleh berjalan dengan harga normal; promo dan voucher dimatikan selama usia data belum dapat dibuktikan. Alarm dapat tertunda saat offline; periksa status terbaru karena jam mundur atau katalog yang terbukti basi tetap dapat menahan penjualan.`
+        : `Harga atau status produk di server lokal gagal diperbarui padahal internet tersambung${names ? ` (${names})` : ""}. Jika belum tersinkron lebih dari 24 jam, penjualan ditahan sampai owner mengizinkan; periksa sinkronisasi.`,
     },
     now,
   );
