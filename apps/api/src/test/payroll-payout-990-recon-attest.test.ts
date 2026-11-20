@@ -594,6 +594,35 @@ describe("990 D recon: resolve-only and bank_confirm-only batches are checked", 
     await expectNotFlagged(w.itemId, "withdrawn proposal, clock stepped back");
   });
 
+  it("[legend-r8nas-resolve-withdrawn-propose-forged-item] A proposes, withdraws, B proposes, the owner points the item at A's withdrawn proposal, B approves: flagged attestation_count", async () => {
+    // Control for the standing-proposal choice: the recon must not pick the
+    // withdrawn proposal just because it matches the (forged) item row.
+    const w = await exportedBatch();
+    const evidenceA = uploadEvidence(w.batchId);
+    await W.resolve(w.batchId, [w.itemId], "failed", APP, evidenceA);
+    await W.inTx((tx) =>
+      withdrawResolutionProposal(tx, actorOf(APP), w.batchId, {
+        itemIds: [w.itemId],
+      }),
+    );
+    await W.resolve(w.batchId, [w.itemId], "failed", APP3);
+    await tamper(async (c) => {
+      const moved = await c.query(
+        `UPDATE payroll_disbursement_items
+            SET resolved_by = $3, resolution_evidence_key = $4
+          WHERE tenant_id = $1 AND id = $2`,
+        [W.tenantId, w.itemId, APP, evidenceA],
+      );
+      expect(moved.rowCount, "premise: item pointed at A's proposal").toBe(1);
+    });
+    await W.resolve(w.batchId, [w.itemId], "failed", APP3, evidenceA);
+    expect((await itemOf(w.itemId)).status, "premise: failed").toBe("failed");
+    await runRecon();
+    await expectFlagged(w.itemId, "approve over a withdrawn proposal", {
+      reason: "attestation_count",
+    });
+  });
+
   it("[legend-r8nas-bank-confirm-forged-session] a bank confirmation whose attestation names another session than its grant: flagged", async () => {
     const w = await confirmedWorld();
     expect(
