@@ -437,6 +437,10 @@ describe("pure helpers", () => {
         approvedBy: septemberRun.approvedBy,
         approvedAt: septemberRun.approvedAt,
         paidAt: septemberRun.paidAt,
+        moneyPaidLineCount: septemberRun.lines.filter(
+          (line) => line.paymentStatus === "paid",
+        ).length,
+        needsCorrection: false,
       }),
     ];
     assert.equal(
@@ -444,6 +448,39 @@ describe("pure helpers", () => {
       septemberRun.totalNetIdr,
     );
     assert.equal(share.runSummaryProgress(summaries[0]), 100);
+    // 1224: only an approved run with no money out may be withdrawn.
+    assert.equal(
+      share.canCancelApprovedSummary({
+        status: "approved",
+        moneyPaidLineCount: 0,
+      }),
+      true,
+    );
+    assert.equal(
+      share.canCancelApprovedSummary({
+        status: "approved",
+        moneyPaidLineCount: 1,
+      }),
+      false,
+    );
+    assert.equal(
+      share.canCancelApprovedSummary({ status: "paid", moneyPaidLineCount: 0 }),
+      false,
+    );
+    assert.equal(
+      share.canCancelApprovedRun({
+        status: "approved",
+        lines: [{ paymentStatus: "pending", grossIdr: 5, paymentRef: null }],
+      }),
+      true,
+    );
+    assert.equal(
+      share.canCancelApprovedRun({
+        status: "approved",
+        lines: [{ paymentStatus: "paid", grossIdr: 5, paymentRef: "TRF-1" }],
+      }),
+      false,
+    );
     assert.equal(
       share.openRuns(summaries, septemberRun.profitEntityId).awaitingPayment,
       0,

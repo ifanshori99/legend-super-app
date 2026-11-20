@@ -1421,14 +1421,22 @@ export const distributionRunSchema = z
           message: "Nothing is paid before approval",
         });
     }
-    if (run.status === "cancelled" && paidLines > 0)
+    // A zero line settled by the carry on approval is not money paid out
+    // (SO 1216 F-P1a): a run withdrawn after approval may keep it.
+    if (
+      run.status === "cancelled" &&
+      run.lines.some((line) => isMoneyPaidLine(line))
+    )
       ctx.addIssue({
         code: "custom",
         path: ["status"],
         message: "A cancelled run has no payments",
       });
     const approved = run.status === "approved" || run.status === "paid";
-    if (approved !== (run.approvedBy !== null && run.approvedAt !== null))
+    // A cancelled run keeps its approval when it was withdrawn after it
+    // (cancel_approved, SO 1216 F-P1a).
+    const approvalSet = run.approvedBy !== null && run.approvedAt !== null;
+    if (approved ? !approvalSet : approvalSet && run.status !== "cancelled")
       ctx.addIssue({
         code: "custom",
         path: ["approvedBy"],
@@ -1476,11 +1484,19 @@ export const distributionRunSummarySchema = z
     totalNetIdr: idrSchema,
     lineCount: z.number().int().min(1),
     paidLineCount: z.number().int().min(0),
+    /** Lines with money out: paid, minus zero lines the carry settled. */
+    moneyPaidLineCount: z.number().int().min(0),
     requestedBy: userIdSchema,
     requestedAt: isoDateTimeSchema,
     approvedBy: userIdSchema.nullable(),
     approvedAt: isoDateTimeSchema.nullable(),
     paidAt: isoDateTimeSchema.nullable(),
+    /**
+     * SO 1216 F-P1a (computed): a regular approved/paid run whose fiscal
+     * period version moved since it was calculated, with no approved or paid
+     * adjustment of it at the period's current version.
+     */
+    needsCorrection: z.boolean(),
   })
   .superRefine((row, ctx) => {
     if (row.paidLineCount > row.lineCount)
@@ -1488,6 +1504,12 @@ export const distributionRunSummarySchema = z
         code: "custom",
         path: ["paidLineCount"],
         message: "paidLineCount cannot exceed lineCount",
+      });
+    if (row.moneyPaidLineCount > row.paidLineCount)
+      ctx.addIssue({
+        code: "custom",
+        path: ["moneyPaidLineCount"],
+        message: "moneyPaidLineCount cannot exceed paidLineCount",
       });
   });
 export type DistributionRunSummary = z.infer<
@@ -1596,6 +1618,21 @@ export function assertNoDuplicateRegularRun(
 /** Payment reference of a zero line, settled on approve (carry absorbed it). */
 export const CARRY_ABSORBED_PAYMENT_REF = "POTONG-KEKURANGAN";
 
+/**
+ * A line whose money actually went out: paid, and not a zero line settled
+ * by the carry on approval (`CARRY_ABSORBED_PAYMENT_REF`). SO 1216 F-P1a.
+ */
+export function isMoneyPaidLine(line: {
+  readonly paymentStatus: string;
+  readonly grossIdr: number;
+  readonly paymentRef: string | null;
+}): boolean {
+  return (
+    line.paymentStatus === "paid" &&
+    !(line.grossIdr === 0 && line.paymentRef === CARRY_ABSORBED_PAYMENT_REF)
+  );
+}
+
 export type DistributionRunAction =
   | { readonly type: "submit"; readonly actorId: UserId }
   | {
@@ -1610,6 +1647,11 @@ export type DistributionRunAction =
     }
   | { readonly type: "cancel"; readonly actorId: UserId }
   | {
+      readonly type: "cancel_approved";
+      readonly actorId: UserId;
+      readonly reason: string;
+    }
+  | {
       readonly type: "record_payment";
       readonly actorId: UserId;
       readonly lineId: DistributionLine["id"];
@@ -1622,6 +1664,7 @@ export type DistributionRunAction =
  *
  *   draft ─submit→ pending_approval ─approve→ approved ─all lines paid→ paid
  *     └─cancel→ cancelled          └─reject→ cancelled
+ *   approved ─cancel_approved (no line paid, reason)→ cancelled
  *
  * Approve also settles every zero line (carry absorbed the share) with
  * `CARRY_ABSORBED_PAYMENT_REF`; when all lines are zero the run is `paid` then.
@@ -1677,6 +1720,13 @@ export function transitionDistributionRun(
       if (!isRequester) throw invalid();
       if (run.status !== "draft" && run.status !== "pending_approval")
         throw invalid();
+      return { ...run, status: "cancelled" };
+    case "cancel_approved":
+      // SO 1216 F-P1a: an approved run with not one line paid may be
+      // withdrawn (e.g. stale after a reopen); a cancelled run has no payments.
+      if (run.status !== "approved") throw invalid();
+      if (action.reason.trim().length < 10) throw invalid();
+      if (run.lines.some((line) => isMoneyPaidLine(line))) throw invalid();
       return { ...run, status: "cancelled" };
     case "record_payment": {
       if (run.status !== "approved") throw invalid();
@@ -2099,6 +2149,15 @@ export const createAdjustmentDistributionInputSchema = z.strictObject({
 export const distributionDecisionInputSchema = z
   .strictObject(approvalDecisionShape)
   .superRefine(rejectNeedsNote);
+
+/** SO 1216 F-P1a: withdraw an approved run with no line paid yet. */
+export const cancelApprovedDistributionInputSchema = z.strictObject({
+  reason: z.string().trim().min(10).max(500),
+  idempotencyKey: idempotencyKeySchema,
+});
+export type CancelApprovedDistributionInput = z.infer<
+  typeof cancelApprovedDistributionInputSchema
+>;
 
 export const recordDistributionPaymentInputSchema = z.strictObject({
   paymentRef: z.string().trim().min(1).max(100),

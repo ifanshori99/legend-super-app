@@ -28,6 +28,9 @@ export type ReasonDialogProps = {
   error?: string;
   onSubmit: (reason: string) => void;
   maxLength?: number;
+  /** Shortest accepted reason (default 1); `minLengthError` words the refusal. */
+  minLength?: number;
+  minLengthError?: string;
 };
 
 export function ReasonDialog(props: ReasonDialogProps) {
@@ -50,15 +53,20 @@ function ReasonForm({
   onSubmit,
   onOpenChange,
   maxLength = 500,
+  minLength = 1,
+  minLengthError,
 }: ReasonDialogProps) {
   const t = useT();
   const [reason, setReason] = React.useState("");
   const [touched, setTouched] = React.useState(false);
   const trimmed = reason.trim();
+  const tooShort = trimmed.length < minLength;
   const fieldError =
     touched && trimmed === ""
       ? t("accounting.manual.actions.reasonRequired")
-      : error;
+      : touched && tooShort && minLengthError
+        ? minLengthError
+        : error;
 
   return (
     <>
@@ -91,10 +99,10 @@ function ReasonForm({
           type="button"
           variant="destructive"
           loading={pending}
-          disabled={trimmed === ""}
+          disabled={tooShort}
           onClick={() => {
             setTouched(true);
-            if (trimmed !== "") onSubmit(trimmed);
+            if (!tooShort) onSubmit(trimmed);
           }}
         >
           {submitLabel}

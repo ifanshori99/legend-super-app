@@ -535,9 +535,11 @@ export const distributionRuns = pgTable(
       "distribution_runs_tax_bp_check",
       sql`${table.taxWithholdingBp} BETWEEN 0 AND 10000`,
     ),
+    // 0517 (SO 1216 F-P1a): an approved run withdrawn before any payment
+    // (cancel_approved) is cancelled and keeps its approval for the audit.
     check(
       "distribution_runs_approved_check",
-      sql`(${table.status} IN ('approved', 'paid')) = (${table.approvedBy} IS NOT NULL AND ${table.approvedAt} IS NOT NULL)`,
+      sql`(${table.status} IN ('approved', 'paid')) = (${table.approvedBy} IS NOT NULL AND ${table.approvedAt} IS NOT NULL) OR (${table.status} = 'cancelled' AND ${table.approvedBy} IS NOT NULL AND ${table.approvedAt} IS NOT NULL)`,
     ),
     check(
       "distribution_runs_four_eyes_check",

@@ -60,7 +60,9 @@ import {
 import { useToast } from "@/components/ui/toast";
 import { ReasonDialog } from "@/features/ws07-accounting/components/reason-dialog";
 import { useFiscalPeriods } from "@/features/ws07-accounting/hooks";
+import { useCanApproveShareAllocation } from "../guard";
 import {
+  useCancelApprovedDistributionRun,
   useCreateDistributionRun,
   useDecideDistributionRun,
   useDistributionRun,
@@ -73,6 +75,7 @@ import {
   DISTRIBUTION_WIZARD_STEPS,
   FREQUENCY_KEYS,
   basisKey,
+  canCancelApprovedRun,
   canRecordPayments,
   distributionProgress,
   distributionWizardStep,
@@ -104,6 +107,7 @@ export function DistributionWizardDialog({
   runId,
   onRunChange,
   onAdjust,
+  startCancel = false,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -114,6 +118,8 @@ export function DistributionWizardDialog({
   onRunChange: (distributionRunId: string | null) => void;
   /** Opens the SH-04 adjustment dialog for a locked run. */
   onAdjust: (run: DistributionRun) => void;
+  /** Opens the "Batalkan persetujuan" dialog as soon as the run loads. */
+  startCancel?: boolean;
 }) {
   // Radix unmounts DialogContent on close, so the wizard re-seeds on opening.
   return (
@@ -126,6 +132,7 @@ export function DistributionWizardDialog({
           runId={runId}
           onRunChange={onRunChange}
           onAdjust={onAdjust}
+          startCancel={startCancel}
         />
       </DialogContent>
     </Dialog>
@@ -139,6 +146,7 @@ function WizardBody({
   runId,
   onRunChange,
   onAdjust,
+  startCancel,
 }: {
   onOpenChange: (open: boolean) => void;
   legalEntityId: string;
@@ -146,6 +154,7 @@ function WizardBody({
   runId: string | null;
   onRunChange: (distributionRunId: string | null) => void;
   onAdjust: (run: DistributionRun) => void;
+  startCancel: boolean;
 }) {
   const t = useT();
   const runQuery = useDistributionRun(runId ?? undefined);
@@ -215,6 +224,7 @@ function WizardBody({
           run={run}
           shareholders={shareholders}
           onAdjust={() => onAdjust(run)}
+          startCancel={startCancel}
         />
       )}
 
@@ -864,9 +874,12 @@ function ApprovalStep({
 function LockBanner({
   run,
   onAdjust,
+  onCancelApproved,
 }: {
   run: DistributionRun;
   onAdjust?: () => void;
+  /** Only for visitors who may approve, on a run with no money out. */
+  onCancelApproved?: () => void;
 }) {
   const t = useT();
   return (
@@ -885,30 +898,62 @@ function LockBanner({
           </p>
         </div>
       </div>
-      {onAdjust && isDistributionLocked(run.status) && (
-        <Button type="button" size="sm" variant="outline" onClick={onAdjust}>
-          <ReceiptText aria-hidden="true" />
-          {t("accounting.share.wizard.adjust")}
-        </Button>
-      )}
+      <div className="flex flex-wrap gap-2">
+        {onCancelApproved && canCancelApprovedRun(run) && (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={onCancelApproved}
+          >
+            <XCircle aria-hidden="true" />
+            {t("accounting.share.wizard.cancelApproved.action")}
+          </Button>
+        )}
+        {onAdjust && isDistributionLocked(run.status) && (
+          <Button type="button" size="sm" variant="outline" onClick={onAdjust}>
+            <ReceiptText aria-hidden="true" />
+            {t("accounting.share.wizard.adjust")}
+          </Button>
+        )}
+      </div>
     </div>
   );
 }
 
 // ---- 4. Pembayaran --------------------------------------------------------
 
+/** API refusals of a withdrawal, in catalog words. */
+function cancelApprovedError(error: unknown, t: ReturnType<typeof useT>) {
+  if (error instanceof ApiError) {
+    if (error.code === "DISTRIBUTION_HAS_ADJUSTMENT")
+      return t("accounting.share.wizard.cancelApproved.hasAdjustment");
+    if (error.code === "DISTRIBUTION_PARTIALLY_PAID")
+      return t("accounting.share.wizard.cancelApproved.partiallyPaid");
+  }
+  return errorMessage(error);
+}
+
 function PaymentStep({
   run,
   shareholders,
   onAdjust,
+  startCancel,
 }: {
   run: DistributionRun;
   shareholders: readonly Shareholder[];
   onAdjust: () => void;
+  startCancel: boolean;
 }) {
   const t = useT();
   const toast = useToast();
   const record = useRecordDistributionPayment(run.profitEntityId);
+  const cancelApproved = useCancelApprovedDistributionRun(run.profitEntityId);
+  const canCancel = useCanApproveShareAllocation();
+  const [cancelOpen, setCancelOpen] = React.useState(
+    startCancel && canCancel && canCancelApprovedRun(run),
+  );
+  const [cancelError, setCancelError] = React.useState<string | undefined>();
   const [lineId, setLineId] = React.useState<string | null>(null);
   const [paymentRef, setPaymentRef] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
@@ -943,7 +988,44 @@ function PaymentStep({
 
   return (
     <div className="grid gap-4">
-      <LockBanner run={run} onAdjust={onAdjust} />
+      <LockBanner
+        run={run}
+        onAdjust={onAdjust}
+        onCancelApproved={
+          canCancel
+            ? () => {
+                setCancelError(undefined);
+                setCancelOpen(true);
+              }
+            : undefined
+        }
+      />
+      <ReasonDialog
+        open={cancelOpen}
+        onOpenChange={setCancelOpen}
+        title={t("accounting.share.wizard.cancelApproved.title")}
+        label={t("accounting.share.wizard.cancelApproved.label")}
+        hint={t("accounting.share.wizard.cancelApproved.hint")}
+        submitLabel={t("accounting.share.wizard.cancelApproved.action")}
+        minLength={10}
+        minLengthError={t(
+          "accounting.share.wizard.cancelApproved.reasonTooShort",
+        )}
+        pending={cancelApproved.isPending}
+        error={cancelError}
+        onSubmit={(reason) => {
+          setCancelError(undefined);
+          cancelApproved
+            .mutateAsync({ distributionRunId: run.id, reason })
+            .then(() => {
+              setCancelOpen(false);
+              toast({
+                title: t("accounting.share.wizard.cancelApproved.done"),
+              });
+            })
+            .catch((caught) => setCancelError(cancelApprovedError(caught, t)));
+        }}
+      />
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="grid gap-1">
           <h3 className="type-heading">

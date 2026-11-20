@@ -40,10 +40,12 @@ import {
   inArray,
   lt,
   max,
+  ne,
   or,
   sql,
   type SQL,
 } from "drizzle-orm";
+import { messagesId } from "@starter/shared/i18n";
 import {
   AccountingError,
   assertAdjustmentMatchesTarget,
@@ -55,6 +57,7 @@ import {
   calculateAdjustmentDistribution,
   calculateDistribution,
   CARRY_ABSORBED_PAYMENT_REF,
+  isMoneyPaidLine,
   distributionApprovedEvent,
   distributionCompletedEvent,
   distributionPaidEvent,
@@ -78,6 +81,7 @@ import {
   type MyProfitShare,
   type ProfitEntity,
   type recordDistributionPaymentInputSchema,
+  type CancelApprovedDistributionInput,
   type ShareAllocationVersion,
 } from "@starter/shared/accounting";
 import {
@@ -1265,6 +1269,26 @@ export async function listDistributionRunsService(
     const rows = await tx
       .select({
         row: distributionRuns,
+        // SO 1216 F-P1a: the period moved on since the run was calculated and
+        // no approved/paid adjustment of it exists at the current version.
+        needsCorrection: sql<boolean>`(
+          "distribution_runs"."type" = 'regular'
+          AND "distribution_runs"."status" IN ('approved', 'paid')
+          AND EXISTS (
+            SELECT 1 FROM fiscal_periods fp
+            WHERE fp.tenant_id = "distribution_runs"."tenant_id"
+              AND fp.id = "distribution_runs"."fiscal_period_id"
+              AND fp.version <> "distribution_runs"."fiscal_period_version"
+              AND NOT EXISTS (
+                SELECT 1 FROM distribution_runs adj
+                WHERE adj.tenant_id = fp.tenant_id
+                  AND adj.adjusts_run_id = "distribution_runs"."id"
+                  AND adj.status IN ('approved', 'paid')
+                  AND adj.fiscal_period_id = fp.id
+                  AND adj.fiscal_period_version = fp.version
+              )
+          )
+        )`,
         key: sql<string>`to_char(${distributionRuns.requestedAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
       })
       .from(distributionRuns)
@@ -1272,13 +1296,19 @@ export async function listDistributionRunsService(
       .orderBy(desc(distributionRuns.requestedAt), desc(distributionRuns.id))
       .limit(query.limit + 1);
     const page = rows.slice(0, query.limit);
-    const counts = new Map<string, { total: number; paid: number }>();
+    const counts = new Map<
+      string,
+      { total: number; paid: number; moneyPaid: number }
+    >();
     if (page.length > 0) {
       const countRows = await tx
         .select({
           runId: distributionLines.distributionRunId,
           total: sql<number>`count(*)::int`,
           paid: sql<number>`(count(*) FILTER (WHERE ${distributionLines.paymentStatus} = 'paid'))::int`,
+          // Money out: paid and not a zero line the carry settled on approval
+          // (the same rule as isMoneyPaidLine).
+          moneyPaid: sql<number>`(count(*) FILTER (WHERE ${distributionLines.paymentStatus} = 'paid' AND NOT (${distributionLines.grossIdr} = 0 AND ${distributionLines.paymentRef} = ${CARRY_ABSORBED_PAYMENT_REF})))::int`,
         })
         .from(distributionLines)
         .where(
@@ -1292,10 +1322,14 @@ export async function listDistributionRunsService(
         )
         .groupBy(distributionLines.distributionRunId);
       for (const row of countRows)
-        counts.set(row.runId, { total: row.total, paid: row.paid });
+        counts.set(row.runId, {
+          total: row.total,
+          paid: row.paid,
+          moneyPaid: row.moneyPaid,
+        });
     }
-    const data = page.map(({ row }) => {
-      const count = counts.get(row.id) ?? { total: 0, paid: 0 };
+    const data = page.map(({ row, needsCorrection }) => {
+      const count = counts.get(row.id) ?? { total: 0, paid: 0, moneyPaid: 0 };
       return distributionRunSummarySchema.parse({
         id: row.id,
         profitEntityId: row.profitEntityId,
@@ -1309,11 +1343,13 @@ export async function listDistributionRunsService(
         totalNetIdr: row.totalNetIdr,
         lineCount: count.total,
         paidLineCount: count.paid,
+        moneyPaidLineCount: count.moneyPaid,
         requestedBy: row.requestedBy,
         requestedAt: iso(row.requestedAt),
         approvedBy: row.approvedBy,
         approvedAt: row.approvedAt ? iso(row.approvedAt) : null,
         paidAt: row.paidAt ? iso(row.paidAt) : null,
+        needsCorrection,
       });
     });
     const last = page.at(-1);
@@ -1440,6 +1476,35 @@ async function distributionChainOf(
  * change, the `distribution.approved` event and the audit row. Shared by the
  * direct path (no chain) and the chain settle.
  */
+/**
+ * SO 1216 F-P1a: an adjustment is approved or paid only while the run it
+ * corrects stands; a cancelled target leaves nothing to correct. Locks the
+ * target FOR SHARE so a concurrent cancel-approved waits (the DB guards
+ * refuse the same).
+ */
+async function assertAdjustmentTargetStands(
+  tx: Tx,
+  tenantId: string,
+  row: RunRow,
+): Promise<void> {
+  if (row.adjustsRunId === null) return;
+  const [target] = await tx
+    .select({ status: distributionRuns.status })
+    .from(distributionRuns)
+    .where(
+      and(
+        eq(distributionRuns.tenantId, tenantId),
+        eq(distributionRuns.id, row.adjustsRunId),
+      ),
+    )
+    .for("share");
+  if (!target || target.status === "cancelled")
+    throw new AccountingError(
+      "ADJUSTMENT_TARGET_INVALID",
+      "Distribusi yang dikoreksi sudah dibatalkan; penyesuaian ini tidak bisa disetujui atau dibayar.",
+    );
+}
+
 async function applyDistributionApproval(
   tx: Tx,
   context: ScopedTenantContext,
@@ -1470,6 +1535,7 @@ async function applyDistributionApproval(
   );
   if (period.status !== "closed" || period.version !== row.fiscalPeriodVersion)
     throw new AccountingError("PERIOD_CHANGED");
+  await assertAdjustmentTargetStands(tx, tenantId, row);
   await assertOutletPayoutAllowed(tx, tenantId, entityRow, run);
   await tx
     .update(distributionRuns)
@@ -1885,6 +1951,98 @@ async function postCompletionJournal(
   return entry.id;
 }
 
+/**
+ * POST cancel-approved (SO 1216 F-P1a): withdraws an approved run before any
+ * line is paid (e.g. stale after a reopen), so the period can be reopened or
+ * a new run calculated. Approver permission (route), reason >= 10 characters,
+ * audited. A run with a paid line stays (it is corrected by an adjustment).
+ */
+export async function cancelApprovedDistributionRunService(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  runId: string,
+  input: CancelApprovedDistributionInput,
+): Promise<DistributionRun> {
+  assertTrustedScopedContext(context);
+  const tenantId = context.tenant.tenantId;
+  const actorId = userIdSchema.parse(actorUserId);
+  return withTenant(db, context, async (tx) => {
+    const { run } = await loadRun(tx, tenantId, runId, true);
+    const entityRow = await loadEntityRow(tx, tenantId, run.profitEntityId);
+    const claim = await claimProfitShareCommand(tx, {
+      tenantId,
+      idempotencyKey: input.idempotencyKey,
+      operation: "distribution.cancel_approved",
+      targetId: run.id,
+      actorId,
+      request: { reason: input.reason },
+    });
+    if (claim === "replay") return run;
+    // A zero line settled by the carry on approval is no payment.
+    if (
+      run.status === "approved" &&
+      run.lines.some((line) => isMoneyPaidLine(line))
+    )
+      throw new HttpError(
+        409,
+        "DISTRIBUTION_PARTIALLY_PAID",
+        "Distribusi ini sudah dibayar sebagian dan tidak bisa dibatalkan. Catat koreksi lewat distribusi penyesuaian.",
+      );
+    // A live adjustment (any status but cancelled) corrects this run: its
+    // money would stand on nothing. The DB guard refuses the same.
+    const [liveAdjustment] = await tx
+      .select({ id: distributionRuns.id })
+      .from(distributionRuns)
+      .where(
+        and(
+          eq(distributionRuns.tenantId, tenantId),
+          eq(distributionRuns.adjustsRunId, run.id),
+          ne(distributionRuns.status, "cancelled"),
+        ),
+      )
+      .limit(1);
+    if (liveAdjustment)
+      throw new HttpError(
+        409,
+        "DISTRIBUTION_HAS_ADJUSTMENT",
+        "Distribusi ini punya penyesuaian yang belum dibatalkan. Batalkan atau tolak penyesuaiannya dulu.",
+      );
+    const next = transitionDistributionRun(run, {
+      type: "cancel_approved",
+      actorId,
+      reason: input.reason,
+    });
+    const now = new Date();
+    const reason = input.reason.trim();
+    await tx
+      .update(distributionRuns)
+      .set({
+        status: "cancelled",
+        cancelledBy: actorId,
+        cancelledAt: now,
+        cancelReason: reason,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(distributionRuns.tenantId, tenantId),
+          eq(distributionRuns.id, run.id),
+          eq(distributionRuns.status, "approved"),
+        ),
+      );
+    await auditRun(
+      tx,
+      context,
+      actorId,
+      "profit_share.distribution_cancelled",
+      run,
+      entityRow.outletId,
+      reason,
+    );
+    return next;
+  });
+}
+
 /** POST payment: pays one line; the last line completes the run and journals. */
 export async function recordDistributionPaymentService(
   context: ScopedTenantContext,
@@ -1912,6 +2070,25 @@ export async function recordDistributionPaymentService(
       request: { paymentRef: input.paymentRef, paidAt: input.paidAt },
     });
     if (claim === "replay") return { run, paid: false };
+    // SO 1216 F-P1a: the money goes out only at the figures it was approved
+    // on. A reopen (or a reopen + re-close) bumps the version: refuse
+    // (PERIOD_CHANGED), the DB line guard refuses the same.
+    const period = await loadPeriod(
+      tx,
+      tenantId,
+      await legalEntityOf(tx, tenantId, entityRow),
+      run.fiscalPeriodId,
+      true,
+    );
+    if (
+      period.status !== "closed" ||
+      period.version !== row.fiscalPeriodVersion
+    )
+      throw new AccountingError(
+        "PERIOD_CHANGED",
+        messagesId.accounting.share.runs.paymentPeriodChanged,
+      );
+    await assertAdjustmentTargetStands(tx, tenantId, row);
     const paidAt = new Date(input.paidAt);
     const next = transitionDistributionRun(run, {
       type: "record_payment",

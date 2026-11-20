@@ -249,6 +249,26 @@ export function useDecideDistributionRun(profitEntityId: string | undefined) {
   });
 }
 
+export function useCancelApprovedDistributionRun(
+  profitEntityId: string | undefined,
+) {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: ({
+      distributionRunId,
+      reason,
+    }: {
+      distributionRunId: string;
+      reason: string;
+    }) => api.cancelApprovedDistributionRun(distributionRunId, reason),
+    onSuccess: (run) =>
+      Promise.all([
+        invalidate(profitShareKeys.run(run.id)),
+        invalidate(profitShareKeys.runs(profitEntityId ?? "none")),
+      ]),
+  });
+}
+
 export function useRecordDistributionPayment(
   profitEntityId: string | undefined,
 ) {

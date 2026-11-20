@@ -19,27 +19,34 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
+  canCancelApprovedSummary,
   formatShareDateTime,
   formatSharePeriod,
   runSummaryProgress,
   shortActorRef,
 } from "../lib";
+import { Badge } from "@/components/ui/badge";
 import { RunStatusBadge } from "./share-status";
 
 export function DistributionRunsTable({
   runs,
   state,
   canWrite,
+  canApprove,
   onRetry,
   onCreate,
   onOpen,
+  onCancelApproved,
 }: {
   runs: readonly DistributionRunSummary[];
   state: DataState;
   canWrite: boolean;
+  /** May approve distributions, and so withdraw an approval. */
+  canApprove: boolean;
   onRetry: () => void;
   onCreate: () => void;
   onOpen: (run: DistributionRunSummary) => void;
+  onCancelApproved: (run: DistributionRunSummary) => void;
 }) {
   const t = useT();
   return (
@@ -99,7 +106,28 @@ export function DistributionRunsTable({
                     : t("accounting.share.runType.regular")}
                 </TableCell>
                 <TableCell>
-                  <RunStatusBadge status={run.status} />
+                  <div className="flex flex-wrap items-center gap-1">
+                    <RunStatusBadge status={run.status} />
+                    {run.needsCorrection ? (
+                      <button
+                        type="button"
+                        className="rounded-full focus-visible:outline-2 focus-visible:outline-offset-2"
+                        aria-label={t(
+                          "accounting.share.runs.needsCorrectionAria",
+                          { period: formatSharePeriod(run.period) },
+                        )}
+                        onClick={() =>
+                          canApprove && canCancelApprovedSummary(run)
+                            ? onCancelApproved(run)
+                            : onOpen(run)
+                        }
+                      >
+                        <Badge tone="warning">
+                          {t("accounting.share.runs.needsCorrection")}
+                        </Badge>
+                      </button>
+                    ) : null}
+                  </div>
                 </TableCell>
                 <TableCell numeric>
                   <Money amount={run.distributableIdr} />
@@ -133,6 +161,22 @@ export function DistributionRunsTable({
                   </div>
                 </TableCell>
                 <TableCell className="text-right">
+                  {canApprove && canCancelApprovedSummary(run) ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      aria-label={t(
+                        "accounting.share.runs.cancelApprovedAria",
+                        {
+                          period: formatSharePeriod(run.period),
+                        },
+                      )}
+                      onClick={() => onCancelApproved(run)}
+                    >
+                      {t("accounting.share.wizard.cancelApproved.action")}
+                    </Button>
+                  ) : null}
                   <Button
                     type="button"
                     variant="ghost"
