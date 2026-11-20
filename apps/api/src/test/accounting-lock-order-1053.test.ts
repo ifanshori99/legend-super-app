@@ -211,6 +211,23 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  // The seeded batches carry a fake sealed total ('\x00'); left in the shared
+  // tenant they make every unfiltered payout batch list answer 500 (396pf).
+  const client = await owner.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SET LOCAL session_replication_role = replica");
+    await client.query(
+      "DELETE FROM payroll_disbursement_batches WHERE tenant_id = $1 AND requested_by = 'lock-order-1053'",
+      [tenantId],
+    );
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
   if (insertedPolicyIds.length)
     await owner.query(
       "DELETE FROM approval_policies WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
