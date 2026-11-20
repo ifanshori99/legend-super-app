@@ -128,8 +128,10 @@ import {
   loadPph21ReceivableBalances,
   loadTaxYearPriors,
   lockPayrollRunMonth,
+  lockPph21ReceivableScope,
   type PayrollRunTaxEmployee,
 } from "./payroll-run-pph21.service.ts";
+import { assertNoOverlappingRegularPayslips } from "./payroll-run-overlap.ts";
 import {
   assertRunUnchanged,
   loadRunRapelAllocations,
@@ -406,6 +408,9 @@ export async function simulatePayrollRunInTransaction(
 
   // LOCK 1: month. LOCK 2: rapel components, employees, outlets. LOCK 3: run.
   const month = await lockPayrollRunMonth(tx, tenantId, runId);
+  // LOCK 1b: the legal entity (same slot as the lock service), so the overlap
+  // check below never races a lock of the other run (bead legend-1213).
+  await lockPph21ReceivableScope(tx, tenantId, month.legalEntityId);
   await lockRapelInputsForRun(tx, context, {
     runId,
     legalEntityId: month.legalEntityId,
@@ -582,6 +587,13 @@ export async function simulatePayrollRunInTransaction(
   const listed = thrEmployeeIds;
   const candidates =
     listed === null ? memberRows : memberRows.filter((m) => listed.has(m.id));
+  // Nobody is paid twice for the same days (bead legend-1213).
+  await assertNoOverlappingRegularPayslips(
+    tx,
+    tenantId,
+    run,
+    candidates.map((m) => m.id),
+  );
 
   const allocations = await loadRunRapelAllocations(tx, context, runId);
 

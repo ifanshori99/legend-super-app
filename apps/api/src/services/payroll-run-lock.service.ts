@@ -117,6 +117,7 @@ import {
   loadRunRapelAllocations,
   lockRapelInputsForRun,
 } from "./payroll-run-rapel-lock.ts";
+import { assertNoOverlappingRegularPayslips } from "./payroll-run-overlap.ts";
 import {
   applyLockLoanDeductions,
   lockLoansForRunLock,
@@ -473,6 +474,15 @@ export async function lockPayrollRunInTransaction(
     !isDeepStrictEqual(sumPayrollRunTotals(calculations), totals)
   )
     throw resultStale();
+
+  // Nobody is paid twice for the same days: under the month and entity locks,
+  // before any write (bead legend-1213).
+  await assertNoOverlappingRegularPayslips(
+    tx,
+    tenantId,
+    run,
+    plan.map((entry) => entry.employeeId),
+  );
 
   // Tax-year priors under the month lock (prior runs FOR SHARE). A changed
   // set since the simulation is stale; a later-month annual slip is 409
