@@ -43,7 +43,9 @@ function useRefresh(endpoints: readonly AnyEndpoint[]) {
  * Writes the fresh run into the detail cache, so the header advances at once.
  * `heldOvertimeCorrections` only comes with a simulate response: an approve
  * response omits it, so with `keepHeld` (approve_hr / approve_final only) carry
- * the cached list over or the block would vanish mid-review. It still
+ * the cached list over or the block would vanish mid-review. The same holds
+ * for `excludedFormerEmployees` (simulate, approve and lock responses carry
+ * it; a plain GET does not), so it is kept the same way. It still
  * disappears after a page refresh or a refetch of the run (the plain GET does
  * not carry it); that is the accepted limit, the reviewer simulates again to
  * see it.
@@ -58,10 +60,15 @@ function useStoreRun() {
       ? (run.heldOvertimeCorrections ??
         queryClient.getQueryData<PayrollRun>(key)?.heldOvertimeCorrections)
       : run.heldOvertimeCorrections;
-    queryClient.setQueryData(
-      key,
-      held === undefined ? run : { ...run, heldOvertimeCorrections: held },
-    );
+    const excluded = options?.keepHeld
+      ? (run.excludedFormerEmployees ??
+        queryClient.getQueryData<PayrollRun>(key)?.excludedFormerEmployees)
+      : run.excludedFormerEmployees;
+    queryClient.setQueryData(key, {
+      ...run,
+      ...(held === undefined ? {} : { heldOvertimeCorrections: held }),
+      ...(excluded === undefined ? {} : { excludedFormerEmployees: excluded }),
+    });
   };
 }
 
