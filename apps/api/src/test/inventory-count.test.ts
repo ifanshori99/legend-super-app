@@ -2904,5 +2904,62 @@ describe("late movements dated before the count (SO 1208 P1)", () => {
     expect(rows[0]!.status).toBe("pending_approval");
     expect(Number(rows[0]!.gross)).toBe(3000);
     expect(await balanceOf(locationId, item)).toBe("12.0000");
+    const { rows: audits } = await owner.query<{ event: unknown }>(
+      `SELECT event FROM audit_logs
+        WHERE tenant_id = $1 AND event->>'objectId' = $2`,
+      [tenantA, countId],
+    );
+    const reopened = audits
+      .map((row) => JSON.stringify(row.event))
+      .filter((event) => event.includes("stock_count_approval_reopened"));
+    expect(reopened).toHaveLength(1);
+    expect(reopened[0]).toContain("variance_grew");
+    expect(reopened[0]).not.toContain("approver_is_counter");
+
+    // The fresh chain approved: the count posts -2 once, stock = counted 10.
+    const posted = await ok(await transition(approver, countId, "approve"));
+    expect(posted.body.data.status).toBe("posted");
+    const ledger = await countLedger(countId);
+    expect(ledger.map((row) => row.quantity)).toEqual(["-2.0000"]);
+    expect(await balanceOf(locationId, item)).toBe("10.0000");
+  });
+
+  it("one line's loss grows while another shrinks and the total drops -> still a fresh approval (409)", async () => {
+    const { locationId, itemIds } = await seedStock([
+      { onHand: "10.0000", cost: "1000.0000" },
+      { onHand: "10.0000", cost: "1000.0000" },
+    ]);
+    const [itemA, itemB] = itemIds as [string, string];
+    const { count } = await createCount(counter, locationId, itemIds);
+    await ok(await transition(counter, count.id, "start"));
+    const soldAt = new Date(Date.now() - 60_000);
+    // A: loss 1 (Rp1000), B: loss 3 (Rp3000).
+    await enterCounts(counter, count.id, false, {
+      [itemA]: "9.0000",
+      [itemB]: "7.0000",
+    });
+    await ok(await transition(counter, count.id, "submit"));
+    // Late, dated before the count: a return on A (loss 2 = Rp2000) and a
+    // sale on B (loss 1 = Rp1000): gross 4000 -> 3000.
+    await recordStockMovement(tenantContext(), {
+      outletId: outletA,
+      locationId,
+      inventoryItemId: itemA,
+      movementType: "return",
+      quantity: decimal4("1.0000"),
+      unitCostIdr: decimal4("1000.0000"),
+      batchId: null,
+      sourceType: "order",
+      sourceId: randomUUID(),
+      occurredAt: soldAt.toISOString() as never,
+      actor: { type: "system" },
+    });
+    await sellAt(locationId, itemB, "-2.0000", soldAt);
+    expectError(
+      await transition(approver, count.id, "approve"),
+      409,
+      "STOCK_COUNT_VERSION_MISMATCH",
+    );
+    expect(await countLedger(count.id)).toHaveLength(0);
   });
 });

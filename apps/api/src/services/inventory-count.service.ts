@@ -1321,6 +1321,7 @@ async function reopenApproval(
   row: CountRow,
   requestedBy: string,
   now: Date,
+  reason: "approver_is_counter" | "variance_grew",
 ): Promise<CountRow | null> {
   const blind = row.blind;
   const opened = await openApprovalRequest(tx, context, {
@@ -1356,7 +1357,7 @@ async function reopenApproval(
     "inventory.stock_count_approval_reopened",
     row,
     updated!,
-    "approver_is_counter",
+    reason,
   );
   return updated!;
 }
@@ -1526,6 +1527,7 @@ async function settle(
       row,
       levels[levels.length - 1]!.requestedBy,
       now,
+      "approver_is_counter",
     );
     if (reopened === null)
       return revertToCounting(
@@ -1555,13 +1557,17 @@ async function settle(
   // the approver saw: then a fresh approval is asked, the lines stay counted.
   await lockLocations(tx, row.tenantId, [row.locationId]);
   const refreshed: LineRow[] = [];
-  for (const line of lines)
-    refreshed.push(await refreshSystemQty(tx, row, line));
+  // Any line whose loss or gain grew needs a fresh approval, even when the
+  // other lines shrink and the total drops.
+  let lineGrew = false;
+  for (const line of lines) {
+    const atCount = await refreshSystemQty(tx, row, line);
+    if (Math.abs(atCount.varianceIdr ?? 0) > Math.abs(line.varianceIdr ?? 0))
+      lineGrew = true;
+    refreshed.push(atCount);
+  }
   const variance = sumVariance(refreshed.map((line) => line.varianceIdr ?? 0));
-  if (
-    variance.total !== row.totalVarianceIdr ||
-    variance.gross !== row.grossVarianceIdr
-  ) {
+  if (refreshed.some((line, index) => line !== lines[index])) {
     const [current] = await tx
       .update(stockCounts)
       .set({
@@ -1572,7 +1578,7 @@ async function settle(
       })
       .where(eq(stockCounts.id, row.id))
       .returning();
-    if (variance.gross > (row.grossVarianceIdr ?? 0)) {
+    if (lineGrew || variance.gross > (row.grossVarianceIdr ?? 0)) {
       const reopened = await reopenApproval(
         tx,
         context,
@@ -1580,6 +1586,7 @@ async function settle(
         current!,
         levels[levels.length - 1]!.requestedBy,
         now,
+        "variance_grew",
       );
       if (reopened === null)
         return revertToCounting(
@@ -1588,7 +1595,7 @@ async function settle(
           actorUserId,
           current!,
           now,
-          "approver_is_counter",
+          "variance_grew",
         );
       deferred.error = countError(
         "STOCK_COUNT_VERSION_MISMATCH",
