@@ -69,6 +69,7 @@ import {
   type PayrollConfigSnapshot,
   type PayrollRun,
   type PayrollRunId,
+  type PayrollTaxExportSuperseded,
   type PayslipCalculation,
   type PayslipId,
   type PayslipPaymentMethod,
@@ -92,6 +93,7 @@ import {
 } from "../lib/payroll-sealed.ts";
 import { recordAudit } from "./core-audit.ts";
 import { assertPayrollTenantCan } from "./payroll-access.ts";
+import { supersedeTaxExportsInTransaction } from "./payroll-tax-export-supersede.ts";
 import { snapshotPayeeBankForLock } from "./payroll-bank-snapshot.service.ts";
 import { emitPayrollEvent } from "./payroll-events.ts";
 import {
@@ -143,6 +145,8 @@ export type PayrollRunLockResult = {
     netIdr: Idr;
   }[];
   bankSnapshotCount: number;
+  /** legend 1229: Coretax exports of the month (or year) this lock left stale. */
+  taxExportsSuperseded: PayrollTaxExportSuperseded[];
   monthPriorRunIds: PayrollRunId[];
 };
 
@@ -841,8 +845,23 @@ export async function lockPayrollRunInTransaction(
     },
     ["employeeCount", "bankSnapshotCount"],
   );
+  // legend 1229: an export of this month (or year) made before this lock no
+  // longer holds these slips. Same transaction, under the month lock above.
+  const taxExportsSuperseded = await supersedeTaxExportsInTransaction(
+    tx,
+    context,
+    actor,
+    {
+      payrollRunId: runId,
+      legalEntityId: row.legalEntityId,
+      payDate: row.payDate,
+      reason: "run_locked",
+    },
+    lockedAt,
+  );
 
   return {
+    taxExportsSuperseded,
     payrollRunId: runId,
     payslips: slips.map((slip) => ({
       payslipId: slip.payslipId,
