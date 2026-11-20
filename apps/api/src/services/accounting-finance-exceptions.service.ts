@@ -13,6 +13,9 @@
 // - `release_recon_unproven` is not dated by the window either: it lists every
 //   QRIS or VA release reconciliation row still open after
 //   RELEASE_RECON_UNPROVEN_AFTER_HOURS, i.e. no provider proof the code is dead.
+// - `edge_refund_unreconciled` (legend-ecr16, brief 1244 r2) is per outlet and
+//   standing: one item per order with a parked legacy edge `order.refunded`
+//   that has no native pos_order_refunds row yet. Not dated by the window.
 // - The payout kind is tenant-wide, so it is shown only to a caller without
 //   an outlet limit and never when an outlet filter is asked for.
 // - `payout_proof_stuck` (legend-so897) is tenant-wide like the payout kind and
@@ -55,7 +58,13 @@ import {
 import { db } from "../db";
 import { withTenant } from "../db/tenant.ts";
 import { openPayrollValue } from "../lib/payroll-sealed.ts";
+import { refundCommittedAmount } from "./payment-refund-approval-limits.ts";
+import {
+  listParkedEdgeRefundFacts,
+  type ParkedEdgeRefundFact,
+} from "./payment-refund-edge-history.ts";
 import { EVENT_DESTINATION } from "./payment-support.ts";
+import type { Tx } from "./permission-resolver.ts";
 import {
   disputeFreezesBatchSql,
   disputeIsOpenSql,
@@ -951,6 +960,147 @@ async function payoutBatchDisputed(
 }
 
 /**
+ * Legacy edge refunds parked in edge_deferred_events with no native
+ * pos_order_refunds row of the same refund id (brief 1244 r2). One item per
+ * order. The central money guards already hold later refunds of such an order
+ * (REFUND_HISTORY_UNVERIFIED); this only makes the parked cash visible. Not
+ * dated by the window. Detail: exceeds_paid / within_paid / order_unknown, or
+ * unreadable when a fact cannot be validated or the cumulative check fails
+ * (run in a savepoint so one bad order never aborts the list). Details are
+ * computed only for the returned items; the summary counts every order.
+ */
+async function edgeRefundUnreconciled(
+  tx: Tx,
+  scope: Scope,
+): Promise<Collected> {
+  const facts = await listParkedEdgeRefundFacts(tx, {
+    tenantId: scope.tenantId,
+    outletIds: scope.reach,
+  });
+  const readableIds = [
+    ...new Set(
+      facts.flatMap((fact) =>
+        fact.readable && UUID.test(fact.refundId) ? [fact.refundId] : [],
+      ),
+    ),
+  ];
+  const materialized = new Set<string>();
+  if (readableIds.length > 0)
+    for (const row of rowsOf(
+      await tx.execute(
+        sql`SELECT id::text AS id FROM pos_order_refunds
+             WHERE tenant_id = ${scope.tenantId}::uuid
+               AND id IN (${sql.join(
+                 readableIds.map((id) => sql`${id}::uuid`),
+                 sql`, `,
+               )})`,
+      ),
+    ))
+      materialized.add(String(row.id).toLowerCase());
+
+  type Group = {
+    refId: string;
+    outletId: string;
+    amountIdr: number;
+    unreadable: boolean;
+    receivedAt: Date;
+  };
+  const groups = new Map<string, Group>();
+  const touch = (
+    fact: ParkedEdgeRefundFact,
+    refId: string,
+    amountIdr: number,
+    unreadable: boolean,
+  ) => {
+    const group = groups.get(refId);
+    if (!group) {
+      groups.set(refId, {
+        refId,
+        outletId: fact.outletId,
+        amountIdr,
+        unreadable,
+        receivedAt: fact.receivedAt,
+      });
+      return;
+    }
+    group.amountIdr += amountIdr;
+    group.unreadable ||= unreadable;
+    if (fact.receivedAt > group.receivedAt) group.receivedAt = fact.receivedAt;
+  };
+  for (const fact of facts) {
+    if (fact.readable) {
+      if (materialized.has(fact.refundId)) continue;
+      touch(fact, fact.orderId, fact.amountIdr, false);
+    } else {
+      touch(fact, fact.aggregateId.toLowerCase(), 0, true);
+    }
+  }
+  const ordered = [...groups.values()].sort(
+    (a, b) =>
+      b.receivedAt.getTime() - a.receivedAt.getTime() ||
+      (a.refId < b.refId ? 1 : a.refId > b.refId ? -1 : 0),
+  );
+  const shown = ordered.slice(0, MAX_ITEMS + 1);
+
+  const items: FinanceExceptionItemDto[] = [];
+  for (const group of shown) {
+    let detail = "unreadable";
+    if (!group.unreadable) {
+      const [tender] = rowsOf(
+        await tx.execute(
+          sql`SELECT count(*)::int AS n, coalesce(sum(amount_idr), 0)::bigint AS paid
+                FROM pos_order_tenders
+               WHERE tenant_id = ${scope.tenantId}::uuid
+                 AND order_id = ${group.refId}::uuid AND status = 'captured'`,
+        ),
+      );
+      if (num(tender?.n) === 0) detail = "order_unknown";
+      else {
+        try {
+          // Savepoint: a guard that throws (unverified history) must not
+          // abort the surrounding read transaction.
+          const committed = await tx.transaction((savepoint) =>
+            refundCommittedAmount(
+              savepoint,
+              {
+                tenantId: scope.tenantId,
+                outletId: group.outletId,
+                orderId: group.refId,
+                amountIdr: 0,
+              },
+              { paidCapScope: true },
+            ),
+          );
+          detail =
+            committed > BigInt(String(tender?.paid ?? 0))
+              ? "exceeds_paid"
+              : "within_paid";
+        } catch {
+          detail = "unreadable";
+        }
+      }
+    }
+    items.push({
+      kind: "edge_refund_unreconciled",
+      outletId: group.outletId,
+      occurredAt: group.receivedAt.toISOString(),
+      refType: "order",
+      refId: group.refId,
+      amountIdr: group.unreadable ? null : group.amountIdr,
+      detail,
+    });
+  }
+  const known = ordered.filter((group) => !group.unreadable);
+  return {
+    kind: "edge_refund_unreconciled",
+    count: ordered.length,
+    knownAmountCount: known.length,
+    amountIdr: known.reduce((sum, group) => sum + group.amountIdr, 0),
+    items,
+  };
+}
+
+/**
  * The exceptions of the window for the caller's outlets. Read-only. A tenant
  * wide caller also sees the outlet-less payout kind (unless it filters by an
  * outlet); an outlet outside the caller's reach shows nothing.
@@ -993,6 +1143,8 @@ export async function listFinanceExceptions(
       parts.push(await receiptPendingStale(tx, scope));
     if (wants("release_recon_unproven"))
       parts.push(await releaseReconUnproven(tx, scope));
+    if (wants("edge_refund_unreconciled"))
+      parts.push(await edgeRefundUnreconciled(tx, scope));
     if (includePayout) parts.push(await payoutFeeNotPosted(tx, scope));
     if (includeProofStuck) parts.push(await payoutProofStuck(tx, scope));
     if (includeReconFlags) parts.push(await payoutReconFlags(tx, scope));

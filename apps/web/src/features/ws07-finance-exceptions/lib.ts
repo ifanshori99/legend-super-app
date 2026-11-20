@@ -48,6 +48,7 @@ export const KIND_LABEL_KEYS: Record<FinanceExceptionKind, MessageKey> = {
   payout_recon_hold: "financeExceptions.kinds.payout_recon_hold",
   release_recon_unproven: "financeExceptions.kinds.release_recon_unproven",
   payout_batch_disputed: "financeExceptions.kinds.payout_batch_disputed",
+  edge_refund_unreconciled: "financeExceptions.kinds.edge_refund_unreconciled",
 };
 
 export const KIND_HELP_KEYS: Record<FinanceExceptionKind, MessageKey> = {
@@ -63,6 +64,8 @@ export const KIND_HELP_KEYS: Record<FinanceExceptionKind, MessageKey> = {
   payout_recon_hold: "financeExceptions.kindHelp.payout_recon_hold",
   release_recon_unproven: "financeExceptions.kindHelp.release_recon_unproven",
   payout_batch_disputed: "financeExceptions.kindHelp.payout_batch_disputed",
+  edge_refund_unreconciled:
+    "financeExceptions.kindHelp.edge_refund_unreconciled",
 };
 
 const REF_TYPE_KEYS: Record<string, MessageKey> = {
@@ -100,6 +103,14 @@ const DETAIL_KEYS: Record<string, MessageKey> = {
   bind_failed: "financeExceptions.details.proofBindFailed",
 };
 
+/** Reasons of `edge_refund_unreconciled`; "unreadable" means a refund fact here. */
+const REFUND_DETAIL_KEYS: Record<string, MessageKey> = {
+  exceeds_paid: "financeExceptions.details.refundExceedsPaid",
+  within_paid: "financeExceptions.details.refundWithinPaid",
+  order_unknown: "financeExceptions.details.refundOrderUnknown",
+  unreadable: "financeExceptions.details.refundUnreadable",
+};
+
 /** Where finance works on a recon flag or hold (the payout reconciliation screen). */
 export const RECON_SCREEN_PATH = "/kelola/payroll/rekonsiliasi" as const;
 
@@ -121,8 +132,13 @@ export function refTypeKey(refType: string): MessageKey {
 }
 
 /** Known flag codes get a sentence; anything else (a batch id) stays as is. */
-export function detailKey(detail: string): MessageKey | undefined {
-  return DETAIL_KEYS[detail];
+export function detailKey(
+  detail: string,
+  kind?: FinanceExceptionKind,
+): MessageKey | undefined {
+  return kind === "edge_refund_unreconciled"
+    ? REFUND_DETAIL_KEYS[detail]
+    : DETAIL_KEYS[detail];
 }
 
 /**

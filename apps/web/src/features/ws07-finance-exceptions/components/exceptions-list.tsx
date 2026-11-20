@@ -70,7 +70,7 @@ function useRowText(outletName: Props["outletName"]) {
 function Reference({ item }: { item: FinanceExceptionItemDto }) {
   const t = useT();
   const short = shortRef(item.refId);
-  const detailSentenceKey = item.detail ? detailKey(item.detail) : undefined;
+  const detailSentenceKey = item.detail ? detailKey(item.detail, item.kind) : undefined;
   const reconPath = reconScreenPath(item.kind);
   return (
     <details className="group min-w-0 text-sm">

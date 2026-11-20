@@ -13,6 +13,7 @@ import {
   outletIdSchema,
   tenantIdSchema,
   ulidToUuid,
+  uuidToUlid,
 } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
@@ -22,6 +23,7 @@ import { eventEnvelopeSchema } from "@starter/shared/events";
 import { orderRefundedPayloadSchema } from "@starter/shared/pos";
 import type { FinanceExceptionKind } from "@starter/shared/validators/finance-exceptions";
 import { createApp } from "../app.ts";
+import { pinOverrideFixtureFingerprint } from "./pos-override-fixture.ts";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { applyEdgeDeferredEvent } from "../edge/deferred-event-applier.ts";
@@ -43,6 +45,7 @@ const WINDOW = { from: "2026-03-01", to: "2026-03-02" };
 
 const orders: string[] = [];
 const refundIds: string[] = [];
+const overrides: string[] = [];
 const users: string[] = [];
 const edgeNodeId = randomUUID();
 let cashier: Staff;
@@ -57,10 +60,16 @@ const tenantScope = (tenantId = seededTenantId) =>
   });
 const wide = establishScopedTenantContext(tenantScope(), { kind: "tenant" });
 
-async function asOwner<T>(run: (client: PoolClient) => Promise<T>) {
+async function asOwner<T>(
+  run: (client: PoolClient) => Promise<T>,
+  replica = false,
+) {
   const client = await owner.connect();
   try {
     await client.query("BEGIN");
+    // Replica role lets cleanup delete append-only rows (as the edge suites do).
+    if (replica)
+      await client.query("SET LOCAL session_replication_role = replica");
     await client.query(
       "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
       [seededTenantId],
@@ -87,7 +96,13 @@ async function sale(paidIdr: number) {
          tax_idr, rounding_idr, total_idr, status, business_date, placed_at)
        VALUES ($1, $2, $3, $4, 'pos', 'takeaway', 'pay_first', $5, 0, 0, 0, 0, $5,
          'completed', '2031-03-18', now())`,
-      [orderUuid, seededTenantId, seededOutletA, `E1244-${orderId.slice(-18)}`, paidIdr],
+      [
+        orderUuid,
+        seededTenantId,
+        seededOutletA,
+        `E1244-${orderId.slice(-18)}`,
+        paidIdr,
+      ],
     );
     await client.query(
       `INSERT INTO pos_orders (order_id, tenant_id, outlet_id, channel, submitted_at)
@@ -111,12 +126,45 @@ async function nativeRefund(
   id: string = randomUUID(),
 ) {
   refundIds.push(id);
-  await asOwner((client) =>
-    client.query(
+  const orderUlid = uuidToUlid(orderUuid);
+  const overrideId = createUlid();
+  const overrideUuid = ulidToUuid(overrideId);
+  overrides.push(overrideUuid);
+  const reason = "Pelanggan salah pesan";
+  await asOwner(async (client) => {
+    await client.query(
+      `INSERT INTO pos_overrides (id, tenant_id, outlet_id, action, method,
+         status, requested_by, approved_by, reason, value_idr, object_type,
+         object_id, request_fingerprint, created_at, resolved_at)
+       VALUES ($1, $2, $3, 'refund', 'supervisor_pin', 'approved', $4, $5,
+         $6, $7, 'order', $8, $9, now(), now())`,
+      [
+        overrideUuid,
+        seededTenantId,
+        seededOutletA,
+        cashier.userId,
+        supervisor.userId,
+        reason,
+        amountIdr,
+        orderUlid,
+        pinOverrideFixtureFingerprint({
+          requestedBy: cashier.userId,
+          outletId: seededOutletA,
+          action: "refund",
+          valueIdr: amountIdr,
+          reason,
+          objectType: "order",
+          objectId: orderUlid,
+          approverUserId: supervisor.userId,
+        }),
+      ],
+    );
+    await client.query(
       `INSERT INTO pos_order_refunds (id, tenant_id, outlet_id, order_id,
-         amount_idr, reason, reason_note, lines, items, requested_by, approved_by, refunded_at)
+         amount_idr, reason, reason_note, lines, items, requested_by, approved_by,
+         override_id, refunded_at)
        VALUES ($1, $2, $3, $4, $5, 'quality_complaint', 'Central refund',
-         $6::jsonb, '[]', $7, $8, now() - interval '1 minute')`,
+         $6::jsonb, '[]', $7, $8, $9, now() - interval '1 minute')`,
       [
         id,
         seededTenantId,
@@ -126,9 +174,10 @@ async function nativeRefund(
         JSON.stringify([{ method: "edc_card", amountIdr }]),
         cashier.userId,
         supervisor.userId,
+        overrideUuid,
       ],
-    ),
-  );
+    );
+  });
   return id;
 }
 
@@ -194,10 +243,8 @@ async function list(
   return listFinanceExceptions(context, { ...WINDOW, kind: KIND, ...extra });
 }
 
-const itemOf = (
-  result: Awaited<ReturnType<typeof list>>,
-  refId: string,
-) => result.items.filter((item) => item.refId === refId);
+const itemOf = (result: Awaited<ReturnType<typeof list>>, refId: string) =>
+  result.items.filter((item) => item.refId === refId);
 
 beforeAll(async () => {
   const app = createApp();
@@ -227,9 +274,13 @@ afterAll(async () => {
       "DELETE FROM edge_deferred_events WHERE edge_node_id = $1",
       [edgeNodeId],
     );
-    await client.query("DELETE FROM edge_nodes WHERE id = $1", [edgeNodeId]);
-    await client.query("DELETE FROM pos_order_refunds WHERE id = ANY($1::uuid[])", [
-      refundIds,
+    // The edge node stays: T5 leaves an append-only dead-letter row on it.
+    await client.query(
+      "DELETE FROM pos_order_refunds WHERE id = ANY($1::uuid[])",
+      [refundIds],
+    );
+    await client.query("DELETE FROM pos_overrides WHERE id = ANY($1::uuid[])", [
+      overrides,
     ]);
     for (const table of ["pos_order_tenders", "pos_orders"])
       await client.query(
@@ -243,7 +294,7 @@ afterAll(async () => {
       "DELETE FROM role_assignments WHERE user_id = ANY($1::text[])",
       [users],
     );
-  });
+  }, true);
   await dropIsolatedTenant(other);
   await owner.end();
 });
@@ -269,7 +320,10 @@ describe("finance exception edge_refund_unreconciled (1244 r2)", () => {
     await edgeRefund(s.orderId, 50_000);
     const items = itemOf(await list(), s.orderUuid);
     expect(items).toHaveLength(1);
-    expect(items[0]).toMatchObject({ amountIdr: 50_000, detail: "within_paid" });
+    expect(items[0]).toMatchObject({
+      amountIdr: 50_000,
+      detail: "within_paid",
+    });
   });
 
   it("T3: one refundId parked twice is one item and counts once", async () => {
@@ -298,7 +352,13 @@ describe("finance exception edge_refund_unreconciled (1244 r2)", () => {
            envelope, parked_reason)
          VALUES ($1, $2, $3, $4, 'order', $5, 1, 'order.refunded',
            '{"broken":true}'::jsonb, 'deferred')`,
-        [seededTenantId, seededOutletA, edgeNodeId, randomUUID(), bogusAggregate],
+        [
+          seededTenantId,
+          seededOutletA,
+          edgeNodeId,
+          randomUUID(),
+          bogusAggregate,
+        ],
       ),
     );
     const items = itemOf(await list(), bogusAggregate);
@@ -327,12 +387,6 @@ describe("finance exception edge_refund_unreconciled (1244 r2)", () => {
     expect(
       both.items.some((item) => item.kind === "edge_link_dead_letter"),
     ).toBe(true);
-    await asOwner((client) =>
-      client.query(
-        "DELETE FROM edge_link_dead_letters WHERE edge_node_id = $1",
-        [edgeNodeId],
-      ),
-    );
   });
 
   it("T6: standing outside the date window; other outlet and other tenant do not see it", async () => {

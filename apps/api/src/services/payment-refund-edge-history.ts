@@ -242,3 +242,145 @@ export async function loadDeferredRefundCommitments(
       amountIdr,
     }));
 }
+
+export type ParkedEdgeRefundFact =
+  | {
+      readable: true;
+      refundId: string;
+      orderId: string;
+      outletId: string;
+      amountIdr: number;
+      receivedAt: Date;
+    }
+  | {
+      readable: false;
+      /** Order uuid when the row's aggregate id is one, else the raw id. */
+      aggregateId: string;
+      outletId: string;
+      receivedAt: Date;
+    };
+
+/**
+ * Every parked edge `order.refunded` of a tenant (optionally limited to
+ * outlets), for the finance exception list (brief 1244 r2). Same envelope and
+ * payload rules as `loadDeferredRefundCommitments`, but a row that fails them
+ * is returned as `readable: false` instead of throwing, and a refund id seen
+ * twice with another order or amount turns both orders unreadable. Counts a
+ * refund once across replayed event IDs and nodes. Read-only.
+ */
+export async function listParkedEdgeRefundFacts(
+  tx: Tx,
+  input: { tenantId: string; outletIds: readonly string[] | null },
+): Promise<ParkedEdgeRefundFact[]> {
+  const outletFilter =
+    input.outletIds === null
+      ? sql`TRUE`
+      : sql`outlet_id IN (${sql.join(
+          input.outletIds.map((id) => sql`${id}::uuid`),
+          sql`, `,
+        )})`;
+  const { rows } = await tx.execute<{
+    tenant_id: string;
+    outlet_id: string;
+    event_id: string;
+    aggregate_type: string;
+    aggregate_id: string;
+    aggregate_sequence: string;
+    event_name: string;
+    envelope: unknown;
+    received_at: string | Date;
+  }>(sql`
+    SELECT tenant_id::text, outlet_id::text, event_id::text,
+           aggregate_type, aggregate_id, aggregate_sequence::text,
+           event_name, envelope, received_at
+      FROM edge_deferred_events
+     WHERE tenant_id = ${input.tenantId}
+       AND (event_name = 'order.refunded' OR envelope->>'name' = 'order.refunded')
+       AND ${outletFilter}
+     ORDER BY received_at, event_id
+  `);
+  const byRefund = new Map<
+    string,
+    Extract<ParkedEdgeRefundFact, { readable: true }>
+  >();
+  const conflicted = new Set<string>();
+  const unreadable: Extract<ParkedEdgeRefundFact, { readable: false }>[] = [];
+  const markUnreadable = (
+    aggregateId: string,
+    outletId: string,
+    receivedAt: Date,
+  ) => {
+    let id = aggregateId;
+    try {
+      id = canonicalOrderId(aggregateId);
+    } catch {
+      // Not an order id: keep the raw value as the reference.
+    }
+    unreadable.push({ readable: false, aggregateId: id, outletId, receivedAt });
+  };
+  for (const row of rows) {
+    const receivedAt = new Date(row.received_at);
+    try {
+      const parsed = posEvents["order.refunded"].envelopeSchema.safeParse(
+        row.envelope,
+      );
+      if (!parsed.success) throw unverified();
+      const event = parsed.data;
+      const parsedPayload = orderRefundedPayloadSchema.safeParse(event.payload);
+      if (!parsedPayload.success) throw unverified();
+      const payload = parsedPayload.data;
+      const orderId = canonicalOrderId(payload.orderId);
+      if (
+        row.tenant_id !== input.tenantId ||
+        event.tenantId !== input.tenantId ||
+        event.outletId !== row.outlet_id ||
+        payload.outletId !== row.outlet_id ||
+        row.event_name !== "order.refunded" ||
+        row.aggregate_type !== "order" ||
+        row.event_id !== ulidToUuid(event.id) ||
+        Number(row.aggregate_sequence) !== event.sequence ||
+        canonicalOrderId(row.aggregate_id) !== orderId ||
+        canonicalOrderId(event.aggregateId) !== orderId
+      )
+        throw unverified();
+      const fact = {
+        readable: true as const,
+        refundId: payload.refundId.toLowerCase(),
+        orderId,
+        outletId: row.outlet_id,
+        amountIdr: Number(payload.amountIdr),
+        receivedAt,
+      };
+      if (!Number.isSafeInteger(fact.amountIdr)) throw unverified();
+      const previous = byRefund.get(fact.refundId);
+      if (
+        conflicted.has(fact.refundId) ||
+        (previous &&
+          (previous.orderId !== fact.orderId ||
+            previous.amountIdr !== fact.amountIdr))
+      ) {
+        conflicted.add(fact.refundId);
+        if (previous) {
+          markUnreadable(
+            previous.orderId,
+            previous.outletId,
+            previous.receivedAt,
+          );
+          byRefund.delete(fact.refundId);
+        }
+        markUnreadable(orderId, fact.outletId, receivedAt);
+        continue;
+      }
+      byRefund.set(fact.refundId, {
+        ...fact,
+        receivedAt:
+          previous && previous.receivedAt > receivedAt
+            ? previous.receivedAt
+            : receivedAt,
+      });
+    } catch {
+      markUnreadable(row.aggregate_id, row.outlet_id, receivedAt);
+    }
+  }
+  return [...byRefund.values(), ...unreadable];
+}
