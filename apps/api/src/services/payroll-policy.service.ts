@@ -15,15 +15,19 @@
 // employees or free text.
 
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { isDeepStrictEqual } from "node:util";
+import { and, asc, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import type { PermissionCode } from "@starter/shared/access";
 import {
   createUlid,
   encodeCursor,
   type ScopedTenantContext,
+  type TenantId,
   type UserId,
 } from "@starter/shared/core";
 import {
+  cycleReopensPaidDays,
+  findEmploymentTypeOverlap,
   payrollPolicySchema,
   thrScheduleSchema,
   type CreatePayrollPolicyInput,
@@ -34,7 +38,11 @@ import {
 } from "@starter/shared/hris/payroll";
 import { db } from "../db/index.ts";
 import { employees } from "../db/schema/hris.ts";
-import { payrollPolicies, thrSchedules } from "../db/schema/payroll.ts";
+import {
+  payrollPolicies,
+  payrollRuns,
+  thrSchedules,
+} from "../db/schema/payroll.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
@@ -101,6 +109,87 @@ const toPolicy = (row: typeof payrollPolicies.$inferSelect): PayrollPolicy =>
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   });
+
+/**
+ * Refuses a policy whose employment types intersect another ACTIVE policy of
+ * the same legal entity (bead legend-1213): a run takes every employee of its
+ * policy's types, so a shared type pays that employee in two runs of one
+ * period. An advisory lock per legal entity serializes two writers, so two
+ * racing creates cannot both pass.
+ */
+async function assertNoEmploymentTypeOverlap(
+  tx: Tx,
+  tenantId: TenantId,
+  legalEntityId: string,
+  excludePolicyId: string | null,
+  employeeGroup: PayrollPolicy["employeeGroup"],
+): Promise<void> {
+  await tx.execute(
+    sql`select pg_advisory_xact_lock(hashtextextended(${`payroll-policy-types:${tenantId}:${legalEntityId}`}, 0))`,
+  );
+  const rows = await tx
+    .select()
+    .from(payrollPolicies)
+    .where(
+      and(
+        eq(payrollPolicies.tenantId, tenantId),
+        eq(payrollPolicies.legalEntityId, legalEntityId),
+        eq(payrollPolicies.isActive, true),
+        // The same group code is the unique-key conflict (its own message).
+        ne(payrollPolicies.employeeGroupCode, employeeGroup.code),
+        ...(excludePolicyId
+          ? [
+              ne(
+                payrollPolicies.id,
+                excludePolicyId as (typeof payrollPolicies.$inferSelect)["id"],
+              ),
+            ]
+          : []),
+      ),
+    );
+  const overlap = findEmploymentTypeOverlap(
+    employeeGroup.employmentTypes,
+    rows.map(toPolicy),
+  );
+  if (overlap)
+    throw new HttpError(
+      409,
+      "PAYROLL_POLICY_EMPLOYMENT_OVERLAP",
+      `Jenis kerja ${overlap.types.join(", ")} sudah dicakup kebijakan aktif "${overlap.name}" di badan usaha ini. Satu jenis kerja hanya boleh ada di satu kebijakan aktif supaya karyawan tidak digaji dua kali.`,
+    );
+}
+
+/**
+ * Refuses a cycle whose next period would start on or before the end of the
+ * latest live (not reversed) regular run of the policy: those days are already
+ * paid. A change that keeps the period boundaries (e.g. only the pay day)
+ * passes.
+ */
+async function assertCycleKeepsPaidDays(
+  tx: Tx,
+  tenantId: TenantId,
+  policy: PayrollPolicy,
+): Promise<void> {
+  const [latest] = await tx
+    .select({ periodEnd: payrollRuns.periodEnd })
+    .from(payrollRuns)
+    .where(
+      and(
+        eq(payrollRuns.tenantId, tenantId),
+        eq(payrollRuns.payrollPolicyId, policy.id),
+        eq(payrollRuns.runType, "regular"),
+        ne(payrollRuns.status, "reversed"),
+      ),
+    )
+    .orderBy(desc(payrollRuns.periodEnd))
+    .limit(1);
+  if (latest && cycleReopensPaidDays(policy.cycle, latest.periodEnd))
+    throw new HttpError(
+      409,
+      "PAYROLL_POLICY_CYCLE_OVERLAPS_RUN",
+      `Siklus baru membuka periode yang beririsan dengan payroll yang sudah ada sampai ${latest.periodEnd}. Hari itu sudah dibayar; batalkan atau selesaikan payroll tersebut dulu, atau buat kebijakan baru.`,
+    );
+}
 
 const toThrSchedule = (row: typeof thrSchedules.$inferSelect): ThrSchedule =>
   thrScheduleSchema.parse({
@@ -209,6 +298,13 @@ export async function createPayrollPolicy(
       "payroll.policy.create",
       { actor, body },
       async () => {
+        await assertNoEmploymentTypeOverlap(
+          tx,
+          context.tenant.tenantId,
+          body.legalEntityId,
+          null,
+          body.employeeGroup,
+        );
         let row: typeof payrollPolicies.$inferSelect | undefined;
         try {
           [row] = await tx
@@ -309,6 +405,21 @@ export async function updatePayrollPolicy(
           ),
           updatedAt: now.toISOString(),
         });
+        // Reactivation brings the policy's types back into play (bead
+        // legend-1213); a cycle change must not reopen days a live run paid.
+        if (merged.isActive && !current.isActive)
+          await assertNoEmploymentTypeOverlap(
+            tx,
+            context.tenant.tenantId,
+            current.legalEntityId,
+            current.id,
+            merged.employeeGroup,
+          );
+        if (
+          patch.cycle !== undefined &&
+          !isDeepStrictEqual(patch.cycle, toPolicy(current).cycle)
+        )
+          await assertCycleKeepsPaidDays(tx, context.tenant.tenantId, merged);
         const [row] = await tx
           .update(payrollPolicies)
           .set({

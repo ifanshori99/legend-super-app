@@ -6,7 +6,7 @@
 // isolated second tenant.
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../app.ts";
 import {
   createIsolatedTenant,
@@ -212,6 +212,20 @@ beforeAll(async () => {
   employeeB = await seedEmployee(isolated.tenantId, isolated.outletId);
 });
 
+// Bead legend-1213: an active policy blocks any other active policy of the
+// same legal entity with a shared employment type. Every case here builds the
+// default pkwt policy, so retire what the case created (rows stay for the
+// cleanup below; deactivation is not what any case asserts afterwards).
+afterEach(async () => {
+  if (!isolatedA || policyIds.length === 0) return;
+  await asTenant(isolatedA.tenantId, (db) =>
+    db.query(
+      "UPDATE payroll_policies SET is_active = false WHERE id = ANY($1)",
+      [policyIds],
+    ),
+  );
+});
+
 afterAll(async () => {
   for (const tenantId of [isolatedA?.tenantId, isolated?.tenantId]) {
     if (!tenantId) continue;
@@ -277,7 +291,14 @@ describe("payroll policy API: create, list, update", () => {
 
   it("pages by name with a cursor and never repeats a row", async () => {
     const first = await createPolicy("P1");
-    const second = await createPolicy("P2");
+    // Another employment type: two active policies of one entity never share one.
+    const second = await createPolicy("P2", {
+      employeeGroup: {
+        code: groupCode("P2"),
+        name: "Grup P2",
+        employmentTypes: ["daily"],
+      },
+    });
     const seen: string[] = [];
     let cursor: string | null = null;
     for (let page = 0; page < 200; page += 1) {
@@ -505,7 +526,13 @@ describe("payroll policy API: conflicts and idempotency", () => {
       .send(policyBody("D", { name: "Nama lain" }));
     expect(duplicate.status).toBe(409);
     // Another group code is fine.
-    await createPolicy("D2");
+    await createPolicy("D2", {
+      employeeGroup: {
+        code: groupCode("D2"),
+        name: "Grup D2",
+        employmentTypes: ["daily"],
+      },
+    });
   });
 
   it("replays the first 201 for the same key and body, and refuses the key with another body", async () => {

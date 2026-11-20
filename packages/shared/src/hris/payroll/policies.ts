@@ -145,6 +145,57 @@ export type UpdatePayrollPolicyInput = z.infer<
   typeof updatePayrollPolicyInputSchema
 >;
 
+// ---- Overlap guards (bead legend-1213, SO 1208) ----------------------------
+
+/**
+ * Employment types two policies of one legal entity both cover. A run takes
+ * every employee of its policy's types, so a shared type means the employee is
+ * in two runs of the same period and is paid twice.
+ */
+export function sharedEmploymentTypes(
+  a: readonly EmployeeGroup["employmentTypes"][number][],
+  b: readonly EmployeeGroup["employmentTypes"][number][],
+): EmployeeGroup["employmentTypes"] {
+  const other = new Set(b);
+  return [...new Set(a)].filter((type) => other.has(type));
+}
+
+/**
+ * The first of `activePolicies` (the ACTIVE policies of the same legal entity,
+ * without `candidate` itself) that shares an employment type with `candidate`,
+ * or null. Pure: the service loads the rows and decides the status code.
+ */
+export function findEmploymentTypeOverlap(
+  candidate: EmployeeGroup["employmentTypes"],
+  activePolicies: readonly {
+    name: string;
+    employeeGroup: Pick<EmployeeGroup, "employmentTypes">;
+  }[],
+): { name: string; types: EmployeeGroup["employmentTypes"] } | null {
+  for (const policy of activePolicies) {
+    const types = sharedEmploymentTypes(
+      candidate,
+      policy.employeeGroup.employmentTypes,
+    );
+    if (types.length > 0) return { name: policy.name, types };
+  }
+  return null;
+}
+
+/**
+ * True when `cycle` would open a period that starts on or before
+ * `latestRunPeriodEnd` (the end of the latest live regular run of the policy):
+ * the days up to that date are already paid, so the next period must start
+ * after it. The period that follows the run is the one containing the next day.
+ */
+export function cycleReopensPaidDays(
+  cycle: PayrollCycle,
+  latestRunPeriodEnd: BusinessDate,
+): boolean {
+  const next = payrollPeriodFor(cycle, addDays(latestRunPeriodEnd, 1));
+  return next.periodStart <= latestRunPeriodEnd;
+}
+
 // ---- Date helpers (UTC calendar arithmetic on YYYY-MM-DD) ----------------
 
 const DAY_MS = 86_400_000;
