@@ -33,6 +33,14 @@
 // out in a later pass. An order with no `order.paid` event at all is never
 // reported (fail closed).
 //
+// The cloud relies on this rule (legend-gdjpu, receipt-run-applier.ts): an ack
+// is transport only, so an order event whose ingest the cloud refused for a
+// transient reason is still acknowledged; the cloud then holds this run (does
+// not ack it, the link queue keeps it) until the redrive heals the order, for
+// at most RECEIPT_RUN_INGEST_HOLD_MS. The hold ignores an order event parked
+// in the same link batch, which this rule guarantees is never the dependency.
+// Do not report a receipt before its order event is acknowledged.
+//
 // Exactly once: a chunk key is `<device>:<prefix>:c:<last ordinal>`; the
 // high-water moves in the same transaction as the append (the sequence row is
 // locked). A receipt voided after it was reported goes out as its own

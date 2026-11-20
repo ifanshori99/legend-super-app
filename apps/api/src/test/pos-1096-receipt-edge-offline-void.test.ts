@@ -76,6 +76,7 @@ import {
 import { registerOrderEdgeApplier } from "../edge/order-edge-applier.ts";
 import { edgeEventApplier, type EdgeApplyMeta } from "../edge/ports.ts";
 import {
+  INGEST_HOLD_EXPIRED_PREFIX,
   RECEIPT_RUN_INGEST_HOLD_MS,
   registerReceiptRunEdgeApplier,
 } from "../edge/receipt-run-applier.ts";
@@ -833,6 +834,23 @@ describe("legend-gdjpu a run whose void ingest failed transiently stays queued u
     expect(await conflictCount(outletId)).toBe(before);
   });
 
+  async function supervisorAlerts(userId: string): Promise<number> {
+    const [row] = await rows<{ n: number }>(
+      `SELECT count(*)::int AS n FROM notifications
+        WHERE tenant_id = $1 AND user_id = $2 AND category = 'edge_sync_conflict'`,
+      [tenant.tenantId, userId],
+    );
+    return row!.n;
+  }
+
+  async function orderCount(orderId: string): Promise<number> {
+    const [row] = await rows<{ n: number }>(
+      "SELECT count(*)::int AS n FROM orders WHERE tenant_id = $1 AND id = $2::uuid",
+      [tenant.tenantId, ulidToUuid(orderId)],
+    );
+    return row!.n;
+  }
+
   async function sweep() {
     await redriveEdgeOrderRefusalsForTenant(sweepContext(), {
       log: { error: () => undefined },
@@ -891,10 +909,65 @@ describe("legend-gdjpu a run whose void ingest failed transiently stays queued u
       ),
     );
 
+    // A supervisor of this outlet receives the conflict alert.
+    const supervisor = randomUUID();
+    const roleId = randomUUID();
+    await owner.query(
+      'INSERT INTO "user" (id, name, email, email_verified) VALUES ($1, $2, $3, true)',
+      [supervisor, "Supervisor Gdjpu", `gdjpu-${supervisor}@example.test`],
+    );
+    await owner.query(
+      `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
+       VALUES ($1, $2, 'Supervisor Gdjpu', true, 'supervisor', '[]', false, '["outlet"]')`,
+      [roleId, tenant.tenantId],
+    );
+    await owner.query(
+      `INSERT INTO role_assignments
+         (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+       VALUES ($1, $2, $3, 'outlet', $4, now() - interval '1 minute', $2)`,
+      [tenant.tenantId, supervisor, roleId, outletId],
+    );
     const before = await conflictCount(outletId);
+    const alertsBefore = await supervisorAlerts(supervisor);
     await deliver(node, [runEvent(outletId, deviceId, orders, [2])]);
     expect(await conflictCount(outletId)).toBe(before + 1);
     expect(await receiptRows(outletId)).toHaveLength(0);
+    // The conflict says why, and the outlet's managers are told.
+    const [expired] = await rows<{ n: number }>(
+      `SELECT count(*)::int AS n FROM edge_sync_conflicts
+        WHERE tenant_id = $1 AND outlet_id = $2 AND detail LIKE $3`,
+      [tenant.tenantId, outletId, `${INGEST_HOLD_EXPIRED_PREFIX}%`],
+    );
+    expect(expired!.n).toBe(1);
+    expect(await supervisorAlerts(supervisor)).toBeGreaterThan(alertsBefore);
+  });
+
+  it("legend-gdjpu another order.paid ahead of the held run in the same batch is rolled back with it and lands exactly once on the retry", async () => {
+    const release = await holdLoyaltyLock();
+    let scenario: Awaited<ReturnType<typeof offlineScenario>>;
+    try {
+      scenario = await offlineScenario(1);
+    } finally {
+      await release();
+    }
+    const { outletId, deviceId, node, orders } = scenario;
+    expect(await ledgerReason(orders[0]!)).toBe("db_error:55P03");
+
+    const other = createUlid(++clock);
+    const batch = [
+      paidEvent(outletId, deviceId, other),
+      runEvent(outletId, deviceId, orders),
+    ];
+    await expect(deliver(node, batch)).rejects.toThrow();
+    expect(await orderCount(other)).toBe(0);
+
+    await sweep();
+    await deliver(node, batch);
+    expect(await orderCount(other)).toBe(1);
+    expect(await ledgerReason(other)).toBeNull();
+    expect(
+      (await receiptRows(outletId)).map((row) => [row.number, row.status]),
+    ).toEqual([["OFF1-000001", "issued"]]);
   });
 });
 

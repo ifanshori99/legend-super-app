@@ -140,17 +140,25 @@ const RETRIED_INGEST_REASONS: readonly string[] = [
  */
 export const RECEIPT_RUN_INGEST_HOLD_MS = 30 * 60_000;
 
+/** Conflict detail prefix when the hold ran out (finance and support filter on it). */
+export const INGEST_HOLD_EXPIRED_PREFIX = "ingest_hold_expired:";
+
 /**
- * True when an order of the run waits on a transient ingest refusal whose
+ * `hold` when an order of the run waits on a transient ingest refusal whose
  * refused event (`order.paid`, or `order.voided` for `void_refused:*`) was
- * parked less than RECEIPT_RUN_INGEST_HOLD_MS ago.
+ * parked less than RECEIPT_RUN_INGEST_HOLD_MS ago; `expired` when such a
+ * refusal exists but every refused event is older; `none` otherwise. An event
+ * parked in THIS transaction (received_at = now()) never counts: the edge
+ * reporter sends a run only after the cloud acknowledged the order event it
+ * depends on (edge-receipt-run-reporter.ts), so a same-batch park is not that
+ * dependency, and the hold never rolls back the batch that parked it.
  */
 async function hasRetriedIngest(
   tx: EdgeTx,
   tenantId: string,
   orderIds: string[],
-): Promise<boolean> {
-  if (orderIds.length === 0) return false;
+): Promise<"none" | "hold" | "expired"> {
+  if (orderIds.length === 0) return "none";
   const tenant = tenantIdSchema.parse(tenantId);
   const rows = await tx
     .select({
@@ -166,7 +174,7 @@ async function hasRetriedIngest(
         inArray(edgeOrderIngests.reason, [...RETRIED_INGEST_REASONS]),
       ),
     );
-  if (rows.length === 0) return false;
+  if (rows.length === 0) return "none";
   const paidEvents = rows
     .filter((row) => !row.reason?.startsWith("void_refused:"))
     .map((row) => sql`${ulidToUuid(row.paidEventId)}::uuid`);
@@ -194,11 +202,12 @@ async function hasRetriedIngest(
   const fresh = await tx.execute(
     sql`SELECT 1 FROM edge_deferred_events
         WHERE tenant_id = ${tenant}::uuid
+          AND received_at < now()
           AND received_at > now() - make_interval(secs => ${RECEIPT_RUN_INGEST_HOLD_MS / 1000}::double precision)
           AND (${sql.join(refused, sql` OR `)})
         LIMIT 1`,
   );
-  return fresh.rows.length > 0;
+  return fresh.rows.length > 0 ? "hold" : "expired";
 }
 
 /** order id -> permanent refusal reason, for the given orders of this tenant. */
@@ -426,7 +435,7 @@ async function applyReceiptRunReported(
       })),
   );
   // Read before the merge: a refused merge may leave the savepoint unusable.
-  const waitsOnIngest = await hasRetriedIngest(
+  const ingestHold = await hasRetriedIngest(
     tx,
     tenantId,
     kept.map(({ receipt }) => receipt.orderId),
@@ -447,14 +456,22 @@ async function applyReceiptRunReported(
     });
   } catch (error) {
     if (
-      waitsOnIngest &&
+      ingestHold !== "none" &&
       error instanceof PosError &&
       error.status >= 400 &&
       error.status < 500
-    )
-      throw new Error(
-        "Receipt run waits on a transient order ingest refusal; retry later",
+    ) {
+      if (ingestHold === "hold")
+        throw new Error(
+          "Receipt run waits on a transient order ingest refusal; retry later",
+        );
+      refuseMerge(
+        new PosError(
+          error.code,
+          `${INGEST_HOLD_EXPIRED_PREFIX}${error.message}`,
+        ),
       );
+    }
     refuseMerge(error);
   }
 }
