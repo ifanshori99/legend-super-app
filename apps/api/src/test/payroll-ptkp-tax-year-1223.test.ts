@@ -809,3 +809,47 @@ describe("[1223 r3] lock, profile, leaver, backfill guard", () => {
     );
   });
 });
+
+describe("[1223 r3] lock vs a concurrent PTKP correction", () => {
+  it("a correction holding the employee row commits while the lock waits: the lock reads it and is stale (409)", async () => {
+    const entity = await makeEntity("balapan");
+    const policy = await rawPolicy(entity);
+    const emp = await makeEmployee(entity, "2025-03-01", "TK/0");
+    const runId = await draftRun(entity, policy, DEC);
+    await simulateRun(runId);
+    await asTenant((conn) => approveSimulatedRun(conn, runId));
+
+    const a = await owner.connect();
+    let lock: Promise<Failure | null> | undefined;
+    try {
+      await a.query("BEGIN");
+      await a.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [tenant.id],
+      );
+      await a.query(
+        "SELECT id FROM employees WHERE tenant_id = $1 AND id = $2 FOR UPDATE",
+        [tenant.id, emp],
+      );
+      lock = failureOf(lockRun(runId));
+      // Give the lock time to reach the employee row and wait on it.
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      await a.query(
+        "SELECT set_config('app.ptkp_effective_from', '2026-01-01', true)",
+      );
+      await a.query(
+        "UPDATE employees SET ptkp_status = 'K/0' WHERE tenant_id = $1 AND id = $2",
+        [tenant.id, emp],
+      );
+      await a.query("COMMIT");
+    } catch (error) {
+      await a.query("ROLLBACK");
+      throw error;
+    } finally {
+      a.release();
+    }
+    const failure = await lock;
+    expect(failure?.status).toBe(409);
+    expect(failure?.code).toBe("PAYROLL_RUN_RESULT_STALE");
+  });
+});

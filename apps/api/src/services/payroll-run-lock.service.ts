@@ -503,7 +503,12 @@ export async function lockPayrollRunInTransaction(
           plan.map((entry) => entry.employeeId),
         ),
       ),
-    );
+    )
+    // Bead 1223 r3: FOR SHARE, in id order, so a PTKP correction (which holds
+    // the employee row FOR UPDATE) cannot commit between the PTKP check below
+    // and the lock; one that committed while we waited is read.
+    .orderBy(asc(employees.id))
+    .for("share");
   const joinDates = new Map(
     joined.map((employee) => [employee.id, employee.joinDate as BusinessDate]),
   );
