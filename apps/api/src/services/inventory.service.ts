@@ -27,6 +27,7 @@ import {
   desc,
   eq,
   gt,
+  gte,
   lt,
   lte,
   ne,
@@ -44,6 +45,7 @@ import {
   decimal4,
   decodeCursor,
   encodeCursor,
+  extendCostIdr,
   formatDecimal4,
   parseDecimal4,
   ulidSchema,
@@ -105,6 +107,7 @@ import {
   stockLocations,
   stockTransferLines,
   stockTransfers,
+  stockCountLines,
   stockCounts,
   uomConversions,
   uoms,
@@ -1068,7 +1071,83 @@ export async function recordStockMovementInTransaction(
   }
   await applyMovementToLockedBalance(tx, balance, entry);
   await appendStockMovedEvent(tx, context, entry, input.actor);
+  if (entry.sourceType !== "stock_count")
+    await absorbIntoPostedCount(tx, context, entry, input.actor);
   return entry;
+}
+
+/**
+ * SO 1208 P1: a posted stock count is the physical truth at each line's
+ * `counted_at`. A movement posted after that count with `occurred_at <=
+ * counted_at` (close_of_day deduction, lagging outbox, late edge order,
+ * repost) is already inside the counted quantity, so it would count twice.
+ * The first such count absorbs it: an opposite `adjustment` on that count
+ * (dated at its `counted_at`, same batch; an inflow back at the movement's own
+ * cost), so the stock equals the count again and the GL moves the value from
+ * the count variance to the movement (e.g. susut -> HPP). Counts not yet
+ * posted need nothing here: their posting recomputes the system quantity from
+ * the ledger at `counted_at` (inventory-count.service.ts).
+ */
+async function absorbIntoPostedCount(
+  tx: Tx,
+  context: ScopedTenantContext,
+  entry: StockLedgerEntry,
+  actor: StockMovementInput["actor"],
+): Promise<void> {
+  const [anchor] = await tx
+    .select({
+      countId: stockCounts.id,
+      lineId: stockCountLines.id,
+      countedAt: stockCountLines.countedAt,
+    })
+    .from(stockCountLines)
+    .innerJoin(
+      stockCounts,
+      and(
+        eq(stockCounts.tenantId, stockCountLines.tenantId),
+        eq(stockCounts.id, stockCountLines.stockCountId),
+      ),
+    )
+    .where(
+      and(
+        eq(stockCountLines.tenantId, context.tenant.tenantId),
+        eq(stockCounts.locationId, entry.locationId),
+        eq(stockCountLines.inventoryItemId, entry.inventoryItemId),
+        eq(stockCounts.status, "posted"),
+        gte(stockCountLines.countedAt, new Date(entry.occurredAt)),
+      ),
+    )
+    .orderBy(asc(stockCountLines.countedAt), asc(stockCountLines.id))
+    .limit(1);
+  if (!anchor?.countedAt) return;
+  const quantity = -parseDecimal4(entry.quantity);
+  const offset = await recordStockMovementInTransaction(tx, context, {
+    outletId: entry.outletId,
+    locationId: entry.locationId,
+    inventoryItemId: entry.inventoryItemId,
+    movementType: "adjustment",
+    quantity: formatDecimal4(quantity),
+    // An outflow leaves the cost to the moving average, as a count decrease.
+    ...(quantity > 0n ? { unitCostIdr: entry.unitCostIdr } : {}),
+    batchId: entry.batchId,
+    sourceType: "stock_count",
+    sourceId: anchor.countId,
+    occurredAt: anchor.countedAt.toISOString() as IsoDateTime,
+    idempotencyKey: `stock-count-late:${entry.id}`,
+    actor,
+  });
+  await tx
+    .update(stockCountLines)
+    .set({
+      postedValueIdr: sql`COALESCE(${stockCountLines.postedValueIdr}, 0) + ${extendCostIdr(offset.quantity, offset.unitCostIdr, ROUNDING_MODE)}`,
+      updatedAt: sql`now()`,
+    })
+    .where(
+      and(
+        eq(stockCountLines.tenantId, context.tenant.tenantId),
+        eq(stockCountLines.id, anchor.lineId),
+      ),
+    );
 }
 
 /** Ensures the balance row exists, then locks it; the caller holds the advisory lock. */

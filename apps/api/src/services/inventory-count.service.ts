@@ -54,6 +54,7 @@ import {
   asc,
   desc,
   eq,
+  gt,
   inArray,
   lt,
   or,
@@ -93,6 +94,7 @@ import { db } from "../db/index.ts";
 import {
   inventoryItems,
   stockBalances,
+  stockLedger,
   stockLocations,
 } from "../db/schema/inventory.ts";
 import { stockCountLines, stockCounts } from "../db/schema/inventory-count.ts";
@@ -1598,9 +1600,10 @@ async function postLines(
   )) {
     if (line.countedQty === null)
       throw new Error("An approved stock count has an uncounted line");
-    const delta = lineDelta(line);
+    const atCount = await refreshSystemQty(tx, row, line);
+    const delta = lineDelta(atCount);
     if (delta === 0n) continue;
-    await postLine(tx, context, postedBy, row, line, delta);
+    await postLine(tx, context, postedBy, row, atCount, delta);
     moved.push({
       locationId: row.locationId,
       inventoryItemId: line.inventoryItemId,
@@ -1625,6 +1628,73 @@ async function postLines(
     posted,
   );
   return posted;
+}
+
+/**
+ * SO 1208 P1: the system quantity the count is compared with is the ledger
+ * balance at the line's `counted_at`, read at posting under the location lock:
+ * the balance now minus every movement dated after the count. A movement that
+ * happened before the count but reached the ledger after the entry (pending
+ * close_of_day deduction posted, lagging outbox, late edge order, repost) is
+ * then part of the system quantity instead of being counted twice. What still
+ * arrives after the posting is absorbed by `absorbIntoPostedCount`.
+ */
+async function refreshSystemQty(
+  tx: Tx,
+  row: CountRow,
+  line: LineRow,
+): Promise<LineRow> {
+  if (line.countedAt === null) return line;
+  const [balance] = await tx
+    .select({ quantity: stockBalances.quantity })
+    .from(stockBalances)
+    .where(
+      and(
+        eq(stockBalances.locationId, row.locationId),
+        eq(stockBalances.inventoryItemId, line.inventoryItemId),
+      ),
+    );
+  const [later] = await tx
+    .select({
+      quantity: sql<string>`COALESCE(SUM(${stockLedger.quantity}), 0)::numeric(20, 4)::text`,
+    })
+    .from(stockLedger)
+    .where(
+      and(
+        eq(stockLedger.tenantId, row.tenantId),
+        eq(stockLedger.locationId, row.locationId),
+        eq(stockLedger.inventoryItemId, line.inventoryItemId),
+        gt(stockLedger.occurredAt, line.countedAt),
+      ),
+    );
+  const systemQty = formatDecimal4(
+    parseDecimal4(balance?.quantity ?? ZERO) - parseDecimal4(later!.quantity),
+  );
+  if (systemQty === line.systemQty) return line;
+  const refreshed = { ...line, systemQty };
+  const [updated] = await tx
+    .update(stockCountLines)
+    .set({
+      systemQty,
+      varianceQty: formatDecimal4(lineDelta(refreshed)),
+      varianceIdr: stockCountVarianceIdr(
+        {
+          systemQty,
+          countedQty: line.countedQty!,
+          unitCostIdr: line.unitCostIdr,
+        },
+        ROUNDING_MODE,
+      ),
+      updatedAt: sql`now()`,
+    })
+    .where(
+      and(
+        eq(stockCountLines.tenantId, row.tenantId),
+        eq(stockCountLines.id, line.id),
+      ),
+    )
+    .returning();
+  return updated ?? refreshed;
 }
 
 /** Splits a decrease FEFO over the batches; what the batches cannot hold goes unbatched. */

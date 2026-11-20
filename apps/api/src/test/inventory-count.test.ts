@@ -2714,3 +2714,76 @@ describe("W4-3 a decrease is valued at the moving average at posting", () => {
     });
   }
 });
+
+describe("late movements dated before the count (SO 1208 P1)", () => {
+  // The deduction paths post with the sale's own `occurred_at`
+  // (postRecipeDeduction: close_of_day at day close, real_time through the
+  // outbox, a late edge order or a repost): a backdated sale row is what reaches
+  // the ledger in every one of them.
+  async function sellAt(
+    locationId: string,
+    itemId: string,
+    quantity: string,
+    occurredAt: Date,
+  ) {
+    await recordStockMovement(tenantContext(), {
+      outletId: outletA,
+      locationId,
+      inventoryItemId: itemId,
+      movementType: "sale",
+      quantity: decimal4(quantity),
+      sourceType: "order",
+      sourceId: randomUUID(),
+      occurredAt: occurredAt.toISOString() as never,
+      actor: { type: "system" },
+    });
+  }
+
+  async function postedAfterSale(counted: string) {
+    const { locationId, itemIds } = await seedStock([{ onHand: "10.0000" }]);
+    const item = itemIds[0]!;
+    const { count } = await createCount(counter, locationId, itemIds);
+    await ok(await transition(counter, count.id, "start"));
+    // Sold 2 before the count; the deduction is not in the ledger yet.
+    const soldAt = new Date(Date.now() - 60_000);
+    await enterCounts(counter, count.id, false, { [item]: counted });
+    return { locationId, item, countId: count.id, soldAt };
+  }
+
+  it("close_of_day: the day close posts a sale made before the count after the count posted -> stock stays at the counted 8", async () => {
+    const { locationId, item, countId, soldAt } =
+      await postedAfterSale("8.0000");
+    await ok(await transition(counter, countId, "submit"));
+    await ok(await transition(approver, countId, "approve"));
+    expect(await balanceOf(locationId, item)).toBe("8.0000");
+
+    await sellAt(locationId, item, "-2.0000", soldAt); // day close
+    expect(await balanceOf(locationId, item)).toBe("8.0000");
+    const ledger = await countLedger(countId);
+    expect(ledger.map((row) => row.quantity).sort()).toEqual([
+      "-2.0000",
+      "2.0000",
+    ]);
+
+    // A sale made after the count still moves the stock.
+    await sellAt(locationId, item, "-1.0000", new Date(Date.now() + 1000));
+    expect(await balanceOf(locationId, item)).toBe("7.0000");
+  });
+
+  it("real_time: a lagging sale made before the count reaches the ledger before approval -> no variance, stock 8", async () => {
+    const { locationId, item, countId, soldAt } =
+      await postedAfterSale("8.0000");
+    await ok(await transition(counter, countId, "submit"));
+    await sellAt(locationId, item, "-2.0000", soldAt); // outbox caught up
+    expect(await balanceOf(locationId, item)).toBe("8.0000");
+
+    await ok(await transition(approver, countId, "approve"));
+    expect(await countLedger(countId)).toHaveLength(0);
+    expect(await balanceOf(locationId, item)).toBe("8.0000");
+    const { rows } = await owner.query<{ system_qty: string }>(
+      "SELECT system_qty::text FROM stock_count_lines WHERE tenant_id = $1 AND stock_count_id = $2",
+      [tenantA, countId],
+    );
+    expect(rows[0]!.system_qty).toBe("8.0000");
+  });
+});
