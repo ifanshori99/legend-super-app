@@ -144,6 +144,14 @@ export type PartialRefundInput = {
    * `refundDueIdr`). Default false: the due is recorded here.
    */
   readonly deferPayout?: boolean;
+  /**
+   * legend-xhl5j (1243): the manual discount (Rp) standing on the whole sale,
+   * stacked on top of the promotions (`paid_idr` does not carry it). The kept
+   * goods carry their pro-rata (by price) share of it; it only feeds the
+   * `uncoveredIdr` decision (whether a voucher may come back), never the
+   * payout. Default 0.
+   */
+  readonly manualDiscountIdr?: number;
 };
 
 export type WithdrawnPromotion = {
@@ -660,7 +668,32 @@ export async function recomputeAfterPartialRefund(
     0,
     Math.min(remainingPaidIdr, remainingPaidIdr - keptPayableIdr),
   );
-  const uncoveredIdr = Math.max(0, keptPayableIdr - remainingPaidIdr);
+  // legend-xhl5j (1243): a manual discount stacked on the sale is part of what
+  // the guest keeps and lowers what they really paid in. Kept goods carry
+  // their pro-rata share of it, and the guest paid in `paid_idr` minus all of
+  // it. The limiting rule: the larger of the two readings is the uncovered
+  // part (the voucher never returns while the guest keeps a discount).
+  const manualDiscountIdr = refund.manualDiscountIdr ?? 0;
+  if (!Number.isSafeInteger(manualDiscountIdr) || manualDiscountIdr < 0)
+    throw new HttpError(
+      422,
+      "VALIDATION_ERROR",
+      "Diskon manual refund tidak valid.",
+    );
+  const keptManualIdr =
+    application.subtotalIdr > 0
+      ? Number(
+          (BigInt(manualDiscountIdr) * BigInt(keptSubtotal)) /
+            BigInt(application.subtotalIdr),
+        )
+      : 0;
+  const uncoveredIdr = Math.max(
+    0,
+    keptPayableIdr - remainingPaidIdr,
+    keptPayableIdr -
+      keptManualIdr -
+      Math.max(0, remainingPaidIdr - manualDiscountIdr),
+  );
 
   // SO 1216 H-P2 (limiting rule): while part of a withdrawn discount stays
   // with the guest (uncovered), the voucher, quota and customer usage are not
