@@ -18,12 +18,20 @@
 //
 // These tests pull from the real cloud export (`listCatalogRecordsSince`), not
 // from a scripted cloud. The promotions stream is tenant-wide and other test
-// files write promotions, so the promotion case serves the real export of an
-// empty outlet stream (price_lists of a private outlet) relabelled as
-// promotions: it is exactly the cloud's empty-stream page.
+// files write promotions, so the promotion case runs against its own tenant
+// (cloned from the main one, one outlet, no promotions, its own edge database):
+// the cloud's genuinely empty promotions page (legend-bg5wy).
 import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { outletIdSchema, type ScopedTenantContext } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
@@ -37,11 +45,13 @@ import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { cafeLegendAccessFixtures } from "@starter/shared/access";
 import { promotionAvailability } from "@starter/shared/crm";
 import { db } from "../db/index.ts";
+import { logger } from "../lib/logger.ts";
 import { pullCatalog } from "../edge/catalog-puller.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import {
   listCatalogRecordsSince,
+  resetDeactivationWarnings,
   setCatalogSnapshotXmaxProvider,
 } from "../services/edge-catalog-sync.ts";
 import { registerEdgeNode } from "../services/edge-node.service.ts";
@@ -91,14 +101,14 @@ const scopeOf = (
 const cloudPage = async (
   stream: string,
   since: string | null,
-  options: { outletId?: string; versioned?: boolean } = {},
+  options: { outletId?: string; versioned?: boolean; limit?: number } = {},
 ): Promise<Rec> =>
   (await listCatalogRecordsSince(db, {
     tenantId: tenantId as never,
     outletId: (options.outletId ?? O1) as never,
     query: catalogSyncQuerySchema.parse({
       stream,
-      limit: 100,
+      limit: options.limit ?? 100,
       ...(since === null ? {} : { since }),
       ...(options.versioned === false
         ? {}
@@ -258,6 +268,7 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   setCatalogSnapshotXmaxProvider(null);
+  resetDeactivationWarnings();
   await edgeWrite(
     `DELETE FROM stations; DELETE FROM price_list_items; DELETE FROM price_lists;
      DELETE FROM promotion_outlets; DELETE FROM promotions;
@@ -311,6 +322,47 @@ describe("7r7q6 ronde 3 P1 cloud: no visibility fields while a row of the stream
     const page = await cloudPage(STATIONS, null, { outletId: O2 });
     expect(page.visibleBelow).toMatch(/^\d+$/);
     expect(page.horizon).toMatch(/^\d+$/);
+  });
+
+  it("legend-bg5wy: a page with more rows after it sends no visibility fields; the last page does", async () => {
+    await cloudStation(O1, "Stasiun halaman satu");
+    await cloudStation(O1, "Stasiun halaman dua");
+    await settleCloud(mainOwner);
+    const first = await cloudPage(STATIONS, null, { limit: 1 });
+    expect(first.hasMore).toBe(true);
+    expect(first, "not a last page").not.toHaveProperty("visibleBelow");
+    expect(first).not.toHaveProperty("horizon");
+    const whole = await cloudPage(STATIONS, null);
+    expect(whole.hasMore).toBe(false);
+    expect(whole.visibleBelow).toMatch(/^\d+$/);
+    expect(whole.horizon).toMatch(/^\d+$/);
+  });
+
+  it("legend-bg5wy: withholding the fields warns once per stream+tenant with no personal data; a clean page does not warn", async () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    try {
+      const S = await cloudStation(O1, "Stasiun dari backup (warn)");
+      await settleCloud(mainOwner);
+      setCatalogSnapshotXmaxProvider(async () => cloudStamp("stations", S));
+      await cloudPage(STATIONS, null);
+      await cloudPage(STATIONS, null);
+      const calls = warn.mock.calls.filter(
+        ([fields]) =>
+          (fields as { stream?: string } | undefined)?.stream === STATIONS,
+      );
+      expect(calls, "rate limited: one warning for two pages").toHaveLength(1);
+      expect(calls[0]![0]).toEqual({ stream: STATIONS, tenantId });
+
+      resetDeactivationWarnings();
+      warn.mockClear();
+      setCatalogSnapshotXmaxProvider(
+        async () => (await cloudStamp("stations", S)) + 1n,
+      );
+      await cloudPage(STATIONS, null);
+      expect(warn, "visible stream: no warning").not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 
@@ -416,42 +468,179 @@ describe("7r7q6 ronde 3 P2 edge: a stream empty in the restored cloud still deac
     expect(row, "row kept (never DELETE)").toBeDefined();
     expect(row!.deleted, "L is switched off").toBe(true);
   }, 180_000);
+});
 
-  it("a promotion the restored cloud no longer has stops applying offline after the confirmation pull", async () => {
-    // The cloud's empty-stream page, relabelled (see the header).
-    const emptyPromos: { fetchPage: FetchPage } = {
-      fetchPage: async (stream, since) =>
-        stream === PROMOS
-          ? {
-              ...(await cloudPage(PRICE_LISTS, since, { outletId: O2 })),
-              stream: PROMOS,
-            }
-          : cloudPage(stream, since),
-    };
-    const seed = await pull(emptyPromos, [PROMOS]);
-    expect(seed.streams[PROMOS]?.error, "seed pull").toBeFalsy();
-    const P = id();
-    await edgeWrite(
-      `INSERT INTO promotions
-         (id, tenant_id, name, description, status, voucher_required, starts_at,
-          ends_at, conditions, benefit, stack_group, stackable, priority, sync_txid)
-       VALUES ($1,$2,'Promo sebelum restore','','active',false,'2026-01-01T00:00:00Z',
-               '2099-01-01T00:00:00Z',$3,$4,'horizon',false,0,11)`,
+describe("7r7q6 ronde 3 P2 edge: a promotions stream genuinely empty in the restored cloud (own tenant)", () => {
+  let T2 = "";
+  let T2outlet = "";
+  let edge2: EdgeDatabase;
+  let node2: { id: string; credential: string };
+
+  const scope2 = (source: "session" | "device"): ScopedTenantContext =>
+    establishScopedTenantContext(
+      establishTenantContext({ tenantId: T2, brandId: null, source }),
+      { kind: "outlets", outletIds: [outletIdSchema.parse(T2outlet)] },
+    );
+
+  const emptyCloud: { fetchPage: FetchPage } = {
+    fetchPage: async (stream, since) =>
+      (await listCatalogRecordsSince(db, {
+        tenantId: T2 as never,
+        outletId: T2outlet as never,
+        query: catalogSyncQuerySchema.parse({
+          stream,
+          limit: 100,
+          ...(since === null ? {} : { since }),
+          protocolVersion: CATALOG_PROTOCOL_VERSION,
+        }),
+      })) as unknown,
+  };
+
+  const pull2 = async () =>
+    (await pullCatalog({
+      database: edge2.database,
+      context: scope2("device"),
+      edgeNodeId: node2.id,
+      fetchPage: emptyCloud.fetchPage,
+      streams: [PROMOS],
+    } as never)) as PullResult;
+
+  beforeAll(async () => {
+    T2 = id();
+    T2outlet = id();
+    // A tenant of its own: same shape as the main one, its own brand and legal
+    // entity, so it owns no promotion.
+    await q(
+      `INSERT INTO tenants SELECT (json_populate_record(NULL::tenants,
+         (to_jsonb(t) || jsonb_build_object('id', $1::text, 'slug', $2::text))::json)).*
+         FROM tenants t WHERE t.id = $3`,
+      [T2, `horizon-${T2}`, tenantId],
+    );
+    const T2brand = id();
+    await q(
+      `INSERT INTO brands SELECT (json_populate_record(NULL::brands,
+         (to_jsonb(b) || jsonb_build_object('id', $1::text, 'tenant_id', $2::text))::json)).*
+         FROM brands b WHERE b.id = (SELECT brand_id FROM outlets WHERE id = $3)`,
+      [T2brand, T2, cafeLegendAccessFixtures.outletIds.bandung],
+    );
+    const T2legal = id();
+    await q(
+      `INSERT INTO legal_entities SELECT (json_populate_record(NULL::legal_entities,
+         (to_jsonb(l) || jsonb_build_object('id', $1::text, 'tenant_id', $2::text))::json)).*
+         FROM legal_entities l WHERE l.id = (SELECT legal_entity_id FROM outlets WHERE id = $3)`,
+      [T2legal, T2, cafeLegendAccessFixtures.outletIds.bandung],
+    );
+    await q(
+      `INSERT INTO outlets SELECT (json_populate_record(NULL::outlets,
+         (to_jsonb(o) || jsonb_build_object('id', $1::text, 'tenant_id', $2::text,
+            'code', $3::text, 'brand_id', $5::text, 'legal_entity_id', $6::text))::json)).*
+         FROM outlets o WHERE o.id = $4`,
       [
-        P,
-        tenantId,
-        JSON.stringify([
-          { kind: "item_quantity", menuItemIds: [id()], minQuantity: 1 },
-        ]),
-        JSON.stringify({ kind: "nominal_off", amountIdr: 1000 }),
+        T2outlet,
+        T2,
+        `ED${T2outlet.slice(0, 8)}`.toUpperCase(),
+        cafeLegendAccessFixtures.outletIds.bandung,
+        T2brand,
+        T2legal,
       ],
     );
-    await rewind(PROMOS);
+    const registered = await registerEdgeNode(scope2("session"), actor, {
+      outletId: T2outlet,
+      role: "standby",
+      label: "Mini PC uji promo kosong",
+    });
+    node2 = { id: registered.edgeNode.id, credential: registered.credential };
+    edge2 = await createEdgeDatabase({ tenantId: T2, outletId: T2outlet });
+    const found = await q(
+      "SELECT row_to_json(t) AS row FROM edge_nodes t WHERE id = $1",
+      [node2.id],
+    );
+    const client = await edge2.owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SET LOCAL session_replication_role = replica");
+      await client.query(
+        "INSERT INTO edge_nodes SELECT * FROM json_populate_record(NULL::edge_nodes, $1::json)",
+        [JSON.stringify(found.rows[0].row)],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }, 240_000);
 
-    const pulls = await pullUntilConfirmed(emptyPromos, PROMOS);
+  afterAll(async () => {
+    await edge2?.cleanup();
+    try {
+      await q("DELETE FROM edge_pull_checkpoints WHERE outlet_id = $1", [
+        T2outlet,
+      ]);
+      await q("DELETE FROM edge_nodes WHERE outlet_id = $1", [T2outlet]);
+      await q("DELETE FROM outlets WHERE id = $1", [T2outlet]);
+      await q("DELETE FROM brands WHERE tenant_id = $1", [T2]);
+      await q("DELETE FROM legal_entities WHERE tenant_id = $1", [T2]);
+      await q("DELETE FROM tenants WHERE id = $1", [T2]);
+    } catch {
+      // Best effort: private ids on a private tenant.
+    }
+  });
 
-    expect(pulls, "the replay of an empty stream is confirmed").toBeLessThan(9);
-    const [row] = (await edge.rows(
+  it("a promotion the restored cloud no longer has stops applying offline after the confirmation pull", async () => {
+    const seed = await pull2();
+    expect(seed.streams[PROMOS]?.error, "seed pull").toBeFalsy();
+    const P = id();
+    const client = await edge2.owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SET LOCAL session_replication_role = replica");
+      await client.query(
+        `INSERT INTO promotions
+           (id, tenant_id, name, description, status, voucher_required, starts_at,
+            ends_at, conditions, benefit, stack_group, stackable, priority, sync_txid)
+         VALUES ($1,$2,'Promo sebelum restore','','active',false,'2026-01-01T00:00:00Z',
+                 '2099-01-01T00:00:00Z',$3,$4,'horizon',false,0,11)`,
+        [
+          P,
+          T2,
+          JSON.stringify([
+            { kind: "item_quantity", menuItemIds: [id()], minQuantity: 1 },
+          ]),
+          JSON.stringify({ kind: "nominal_off", amountIdr: 1000 }),
+        ],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+    const rewound = await edge2.rows(
+      "UPDATE edge_pull_checkpoints SET watermark = 'rewind' WHERE edge_node_id = $1 AND stream = $2 RETURNING stream",
+      [node2.id, `catalog:${PROMOS}`],
+    );
+    expect(rewound, "rewind: checkpoint row exists").toHaveLength(1);
+
+    let confirmed = 0;
+    for (let n = 1; n <= 8 && confirmed === 0; n += 1) {
+      await settleCloud(mainOwner);
+      const result = await pull2();
+      expect(result.streams[PROMOS]?.error, `pull ${n}`).toBeFalsy();
+      const marker = await edge2.rows(
+        "SELECT watermark FROM edge_pull_checkpoints WHERE edge_node_id = $1 AND stream = $2",
+        [node2.id, `catalog:replay:${PROMOS}`],
+      );
+      if (marker.length === 0) confirmed = n;
+    }
+    expect(
+      confirmed,
+      "the replay of an empty stream is confirmed",
+    ).toBeGreaterThan(0);
+
+    const [row] = (await edge2.rows(
       "SELECT status, starts_at, ends_at FROM promotions WHERE id = $1",
       [P],
     )) as { status: string; starts_at: Date; ends_at: Date | null }[];
