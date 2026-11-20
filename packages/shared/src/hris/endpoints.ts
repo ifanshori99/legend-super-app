@@ -64,6 +64,8 @@ import {
   employeeStatusSchema,
   updateEmployeePiiInputSchema,
   changeEmployeeManagerInputSchema,
+  correctEmployeePtkpInputSchema,
+  employeePtkpChangeSchema,
 } from "./organization.ts";
 import {
   checklistTaskActionInputSchema,
@@ -218,6 +220,17 @@ export const updateEmployeePii = defineEndpoint({
     idempotencyKey: idempotencyKeySchema,
   }),
   response: dataResponseSchema(employeePiiSchema),
+});
+
+/** PTKP status with its effective day (bead 1223). */
+export const correctEmployeePtkpEndpoint = defineEndpoint({
+  method: "PUT",
+  path: "/api/hris/employees/:employeeId/ptkp",
+  params: employeeIdParams,
+  body: correctEmployeePtkpInputSchema.extend({
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(employeePtkpChangeSchema),
 });
 
 export const changeEmployeeManagerEndpoint = defineEndpoint({

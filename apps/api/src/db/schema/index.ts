@@ -54,6 +54,8 @@ export * from "./facility-pos-ticket";
 // WFC min-spend reminder outbox for guests without an account (legend-qr3sd).
 export * from "./wfc-guest-reminder";
 export * from "./hris";
+// HRIS PTKP status history per tax year (bead 1223).
+export * from "./hris-ptkp-history";
 // WS-10 leave, balances, accrual, holidays, overtime (legend-hggk).
 export * from "./hris-leave";
 // WS-10 shift scheduling: templates, roster, swaps, compliance (legend-jstx).

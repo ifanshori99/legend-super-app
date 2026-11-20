@@ -5,7 +5,13 @@
 // is linkable and the loader can prefetch it.
 import * as React from "react";
 import { Link } from "@tanstack/react-router";
-import { ArrowLeft, KeyRound, Lock, UserRoundCog } from "lucide-react";
+import {
+  ArrowLeft,
+  Calculator,
+  KeyRound,
+  Lock,
+  UserRoundCog,
+} from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -34,6 +40,7 @@ import {
   EmployeeStatusPill,
   EmploymentTypeBadge,
 } from "./employee-status";
+import { PtkpCorrectionDialog } from "./ptkp-correction-dialog";
 import { PayslipPinResetDialog } from "./payslip-pin-reset-dialog";
 import { ManagerChangeDialog } from "./manager-change-dialog";
 import { EmployeePiiPanel } from "./pii-panel";
@@ -53,11 +60,14 @@ export function EmployeeProfilePage({
   locked,
   canEditPii,
   canResetPin = false,
+  canCorrectPtkp = false,
 }: {
   employeeId: string;
   tab: ProfileTab;
   /** Payslip PIN reset (bead legend-ilzrj): needs `payroll.run`. */
   canResetPin?: boolean;
+  /** Koreksi status PTKP (bead 1223): `hr.employee.manage` + `payroll.run`. */
+  canCorrectPtkp?: boolean;
   /** HR-03: `hr.employee.manage` opens the write-only edit flow. */
   canEditPii: boolean;
   /**
@@ -74,6 +84,7 @@ export function EmployeeProfilePage({
       tab={tab}
       canEditPii={canEditPii}
       canResetPin={canResetPin}
+      canCorrectPtkp={canCorrectPtkp}
     />
   );
 }
@@ -105,14 +116,17 @@ function ProfileBody({
   tab,
   canEditPii,
   canResetPin,
+  canCorrectPtkp,
 }: {
   employeeId: string;
   tab: ProfileTab;
   canEditPii: boolean;
   canResetPin: boolean;
+  canCorrectPtkp: boolean;
 }) {
   const t = useT();
   const [resetOpen, setResetOpen] = React.useState(false);
+  const [ptkpOpen, setPtkpOpen] = React.useState(false);
   const [changingManager, setChangingManager] = React.useState(false);
   const employeeQuery = useEmployee(employeeId);
   const employeesQuery = useEmployees();
@@ -201,6 +215,16 @@ function ProfileBody({
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          {canCorrectPtkp && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPtkpOpen(true)}
+            >
+              <Calculator aria-hidden="true" />
+              {t("employeeMaster.profile.ptkp.trigger")}
+            </Button>
+          )}
           {canResetPin && (
             <Button
               variant="outline"
@@ -349,6 +373,14 @@ function ProfileBody({
         <EmployeeContracts employeeId={employeeId} timeZone={timeZone} />
       ) : (
         <EmployeeDocuments employeeId={employeeId} timeZone={timeZone} />
+      )}
+
+      {canCorrectPtkp && (
+        <PtkpCorrectionDialog
+          employee={employee}
+          open={ptkpOpen}
+          onOpenChange={setPtkpOpen}
+        />
       )}
 
       {canResetPin && (

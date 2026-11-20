@@ -3,6 +3,7 @@ import { z } from "zod";
 import { EmployeeProfilePage } from "@/features/ws10-employee-master/components/employee-profile-page";
 import {
   canEditEmployeePii,
+  canCorrectEmployeePtkp,
   canResetPayslipPin,
   canViewEmployees,
 } from "@/features/ws10-employee-master/guard";
@@ -59,6 +60,7 @@ function ProfileScreen() {
       locked={!canViewEmployees(access)}
       canEditPii={canEditEmployeePii(access)}
       canResetPin={canResetPayslipPin(access)}
+      canCorrectPtkp={canCorrectEmployeePtkp(access)}
     />
   );
 }

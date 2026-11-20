@@ -133,6 +133,7 @@ import {
   type PayrollRunTaxEmployee,
 } from "./payroll-run-pph21.service.ts";
 import { assertNoOverlappingRegularPayslips } from "./payroll-run-overlap.ts";
+import { loadTaxYearPtkpStatuses } from "./payroll-ptkp-tax-year.ts";
 import {
   assertRunUnchanged,
   loadRunRapelAllocations,
@@ -703,7 +704,7 @@ export async function simulatePayrollRunInTransaction(
   });
 
   // Population (decided O7, see header), ordered by id.
-  const memberRows = await tx
+  const rawMemberRows = await tx
     .select({
       id: employees.id,
       employeeNo: employees.employeeNo,
@@ -734,6 +735,21 @@ export async function simulatePayrollRunInTransaction(
     )
     .where(runMemberFilter(tenantId, run, employmentTypes))
     .orderBy(asc(employees.id));
+  // Bead 1223 (PMK 168/2023): the PTKP (and so the TER category) of the tax
+  // year is the status on 1 January, or on the join date when he starts during
+  // the year; a change in the middle of the year applies from the next year.
+  // No status on the employee still blocks him (missing PTKP below).
+  const taxYearPtkp = await loadTaxYearPtkpStatuses(
+    tx,
+    tenantId,
+    Number(run.payDate.slice(0, 4)),
+    rawMemberRows,
+  );
+  const memberRows = rawMemberRows.map((m) => ({
+    ...m,
+    ptkpStatus:
+      m.ptkpStatus === null ? null : (taxYearPtkp.get(m.id) ?? m.ptkpStatus),
+  }));
   const listed = thrEmployeeIds;
   const listedMembers =
     listed === null ? memberRows : memberRows.filter((m) => listed.has(m.id));

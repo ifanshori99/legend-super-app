@@ -56,3 +56,14 @@ export const PAYSLIP_PIN_RESET_PERMISSIONS = ["payroll.run"] as const;
 export function canResetPayslipPin(access: AreaAccess): boolean {
   return holdsAny(access, PAYSLIP_PIN_RESET_PERMISSIONS);
 }
+
+/**
+ * Koreksi status PTKP (bead 1223): the API needs `hr.employee.manage` and
+ * `payroll.run` together on the employee's home outlet. Presentation only.
+ */
+export function canCorrectEmployeePtkp(access: AreaAccess): boolean {
+  return (
+    holdsAny(access, ["hr.employee.manage"]) &&
+    holdsAny(access, ["payroll.run"])
+  );
+}

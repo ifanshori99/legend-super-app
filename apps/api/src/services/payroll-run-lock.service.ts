@@ -118,6 +118,7 @@ import {
   lockRapelInputsForRun,
 } from "./payroll-run-rapel-lock.ts";
 import { assertNoOverlappingRegularPayslips } from "./payroll-run-overlap.ts";
+import { loadTaxYearPtkpStatuses } from "./payroll-ptkp-tax-year.ts";
 import {
   applyLockLoanDeductions,
   lockLoansForRunLock,
@@ -502,7 +503,12 @@ export async function lockPayrollRunInTransaction(
           plan.map((entry) => entry.employeeId),
         ),
       ),
-    );
+    )
+    // Bead 1223 r3: FOR SHARE, in id order, so a PTKP correction (which holds
+    // the employee row FOR UPDATE) cannot commit between the PTKP check below
+    // and the lock; one that committed while we waited is read.
+    .orderBy(asc(employees.id))
+    .for("share");
   const joinDates = new Map(
     joined.map((employee) => [employee.id, employee.joinDate as BusinessDate]),
   );
@@ -516,6 +522,23 @@ export async function lockPayrollRunInTransaction(
       joinDates.get(entry.employeeId) !== entry.stored.joinDate ||
       liveDates.get(entry.employeeId) !== (entry.stored.endDate ?? null)
     )
+      throw resultStale();
+  }
+  // Bead 1223 r3: the PTKP of the tax year (history, status on 1 January or
+  // the join date) may have been corrected since the simulation. A result
+  // computed with another status is stale: simulate again.
+  const taxYearPtkp = await loadTaxYearPtkpStatuses(
+    tx,
+    tenantId,
+    Number(run.payDate.slice(0, 4)),
+    joined.map((employee) => ({
+      id: employee.id,
+      joinDate: employee.joinDate,
+    })),
+  );
+  for (const entry of plan) {
+    const status = taxYearPtkp.get(entry.employeeId);
+    if (status !== undefined && status !== entry.calculation.tax.ptkpStatus)
       throw resultStale();
   }
   const priors = await loadTaxYearPriors(

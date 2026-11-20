@@ -184,6 +184,28 @@ Rollback is a restore of the backup taken before the migration, not a down
 migration. After the start, the worker retries the webhook events that were
 held back while the services were stopped; check that the queue drains.
 
+### PTKP history backfill: after 0520, before the next payroll simulate (bead 1223)
+
+A release that contains 0519/0520 (`employee_ptkp_history`) needs a one-shot
+backfill, run ONCE: right after `pnpm db:migrate`, before anyone simulates a
+payroll run, before any HR PTKP correction (`PUT /api/hris/employees/:id/ptkp`)
+and before 1 January (it reads the running year's locked slips). The script
+refuses a tenant where an HR correction is already audited; `--force` overrides
+that only when the correction may be overwritten. Migration 0519 recorded each employee's status of today from his join
+date; an employee whose status changed earlier this year would otherwise be
+computed with the new status for the whole tax year. From `apps/api`, with the
+migration owner's connection (`MIGRATION_DATABASE_URL`):
+
+```sh
+pnpm exec tsx src/db/backfill-ptkp-history.ts            # running tax year (Jakarta)
+pnpm exec tsx src/db/backfill-ptkp-history.ts --year 2026 # an explicit year
+```
+
+For every employee with a locked or paid payslip in that year it writes the
+status of his first payslip of the year on 1 January (or his join date), and,
+when his status today differs, today's status from the deploy date (in force
+from the next tax year). It is idempotent and prints counts only.
+
 Apply migrations once per release. Both servers honor `PORT` and `HOST`. The API bundle (`apps/api/dist`) includes its dependencies; it needs only `dist/` (and `drizzle/` for migrations).
 
 ## Docker images

@@ -4,6 +4,7 @@
 import type { AnyEndpoint, EndpointInput } from "@starter/shared/api";
 import {
   changeEmployeeManagerEndpoint,
+  correctEmployeePtkpEndpoint,
   getEmployee,
   getEmployeePii,
   listEmployeeDocuments,
@@ -70,3 +71,9 @@ export const saveEmployeeManager = (
   params: Params<typeof changeEmployeeManagerEndpoint>,
   body: Body<typeof changeEmployeeManagerEndpoint>,
 ) => callEndpoint(changeEmployeeManagerEndpoint, { params, body });
+
+/** Koreksi status PTKP (bead 1223): status, day in force and reason. */
+export const saveEmployeePtkp = (
+  params: Params<typeof correctEmployeePtkpEndpoint>,
+  body: Body<typeof correctEmployeePtkpEndpoint>,
+) => callEndpoint(correctEmployeePtkpEndpoint, { params, body });

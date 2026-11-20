@@ -1164,6 +1164,28 @@ describe("Coretax A1 export: official DJP BPA1 format (legend-y6w4q)", () => {
   });
 });
 
+describe("Coretax A1 export: PTKP is the slip's (bead 1223 r3)", () => {
+  it("[coretax-a1-ptkp-from-slip] a status recorded later for that year (history and profile K/2) never changes the A1: TaxExemptOpt stays the locked slip's TK/0", async () => {
+    const world = await makeWorld(digits(16));
+    const a = await makeEmployee(world);
+    await seedRun(world, "locked", [slipA(a)], runDates(3));
+    await asTenant(tenant.id, async (conn) => {
+      await conn.query(
+        `INSERT INTO employee_ptkp_history (tenant_id, employee_id, effective_from, ptkp_status)
+         VALUES ($1, $2, $3, 'K/2')
+         ON CONFLICT (tenant_id, employee_id, effective_from) DO UPDATE SET ptkp_status = 'K/2'`,
+        [tenant.id, a.id, `${YEAR}-01-01`],
+      );
+      await conn.query(
+        "UPDATE employees SET ptkp_status = 'K/2' WHERE tenant_id = $1 AND id = $2",
+        [tenant.id, a.id],
+      );
+    });
+    const { xml } = await exportA1Ok(world);
+    expect(field(a1ByNik(xml).get(a.nik!)!, "TaxExemptOpt")).toBe("TK/0");
+  });
+});
+
 describe("Coretax A1 export: Article21IncomeTax is the PPh 21 already withheld", () => {
   it("[coretax-a1-article21-equals-slip-pph21] per employee Article21IncomeTax is the sum of the year's locked slips' PPh 21; other years and reversed runs are left out", async () => {
     const world = await makeWorld(digits(16));
