@@ -65,7 +65,7 @@ import {
 } from "@starter/shared/pos";
 import { db } from "../db/index.ts";
 import { edgeNodes } from "../db/schema/edge-node.ts";
-import { isHeartbeatFresh } from "../edge/link-freshness.ts";
+import { isHeartbeatFreshForDayClose } from "../edge/link-freshness.ts";
 import { getEdgeRuntimeState } from "../edge/runtime.ts";
 import {
   domainEventOutbox,
@@ -785,7 +785,9 @@ export async function getEndOfDayRecap(
  * day on the edge (day/close is an edge route). Late offline orders reach the
  * cloud only through the order ingest, so a cloud close would freeze a recap
  * that misses them: refuse with 409 DAY_CLOSE_ON_EDGE. An active primary whose
- * heartbeat is stale (edge down at end of day) must not strand the day, so the
+ * heartbeat is older than EDGE_DAY_CLOSE_STALE_SECONDS (default 15 min, not the
+ * 45 s link freshness: a short link drop must not close a live edge's day; edge
+ * down at end of day) must not strand the day, so the
  * cloud may close it (Q24); edge data that arrives later is a late adjustment
  * (full flow with the failover bead legend-b3k). Returns true for that stale
  * case so the caller audits it. Same edge-process rule as pos-receipt (static
@@ -812,7 +814,7 @@ async function assertDayClosesOnCloud(
     )
     .limit(1);
   if (!edge) return { staleEdge: false };
-  if (isHeartbeatFresh(edge.lastHeartbeatAt, now))
+  if (isHeartbeatFreshForDayClose(edge.lastHeartbeatAt, now))
     throw new PosError("DAY_CLOSE_ON_EDGE");
   return { staleEdge: true };
 }

@@ -4,7 +4,8 @@
 // order ingest. A second Tutup Hari in the cloud would freeze a recap that
 // misses those orders, so the cloud refuses it: 409 DAY_CLOSE_ON_EDGE.
 // Founder Q24 (edge-cloud-failover.md): an edge that is down at end of day
-// (active but heartbeat stale) must not strand the day, so the cloud closes
+// (active but heartbeat older than
+// EDGE_DAY_CLOSE_STALE_SECONDS, default 15 min) must not strand the day, so the cloud closes
 // and audits it. An outlet without an active primary edge (none, standby only,
 // revoked), a replay by the same key, and the edge process itself keep
 // closing as before.
@@ -127,11 +128,22 @@ describe("Tutup Hari cloud vs edge outlet (legend-k0i8)", () => {
   });
 
   it("Q24 an active primary whose heartbeat is stale lets the cloud close, with an audit", async () => {
-    primaryId = await addEdge("primary", new Date(Date.now() - 15 * 60_000));
+    primaryId = await addEdge("primary", new Date(Date.now() - 20 * 60_000));
     const response = await close("2025-01-15", staleKey);
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     expect(await dailyCloseCount("2025-01-15")).toBe(1);
     expect(await staleCloseAudits()).toBe(1);
+  });
+
+  it("a heartbeat 5 minutes old (past the 45 s link limit) still counts as a live edge", async () => {
+    await owner.query(
+      "UPDATE edge_nodes SET last_heartbeat_at = now() - interval '5 minutes' WHERE id = $1",
+      [primaryId],
+    );
+    const response = await close("2025-01-18");
+    expect(response.status, JSON.stringify(response.body)).toBe(409);
+    expect(response.body.error.code).toBe("DAY_CLOSE_ON_EDGE");
+    expect(await dailyCloseCount("2025-01-18")).toBe(0);
   });
 
   it("a healthy active primary makes the cloud refuse Tutup Hari with 409 DAY_CLOSE_ON_EDGE", async () => {
