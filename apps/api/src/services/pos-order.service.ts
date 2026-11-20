@@ -80,6 +80,7 @@ import {
 import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { orderGivenOf } from "./order-given.ts";
 import { logger } from "../lib/logger.ts";
 import {
   cancelKitchenItemsForVoidedLines,
@@ -1697,6 +1698,21 @@ export async function voidPosOrder(
           "CONFLICT",
           "Pesanan sudah dibayar sebagian; selesaikan lalu koreksi dengan void/refund tertaut.",
         );
+      // legend-v6is2 (restrictive rule): the void gives every points tender
+      // back in full, so a points-paid bill that still holds an apology or
+      // CRM voucher (`orderGivenOf().vouchersIdr`: any voucher not cancelled,
+      // used or not) would hand the guest the points AND the voucher. Refused
+      // until the voucher is cancelled; nothing is cut or recomputed here.
+      // Checked before the approval is consumed.
+      if (pointsOnly) {
+        const given = await orderGivenOf(tx, tenantId, order.id);
+        if (given.vouchersIdr > 0)
+          throw new HttpError(
+            409,
+            "VOID_POINTS_HAS_VOUCHER",
+            "Pesanan ini dibayar poin dan masih punya voucher maaf yang belum dibatalkan. Batalkan voucher dulu sebelum void.",
+          );
+      }
       const override = await consumeApproval(tx, context, {
         action: "void",
         purpose: "order_void",

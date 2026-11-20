@@ -1955,3 +1955,85 @@ describe("1203 review fixes", () => {
     expect(await balanceNow(member)).toBe(1_000);
   });
 });
+
+// ================================================================================
+// legend-v6is2: a points-paid bill that still holds an apology / CRM voucher
+// ================================================================================
+
+/** A kitchen issue on the bill's first line that stores a live CRM voucher. */
+async function voucherOnBill(order: CreatedOrder, member: Member) {
+  const voucherId = randomUUID();
+  await asTenant(world.tenant.tenantId, async (client) => {
+    await client.query(
+      `INSERT INTO vouchers (id, tenant_id, customer_profile_id, code_hash, source, value_idr, valid_from)
+       VALUES ($1, $2, $3, $4, 'loyalty_reward', 5000, now() - interval '1 hour')`,
+      [
+        voucherId,
+        world.tenant.tenantId,
+        member.profile.id,
+        randomUUID().replace(/-/g, "").repeat(2),
+      ],
+    );
+    const line = await client.query<{ id: string }>(
+      `SELECT id FROM order_items WHERE tenant_id = $1 AND order_id = $2 LIMIT 1`,
+      [world.tenant.tenantId, ulidToUuid(order.id)],
+    );
+    await client.query(
+      `INSERT INTO order_issues (id, tenant_id, outlet_id, order_id, order_item_id, type, reason,
+       reason_note, reported_by, cost_idr, idempotency_key, voucher_id)
+       VALUES ($1, $2, $3, $4, $5, 'unfulfillable', 'out_of_stock', 'v6is2', $6, 0, $7, $8)`,
+      [
+        randomUUID(),
+        world.tenant.tenantId,
+        order.outletId,
+        ulidToUuid(order.id),
+        line.rows[0]!.id,
+        world.cashier.userId,
+        `v6is2-${randomUUID()}`,
+        voucherId,
+      ],
+    );
+  });
+  return voucherId;
+}
+
+describe("legend-v6is2 void of a points-paid bill with a live voucher", () => {
+  it("v6is2-01 the void is refused 409 while the voucher is live: no points back, tender stays captured", async () => {
+    const member = await newMember(1_000);
+    const order = await newOrder(member);
+    const token = await mintOk(member, order.id, 100);
+    const done = await cashierRedeem(order, 100, { token });
+    expect(redeemed(done.status), JSON.stringify(done.body)).toBe(true);
+    await voucherOnBill(order, member);
+
+    const refused = await voidNow(order);
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(refused.body.error?.code).toBe("VOID_POINTS_HAS_VOUCHER");
+    expect(await balanceNow(member)).toBe(900);
+    expect(await restoreRows(member)).toHaveLength(0);
+    expect((await pointsTenders(order)).map((row) => row.status)).toEqual([
+      "captured",
+    ]);
+  });
+
+  it("v6is2-02 once the voucher is cancelled the void goes through and gives the points back once", async () => {
+    const member = await newMember(1_000);
+    const order = await newOrder(member);
+    const token = await mintOk(member, order.id, 100);
+    expect(redeemed((await cashierRedeem(order, 100, { token })).status)).toBe(
+      true,
+    );
+    const voucherId = await voucherOnBill(order, member);
+    await asTenant(world.tenant.tenantId, (client) =>
+      client.query(
+        `UPDATE vouchers SET status = 'cancelled', cancelled_reason = 'v6is2' WHERE tenant_id = $1 AND id = $2`,
+        [world.tenant.tenantId, voucherId],
+      ),
+    );
+
+    const voided = await voidNow(order);
+    expect(voided.status, JSON.stringify(voided.body)).toBe(200);
+    expect(await balanceNow(member)).toBe(1_000);
+    expect(await restoreRows(member)).toHaveLength(1);
+  });
+});

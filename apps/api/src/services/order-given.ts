@@ -41,7 +41,12 @@
 //     `pos-refund-gateway:<pos_order_refunds.id>:<intent>`, already inside
 //     `pos_refunds`). No column links the two tables; the key row's
 //     `response.refundId` is the only link. Not matched = counted (restrictive).
-//   * Open refund holds (`refund_recon_holds`) are not on this branch yet.
+//   * legend-byws7: an open refund hold of the intent (`refund_recon_holds`,
+//     `resolved_at IS NULL`, `openReconHoldIdrSql`: a transaction-conflict
+//     hold in full, any other less what a counted provider fact of the same
+//     refund already carries, so it is not subtracted twice) is subtracted
+//     from what the intent counts, on the POS tenders, the order intents and
+//     the swap charges alike, until finance resolves it.
 // - Per line (Q25 is per item): the vouchers and live recovery refunds of the
 //   issues of each ORIGINAL line, a replacement line mapped back to the line it
 //   replaced through the swap chain (`originalOf`).
@@ -57,6 +62,7 @@ import { posOrderRefunds } from "../db/schema/pos-order.ts";
 import { orderIssues } from "../db/schema/kds-issues.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { providerRefundedForeignIdrSql } from "./payment-provider-refunded-foreign-sql.ts";
+import { openReconHoldIdrSql } from "./reservation-deposit-credit.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { allocateRefundRowIdr } from "./order-given-history.ts";
 import type { Tx } from "./permission-resolver.ts";
@@ -97,6 +103,13 @@ const latePaid = (alias: string) =>
                     `pk.key = '${prefix}' || ${alias}.id::text OR pk.key LIKE '${prefix}' || ${alias}.id::text || ':%'`,
                 ).join(" OR ")}))`,
   );
+
+// legend-byws7: the open refund holds of the intent (see the header). `alias`
+// is the payment_intents alias.
+const openHolds = (alias: string) =>
+  openReconHoldIdrSql(sql.raw(`${alias}.tenant_id`), sql.raw(`${alias}.id`), {
+    includeCreditUsed: true,
+  });
 
 // 1116: our own gateway refunds of the intent (not failed) that no other part
 // of `OrderGiven` counts: not a recovery refund of an issue of this order
@@ -155,7 +168,8 @@ const chargeNetSql = (tenantId: string) => sql`(CASE
          AND (ci.id IS NULL OR ${flagged("ci")} OR ${latePaid("ci")}) THEN 0
     ELSE greatest(0, CASE WHEN ci.id IS NULL THEN c.amount_idr
                           ELSE least(c.amount_idr, ${allocated("ci")})
-                               - ${providerRefundedForeignIdrSql(sql`${tenantId}::uuid`, sql`ci.id`, undefined, false)} END
+                               - ${providerRefundedForeignIdrSql(sql`${tenantId}::uuid`, sql`ci.id`, undefined, false)}
+                               - ${openHolds("ci")} END
     - coalesce((SELECT sum(r.amount_idr)
                   FROM payment_refunds r
                  WHERE r.tenant_id = c.tenant_id
@@ -237,7 +251,8 @@ export async function orderGivenOf(
                   WHEN ${flagged("i")} OR ${latePaid("i")} THEN 0
                   ELSE greatest(0, s.amount
                          - ${providerRefundedForeignIdrSql(sql`${tenantId}::uuid`, sql`i.id`, undefined, false)}
-                         - ${ownRefunds("i", orderUuid)}) END), 0)
+                         - ${ownRefunds("i", orderUuid)}
+                         - ${openHolds("i")}) END), 0)
                  FROM (SELECT t.payment_intent_id, sum(t.amount_idr) AS amount
                          FROM pos_order_tenders t
                         WHERE t.tenant_id = ${tenantId}
@@ -255,7 +270,8 @@ export async function orderGivenOf(
                           WHEN ${flagged("i")} OR ${latePaid("i")} THEN 0
                           ELSE greatest(0, ${allocated("i")}
                                  - ${providerRefundedForeignIdrSql(sql`${tenantId}::uuid`, sql`i.id`, undefined, false)}
-                                 - ${ownRefunds("i", orderUuid)}) END), 0)
+                                 - ${ownRefunds("i", orderUuid)}
+                                 - ${openHolds("i")}) END), 0)
                    FROM payment_intents i
                   WHERE i.tenant_id = ${tenantId}
                     AND (i.order_id = ${orderUuid}::uuid

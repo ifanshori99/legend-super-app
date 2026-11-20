@@ -32,7 +32,8 @@
 //   payment-overpay-provider-refund-1016; `force: true` skips the in-flight "retry"
 //   window. The payment reference is the intent's own provider_ref, or the evidence
 //   reference when that does not bind; the outcome must be "recorded" (setup guard).
-// - "Open refund hold" (refund_recon_holds) is not on this branch: it.todo only.
+// - "Open refund hold" (refund_recon_holds, legend-byws7): a raw open hold row on the
+//   intent (no provider transaction, so no fact covers it) counts in full.
 // - Gateway refund of ours = a payment_refunds row on the order's intent, status
 //   pending / approved / completed (counts), failed (does not count), no
 //   order_issue_id, no link to a POS refund. Raw rows, like payment-refund-qr-net-
@@ -347,6 +348,18 @@ async function flagProviderRefunded(
     `UPDATE payment_intents SET ${column} = now() WHERE tenant_id = $1 AND id = $2`,
     [tenantId(), intentId],
   );
+}
+
+/** legend-byws7: an open refund hold (finance not decided yet) on the intent. */
+async function openRefundHold(intentId: string, amountIdr: number) {
+  const id = randomUUID();
+  await owner.query(
+    `INSERT INTO refund_recon_holds
+       (id, tenant_id, payment_intent_id, webhook_event_id, amount_idr, reason)
+     VALUES ($1, $2, $3, $4, $5, 'provider_refund_unmatched')`,
+    [id, tenantId(), intentId, randomUUID(), amountIdr],
+  );
+  return id;
 }
 
 async function voidedIdr(orderId: string): Promise<number> {
@@ -734,9 +747,20 @@ for (const kind of ["qr", "pos"] as const) {
       }
     });
 
-    it.todo(
-      "an open refund hold (refund_recon_holds) on the payment also reduces the room: not on this branch (ws/1072 only), follow-up bead for the merge train",
-    );
+    it("legend-byws7 an open refund hold of 30.000 on the payment caps the voucher at 19.665; resolving it gives the room back", async () => {
+      const { paid, intent } = await paidOrderOfKind(kind);
+      const holdId = await openRefundHold(intent.id, 30_000);
+      await expectRoom(paid, ORDER_PAID - 30_000, paid.kopiLine);
+      await owner.query(
+        `UPDATE refund_recon_holds
+            SET resolved_at = now(), resolution = 'not_this_intent'
+          WHERE tenant_id = $1 AND id = $2`,
+        [tenantId(), holdId],
+      );
+      // 19.665 already out as a voucher; the hold resolved leaves 30.000 of
+      // the order, capped by the roti line (20.790).
+      await expectRoom(paid, Math.min(30_000, ROTI_PAID), paid.rotiLine);
+    });
   });
 }
 
@@ -907,6 +931,29 @@ describe("1116-P1b cashier refund and void on a POS sale paid by QRIS", () => {
     );
     expect(over.ok, "above the money still held").toBe(false);
     expect(await p.posRefundRows(paid.orderId)).toEqual([]);
+  });
+
+  it("legend-byws7 an open refund hold of 30.000: a cashier refund of 19.666 is refused, 19.665 accepted; the void is refused", async () => {
+    const { paid, intent } = await paidOrderOfKind("pos");
+    await openRefundHold(intent.id, 30_000);
+
+    const over = await p.posRefund(
+      paid.orderId,
+      await p.refundInput(paid.orderId, ORDER_PAID - 30_000 + 1),
+    );
+    expect(over.ok, "above the money not held").toBe(false);
+    expect(await p.posRefundRows(paid.orderId)).toEqual([]);
+
+    const voided = await p.cloudVoid(paid.orderId);
+    expect(voided.ok, "void would pay back the held money").toBe(false);
+    expect(await p.voidCount(paid.orderId)).toBe(0);
+
+    const exact = await p.posRefund(
+      paid.orderId,
+      await p.refundInput(paid.orderId, ORDER_PAID - 30_000),
+    );
+    expect(exact.ok, JSON.stringify(exact)).toBe(true);
+    expect(await p.posRefundRows(paid.orderId)).toEqual([ORDER_PAID - 30_000]);
   });
 
   it("the provider refunded 30.000: the void of the whole sale (49.665) is refused", async () => {
