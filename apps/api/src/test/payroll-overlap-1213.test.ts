@@ -525,3 +525,81 @@ describe("[1213c] a cycle change cannot reopen days a live run already covers", 
     });
   });
 });
+
+// ---- architect review (P2): concurrency across entities, reversed, past-dated --
+
+describe("[1213 review] tenant-wide overlap guard", () => {
+  it("two locks at once for one transferred employee in two legal entities: exactly one wins, the other is 409", async () => {
+    const entityA = await makeEntity("r1a");
+    const entityB = await makeEntity("r1b");
+    const policyA = await rawPolicy(entityA);
+    const policyB = await rawPolicy(entityB);
+    const employee = await makeEmployee(entityA);
+    const runA = await approvedRun(entityA, policyA, NOV);
+    // The employee moves to entity B before B's run is simulated.
+    await asTenant(
+      (conn) =>
+        conn.query(
+          "UPDATE employees SET legal_entity_id = $2 WHERE tenant_id = $3 AND id = $1",
+          [employee, entityB, tenant.id],
+        ),
+      true,
+    );
+    const runB = await approvedRun(entityB, policyB, NOV);
+    const outcomes = await Promise.all([
+      failureOf(lockRun(runA)),
+      failureOf(lockRun(runB)),
+    ]);
+    const failures = outcomes.filter((failure) => failure !== null);
+    expect(failures.map((failure) => failure?.code)).toEqual([RUN_OVERLAP]);
+    expect(failures[0]?.status).toBe(409);
+    expect((await slipCount(runA)) + (await slipCount(runB))).toBe(1);
+  });
+
+  it("a reversed run does not block a new run for the same employee and period", async () => {
+    const entity = await makeEntity("r2");
+    const first = await rawPolicy(entity);
+    const second = await rawPolicy(entity);
+    await makeEmployee(entity);
+    const locked = await approvedRun(entity, first, NOV);
+    await lockRun(locked);
+    await asTenant(
+      (conn) =>
+        conn.query(
+          `UPDATE payroll_runs SET status = 'reversed', reversal = '{"status":"approved"}'::jsonb
+            WHERE tenant_id = $1 AND id = $2`,
+          [tenant.id, locked],
+        ),
+      true,
+    );
+    const next = await draftRun(entity, second, NOV);
+    await simulateRun(next);
+  });
+
+  it("a past-dated run made after a cycle change is refused at lock when its days are paid", async () => {
+    const entity = await makeEntity("r3");
+    const october = await rawPolicy(entity);
+    const shifted = await rawPolicy(entity);
+    await makeEmployee(entity);
+    const paid = await approvedRun(entity, october, OCT);
+    // No live run on this policy, so the cycle change is allowed ...
+    await patchPolicy(shifted, {
+      cycle: {
+        frequency: "monthly",
+        cutoffDay: 25,
+        payDay: 28,
+        payMonthOffset: 0,
+      },
+    });
+    // ... and a run for a past reference date now straddles the paid days.
+    const late = await approvedRun(entity, shifted, {
+      periodStart: "2026-09-26",
+      periodEnd: "2026-10-25",
+      payDate: "2026-10-28",
+    });
+    await lockRun(paid);
+    const failure = await failureOf(lockRun(late));
+    expect(failure?.status).toBe(409);
+    expect(failure?.code).toBe(RUN_OVERLAP);
+  });
+});
