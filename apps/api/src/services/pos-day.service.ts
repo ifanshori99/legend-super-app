@@ -64,6 +64,9 @@ import {
   type EndOfDayRecapView,
 } from "@starter/shared/pos";
 import { db } from "../db/index.ts";
+import { edgeNodes } from "../db/schema/edge-node.ts";
+import { isHeartbeatFreshForDayClose } from "../edge/link-freshness.ts";
+import { getEdgeRuntimeState } from "../edge/runtime.ts";
 import {
   domainEventOutbox,
   outlets,
@@ -776,6 +779,46 @@ export async function getEndOfDayRecap(
   });
 }
 
+/**
+ * legend-k0i8 + founder Q24 (docs/design/edge-cloud-failover.md, "Founder
+ * decisions"): an outlet served by a HEALTHY active primary edge closes its
+ * day on the edge (day/close is an edge route). Late offline orders reach the
+ * cloud only through the order ingest, so a cloud close would freeze a recap
+ * that misses them: refuse with 409 DAY_CLOSE_ON_EDGE. An active primary whose
+ * heartbeat is older than EDGE_DAY_CLOSE_STALE_SECONDS (default 15 min, not the
+ * 45 s link freshness: a short link drop must not close a live edge's day; edge
+ * down at end of day) must not strand the day, so the
+ * cloud may close it (Q24); edge data that arrives later is a late adjustment
+ * (full flow with the failover bead legend-b3k). Returns true for that stale
+ * case so the caller audits it. Same edge-process rule as pos-receipt (static
+ * EDGE_MODE counts in the boot window): the edge itself never refuses.
+ */
+async function assertDayClosesOnCloud(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: OutletId,
+  now: Date,
+): Promise<{ staleEdge: boolean }> {
+  if (getEdgeRuntimeState().edgeMode || process.env.EDGE_MODE === "true")
+    return { staleEdge: false };
+  const [edge] = await tx
+    .select({ lastHeartbeatAt: edgeNodes.lastHeartbeatAt })
+    .from(edgeNodes)
+    .where(
+      and(
+        eq(edgeNodes.tenantId, context.tenant.tenantId),
+        eq(edgeNodes.outletId, outletId),
+        eq(edgeNodes.role, "primary"),
+        eq(edgeNodes.status, "active"),
+      ),
+    )
+    .limit(1);
+  if (!edge) return { staleEdge: false };
+  if (isHeartbeatFreshForDayClose(edge.lastHeartbeatAt, now))
+    throw new PosError("DAY_CLOSE_ON_EDGE");
+  return { staleEdge: true };
+}
+
 /** POST close business day (Tutup Hari): freezes the recap, emits `day.closed`. */
 export async function closePosDay(
   context: ScopedTenantContext,
@@ -828,6 +871,14 @@ export async function closePosDay(
         );
       return endOfDayRecapSchema.parse(replay.recap);
     }
+
+    // After the replay check, so a retry with the same key still gets 200.
+    const { staleEdge } = await assertDayClosesOnCloud(
+      tx,
+      context,
+      outletId,
+      now,
+    );
 
     const [existing] = await tx
       .select({ id: posDailyCloses.id })
@@ -1079,6 +1130,32 @@ export async function closePosDay(
       },
       AUDIT_SAFE_FIELDS,
     );
+    if (staleEdge)
+      await recordAudit(
+        tx,
+        context,
+        {
+          id: createUlid(now.getTime()),
+          tenantId,
+          outletId,
+          actorType: "user",
+          actorId: caller.userId,
+          deviceId: null,
+          action: "day.closed_from_cloud_edge_stale",
+          objectType: "pos_daily_close",
+          objectId: recap.id,
+          reason: null,
+          maskedChanges: {
+            before: null,
+            after: { businessDate: body.businessDate },
+          },
+          ipHash: null,
+          sensitiveAccess: false,
+          retentionClass: "audit_2y",
+          createdAt: closedAt,
+        },
+        AUDIT_SAFE_FIELDS,
+      );
     return recap;
   });
 }

@@ -172,6 +172,7 @@ test("POS-06: cloud receipt prefix is fixed and edge refusals have their own cod
     "RECEIPT_SEQUENCE_NOT_PROVISIONED",
     "RECEIPT_VOID_UNMATCHED",
     "RECEIPT_DEVICE_ON_EDGE",
+    "DAY_CLOSE_ON_EDGE",
   ]) {
     assert.equal(pos.POS_ERROR_CODES.includes(code), true);
     assert.equal(new pos.PosError(code).code, code);

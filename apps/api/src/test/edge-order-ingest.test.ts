@@ -604,6 +604,7 @@ afterAll(async () => {
       [tenantId],
     );
     for (const table of [
+      "pos_daily_closes",
       "edge_order_ingests",
       "pos_order_voids",
       "pos_order_tenders",
@@ -1583,5 +1584,61 @@ describe("legend-771dl an ingested order has no payment ledger rows", () => {
       expect(tender.payment_intent_id).toBeNull();
       expect(tender.payment_link_id).toBeNull();
     }
+  });
+});
+
+// legend-k0i8 (1248, founder Q24): the cloud may close a day while the edge is
+// down; edge orders that arrive afterwards must not vanish or edit that frozen
+// day. Observed behaviour: the order is ingested as a normal completed cloud
+// order on its own business date, the stored day close (totals + recap) stays
+// byte-for-byte what it was, and no second close row appears. There is no late
+// flag, audit row or manager notification yet (bead legend-b3k failover).
+describe("legend-k0i8 edge order ingested after the cloud closed its day", () => {
+  it("is kept as a cloud order and leaves the frozen day close untouched", async () => {
+    const closeId = randomUUID();
+    await q(
+      `INSERT INTO pos_daily_closes
+         (id, tenant_id, outlet_id, business_date, order_count, total_sales_idr,
+          total_refunds_idr, total_voids_idr, total_variance_idr,
+          inventory_deduction_applied, recap, closed_by, closed_at,
+          idempotency_key, request_fingerprint)
+       VALUES ($1, $2, $3, $4, 0, 0, 0, 0, 0, false, '{"frozen":true}'::jsonb,
+               $5, now(), $6, $7)`,
+      [
+        closeId,
+        tenantId,
+        outletA,
+        BUSINESS_DATE,
+        cashierId,
+        randomUUID(),
+        "f".repeat(64),
+      ],
+    );
+    const frozenSql = `SELECT order_count, total_sales_idr::int AS total,
+        recap::text AS recap, closed_at::text AS closed_at
+      FROM pos_daily_closes WHERE tenant_id = $1 AND outlet_id = $2 AND business_date = $3`;
+    const before = await q(frozenSql, [tenantId, outletA, BUSINESS_DATE]);
+
+    const orderId = createUlid(++clock);
+    const event = paidEvent(orderId);
+    await deliver([event]);
+
+    // Not lost: one completed cloud order on its own business date, ledgered
+    // as ingested, and the raw event is parked.
+    const rows = await orderRows(orderId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      status: "completed",
+      business_date: BUSINESS_DATE,
+      outlet_id: outletA,
+    });
+    expect((await ingestOf(orderId))?.state).toBe("ingested");
+    expect(await parkedRowsOf(event)).toBe(1);
+
+    // Not edited: the frozen close is identical and still the only one.
+    expect(await q(frozenSql, [tenantId, outletA, BUSINESS_DATE])).toEqual(
+      before,
+    );
+    expect(before).toHaveLength(1);
   });
 });

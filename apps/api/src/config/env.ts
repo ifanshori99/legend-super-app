@@ -431,6 +431,16 @@ const schema = z
       .min(5)
       .max(1_440)
       .default(30),
+    // Tutup Hari from the cloud (legend-k0i8, founder Q24): the cloud closes an
+    // outlet's day despite an active primary edge only when its last heartbeat
+    // is older than this. Much longer than the 45 s link freshness on purpose:
+    // a short link drop must not let the cloud close a live edge's day.
+    EDGE_DAY_CLOSE_STALE_SECONDS: z.coerce
+      .number()
+      .int()
+      .min(60)
+      .max(86_400)
+      .default(900),
     EDGE_SELFIE_MAX_AGE_DAYS: z.coerce
       .number()
       .int()
