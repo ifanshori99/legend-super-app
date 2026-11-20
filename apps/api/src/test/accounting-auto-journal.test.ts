@@ -78,6 +78,14 @@ import {
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { assertDepositReturnNotReversed } from "../services/payment-refund-deposit-return.ts";
+import {
+  approveRefund,
+  createRefund,
+} from "../services/payment-admin.service.ts";
+import {
+  approveRefundInputSchema,
+  createRefundInputSchema,
+} from "@starter/shared/payment/admin";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import { lockIntentsForFact } from "../services/payment-refund-fact-time.ts";
@@ -7120,6 +7128,84 @@ describe("legend-77r0 Q81 DP return accounting never funds a payout twice", () =
       status: 409,
       code: "DEPOSIT_RETURN_REVERSED",
     });
+  });
+
+  it("[1218-R5-REVERSED-DP-PROD] after a manual DP-only reversal, the production refund request and approve answer 409 DEPOSIT_RETURN_REVERSED and the refund is not approved", async () => {
+    const { world, dp, journalId } = await returnedDeposit({ dpOnly: true });
+    const requesterId = await seedUser();
+    const approverId = await seedUser();
+    const roleId = randomUUID();
+    await owner.query(
+      `INSERT INTO roles (id, tenant_id, name, is_template, permissions, allowed_scope_types)
+       VALUES ($1, $2, 'Finance Uji 1218', false, $3, '["tenant"]')`,
+      [
+        roleId,
+        world.tenant.id,
+        JSON.stringify(["payment.reconcile", "pos.refund.approve"]),
+      ],
+    );
+    for (const userId of [requesterId, approverId]) {
+      await owner.query(
+        `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+         VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 hour', $2)`,
+        [world.tenant.id, userId, roleId],
+      );
+    }
+    await owner.query(
+      `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels)
+       VALUES ($1, 'refund', NULL, $2, 1)`,
+      [world.tenant.id, roleId],
+    );
+    await reverseJournal(
+      contextOf(world.tenant),
+      journalId!,
+      {
+        entryDate: "2026-10-15",
+        reason: "Koreksi DP retur murni",
+        idempotencyKey: randomUUID(),
+      },
+      userIdSchema.parse(await seedUser()),
+    );
+    const requestKey = `req-${randomUUID()}`;
+    // Request: refused up front by the shared guard.
+    await expect(
+      createRefund(
+        contextOf(world.tenant),
+        requesterId,
+        createRefundInputSchema.parse({
+          idempotencyKey: requestKey,
+          paymentIntentId: dp.intentId,
+          amountIdr: 25_000,
+          reason: "Pengembalian DP uji",
+        }),
+        requestKey,
+      ),
+    ).rejects.toMatchObject({ status: 409, code: "DEPOSIT_RETURN_REVERSED" });
+    // Approve: a pending refund filed before the guard existed still cannot
+    // be approved.
+    const refundId = randomUUID();
+    await owner.query(
+      `INSERT INTO payment_refunds
+         (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status, requested_by)
+       VALUES ($1, $2, $3, $4, 25000, 'Pengembalian dana', 'pending', $5)`,
+      [refundId, world.tenant.id, world.outletId, dp.intentId, requesterId],
+    );
+    const approveKey = `apr-${randomUUID()}`;
+    await expect(
+      approveRefund(
+        contextOf(world.tenant),
+        approverId,
+        { refundId },
+        approveRefundInputSchema.parse({ idempotencyKey: approveKey }),
+        approveKey,
+        { mfaVerified: true },
+      ),
+    ).rejects.toMatchObject({ status: 409, code: "DEPOSIT_RETURN_REVERSED" });
+    const { rows } = await owner.query<{ status: string }>(
+      "SELECT status FROM payment_refunds WHERE tenant_id = $1 AND payment_intent_id = $2",
+      [world.tenant.id, dp.intentId],
+    );
+    expect(rows.map((r) => r.status)).toEqual(["pending"]);
   });
 
   it("AJ-Q81-06: after a DP-only return was reversed by hand, the original payer payout parks non-retryable POSTING_AMOUNTS_MISMATCH and customer_deposit never goes negative", async () => {
