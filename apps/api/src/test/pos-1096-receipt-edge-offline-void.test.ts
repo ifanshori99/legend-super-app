@@ -49,6 +49,7 @@ import {
   createUlid,
   outletIdSchema,
   tenantIdSchema,
+  ulidToUuid,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
@@ -78,6 +79,7 @@ import { registerReceiptRunEdgeApplier } from "../edge/receipt-run-applier.ts";
 import { registerStockMovedEdgeApplier } from "../edge/stock-moved-applier.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
+import { redriveEdgeOrderRefusalsForTenant } from "../worker/edge-order-redrive.job.ts";
 import { enrollDevice } from "../services/device.service.ts";
 import {
   authenticateEdgeCredential,
@@ -736,6 +738,96 @@ describe("legend-ain0 offline sale then offline void merges without deadlock (a)
       voided_by: cashierId,
     });
     for (const gap of await gapsOf(outletId)) expect(gap.missing).toEqual([]);
+  });
+});
+
+// ---- legend-gdjpu: a void ACKed before its ingest succeeded -----------------------
+
+describe("legend-gdjpu a run whose void ingest failed transiently stays queued until the void is redriven", () => {
+  /** Holds the tenant loyalty entity lock on another connection. */
+  async function holdLoyaltyLock() {
+    const client = await owner.connect();
+    await client.query("BEGIN");
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+      [`loyalty-entity:${tenant.tenantId}`],
+    );
+    return async () => {
+      await client.query("ROLLBACK");
+      client.release();
+    };
+  }
+
+  async function ledgerReason(orderId: string): Promise<string | null> {
+    const [row] = await rows<{ reason: string | null }>(
+      `SELECT reason FROM edge_order_ingests
+        WHERE tenant_id = $1 AND order_id = $2::uuid`,
+      [tenant.tenantId, ulidToUuid(orderId)],
+    );
+    return row?.reason ?? null;
+  }
+
+  const sweepContext = () =>
+    establishScopedTenantContext(
+      establishTenantContext({
+        tenantId: tenantIdSchema.parse(tenant.tenantId),
+        brandId: null,
+        source: "job",
+      }),
+      { kind: "tenant" },
+    );
+
+  it("legend-gdjpu the link refuses to acknowledge the run while its void is transiently refused; the sweep heals the void and the SAME queued run then merges, no manual replacement event", async () => {
+    const { outletId, deviceId, node, orders } = await offlineScenario(2);
+    const [, voidedOrder] = orders;
+
+    // The void reaches the cloud while the loyalty lock is busy: the ingest
+    // savepoint times out (55P03), the refusal is noted, and the link still
+    // acknowledges the event (R1: ingest never throws after parking).
+    const release = await holdLoyaltyLock();
+    try {
+      await deliver(node, [
+        voidedEvent(outletId, voidedOrder!, formatReceiptNumber("OFF1", 2)),
+      ]);
+    } finally {
+      await release();
+    }
+    expect(await voidCount(outletId)).toBe(0);
+    expect(await ledgerReason(voidedOrder!)).toBe(
+      "void_refused:db_error:55P03",
+    );
+
+    // The edge reporter saw order.voided acknowledged and sent the run. The
+    // cloud must not acknowledge it (no conflict, no cursor move): the edge
+    // keeps it queued and resends the same event.
+    const run = runEvent(outletId, deviceId, orders, [2]);
+    const before = await conflictCount(outletId);
+    await expect(deliver(node, [run])).rejects.toThrow();
+    expect(await conflictCount(outletId)).toBe(before);
+    expect(await receiptRows(outletId)).toHaveLength(0);
+
+    // The redrive sweep ingests the parked void.
+    await redriveEdgeOrderRefusalsForTenant(sweepContext(), {
+      log: { error: () => undefined },
+      lockTimeoutMs: 300,
+    });
+    expect(await voidCount(outletId)).toBe(1);
+    expect(await ledgerReason(voidedOrder!)).toBeNull();
+
+    // The sender's retry of the SAME event now merges every receipt.
+    await deliver(node, [run]);
+    expect(
+      (await receiptRows(outletId)).map((row) => [row.number, row.status]),
+    ).toEqual([
+      ["OFF1-000001", "issued"],
+      ["OFF1-000002", "voided"],
+    ]);
+    expect(await sequenceRows(outletId)).toEqual([
+      expect.objectContaining({ prefix: "OFF1", last_number: 2 }),
+    ]);
+    for (const gap of await gapsOf(outletId)) expect(gap.missing).toEqual([]);
+    expect(await voidCount(outletId)).toBe(1);
+    expect(await conflictCount(outletId)).toBe(before);
   });
 });
 

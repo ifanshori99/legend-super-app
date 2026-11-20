@@ -38,6 +38,20 @@
 // order aggregate; its receipts are skipped the same way (reason
 // `link_dead_lettered`). Only for the notice's own outlet, and never for an
 // order the cloud already holds (ingested/voided/cancelled or a pos_orders row).
+//
+// legend-gdjpu (SO 1111 P2): the link acknowledges `order.paid` /
+// `order.voided` even when their ingest was refused for a TRANSIENT reason
+// (lock timeout, deadlock; R1 in order-ingest.ts: the ingest never throws), and
+// the redrive sweep heals the order later. The edge reporter takes that ack as
+// "the cloud holds the order/void" and sends the run. A merge refusal of such a
+// run (RECEIPT_VOID_UNMATCHED, prefix mismatch, ...) must not become a
+// conflict: the link would acknowledge it and the edge never resends it, so
+// the receipts would stay missing in the cloud. While an order of the run has a
+// transient refusal on its ledger row, a merge refusal is a plain Error: the
+// batch aborts, nothing is recorded, the edge keeps the run queued and retries
+// the SAME event; once the sweep heals the order the retry merges. A refusal
+// the sweep turns final ends the hold (the run is then refused as before). No
+// money moves on this path.
 import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   CoreError,
@@ -75,6 +89,7 @@ import {
   assertEdgeEventScope,
 } from "./deferred-event-applier.ts";
 import { redactEdgeEnvelopeSecrets } from "./envelope-secrets.ts";
+import { TRANSIENT_REFUSAL_REASONS } from "./order-ingest.ts";
 import { LINK_EVENT_DEAD_LETTERED_REASON } from "./link-dead-letter-applier.ts";
 import type { EdgeApplyMeta } from "./ports.ts";
 
@@ -106,6 +121,33 @@ function refuseMerge(error: unknown): never {
       error.message,
     );
   throw error;
+}
+
+/** Ledger reasons of an order whose ingest the redrive sweep will retry. */
+const RETRIED_INGEST_REASONS: readonly string[] = [
+  ...TRANSIENT_REFUSAL_REASONS,
+  ...TRANSIENT_REFUSAL_REASONS.map((reason) => `void_refused:${reason}`),
+];
+
+/** True when an order of the run waits on a transient ingest refusal. */
+async function hasRetriedIngest(
+  tx: EdgeTx,
+  tenantId: string,
+  orderIds: string[],
+): Promise<boolean> {
+  if (orderIds.length === 0) return false;
+  const rows = await tx
+    .select({ orderId: edgeOrderIngests.orderId })
+    .from(edgeOrderIngests)
+    .where(
+      and(
+        eq(edgeOrderIngests.tenantId, tenantIdSchema.parse(tenantId)),
+        inArray(edgeOrderIngests.orderId, orderIds),
+        inArray(edgeOrderIngests.reason, [...RETRIED_INGEST_REASONS]),
+      ),
+    )
+    .limit(1);
+  return rows.length > 0;
 }
 
 /** order id -> permanent refusal reason, for the given orders of this tenant. */
@@ -332,6 +374,12 @@ async function applyReceiptRunReported(
         reason: permanent.get(receipt.orderId) ?? "",
       })),
   );
+  // Read before the merge: a refused merge may leave the savepoint unusable.
+  const waitsOnIngest = await hasRetriedIngest(
+    tx,
+    tenantId,
+    kept.map(({ receipt }) => receipt.orderId),
+  );
   try {
     await mergeDeviceReceiptRun(tx, meta.context, {
       sequence: {
@@ -347,6 +395,15 @@ async function applyReceiptRunReported(
       skippedOrdinals,
     });
   } catch (error) {
+    if (
+      waitsOnIngest &&
+      error instanceof PosError &&
+      error.status >= 400 &&
+      error.status < 500
+    )
+      throw new Error(
+        "Receipt run waits on a transient order ingest refusal; retry later",
+      );
     refuseMerge(error);
   }
 }
