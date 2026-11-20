@@ -76,7 +76,7 @@ import { openRefundChainSafely } from "./payment-refund.service.ts";
 import { appendPaymentEvent } from "./payment-support.ts";
 import type { Tx } from "./permission-resolver.ts";
 import { qrTenderMethod } from "./qr-order-paid.ts";
-import { appendPosEvent } from "./pos-order-support.ts";
+import { appendPosEvent, liveDiscountsOf } from "./pos-order-support.ts";
 
 const RECOVERY_REQUESTER: SystemRefundActor = "system:recovery";
 const REFUND_REASON = "Refund item gagal (ORD-09)";
@@ -594,6 +594,18 @@ export async function deliverOrderRecoveryRefundEvent(
             lineTotalIdr: idr(unitPriceIdr * item.quantity),
           };
         });
+      // legend-xhl5j (1243): a manual discount stacked on the sale, read from
+      // the order's own rows (never from the caller). This lane prices the
+      // payout from the promo ledger (`paid_idr`), which does not carry it, so
+      // it would pay too much: refuse before the recompute writes anything
+      // and let a person settle it. (A QR order has none today.)
+      const manualDiscountIdr = (await liveDiscountsOf(tx, context, order.id))
+        .filter((row) => row.source === "manual")
+        .reduce((sum, row) => sum + Number(row.amountIdr), 0);
+      if (manualDiscountIdr > 0) {
+        await blocked("manual_discount", { manualDiscountIdr });
+        return;
+      }
       let recomputed: Awaited<
         ReturnType<
           typeof orderPromoPartialRefundPort.recomputeAfterPartialRefund

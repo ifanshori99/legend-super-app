@@ -447,6 +447,45 @@ describe("legend-h1dyy dua item gagal diselesaikan sebelum event mana pun berjal
   });
 });
 
+describe("legend-xhl5j (1243) refund item gagal: diskon manual pada pesanan QR diblokir", () => {
+  it("diskon manual 20.000 (dibaca dari data order): tidak ada refund, audit diblokir manual_discount, promo tidak disentuh", async () => {
+    const paid = await paidPromoOrder();
+    // The manual discount sits on the order's own rows (read by the server).
+    await asOwnerTenant(w.tenant.tenantId, async (client) => {
+      await client.query("SET LOCAL session_replication_role = replica");
+      await client.query(
+        `INSERT INTO pos_order_discounts (id, tenant_id, outlet_id, order_id, source, kind, amount_idr,
+                                          reason, reason_note, applied_by)
+         VALUES ($1, $2, $3, $4, 'manual', 'amount', 20000, 'loyal', 'pelanggan setia', 'kasir-a')`,
+        [
+          randomUUID(),
+          w.tenant.tenantId,
+          w.tenant.outletId,
+          toUuid(paid.order.id),
+        ],
+      );
+    });
+    const kopi = await approvedRefund(paid.kopi.id, 25_000);
+
+    await deliver(kopi.event);
+
+    expect(await issueRefunds(kopi.issueId), "no refund row").toEqual([]);
+    expect(await w.outboxRows("order.refunded", paid.order.id)).toHaveLength(0);
+    const blocked = await auditRows(kopi.issueId, "order_issue.refund_blocked");
+    expect(blocked).toHaveLength(1);
+    expect(JSON.stringify(blocked[0])).toContain("manual_discount");
+    // The recompute never ran: the promo stands as checkout left it.
+    expect(await application(paid.order.id)).toMatchObject({
+      status: "applied",
+      refunded_subtotal_idr: 0,
+      refunded_paid_idr: 0,
+    });
+    expect(await redemptionDiscounts(paid.order.id)).toEqual([
+      expect.objectContaining({ status: "applied" }),
+    ]);
+  });
+});
+
 describe("legend-h1dyy H4 baris swap: kept lines dari baris checkout", () => {
   beforeAll(async () => {
     // Only this promotion is live here: 5.000 off from a 50.000 bill.

@@ -1171,6 +1171,11 @@ export async function refundPosOrder(
             },
           ];
         });
+        // legend-xhl5j: the manual discount stacked on the sale decides whether
+        // a voucher may come back (the guest keeps it on the kept goods).
+        const manualDiscount = (await liveDiscountsOf(tx, context, order.id))
+          .filter((row) => row.source === "manual")
+          .reduce((sum, row) => sum + Number(row.amountIdr), 0);
         const recomputed =
           await posPromoRefundPort().recomputeAfterPartialRefund(tx, context, {
             orderId: order.id,
@@ -1179,6 +1184,7 @@ export async function refundPosOrder(
             actorUserId: caller.userId,
             at: now,
             deferPayout: true,
+            manualDiscountIdr: manualDiscount,
           });
         // The re-check can depend on more than this order (same-day spend of
         // the guest's other orders, or the live rule of a pre-0042 promo), so
@@ -1203,9 +1209,6 @@ export async function refundPosOrder(
             (sum, line) => sum + Number(line.lineTotalIdr),
             0,
           );
-          const manualDiscount = (await liveDiscountsOf(tx, context, order.id))
-            .filter((row) => row.source === "manual")
-            .reduce((sum, row) => sum + Number(row.amountIdr), 0);
           const keptManualShare =
             order.subtotalIdr > 0
               ? Number(
