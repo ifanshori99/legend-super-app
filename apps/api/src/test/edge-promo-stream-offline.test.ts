@@ -936,3 +936,103 @@ describe("533c P2 a partial promo sync is never completed by a retry that gets n
     expect(await orderDiscount()).toBe(PROMO);
   });
 });
+
+// legend-1212 (second opinion 1199 P2 fail closed): from the moment the operator
+// rewinds the promo streams after a cloud restore, a promotion the restored
+// cloud no longer has must stop giving discounts. The rewind mark and the
+// durable replay marker are the evidence; a fresh `last_success_at` is not.
+describe("1212 promos fail closed from the rewind until the replay is confirmed", () => {
+  const rewind = () =>
+    edge.owner.query(
+      "UPDATE edge_pull_checkpoints SET watermark = 'rewind' WHERE edge_node_id = $1 AND stream IN ('catalog:promotions','catalog:vouchers')",
+      [nodeId],
+    );
+
+  it("a rewound edge restarted before any pull gives no discount, although the checkpoints are fresh", async () => {
+    await pull();
+    await openGate();
+    expect(await guardedDiscount(openItem)).toBe(DISCOUNT);
+    await rewind();
+    await openGate(); // restart of the edge process
+    expect(await guardedDiscount(openItem)).toBe(0);
+  });
+
+  it("the running gate closes on its next read of the rewind mark", async () => {
+    await pull();
+    await openGate();
+    await rewind();
+    await gate!.refresh();
+    expect(await guardedDiscount(openItem)).toBe(0);
+  });
+
+  it("rewind then a pull that fails on transport keeps promos closed (cloud unreachable on purpose)", async () => {
+    await pull();
+    await openGate();
+    await rewind();
+    const failed = await offlinePull();
+    expect(
+      failed.streams["promotions" as keyof typeof failed.streams]?.error,
+    ).toBeDefined();
+    await gate!.refresh();
+    expect(await guardedDiscount(openItem)).toBe(0);
+    // The promo engine's own pending mark stays too (no gate involved).
+    expect(await engineDiscount(openItem)).toBe(0);
+    await openGate();
+    expect(await guardedDiscount(openItem)).toBe(0);
+  });
+
+  it("while other streams replay before promotions, promos stay closed", async () => {
+    await pull();
+    await rewind();
+    await pull(undefined, ["stations" as Stream]);
+    await openGate();
+    expect(await guardedDiscount(openItem)).toBe(0);
+  });
+
+  it("an open replay marker of promotions closes the gate, deleting it reopens", async () => {
+    await pull();
+    await openGate();
+    expect(await guardedDiscount(openItem)).toBe(DISCOUNT);
+    await edge.owner.query(
+      `INSERT INTO edge_pull_checkpoints (tenant_id, outlet_id, edge_node_id, stream, watermark, last_success_at)
+       SELECT tenant_id, outlet_id, edge_node_id, 'catalog:replay:promotions', '1', now()
+         FROM edge_pull_checkpoints WHERE edge_node_id = $1 LIMIT 1`,
+      [nodeId],
+    );
+    await gate!.refresh();
+    expect(await guardedDiscount(openItem)).toBe(0);
+    await edge.owner.query(
+      "DELETE FROM edge_pull_checkpoints WHERE edge_node_id = $1 AND stream = 'catalog:replay:promotions'",
+      [nodeId],
+    );
+    await gate!.refresh();
+    expect(await guardedDiscount(openItem)).toBe(DISCOUNT);
+  });
+
+  it("control: a sale without any promo is never blocked by the closed gate", async () => {
+    await pull();
+    await rewind();
+    await openGate();
+    expect(await guardedDiscount(openItem)).toBe(0);
+    // A line the promos do not touch still quotes (no exception).
+    expect(await guardedDiscount(randomUUID())).toBe(0);
+  });
+
+  it("a complete replay and its confirming pull reopen the gate", async () => {
+    await pull();
+    await rewind();
+    await openGate();
+    expect(await guardedDiscount(openItem)).toBe(0);
+    await settleCloud(owner);
+    expect(streamErrors(await pull())).toEqual([]);
+    expect(streamErrors(await pull())).toEqual([]);
+    await gate!.refresh();
+    expect(await guardedDiscount(openItem)).toBe(DISCOUNT);
+  });
+});
+
+function streamErrors(result: Awaited<ReturnType<typeof pull>>) {
+  return Object.values(result.streams)
+    .map((stream) => stream?.error)
+    .filter((error) => error !== undefined);
+}

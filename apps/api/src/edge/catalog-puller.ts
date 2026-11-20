@@ -152,6 +152,10 @@ function catalogReplayCheckpoint(
   return `catalog:replay:${stream}`;
 }
 
+/** Replay marker row of the promotions stream (read by the promo gate). */
+export const CATALOG_PROMO_REPLAY_STREAM =
+  catalogReplayCheckpoint("promotions");
+
 /** Key of a stream's row in `edge_pull_checkpoints` (varchar(40)). */
 export function catalogCheckpointStream(
   stream: CatalogSyncStream,
@@ -246,7 +250,8 @@ function isCurrentCursor(cursor: string): boolean {
 /**
  * No row yet (first boot) or a cursor of another tag gives a null cursor: pull
  * from the start. `unfinished` is true when the row was closed by an earlier
- * promo sync that did not reach its end (epoch success time).
+ * promo sync that did not reach its end (epoch success time) or carries the
+ * operator's rewind mark.
  */
 async function loadCatalogCheckpoint(
   database: Database,
@@ -275,7 +280,10 @@ async function loadCatalogCheckpoint(
     unfinished:
       isPromoStream(stream) &&
       row !== undefined &&
-      row.lastSuccessAt.getTime() === PROMO_INVALIDATED_AT.getTime(),
+      // legend-1212: a rewound promo stream is unfinished too, so a pull that
+      // fails on transport keeps the pending mark (fail closed).
+      (row.watermark === CATALOG_REWIND_MARK ||
+        row.lastSuccessAt.getTime() === PROMO_INVALIDATED_AT.getTime()),
   };
 }
 
