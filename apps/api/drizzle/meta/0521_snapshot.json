@@ -1,6 +1,6 @@
 {
-  "id": "5784eca7-eb1f-4c1a-a89b-950cda5da809",
-  "prevId": "00d53e9f-8907-4d65-8893-ac691aa64f71",
+  "id": "1ab13195-c577-4440-8172-c4ad366da685",
+  "prevId": "549ae42c-9272-48b5-828c-70c707108e1a",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -31558,6 +31558,93 @@
         "positions_name_check": {
           "name": "positions_name_check",
           "value": "length(\"positions\".\"name\") > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.employee_ptkp_history": {
+      "name": "employee_ptkp_history",
+      "schema": "",
+      "columns": {
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "employee_id": {
+          "name": "employee_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "effective_from": {
+          "name": "effective_from",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ptkp_status": {
+          "name": "ptkp_status",
+          "type": "varchar(10)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "employee_ptkp_history_tenant_id_tenants_id_fk": {
+          "name": "employee_ptkp_history_tenant_id_tenants_id_fk",
+          "tableFrom": "employee_ptkp_history",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "employee_ptkp_history_employee_fk": {
+          "name": "employee_ptkp_history_employee_fk",
+          "tableFrom": "employee_ptkp_history",
+          "tableTo": "employees",
+          "columnsFrom": [
+            "tenant_id",
+            "employee_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "employee_ptkp_history_pkey": {
+          "name": "employee_ptkp_history_pkey",
+          "columns": [
+            "tenant_id",
+            "employee_id",
+            "effective_from"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "employee_ptkp_history_status_check": {
+          "name": "employee_ptkp_history_status_check",
+          "value": "\"employee_ptkp_history\".\"ptkp_status\" IN ('TK/0', 'TK/1', 'TK/2', 'TK/3', 'K/0', 'K/1', 'K/2', 'K/3', 'K/I/0', 'K/I/1', 'K/I/2', 'K/I/3')"
         }
       },
       "isRLSEnabled": false
