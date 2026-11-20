@@ -176,6 +176,57 @@ Ada **dua set key yang berbeda**, untuk dua fitur berbeda. Dua-duanya opsional; 
 - **Cara uji aman.** Pasang DSN di lingkungan staging, picu satu error uji, cek di dashboard Sentry bahwa tidak ada cookie atau email di event.
 - **Status: Siap.** Belum dipasang di proses worker dan belum menangkap error render SSR web (hanya browser).
 
+## 12. Daftar final kunci yang diisi founder (kartu 1261)
+
+Ringkasan per berkas untuk `deploy/single-vm`. Nilai tidak pernah masuk repo atau chat: minta lewat `ghostex secret request`. Acuan nama: `deploy/single-vm/runtime.env.example` dan `deploy/single-vm/compose.env.example`. Satu berkas per proses (`api.env`, `web.env`, `worker.env`, `migrator.env`); salin hanya baris yang diperlukan proses itu.
+
+### 12.1 Wajib (tanpa ini API atau worker tidak start)
+
+| Kelompok | Kunci | Berkas |
+|---|---|---|
+| Mode | `NODE_ENV=production`, `DEPLOYMENT_MODE=production`, `DATA_CLASSIFICATION=real`, `EDGE_MODE=false` | api, web, worker |
+| Database | `DATABASE_URL`, `APP_DATABASE_URL`, `PAYOUT_GRANTOR_DATABASE_URL` | api |
+| Database | `DATABASE_URL`, `APP_DATABASE_URL`, `WORKER_DATABASE_URL`, `MAINTENANCE_DATABASE_URL` (opsional: `RESEAL_DATABASE_URL`) | worker |
+| Database | `MIGRATION_DATABASE_URL` | migrator |
+| Database | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` (hanya untuk langkah provision, bukan berkas layanan) | compose.env |
+| Rahasia aplikasi | `BETTER_AUTH_SECRET`, `DATA_ENCRYPTION_KEY`, `STAFF_PIN_PEPPER` (versi >= 2), `CONTACT_HASH_SECRET`, `KIRIM_WEBHOOK_SECRET` | api |
+| Alamat | `BETTER_AUTH_URL`, `WEB_URL`, `COOKIE_DOMAIN`, `TRUST_PROXY=2`, `PUBLIC_RATE_LIMIT_INTERNAL_IPS` | api |
+| TLS | `TLS_ASK_TOKEN`, `ACME_EMAIL` | compose.env |
+| Gambar | `POSTGRES_IMAGE`, `API_IMAGE`, `WEB_IMAGE`, `WORKER_IMAGE`, `MIGRATOR_IMAGE`, `PGBACKREST_CONFIG` | compose.env |
+| Notifikasi | `NOTIFICATION_EMAIL_PROVIDER`, `NOTIFICATION_PUSH_PROVIDER`, `NOTIFICATION_WHATSAPP_PROVIDER` (nilai `disabled` sah) | worker |
+
+### 12.2 Fitur (diisi founder sesuai fitur yang dinyalakan)
+
+| Kelompok | Kunci | Berkas |
+|---|---|---|
+| Penyimpanan berkas | `STORAGE_S3_ACCESS_KEY_ID`, `STORAGE_S3_SECRET_ACCESS_KEY`, `STORAGE_S3_PRIVATE_BUCKET`, `STORAGE_S3_PUBLIC_BUCKET`, `STORAGE_PUBLIC_BASE_URL`, `STORAGE_S3_REGION` (opsional: `STORAGE_S3_ENDPOINT`, `STORAGE_S3_FORCE_PATH_STYLE`) | api |
+| Pembayaran Duitku | `DUITKU_CALLBACK_BASE_URL`, `DUITKU_RETURN_URL` (kode merchant dan API key diisi di aplikasi) | api |
+| Selfie absensi | `ATTENDANCE_SELFIE_SEAL_KEYS`, `ATTENDANCE_SELFIE_SEAL_ACTIVE_KID` | api |
+| AI | `AI_PROVIDER`, `ANTHROPIC_API_KEY` (tanpa kunci, AI mati) | api |
+| Email Brevo | `BREVO_API_KEY`, `NOTIFICATION_EMAIL_FROM`, `NOTIFICATION_EMAIL_FROM_NAME` (hanya bila provider `brevo`) | worker |
+| Email masuk | `SMTP_HOST`, `SMTP_USER`, `SMTP_PASS`, `EMAIL_FROM` (satu paket, atau tidak sama sekali); opsional `SMTP_PORT`, `SMTP_SECURE` | api |
+| Google | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` (berdua atau tidak sama sekali) | api |
+| Pantau galat | `SENTRY_DSN` (api); `VITE_SENTRY_DSN` (web, argumen build image, bukan berkas env) | api, build web |
+
+Saklar uang `DOIT_REFUNDS_ENABLED` dan `DOIT_RECURRING_ENABLED` tetap `false` di template. Hanya founder yang memutuskan menyalakannya, setelah alur DOIT terbukti hidup.
+
+### 12.3 Opsional
+
+`SSR_SHARED_SECRET` (api dan web, nilai sama) dan `WEB_TRUST_PROXY_HOPS`; `REDIS_URL` (wajib bila API lebih dari satu instance); `PLATFORM_DOMAIN`; `KIRIM_API_KEY`; `DELIVERY_GOFOOD_WEBHOOK_SECRET`, `DELIVERY_GRABFOOD_WEBHOOK_SECRET`; `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`; rotasi: `DATA_ENCRYPTION_KEYS`, `HRIS_PII_KEYS`, `BLIND_INDEX_ACTIVE_VERSION`, `STAFF_PIN_PEPPER_CURRENT_VERSION`.
+
+`CLAMD_HOST` dan `CLAMD_PORT` tidak diisi di berkas env: compose sudah menetapkannya ke service `clamav`.
+
+## 13. Langkah operator (bersama kredensial, sebelum rilis)
+
+- [ ] VM minimal 4 GB RAM (ClamAV menambah 1,5 GB); keluar ke `database.clamav.net` terbuka.
+- [ ] Firewall: port 80 dan 443 hanya dari rentang IP Cloudflare (security group cloud atau rantai `DOCKER-USER`). Bukti: `curl -m 5 http://<ip-origin>/` dan `https://<ip-origin>/` dari alamat non-Cloudflare ditolak. Perbarui tiap kuartal bersama `trusted_proxies` di `deploy/caddy/Caddyfile`.
+- [ ] Cloudflare: mode SSL Full (strict); aturan rate limit untuk `/api/qr/` dan `/api/public/site/`.
+- [ ] Restore drill: jalankan `deploy/backup/restore-drill.sh`, catat waktu dan hasilnya (belum pernah dijalankan).
+- [ ] Uptime check dari luar dan alarm: ikuti `deploy/monitoring/README.md`.
+- [ ] Setelah deploy: `GET /api/health` menjawab `scanner: "ok"`.
+
+Rujukan: `docs/deployment.md` (Security checklist, Deployment checklist, ClamAV).
+
 ## Urutan pemasangan yang disarankan
 
 1. **Kunci inti (bagian 0).** Tanpa ini aplikasi tidak start. Uji: `/api/health`.
