@@ -25,6 +25,7 @@ import {
   getMyProfitShare,
   listDistributionRuns,
   myProfitShareSchema,
+  cancelApprovedDistributionRun,
   recordDistributionPayment,
   submitDistributionRun,
 } from "@starter/shared/accounting";
@@ -48,6 +49,7 @@ import {
   getDistributionStatementService,
   getMyProfitShareService,
   listDistributionRunsService,
+  cancelApprovedDistributionRunService,
   recordDistributionPaymentService,
   submitDistributionRunService,
   type DistributionDeps,
@@ -167,6 +169,25 @@ export function createProfitShareDistributionRouter(
       );
       const body = decideDistributionRun.body.parse(req.body);
       const data = await decideDistributionRunService(
+        getScopedTenantContext(req),
+        actorId(req),
+        distributionRunId,
+        body,
+      );
+      res.json({ data: distributionRunSchema.parse(data) });
+    },
+  );
+
+  router.post(
+    route(cancelApprovedDistributionRun.path),
+    approve,
+    jsonBody,
+    async (req, res) => {
+      const { distributionRunId } = cancelApprovedDistributionRun.params.parse(
+        req.params,
+      );
+      const body = cancelApprovedDistributionRun.body.parse(req.body);
+      const data = await cancelApprovedDistributionRunService(
         getScopedTenantContext(req),
         actorId(req),
         distributionRunId,

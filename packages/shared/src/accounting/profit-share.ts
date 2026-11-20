@@ -1481,6 +1481,12 @@ export const distributionRunSummarySchema = z
     approvedBy: userIdSchema.nullable(),
     approvedAt: isoDateTimeSchema.nullable(),
     paidAt: isoDateTimeSchema.nullable(),
+    /**
+     * SO 1216 F-P1a (computed): a regular approved/paid run whose fiscal
+     * period version moved since it was calculated, with no approved or paid
+     * adjustment of it at the period's current version.
+     */
+    needsCorrection: z.boolean(),
   })
   .superRefine((row, ctx) => {
     if (row.paidLineCount > row.lineCount)
@@ -1610,6 +1616,11 @@ export type DistributionRunAction =
     }
   | { readonly type: "cancel"; readonly actorId: UserId }
   | {
+      readonly type: "cancel_approved";
+      readonly actorId: UserId;
+      readonly reason: string;
+    }
+  | {
       readonly type: "record_payment";
       readonly actorId: UserId;
       readonly lineId: DistributionLine["id"];
@@ -1622,6 +1633,7 @@ export type DistributionRunAction =
  *
  *   draft ─submit→ pending_approval ─approve→ approved ─all lines paid→ paid
  *     └─cancel→ cancelled          └─reject→ cancelled
+ *   approved ─cancel_approved (no line paid, reason)→ cancelled
  *
  * Approve also settles every zero line (carry absorbed the share) with
  * `CARRY_ABSORBED_PAYMENT_REF`; when all lines are zero the run is `paid` then.
@@ -1676,6 +1688,14 @@ export function transitionDistributionRun(
     case "cancel":
       if (!isRequester) throw invalid();
       if (run.status !== "draft" && run.status !== "pending_approval")
+        throw invalid();
+      return { ...run, status: "cancelled" };
+    case "cancel_approved":
+      // SO 1216 F-P1a: an approved run with not one line paid may be
+      // withdrawn (e.g. stale after a reopen); a cancelled run has no payments.
+      if (run.status !== "approved") throw invalid();
+      if (action.reason.trim().length < 10) throw invalid();
+      if (run.lines.some((line) => line.paymentStatus === "paid"))
         throw invalid();
       return { ...run, status: "cancelled" };
     case "record_payment": {
@@ -2099,6 +2119,15 @@ export const createAdjustmentDistributionInputSchema = z.strictObject({
 export const distributionDecisionInputSchema = z
   .strictObject(approvalDecisionShape)
   .superRefine(rejectNeedsNote);
+
+/** SO 1216 F-P1a: withdraw an approved run with no line paid yet. */
+export const cancelApprovedDistributionInputSchema = z.strictObject({
+  reason: z.string().trim().min(10).max(500),
+  idempotencyKey: idempotencyKeySchema,
+});
+export type CancelApprovedDistributionInput = z.infer<
+  typeof cancelApprovedDistributionInputSchema
+>;
 
 export const recordDistributionPaymentInputSchema = z.strictObject({
   paymentRef: z.string().trim().min(1).max(100),

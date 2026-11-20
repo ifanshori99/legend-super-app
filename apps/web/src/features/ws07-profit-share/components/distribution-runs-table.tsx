@@ -24,6 +24,7 @@ import {
   runSummaryProgress,
   shortActorRef,
 } from "../lib";
+import { Badge } from "@/components/ui/badge";
 import { RunStatusBadge } from "./share-status";
 
 export function DistributionRunsTable({
@@ -99,7 +100,14 @@ export function DistributionRunsTable({
                     : t("accounting.share.runType.regular")}
                 </TableCell>
                 <TableCell>
-                  <RunStatusBadge status={run.status} />
+                  <div className="flex flex-wrap items-center gap-1">
+                    <RunStatusBadge status={run.status} />
+                    {run.needsCorrection ? (
+                      <Badge tone="warning">
+                        {t("accounting.share.runs.needsCorrection")}
+                      </Badge>
+                    ) : null}
+                  </div>
                 </TableCell>
                 <TableCell numeric>
                   <Money amount={run.distributableIdr} />

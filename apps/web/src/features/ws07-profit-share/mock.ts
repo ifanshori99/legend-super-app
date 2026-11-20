@@ -596,6 +596,7 @@ register(listDistributionRuns, ({ params, query, scenario }) => {
         approvedBy: run.approvedBy,
         approvedAt: run.approvedAt,
         paidAt: run.paidAt,
+        needsCorrection: false,
       }),
     );
   return paginateFixture(

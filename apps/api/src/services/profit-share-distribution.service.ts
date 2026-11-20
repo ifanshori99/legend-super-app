@@ -78,6 +78,7 @@ import {
   type MyProfitShare,
   type ProfitEntity,
   type recordDistributionPaymentInputSchema,
+  type CancelApprovedDistributionInput,
   type ShareAllocationVersion,
 } from "@starter/shared/accounting";
 import {
@@ -1265,6 +1266,26 @@ export async function listDistributionRunsService(
     const rows = await tx
       .select({
         row: distributionRuns,
+        // SO 1216 F-P1a: the period moved on since the run was calculated and
+        // no approved/paid adjustment of it exists at the current version.
+        needsCorrection: sql<boolean>`(
+          ${distributionRuns.type} = 'regular'
+          AND ${distributionRuns.status} IN ('approved', 'paid')
+          AND EXISTS (
+            SELECT 1 FROM fiscal_periods fp
+            WHERE fp.tenant_id = ${distributionRuns.tenantId}
+              AND fp.id = ${distributionRuns.fiscalPeriodId}
+              AND fp.version <> ${distributionRuns.fiscalPeriodVersion}
+              AND NOT EXISTS (
+                SELECT 1 FROM distribution_runs adj
+                WHERE adj.tenant_id = fp.tenant_id
+                  AND adj.adjusts_run_id = ${distributionRuns.id}
+                  AND adj.status IN ('approved', 'paid')
+                  AND adj.fiscal_period_id = fp.id
+                  AND adj.fiscal_period_version = fp.version
+              )
+          )
+        )`,
         key: sql<string>`to_char(${distributionRuns.requestedAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
       })
       .from(distributionRuns)
@@ -1294,7 +1315,7 @@ export async function listDistributionRunsService(
       for (const row of countRows)
         counts.set(row.runId, { total: row.total, paid: row.paid });
     }
-    const data = page.map(({ row }) => {
+    const data = page.map(({ row, needsCorrection }) => {
       const count = counts.get(row.id) ?? { total: 0, paid: 0 };
       return distributionRunSummarySchema.parse({
         id: row.id,
@@ -1314,6 +1335,7 @@ export async function listDistributionRunsService(
         approvedBy: row.approvedBy,
         approvedAt: row.approvedAt ? iso(row.approvedAt) : null,
         paidAt: row.paidAt ? iso(row.paidAt) : null,
+        needsCorrection,
       });
     });
     const last = page.at(-1);
@@ -1883,6 +1905,78 @@ async function postCompletionJournal(
     input.now,
   );
   return entry.id;
+}
+
+/**
+ * POST cancel-approved (SO 1216 F-P1a): withdraws an approved run before any
+ * line is paid (e.g. stale after a reopen), so the period can be reopened or
+ * a new run calculated. Approver permission (route), reason >= 10 characters,
+ * audited. A run with a paid line stays (it is corrected by an adjustment).
+ */
+export async function cancelApprovedDistributionRunService(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  runId: string,
+  input: CancelApprovedDistributionInput,
+): Promise<DistributionRun> {
+  assertTrustedScopedContext(context);
+  const tenantId = context.tenant.tenantId;
+  const actorId = userIdSchema.parse(actorUserId);
+  return withTenant(db, context, async (tx) => {
+    const { run } = await loadRun(tx, tenantId, runId, true);
+    const entityRow = await loadEntityRow(tx, tenantId, run.profitEntityId);
+    const claim = await claimProfitShareCommand(tx, {
+      tenantId,
+      idempotencyKey: input.idempotencyKey,
+      operation: "distribution.cancel_approved",
+      targetId: run.id,
+      actorId,
+      request: { reason: input.reason },
+    });
+    if (claim === "replay") return run;
+    if (
+      run.status === "approved" &&
+      run.lines.some((line) => line.paymentStatus === "paid")
+    )
+      throw new HttpError(
+        409,
+        "DISTRIBUTION_PARTIALLY_PAID",
+        "Distribusi ini sudah dibayar sebagian dan tidak bisa dibatalkan. Catat koreksi lewat distribusi penyesuaian.",
+      );
+    const next = transitionDistributionRun(run, {
+      type: "cancel_approved",
+      actorId,
+      reason: input.reason,
+    });
+    const now = new Date();
+    const reason = input.reason.trim();
+    await tx
+      .update(distributionRuns)
+      .set({
+        status: "cancelled",
+        cancelledBy: actorId,
+        cancelledAt: now,
+        cancelReason: reason,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(distributionRuns.tenantId, tenantId),
+          eq(distributionRuns.id, run.id),
+          eq(distributionRuns.status, "approved"),
+        ),
+      );
+    await auditRun(
+      tx,
+      context,
+      actorId,
+      "profit_share.distribution_cancelled",
+      run,
+      entityRow.outletId,
+      reason,
+    );
+    return next;
+  });
 }
 
 /** POST payment: pays one line; the last line completes the run and journals. */

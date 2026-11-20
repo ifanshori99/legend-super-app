@@ -39,6 +39,7 @@ import {
   updateShareAllocationVersionInputSchema,
   updateShareholderInputSchema,
   uploadShareholderDocumentFileMetadataSchema,
+  cancelApprovedDistributionInputSchema,
 } from "./profit-share.ts";
 import {
   distributionLineIdSchema,
@@ -193,6 +194,14 @@ export const decideDistributionRun = defineEndpoint({
   path: `${BASE}/distributions/:distributionRunId/decision`,
   params: runParams,
   body: distributionDecisionInputSchema,
+  response: dataResponseSchema(distributionRunSchema),
+});
+/** SO 1216 F-P1a: withdraw an approved run before any line is paid. */
+export const cancelApprovedDistributionRun = defineEndpoint({
+  method: "POST",
+  path: `${BASE}/distributions/:distributionRunId/cancel-approved`,
+  params: runParams,
+  body: cancelApprovedDistributionInputSchema,
   response: dataResponseSchema(distributionRunSchema),
 });
 export const recordDistributionPayment = defineEndpoint({

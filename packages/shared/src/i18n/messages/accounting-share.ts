@@ -267,6 +267,7 @@ export const accountingShareMessages = {
     open: "Buka",
     openAria: "Buka distribusi {period}",
     progress: "{paid} dari {total} baris",
+    needsCorrection: "Perlu koreksi",
     emptyTitle: "Belum ada distribusi",
     emptyHint:
       "Mulai dari periode yang sudah ditutup; angka resmi hanya dari periode tertutup (SH-02).",

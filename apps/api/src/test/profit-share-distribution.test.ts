@@ -3316,4 +3316,129 @@ describe("1217 an approved distribution and a reopen of its period", () => {
     expect(after.status).toBe("approved");
     expect(after.lines.every((l) => l.paymentStatus === "pending")).toBe(true);
   });
+
+  // ---- review: withdraw an unpaid approved run, flag a paid stale one ------
+
+  const cancelApproved = (who: Person, runId: string, reason: string) =>
+    post(who, `/distributions/${runId}/cancel-approved`, {
+      reason,
+      idempotencyKey: key("cancel-approved"),
+    });
+  const listed = async (world: World, runId: string) => {
+    const response = await get(
+      manager,
+      `/profit-entities/${world.profitEntityId}/distributions`,
+    );
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    return (
+      response.body as { data: { id: string; needsCorrection: boolean }[] }
+    ).data.find((row) => row.id === runId)!;
+  };
+
+  it("Maret paid, reopened, Rp30 jt payroll, closed again: needsCorrection until an approved claw-back", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { period, run } = await approved60(world);
+    expect((await payAll(manager, run)).status).toBe("paid");
+    expect((await listed(world, run.id)).needsCorrection).toBe(false);
+
+    const request = await requestReopen(period.id);
+    await approveReopen(request.id);
+    await postEntry(world.legalEntityId, `${period.period}-28`, [
+      journalLine(world.accounts.expense, 30_000_000, 0),
+      journalLine(world.accounts.cash, 0, 30_000_000),
+    ]);
+    await closeFiscalPeriod(
+      scopedContext(),
+      period.id,
+      { expectedVersion: 3, idempotencyKey: `close-${randomUUID()}` },
+      userIdSchema.parse(closer),
+    );
+    expect((await listed(world, run.id)).needsCorrection).toBe(true);
+
+    const adjusted = await adjust(manager, run.id, {
+      fiscalPeriodId: period.id,
+      adjustmentIdr: -30_000_000,
+      reason: "Gaji Maret Rp30 jt terlewat",
+    });
+    expect(adjusted.status, JSON.stringify(adjusted.body)).toBe(201);
+    const adjustment = parseRun(adjusted.body);
+    expect((await submitRun(manager, adjustment.id)).status).toBe(200);
+    // Still flagged while the claw-back only waits for approval.
+    expect((await listed(world, run.id)).needsCorrection).toBe(true);
+    const decided = await decideRun(approver, adjustment.id);
+    expect(decided.status, JSON.stringify(decided.body)).toBe(200);
+    expect((await listed(world, run.id)).needsCorrection).toBe(false);
+  });
+
+  it("cancels an unpaid approved run; refuses one with a paid line (409) and a non-approver (403)", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { run } = await approved60(world);
+
+    const noPermission = await cancelApproved(
+      manager,
+      run.id,
+      "Angka basi, dihitung ulang",
+    );
+    expect(noPermission.status, JSON.stringify(noPermission.body)).toBe(403);
+    const shortReason = await cancelApproved(approver, run.id, "basi");
+    expect(shortReason.status, JSON.stringify(shortReason.body)).toBe(400);
+
+    const cancelled = await cancelApproved(
+      approver,
+      run.id,
+      "Angka basi, dihitung ulang",
+    );
+    expect(cancelled.status, JSON.stringify(cancelled.body)).toBe(200);
+    expect(parseRun((await getRun(manager, run.id)).body).status).toBe(
+      "cancelled",
+    );
+    const audit = await owner.query(
+      `SELECT 1 FROM audit_logs
+       WHERE tenant_id = $1 AND event->>'action' = 'profit_share.distribution_cancelled'
+         AND event->>'objectId' = $2`,
+      [tenantA, run.id],
+    );
+    expect(audit.rowCount).toBe(1);
+
+    const other = await makeWorld(roundingPolicy, roundingShares());
+    const partly = await approved60(other);
+    const line = partly.run.lines.find((l) => l.paymentStatus === "pending")!;
+    expect((await payLine(manager, partly.run.id, line.id)).status).toBe(200);
+    const refused = await cancelApproved(
+      approver,
+      partly.run.id,
+      "Angka basi, dihitung ulang",
+    );
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(errorCode(refused)).toBe("DISTRIBUTION_PARTIALLY_PAID");
+    // The DB refuses the same raw transition.
+    await expect(
+      owner.query(
+        `UPDATE distribution_runs SET status = 'cancelled', cancelled_by = 'raw',
+           cancelled_at = now(), cancel_reason = 'Angka basi, dihitung ulang'
+         WHERE tenant_id = $1 AND id = $2`,
+        [tenantA, partly.run.id],
+      ),
+    ).rejects.toThrow(/SH-04/);
+    expect(parseRun((await getRun(manager, partly.run.id)).body).status).toBe(
+      "approved",
+    );
+  });
+
+  it("a stale approved run (period reopened before) is cancelled, then recalculated", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { period, run } = await approved60(world);
+    await forcePeriod(period.id, "open");
+    await forcePeriod(period.id, "closed");
+
+    const cancelled = await cancelApproved(
+      approver,
+      run.id,
+      "Periode dibuka ulang sebelum rilis",
+    );
+    expect(cancelled.status, JSON.stringify(cancelled.body)).toBe(200);
+    const recalculated = await createRun(manager, world, period.id);
+    expect(recalculated.status, JSON.stringify(recalculated.body)).toBe(201);
+    expect(parseRun(recalculated.body).status).toBe("draft");
+  });
 });
