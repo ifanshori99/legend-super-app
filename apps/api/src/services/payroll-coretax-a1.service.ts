@@ -24,7 +24,8 @@
 // - PensionContributionJhtThtFee = the employee's JHT + JP shares.
 // - StatusOfWithholding: FullYear when the first payslip is in January and the
 //   last in December, else PartialYear; Annualized is never produced (no partial-year tax subject exists, bead legend-0ytbu).
-// - PTKP status and position come from the employee's latest payslip.
+// - PTKP status is the tax year's (status on 1 January or the join date,
+//   bead 1223); position comes from the employee's latest payslip.
 // - Article21IncomeTax = sum of the sealed `tax.pph21Idr` of those slips,
 //   never recomputed; a negative sum (refund) is refused, never clamped.
 // - Layout and fixed values (GrossUpOpt No, IncomeTaxBenefit 0): see
@@ -46,6 +47,7 @@ import {
   buildA1BulkXml,
   type A1Row,
 } from "../lib/payroll-export/coretax-a1.ts";
+import { loadTaxYearPtkpStatuses } from "./payroll-ptkp-tax-year.ts";
 import type { Tx } from "./permission-resolver.ts";
 
 /** Statuses a run can be exported in (frozen by the lock, PAYR-02). */
@@ -192,6 +194,7 @@ export async function buildAnnualA1Xml(
       runId: payrollRuns.id,
       payDate: payrollRuns.payDate,
       employmentType: employees.employmentType,
+      joinDate: employees.joinDate,
       nikEncrypted: employees.nikEncrypted,
       employeePiiKeyVersion: employees.piiKeyVersion,
     })
@@ -251,6 +254,20 @@ export async function buildAnnualA1Xml(
     slipsByEmployee.set(row.employeeId, list);
   }
 
+  // Bead 1223 (PMK 168/2023): the A1 states the PTKP of the tax year (status on
+  // 1 January, or on the join date), the one the year's payslips are computed
+  // with. No history: the latest payslip's status.
+  const joinDateByEmployee = new Map<string, string>();
+  for (const row of slipRows)
+    if (slipsByEmployee.has(row.employeeId))
+      joinDateByEmployee.set(row.employeeId, row.joinDate);
+  const taxYearPtkp = await loadTaxYearPtkpStatuses(
+    tx,
+    tenantId,
+    taxYear,
+    [...joinDateByEmployee].map(([id, joinDate]) => ({ id, joinDate })),
+  );
+
   const badAmounts: string[] = [];
   const negativeTax: string[] = [];
   const unsupportedPtkp: string[] = [];
@@ -306,13 +323,13 @@ export async function buildAnnualA1Xml(
       continue;
     }
 
-    // Latest payslip of the year: PTKP status, position, withholding date.
+    // Latest payslip of the year: position, withholding date.
     const first = slips[0]!;
     const last = slips[slips.length - 1]!;
     const startMonth = monthOf(first.payDate);
     const endMonth = monthOf(last.payDate);
 
-    const ptkpStatus = last.calc.tax.ptkpStatus;
+    const ptkpStatus = taxYearPtkp.get(employeeId) ?? last.calc.tax.ptkpStatus;
     if (ptkpStatus.startsWith("K/I/")) {
       unsupportedPtkp.push(employeeId);
       continue;
