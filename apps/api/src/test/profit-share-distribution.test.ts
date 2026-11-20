@@ -70,6 +70,7 @@ import {
 } from "../services/profit-share-statement.service";
 import { deviceTenantCredential } from "../services/platform-tenant.service";
 import { db } from "../db";
+import { isAutoJournalEvent } from "../services/accounting-auto-journal-amounts";
 import { withTenant } from "../db/tenant";
 import { postJournalInTransaction } from "../services/accounting-journal.service";
 import {
@@ -3641,5 +3642,150 @@ describe("1217 an approved distribution and a reopen of its period", () => {
     await expect(rawCancel(draft.id)).rejects.toThrow(/carries no approval/);
     expect((await submitRun(manager, draft.id)).status).toBe(200);
     await expect(rawCancel(draft.id)).rejects.toThrow(/carries no approval/);
+  });
+});
+
+// ---- 1251 legend-905j / legend-j7018 -----------------------------------------
+// - 905j: one real payment run = exactly one journal. `distribution.paid`
+//   (per line) and `distribution.completed` are domain facts for other readers;
+//   neither is an auto-journal event, so only the service books the run.
+// - j7018: a last payment dated in a closed month never writes to the closed
+//   month, for a payout and for a claw-back, whatever later months are closed.
+
+describe("1251 one journal per paid run, and late payments after a close", () => {
+  const dividendJournals = async (runId: string) =>
+    (
+      await owner.query<{ id: string; entry_date: string; fp_status: string }>(
+        `SELECT je.id, je.entry_date::text AS entry_date, fp.status AS fp_status
+         FROM journal_entries je
+         JOIN fiscal_periods fp ON fp.tenant_id = je.tenant_id AND fp.id = je.fiscal_period_id
+         WHERE je.tenant_id = $1 AND je.source_type = 'dividend' AND je.source_id = $2`,
+        [tenantA, runId],
+      )
+    ).rows;
+
+  it("905j: paid and completed events are not auto-journal events; a paid run has exactly one dividend journal, and a replayed last payment adds none", async () => {
+    expect(isAutoJournalEvent("distribution.paid")).toBe(false);
+    expect(isAutoJournalEvent("distribution.completed")).toBe(false);
+    expect(isAutoJournalEvent("distribution.approved")).toBe(false);
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { run } = await approvedRun(world);
+    const last = run.lines[run.lines.length - 1]!;
+    const paidKey = key("pay");
+    const paidAtIso = new Date().toISOString();
+    for (const line of run.lines)
+      expect(
+        (
+          await payLine(
+            manager,
+            run.id,
+            line.id,
+            line.id === last.id ? paidKey : key("pay"),
+            "TRF-1251",
+            paidAtIso,
+          )
+        ).status,
+      ).toBe(200);
+    const events = await owner.query<{ event_name: string }>(
+      `SELECT event->>'name' AS event_name FROM domain_event_outbox
+       WHERE tenant_id = $1 AND event->>'name' LIKE 'distribution.%'
+         AND event->'payload'->>'distributionRunId' = $2`,
+      [tenantA, run.id],
+    );
+    const count = (name: string) =>
+      events.rows.filter((row) => row.event_name === name).length;
+    expect(count("distribution.paid")).toBe(run.lines.length);
+    expect(count("distribution.completed")).toBe(1);
+    expect(await dividendJournals(run.id)).toHaveLength(1);
+    // Replaying the final payment (same key) does not book a second entry.
+    const replay = await payLine(
+      manager,
+      run.id,
+      last.id,
+      paidKey,
+      "TRF-1251",
+      paidAtIso,
+    );
+    expect(replay.status, JSON.stringify(replay.body)).toBe(200);
+    expect(await dividendJournals(run.id)).toHaveLength(1);
+  });
+
+  it("j7018: with later months also closed, a payout dated in the first closed month books after the LATEST closed month, in an open period", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { run, period } = await backdatedApprovedRun(
+      world,
+      new Date("2021-01-20T03:00:00Z"),
+    );
+    expect(period.period).toBe("2021-01");
+    await closedPeriod(world, NET_PROFIT); // 2021-02
+    const third = await closedPeriod(world, NET_PROFIT); // 2021-03
+    expect(third.period).toBe("2021-03");
+    let last = null;
+    for (const line of run.lines) {
+      last = await payLineAt(
+        manager,
+        run.id,
+        line.id,
+        new Date("2021-01-25T03:00:00Z"),
+      );
+      expect(last.status, JSON.stringify(last.body)).toBe(200);
+    }
+    expect(parseRun(last!.body).status).toBe("paid");
+    const [entry, ...rest] = await dividendJournals(run.id);
+    expect(rest).toHaveLength(0);
+    expect(entry!.fp_status).toBe("open");
+    expect(entry!.entry_date).toBe("2021-04-01");
+    const late = await owner.query<{ late_adjustment_from: string }>(
+      `SELECT late_adjustment_from::text FROM journal_entries WHERE tenant_id = $1 AND id = $2`,
+      [tenantA, entry!.id],
+    );
+    expect(late.rows[0]!.late_adjustment_from).toBe("2021-01-25");
+  });
+
+  it("j7018: a claw-back whose last payment is dated in a closed month posts the mirrored entry in an open period and flags the late date", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { run: original, period } = await paidRun(world);
+    const response = await adjust(manager, original.id, {
+      fiscalPeriodId: period.id,
+      adjustmentIdr: -100_000,
+      reason: "Pembayaran berlebih dikoreksi",
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    const adjustment = parseRun(response.body);
+    expect((await submitRun(manager, adjustment.id)).status).toBe(200);
+    await owner.query(
+      `UPDATE distribution_runs SET status = 'approved', approved_by = $3, approved_at = $4
+       WHERE tenant_id = $1 AND id = $2`,
+      [
+        tenantA,
+        adjustment.id,
+        approver.userId,
+        new Date("2021-01-20T03:00:00Z"),
+      ],
+    );
+    const approved = parseRun((await getRun(manager, adjustment.id)).body);
+    let last = null;
+    for (const line of approved.lines) {
+      last = await payLineAt(
+        manager,
+        adjustment.id,
+        line.id,
+        new Date("2021-01-25T03:00:00Z"),
+      );
+      expect(last.status, JSON.stringify(last.body)).toBe(200);
+    }
+    const paid = parseRun(last!.body);
+    expect(paid.status).toBe("paid");
+    expect(paid.reversalJournalEntryId).not.toBeNull();
+    const [entry, ...rest] = await dividendJournals(adjustment.id);
+    expect(rest).toHaveLength(0);
+    expect(entry!.id).toBe(paid.reversalJournalEntryId);
+    expect(entry!.fp_status).toBe("open");
+    expect(entry!.entry_date).toBe("2021-02-01");
+    const journal = await journalOf(entry!.id);
+    expect(journal.totalDebit).toBe(journal.totalCredit);
+    expect(journal.byAccount(world.accounts.retainedEarnings).credit).toBe(
+      100_000,
+    );
   });
 });

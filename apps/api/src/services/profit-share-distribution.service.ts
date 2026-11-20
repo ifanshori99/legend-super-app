@@ -67,6 +67,7 @@ import {
   listDistributionRuns,
   periodBounds,
   profitEntitySchema,
+  periodOf,
   resolveAutoJournalDate,
   transitionDistributionRun,
   type createAdjustmentDistributionInputSchema,
@@ -124,6 +125,7 @@ import {
   type TenantTransaction,
 } from "./accounting-shared";
 import { postJournalFromRuleInTransaction } from "./accounting-journal.service";
+import { wouldPostingBeBlockedByClosedPeriod } from "./accounting-period.service";
 import { appendOutbox } from "./core-outbox";
 import {
   cancelApprovalRequest,
@@ -1904,20 +1906,33 @@ async function postCompletionJournal(
   const legalEntityId = await legalEntityOf(tx, tenantId, input.entity);
   const negative = input.run.distributableIdr < 0;
   // A closed month does not block completion: the entry moves to the first
-  // day after the latest closed period and keeps the natural date (F19).
-  const [latest] = await tx
-    .select({ period: max(fiscalPeriods.period) })
-    .from(fiscalPeriods)
-    .where(
-      and(
-        eq(fiscalPeriods.tenantId, tenantId),
-        eq(fiscalPeriods.legalEntityId, legalEntityId),
-        eq(fiscalPeriods.status, "closed"),
-      ),
-    );
+  // day after the latest closed period and keeps the natural date (F19). Same
+  // path as the other auto-journals: the probe takes the entity FOR SHARE lock,
+  // so a close/reopen cannot race the read of the latest closed period.
+  const naturalDate = businessDateOf(input.paidAt, JOURNAL_CLOCK);
+  const blocked = await wouldPostingBeBlockedByClosedPeriod(
+    tx,
+    tenantId,
+    legalEntityId,
+    periodOf(naturalDate),
+  );
+  let latestClosed: string | null = null;
+  if (blocked) {
+    const [latest] = await tx
+      .select({ period: max(fiscalPeriods.period) })
+      .from(fiscalPeriods)
+      .where(
+        and(
+          eq(fiscalPeriods.tenantId, tenantId),
+          eq(fiscalPeriods.legalEntityId, legalEntityId),
+          eq(fiscalPeriods.status, "closed"),
+        ),
+      );
+    latestClosed = latest?.period ?? null;
+  }
   const { entryDate, lateAdjustmentFrom } = resolveAutoJournalDate(
-    businessDateOf(input.paidAt, JOURNAL_CLOCK),
-    latest?.period ?? null,
+    naturalDate,
+    latestClosed,
   );
   // A claw-back posts the same rule with negative amounts: every side flips,
   // giving Dr bank, Dr dividend_tax_payable, Cr retained_earnings.
