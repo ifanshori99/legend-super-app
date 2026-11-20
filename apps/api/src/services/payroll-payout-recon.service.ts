@@ -654,14 +654,23 @@ async function readResolutions(
       sessionId: String(row.session_id),
       operationId: String(row.operation_id),
     });
+  // The standing proposal is the newest one by txid (payroll_payout_attestations
+  // .txid is txid_current() at the write, 0503), not by attested_at: that is
+  // clock_timestamp(), and a DB clock step (the dev VM is stepped back about
+  // 130 ms every 10 s) can put a withdrawn earlier proposal after the standing
+  // one (r8nas). txid only grows inside one cluster. A logical restore that
+  // resets the xid can at worst pick the wrong proposal, which flags a
+  // legit resolve: the slip is held, the safe direction. attested_at and
+  // operation_id only break ties.
   for (const row of rowsOf(
     await tx.execute(sql`
       SELECT DISTINCT ON (x) x::text AS item_id, a.operation_id::text AS operation_id
-        FROM payroll_payout_attestations a, unnest(a.item_ids) AS x
+        FROM payroll_payout_attestations a
+       CROSS JOIN unnest(a.item_ids) AS x
        WHERE a.tenant_id = ${tenantId}::uuid
          AND a.kind = 'resolve' AND a.step = 'propose'
          AND x IN (${uuidList(ids)})
-       ORDER BY x, a.attested_at DESC, a.operation_id DESC`),
+       ORDER BY x, a.txid DESC, a.attested_at DESC, a.operation_id DESC`),
   )) {
     const facts = resolutions.get(String(row.item_id));
     if (facts) facts.lastProposeOperationId = String(row.operation_id);
