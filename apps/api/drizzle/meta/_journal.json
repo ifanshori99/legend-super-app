@@ -3494,6 +3494,20 @@
       "when": 1795000022101,
       "tag": "0512_member_qr_redeem_mints",
       "breakpoints": true
+    },
+    {
+      "idx": 513,
+      "version": "7",
+      "when": 1795148969846,
+      "tag": "0513_stock_negative_revaluations",
+      "breakpoints": true
+    },
+    {
+      "idx": 514,
+      "version": "7",
+      "when": 1795148985602,
+      "tag": "0514_stock_negative_revaluations_rls",
+      "breakpoints": true
     }
   ]
 }

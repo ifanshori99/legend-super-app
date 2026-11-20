@@ -44,6 +44,7 @@ import {
   businessDayRange,
   decimal4,
   decodeCursor,
+  divideRounded,
   encodeCursor,
   extendCostIdr,
   formatDecimal4,
@@ -105,6 +106,7 @@ import {
   stockBatches,
   stockLedger,
   stockLocations,
+  stockNegativeRevaluations,
   stockTransferLines,
   stockTransfers,
   stockCountLines,
@@ -1182,6 +1184,51 @@ async function lockStockBalance(
   return balance;
 }
 
+/**
+ * Bead 1214: a receipt onto a negative balance resets the average to its own
+ * cost (applyStockMovement), but the units already sold were costed at the old
+ * average. The receipt journal books the full receipt value, so the GL
+ * inventory would stay `priorQty x (cost - oldAvg)` above the stock card and
+ * HPP short by the same amount. Record that difference (under the balance
+ * lock, so the prior balance is exact) for the GL bridge to post. A replayed
+ * receipt never reaches here; the unique key makes a repeat a no-op anyway.
+ */
+async function recordNegativeRevaluation(
+  tx: Tx,
+  balance: BalanceRow,
+  entry: StockLedgerEntry,
+): Promise<void> {
+  if (entry.movementType !== "receipt") return;
+  const priorQuantity = parseDecimal4(balance.quantity);
+  if (priorQuantity >= 0n) return;
+  // Both factors are decimal4 (scale 10^4 each): the product is at 10^8.
+  const valueIdr = Number(
+    divideRounded(
+      priorQuantity *
+        (parseDecimal4(entry.unitCostIdr) - parseDecimal4(balance.avgCostIdr)),
+      100_000_000n,
+      ROUNDING_MODE,
+    ),
+  );
+  if (valueIdr === 0) return;
+  await tx
+    .insert(stockNegativeRevaluations)
+    .values({
+      tenantId: balance.tenantId,
+      ledgerEntryId: entry.id,
+      outletId: entry.outletId,
+      locationId: entry.locationId,
+      inventoryItemId: entry.inventoryItemId,
+      sourceId: sourceIdToDb(entry.sourceId),
+      priorQuantity: balance.quantity,
+      priorAvgCostIdr: balance.avgCostIdr,
+      unitCostIdr: entry.unitCostIdr,
+      valueIdr,
+      occurredAt: new Date(entry.occurredAt),
+    })
+    .onConflictDoNothing();
+}
+
 /** Applies one movement to the already locked balance row. */
 async function applyMovementToLockedBalance(
   tx: Tx,
@@ -1189,6 +1236,7 @@ async function applyMovementToLockedBalance(
   entry: StockLedgerEntry,
 ): Promise<void> {
   const next = applyStockMovement(balance, entry, ROUNDING_MODE);
+  await recordNegativeRevaluation(tx, balance, entry);
   await tx
     .update(stockBalances)
     .set({

@@ -72,7 +72,9 @@ import {
   inventoryGlPostings,
   outlets,
   stockLedger,
+  stockNegativeRevaluations,
   tenants,
+  type InventoryGlSourceType,
 } from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { isTrainingOrder } from "./device-training.ts";
@@ -118,10 +120,10 @@ function blockingCodeOf(error: unknown): BlockingCode | null {
 }
 
 type GlMapping = {
-  readonly sourceType: StockSourceType;
+  readonly sourceType: InventoryGlSourceType;
   readonly movementTypes: readonly StockMovementType[];
   readonly eventName: "stock.adjusted" | "stock.deducted";
-  readonly variant: "count" | "waste" | null;
+  readonly variant: "count" | "waste" | "negative_revaluation" | null;
   readonly amountKey: "differenceIdr" | "costIdr";
 };
 
@@ -148,7 +150,35 @@ const MAPPINGS: readonly GlMapping[] = [
     variant: null,
     amountKey: "costIdr",
   },
+  // Bead 1214: a goods receipt row that landed on a negative balance. Its
+  // `stock_negative_revaluations` row (not the ledger row: the receipt journal
+  // already books the receipt) posts Dr HPP / Cr inventory, reversed when the
+  // new cost is below the old average.
+  {
+    sourceType: "negative_stock_revaluation",
+    movementTypes: ["receipt"],
+    eventName: "stock.deducted",
+    variant: "negative_revaluation",
+    amountKey: "costIdr",
+  },
 ];
+
+/** The GL source a ledger movement feeds (a receipt feeds its revaluation). */
+function glSourceTypeOf(
+  sourceType: StockSourceType,
+  movementType: StockMovementType,
+): InventoryGlSourceType {
+  return sourceType === "goods_receipt" && movementType === "receipt"
+    ? "negative_stock_revaluation"
+    : sourceType;
+}
+
+/** The ledger source type behind a GL source (its id form follows it). */
+function ledgerSourceTypeOf(sourceType: InventoryGlSourceType): StockSourceType {
+  return sourceType === "negative_stock_revaluation"
+    ? "goods_receipt"
+    : sourceType;
+}
 
 const LATE_AUDIT_FIELDS = [
   "journalId",
@@ -180,15 +210,48 @@ function mappingOf(
 
 /** DB (uuid) form for ledger queries, domain form (ULID for orders) for the rest. */
 function normalizeSource(source: {
-  sourceType: StockSourceType;
+  sourceType: InventoryGlSourceType;
   sourceId: string;
 }) {
   const dbId = sourceIdToDb(source.sourceId);
   return {
     sourceType: source.sourceType,
     dbId,
-    domainId: sourceIdFromDb(source.sourceType, dbId),
+    domainId: sourceIdFromDb(ledgerSourceTypeOf(source.sourceType), dbId),
   };
+}
+
+/** Outlet of a source's first row (ledger or revaluation), or null. */
+async function outletOfSource(
+  tx: Tx,
+  tenantId: ScopedTenantContext["tenant"]["tenantId"],
+  target: ReturnType<typeof normalizeSource>,
+): Promise<string | null> {
+  if (target.sourceType === "negative_stock_revaluation") {
+    const [row] = await tx
+      .select({ outletId: stockNegativeRevaluations.outletId })
+      .from(stockNegativeRevaluations)
+      .where(
+        and(
+          eq(stockNegativeRevaluations.tenantId, tenantId),
+          eq(stockNegativeRevaluations.sourceId, target.dbId),
+        ),
+      )
+      .limit(1);
+    return row?.outletId ?? null;
+  }
+  const [ledger] = await tx
+    .select({ outletId: stockLedger.outletId })
+    .from(stockLedger)
+    .where(
+      and(
+        eq(stockLedger.tenantId, tenantId),
+        eq(stockLedger.sourceType, target.sourceType),
+        eq(stockLedger.sourceId, target.dbId),
+      ),
+    )
+    .limit(1);
+  return ledger?.outletId ?? null;
 }
 
 async function accountingEnabled(
@@ -212,13 +275,14 @@ export async function deliverInventoryGlEvent(
   if (event.name !== "stock.moved") return { status: "ignored" };
   if (event.tenantId !== context.tenant.tenantId) return { status: "ignored" };
   const payload = stockMovedEventPayloadSchema.parse(event.payload);
-  if (!mappingOf(payload.sourceType, payload.movementType))
+  const sourceType = glSourceTypeOf(payload.sourceType, payload.movementType);
+  if (!mappingOf(sourceType, payload.movementType))
     return { status: "ignored" };
   if (!(await accountingEnabled(tx, context))) return { status: "ignored" };
   return settleStockSource(
     tx,
     context,
-    { sourceType: payload.sourceType, sourceId: payload.sourceId },
+    { sourceType, sourceId: payload.sourceId },
     now,
   );
 }
@@ -230,7 +294,7 @@ export async function deliverInventoryGlEvent(
 async function settleStockSource(
   tx: Tx,
   context: ScopedTenantContext,
-  source: { sourceType: StockSourceType; sourceId: string },
+  source: { sourceType: InventoryGlSourceType; sourceId: string },
   now: Date,
 ): Promise<InventoryGlResult> {
   const tenantId = context.tenant.tenantId;
@@ -244,23 +308,13 @@ async function settleStockSource(
   } catch (error) {
     const code = blockingCodeOf(error);
     if (!code) throw error;
-    const [ledger] = await tx
-      .select({ outletId: stockLedger.outletId })
-      .from(stockLedger)
-      .where(
-        and(
-          eq(stockLedger.tenantId, tenantId),
-          eq(stockLedger.sourceType, target.sourceType),
-          eq(stockLedger.sourceId, target.dbId),
-        ),
-      )
-      .limit(1);
-    if (!ledger) throw error;
+    const outletId = await outletOfSource(tx, tenantId, target);
+    if (!outletId) throw error;
     await tx
       .insert(inventoryGlBlocked)
       .values({
         tenantId,
-        outletId: ledger.outletId,
+        outletId,
         sourceType: target.sourceType,
         sourceId: target.domainId,
         errorCode: code,
@@ -461,7 +515,7 @@ function idempotencyKeyOf(
 export async function postStockSourceToGl(
   tx: Tx,
   context: ScopedTenantContext,
-  source: { sourceType: StockSourceType; sourceId: string },
+  source: { sourceType: InventoryGlSourceType; sourceId: string },
   now = new Date(),
 ): Promise<InventoryGlResult> {
   const mapping = mappingOf(source.sourceType);
@@ -489,7 +543,7 @@ export async function postStockSourceToGl(
       .where(
         and(
           eq(stockLedger.tenantId, tenantId),
-          eq(stockLedger.sourceType, target.sourceType),
+          eq(stockLedger.sourceType, "order"),
           eq(stockLedger.sourceId, target.dbId),
         ),
       )
@@ -500,32 +554,80 @@ export async function postStockSourceToGl(
     }
   }
   await lockSource(tx, tenantId, target);
-  let rows = await tx
-    .select({
-      id: stockLedger.id,
-      outletId: stockLedger.outletId,
-      quantity: stockLedger.quantity,
-      unitCostIdr: stockLedger.unitCostIdr,
-      occurredAt: stockLedger.occurredAt,
-      postedLedgerEntryId: inventoryGlPostings.ledgerEntryId,
-    })
-    .from(stockLedger)
-    .leftJoin(
-      inventoryGlPostings,
-      and(
-        eq(inventoryGlPostings.tenantId, stockLedger.tenantId),
-        eq(inventoryGlPostings.ledgerEntryId, stockLedger.id),
-      ),
-    )
-    .where(
-      and(
-        eq(stockLedger.tenantId, tenantId),
-        eq(stockLedger.sourceType, target.sourceType),
-        eq(stockLedger.sourceId, target.dbId),
-        inArray(stockLedger.movementType, [...mapping.movementTypes]),
-      ),
-    )
-    .orderBy(asc(stockLedger.occurredAt), asc(stockLedger.id));
+  const ledgerSourceType = ledgerSourceTypeOf(target.sourceType);
+  let rows =
+    target.sourceType === "negative_stock_revaluation"
+      ? await tx
+          .select({
+            id: stockNegativeRevaluations.ledgerEntryId,
+            outletId: stockNegativeRevaluations.outletId,
+            quantity: stockNegativeRevaluations.priorQuantity,
+            unitCostIdr: stockNegativeRevaluations.unitCostIdr,
+            occurredAt: stockNegativeRevaluations.occurredAt,
+            valueIdr: stockNegativeRevaluations.valueIdr,
+            postedLedgerEntryId: inventoryGlPostings.ledgerEntryId,
+          })
+          .from(stockNegativeRevaluations)
+          .leftJoin(
+            inventoryGlPostings,
+            and(
+              eq(
+                inventoryGlPostings.tenantId,
+                stockNegativeRevaluations.tenantId,
+              ),
+              eq(
+                inventoryGlPostings.ledgerEntryId,
+                stockNegativeRevaluations.ledgerEntryId,
+              ),
+            ),
+          )
+          .where(
+            and(
+              eq(stockNegativeRevaluations.tenantId, tenantId),
+              eq(stockNegativeRevaluations.sourceId, target.dbId),
+            ),
+          )
+          .orderBy(
+            asc(stockNegativeRevaluations.occurredAt),
+            asc(stockNegativeRevaluations.ledgerEntryId),
+          )
+      : (
+          await tx
+            .select({
+              id: stockLedger.id,
+              outletId: stockLedger.outletId,
+              quantity: stockLedger.quantity,
+              unitCostIdr: stockLedger.unitCostIdr,
+              occurredAt: stockLedger.occurredAt,
+              postedLedgerEntryId: inventoryGlPostings.ledgerEntryId,
+            })
+            .from(stockLedger)
+            .leftJoin(
+              inventoryGlPostings,
+              and(
+                eq(inventoryGlPostings.tenantId, stockLedger.tenantId),
+                eq(inventoryGlPostings.ledgerEntryId, stockLedger.id),
+              ),
+            )
+            .where(
+              and(
+                eq(stockLedger.tenantId, tenantId),
+                eq(stockLedger.sourceType, ledgerSourceType),
+                eq(stockLedger.sourceId, target.dbId),
+                inArray(stockLedger.movementType, [...mapping.movementTypes]),
+              ),
+            )
+            .orderBy(asc(stockLedger.occurredAt), asc(stockLedger.id))
+        ).map((row) => ({
+          ...row,
+          // Signed stock effect in whole rupiah (positive = stock in).
+          valueIdr: Number(
+            extendCostIdr(row.quantity, row.unitCostIdr, "half_up"),
+          ),
+        }));
+  // A receipt that did not land on a negative balance has nothing to revalue.
+  if (rows.length === 0 && target.sourceType === "negative_stock_revaluation")
+    return { status: "ignored" };
   // Every ledger row of the source (posted or not) feeds the waste allocation;
   // only the unposted ones are posted below.
   const allRows = rows;
@@ -589,9 +691,8 @@ export async function postStockSourceToGl(
   const journalEntryIds: string[] = [];
   for (const [naturalDate, group] of groups) {
     // Signed stock effect of each row in whole rupiah (positive = stock in).
-    const rowValues = group.map((row) =>
-      Number(extendCostIdr(row.quantity, row.unitCostIdr, "half_up")),
-    );
+    // A revaluation row carries its own value (prior qty x cost change).
+    const rowValues = group.map((row) => row.valueIdr);
     const rowSum = rowValues.reduce((sum, value) => sum + value, 0);
     let amount: number;
     if (mapping.variant === "waste") {

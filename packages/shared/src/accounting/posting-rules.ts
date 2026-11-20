@@ -378,6 +378,16 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
     ],
   ),
   rule(
+    { event: "stock.deducted", variant: "negative_revaluation" },
+    "cogs",
+    "Revaluasi HPP: penerimaan ke stok negatif",
+    `${AUTO} (HPP); INV-01 kartu stok = GL persediaan`,
+    [
+      ["cogs", "debit", "costIdr"],
+      ["inventory", "credit", "costIdr"],
+    ],
+  ),
+  rule(
     { event: "stock.adjusted", variant: "waste" },
     "stock_adjustment",
     "Waste dan spoilage",

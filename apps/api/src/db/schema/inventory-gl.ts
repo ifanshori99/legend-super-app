@@ -21,8 +21,18 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 import type { StockSourceType } from "@starter/shared/inventory";
-import { tenantIdColumn, ulidInUuid } from "../columns.ts";
+import { decimal4Column, tenantIdColumn, ulidInUuid } from "../columns.ts";
 import { tenants } from "./platform-org.ts";
+
+/**
+ * Source types the GL bridge tracks: every stock ledger source plus
+ * `negative_stock_revaluation` (bead 1214), the revaluation of a receipt that
+ * landed on a negative balance. It is not a stock movement (no quantity), so it
+ * never appears in `stock_ledger`.
+ */
+export type InventoryGlSourceType =
+  | StockSourceType
+  | "negative_stock_revaluation";
 
 /**
  * `inventory_gl_postings` (T, outlet-owned): a stock ledger row that already
@@ -40,7 +50,7 @@ export const inventoryGlPostings = pgTable(
     ledgerEntryId: ulidInUuid("ledger_entry_id").notNull(),
     outletId: uuid("outlet_id").notNull(),
     sourceType: varchar("source_type", { length: 30 })
-      .$type<StockSourceType>()
+      .$type<InventoryGlSourceType>()
       .notNull(),
     sourceId: text("source_id").notNull(),
     journalEntryId: uuid("journal_entry_id"),
@@ -76,7 +86,7 @@ export const inventoryGlBlocked = pgTable(
     tenantId: tenantIdColumn(() => tenants.id).notNull(),
     outletId: uuid("outlet_id").notNull(),
     sourceType: varchar("source_type", { length: 30 })
-      .$type<StockSourceType>()
+      .$type<InventoryGlSourceType>()
       .notNull(),
     sourceId: text("source_id").notNull(),
     errorCode: varchar("error_code", { length: 60 }).notNull(),
@@ -97,6 +107,47 @@ export const inventoryGlBlocked = pgTable(
     index("inventory_gl_blocked_retry_idx").on(
       table.tenantId,
       table.firstFailedAt,
+    ),
+  ],
+);
+
+/**
+ * `stock_negative_revaluations` (T, outlet-owned; bead 1214): one row per
+ * receipt ledger row that landed on a negative balance. The sale ran ahead of
+ * the receipt at the old average and the receipt reset the average to its own
+ * cost, so the stock card value is `value_idr` away from the receipt journal:
+ * `prior_quantity x (unit_cost_idr - prior_avg_cost_idr)`, half_up to whole
+ * rupiah (negative = the card is lower than the books, Dr HPP / Cr inventory).
+ * Written in the same transaction as the receipt row, under its balance lock;
+ * the GL bridge posts it as source `negative_stock_revaluation` keyed by the
+ * goods receipt. `ledger_entry_id` is the receipt row. Append-only.
+ */
+export const stockNegativeRevaluations = pgTable(
+  "stock_negative_revaluations",
+  {
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    ledgerEntryId: ulidInUuid("ledger_entry_id").notNull(),
+    outletId: uuid("outlet_id").notNull(),
+    locationId: uuid("location_id").notNull(),
+    inventoryItemId: uuid("inventory_item_id").notNull(),
+    sourceId: uuid("source_id").notNull(),
+    priorQuantity: decimal4Column("prior_quantity").notNull(),
+    priorAvgCostIdr: decimal4Column("prior_avg_cost_idr").notNull(),
+    unitCostIdr: decimal4Column("unit_cost_idr").notNull(),
+    valueIdr: bigint("value_idr", { mode: "number" }).notNull(),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    unique("stock_negative_revaluations_tenant_ledger_entry_key").on(
+      table.tenantId,
+      table.ledgerEntryId,
+    ),
+    index("stock_negative_revaluations_source_idx").on(
+      table.tenantId,
+      table.sourceId,
     ),
   ],
 );
