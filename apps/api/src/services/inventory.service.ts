@@ -1205,20 +1205,33 @@ async function lockStockBalance(
  * transfer_in, production_in, a restocked order return, a positive count
  * adjustment. The difference is the full prior quantity even when the inflow
  * is smaller than the deficit (the whole negative balance is repriced).
+ *
+ * Bead legend-tomda: a zero-cost inflow (supplier bonus) is the exception. It
+ * keeps the old average, so only the covered units (min(inflow, deficit) x old
+ * average) move value, credited to HPP; the rest of the deficit is untouched.
  */
 async function recordNegativeRevaluation(
   tx: Tx,
   balance: BalanceRow,
   entry: StockLedgerEntry,
 ): Promise<void> {
-  if (parseDecimal4(entry.quantity) <= 0n) return;
+  const quantity = parseDecimal4(entry.quantity);
+  if (quantity <= 0n) return;
   const priorQuantity = parseDecimal4(balance.quantity);
   if (priorQuantity >= 0n) return;
+  const unitCost = parseDecimal4(entry.unitCostIdr);
+  const priorAvg = parseDecimal4(balance.avgCostIdr);
+  // legend-tomda: a zero-cost inflow keeps the old average (applyStockMovement),
+  // so only the free units that cover units sold short move value to HPP, not
+  // the whole deficit.
+  const repriced =
+    unitCost === 0n
+      ? -(quantity < -priorQuantity ? quantity : -priorQuantity)
+      : priorQuantity;
   // Both factors are decimal4 (scale 10^4 each): the product is at 10^8.
   const valueIdr = Number(
     divideRounded(
-      priorQuantity *
-        (parseDecimal4(entry.unitCostIdr) - parseDecimal4(balance.avgCostIdr)),
+      repriced * (unitCost - priorAvg),
       100_000_000n,
       ROUNDING_MODE,
     ),

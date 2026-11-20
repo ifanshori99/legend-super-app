@@ -296,6 +296,25 @@ registerMock(createGoodsReceipt, ({ body, headers }) =>
             "PURCHASE_ORDER_LINE_MISMATCH",
             "Baris penerimaan bukan milik purchase order ini.",
           );
+        // legend-tomda: same rule as the API.
+        const zeroPrice = parseDecimal4(orderLine.unitPriceIdr) === 0n;
+        if (
+          zeroPrice &&
+          line.isBonus !== true &&
+          parseDecimal4(line.quantityReceived) >
+            parseDecimal4(line.quantityRejected)
+        )
+          throw new ApiError(
+            422,
+            "GOODS_RECEIPT_BONUS_REQUIRED",
+            "Baris berharga Rp0 harus ditandai bonus supplier.",
+          );
+        if (!zeroPrice && line.isBonus === true)
+          throw new ApiError(
+            422,
+            "GOODS_RECEIPT_BONUS_PRICED_LINE",
+            "Bonus supplier hanya untuk baris berharga Rp0.",
+          );
         if (
           parseDecimal4(line.quantityRejected) >
           parseDecimal4(line.quantityReceived)

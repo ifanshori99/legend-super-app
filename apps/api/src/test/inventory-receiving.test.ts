@@ -1180,3 +1180,125 @@ describe("o1o4s-GR goods receipt: partial, QC, photos", () => {
     expect(await ordersAudited()).toBe(1);
   });
 });
+
+// legend-tomda (second opinion 1221 B3): a zero-price line is either a supplier
+// bonus or a price someone forgot. Only an explicit `isBonus` receives it, and
+// within one receipt the priced lines post before the bonus lines, so the HPP
+// revaluation of a negative balance no longer depends on line order.
+describe("tomda zero-price receipt lines need an explicit bonus flag", () => {
+  async function seedBonusFixture(): Promise<{
+    poId: string;
+    bonusLine: string;
+    paidLine: string;
+    item: string;
+    location: string;
+  }> {
+    const item = await insertItem(uomKg, "Sirup Bonus GR");
+    const location = await insertLocation(outletA);
+    const poId = randomUUID();
+    await owner.query(
+      `INSERT INTO purchase_orders
+         (id, tenant_id, outlet_id, supplier_id, number, status, expected_date,
+          subtotal_idr, tax_idr, total_idr, source, created_by, approved_by,
+          approved_at, sent_at)
+       VALUES ($1, $2, $3, $4, $5, 'sent', '2099-12-20', 60000, 0, 60000, 'user',
+          $6, $7, now(), now())`,
+      [
+        poId,
+        tenantA,
+        outletA,
+        supplierId,
+        `PO/209912/${randomBytes(4).toString("hex")}`,
+        creatorId,
+        approverId,
+      ],
+    );
+    createdOrderIds.push(poId);
+    const ids: string[] = [];
+    // The bonus line comes first: the old posting order (line number) applied
+    // it before the priced line.
+    for (const [quantity, price, total, lineNo] of [
+      ["2.0000", "0.0000", 0, 1],
+      ["10.0000", "6000.0000", 60000, 2],
+    ] as const) {
+      const { rows } = await owner.query<{ id: string }>(
+        `INSERT INTO purchase_order_lines
+           (tenant_id, outlet_id, purchase_order_id, inventory_item_id, quantity,
+            uom_id, unit_price_idr, line_total_idr, line_no)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+        [tenantA, outletA, poId, item, quantity, uomKg, price, total, lineNo],
+      );
+      ids.push(rows[0]!.id);
+    }
+    return { poId, bonusLine: ids[0]!, paidLine: ids[1]!, item, location };
+  }
+
+  it("[tomda-GR-1] a zero-price line without isBonus, or isBonus on a priced line, is refused 422 and records nothing", async () => {
+    const bx = await seedBonusFixture();
+    const fx = { poId: bx.poId } as Fixture;
+    for (const [lines, code] of [
+      [
+        [rl(bx.bonusLine, bx.location, "2.0000")],
+        "GOODS_RECEIPT_BONUS_REQUIRED",
+      ],
+      [
+        [
+          rl(bx.bonusLine, bx.location, "2.0000", "0.0000", { isBonus: true }),
+          rl(bx.paidLine, bx.location, "10.0000", "0.0000", { isBonus: true }),
+        ],
+        "GOODS_RECEIPT_BONUS_PRICED_LINE",
+      ],
+    ] as const) {
+      const refused = await receive(
+        receiver.client,
+        receiptBody(fx, [...lines]),
+      );
+      expect(refused.status).toBe(422);
+      expect(refused.body.error.code).toBe(code);
+    }
+    expect(await receiptCount(bx.poId)).toBe(0);
+    expect(await ledgerCountForOrder(bx.poId)).toBe(0);
+    expect(await poStatus(bx.poId)).toBe("sent");
+  });
+
+  it("[tomda-GR-2] onto -10 kg @5000 the priced line posts first: HPP revaluation -10000 whatever the line order, 2 kg left at 0", async () => {
+    const bx = await seedBonusFixture();
+    await owner.query(
+      `INSERT INTO stock_balances
+         (tenant_id, outlet_id, location_id, inventory_item_id, quantity, avg_cost_idr, updated_at)
+       VALUES ($1, $2, $3, $4, -10, 5000, now())`,
+      [tenantA, outletA, bx.location, bx.item],
+    );
+    const fx = { poId: bx.poId } as Fixture;
+    const ok = await receive(
+      receiver.client,
+      receiptBody(fx, [
+        rl(bx.bonusLine, bx.location, "2.0000", "0.0000", { isBonus: true }),
+        rl(bx.paidLine, bx.location, "10.0000"),
+      ]),
+    );
+    expect(ok.status).toBe(201);
+    const { rows: audit } = await owner.query<{ bonus: unknown }>(
+      `SELECT event->'maskedChanges'->'after'->'bonusOrderLineIds' AS bonus FROM audit_logs
+        WHERE tenant_id = $1 AND event->>'action' = 'inventory.goods_receipt_recorded'
+          AND event::text LIKE '%' || $2 || '%'`,
+      [tenantA, ok.body.data.receipt.id],
+    );
+    expect(audit).toEqual([{ bonus: [bx.bonusLine] }]);
+    const { rows } = await owner.query<{ value: string; prior: string }>(
+      `SELECT value_idr::text AS value, prior_quantity::text AS prior
+         FROM stock_negative_revaluations
+        WHERE tenant_id = $1 AND inventory_item_id = $2`,
+      [tenantA, bx.item],
+    );
+    // Priced 10 @6000 onto -10 @5000 reprices the deficit (HPP +10000); the
+    // bonus then lands on 0 and moves no value.
+    expect(rows).toEqual([{ value: "-10000", prior: "-10.0000" }]);
+    const { rows: balance } = await owner.query<{ q: string; avg: string }>(
+      `SELECT quantity::text AS q, avg_cost_idr::text AS avg FROM stock_balances
+        WHERE tenant_id = $1 AND location_id = $2 AND inventory_item_id = $3`,
+      [tenantA, bx.location, bx.item],
+    );
+    expect(balance).toEqual([{ q: "2.0000", avg: "0.0000" }]);
+  });
+});

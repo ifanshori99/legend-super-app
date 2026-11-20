@@ -63,6 +63,10 @@ export const PURCHASING_ERROR_CODES = [
   "PURCHASE_ORDER_NOT_SENDABLE",
   /** Replay of a send whose share link is expired, revoked or missing. */
   "PURCHASE_ORDER_SHARE_LINK_UNAVAILABLE",
+  /** legend-tomda: a zero-price receipt line was not marked as a supplier bonus. */
+  "GOODS_RECEIPT_BONUS_REQUIRED",
+  /** legend-tomda: `isBonus` was sent on a receipt line that has a price. */
+  "GOODS_RECEIPT_BONUS_PRICED_LINE",
 ] as const;
 
 export const purchasingErrorCodeSchema = z.enum(PURCHASING_ERROR_CODES);
@@ -113,6 +117,8 @@ export const purchasingErrorHttpStatus = {
   SUPPLIER_NAME_TAKEN: 409,
   PURCHASE_ORDER_NOT_SENDABLE: 409,
   PURCHASE_ORDER_SHARE_LINK_UNAVAILABLE: 409,
+  GOODS_RECEIPT_BONUS_REQUIRED: 422,
+  GOODS_RECEIPT_BONUS_PRICED_LINE: 422,
 } as const satisfies Record<PurchasingErrorCode, number>;
 
 /**
@@ -172,4 +178,8 @@ export const purchasingErrorMessages: Record<PurchasingErrorCode, string> = {
     "Pesanan pembelian pada status ini tidak dapat dikirim.",
   PURCHASE_ORDER_SHARE_LINK_UNAVAILABLE:
     "Tautan berbagi tidak tersedia. Kirim ulang dengan kunci idempotensi baru.",
+  GOODS_RECEIPT_BONUS_REQUIRED:
+    "Baris berharga Rp0 harus ditandai bonus supplier, atau perbaiki harga di pesanan.",
+  GOODS_RECEIPT_BONUS_PRICED_LINE:
+    "Bonus supplier hanya untuk baris berharga Rp0.",
 };

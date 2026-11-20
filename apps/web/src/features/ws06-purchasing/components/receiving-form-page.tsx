@@ -14,9 +14,11 @@ import { useTenantContext } from "@/lib/tenant-context";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { FormField } from "@/components/ui/form-field";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Money } from "@/components/ui/money";
 import {
   Select,
@@ -49,7 +51,9 @@ import {
   useReceiptLinesForOrder,
 } from "../receiving-hooks.ts";
 import {
+  bonusFlagOf,
   formatBusinessDate,
+  isZeroPriceLine,
   formatQuantityWithUnit,
   itemNameOf,
   receivingErrorKey,
@@ -77,6 +81,7 @@ type LineDraft = {
   batchCode: string;
   expiresOn: string;
   locationId: string;
+  isBonus: boolean;
 };
 
 function emptyDraft(locationId: string): LineDraft {
@@ -87,6 +92,7 @@ function emptyDraft(locationId: string): LineDraft {
     batchCode: "",
     expiresOn: "",
     locationId,
+    isBonus: false,
   };
 }
 
@@ -263,6 +269,7 @@ function ReceivingFormContent() {
       batchCode: string | null;
       expiresOn: string | null;
       locationId: string;
+      isBonus: boolean;
     }[] = [];
     if (orderId === "") {
       setFormError(t("inventoryReceiving.receiving.form.errorOrder"));
@@ -312,6 +319,16 @@ function ReceivingFormContent() {
         errors[line.id] = t("inventoryReceiving.common.emptyValue");
         continue;
       }
+      if (
+        isZeroPriceLine(line) &&
+        !draft.isBonus &&
+        parseDecimal4(received) > parseDecimal4(rejected)
+      ) {
+        errors[line.id] = t(
+          "inventoryReceiving.receiving.form.errorBonusRequired",
+        );
+        continue;
+      }
       parsedLines.push({
         line,
         received,
@@ -321,6 +338,7 @@ function ReceivingFormContent() {
           draft.batchCode.trim() === "" ? null : draft.batchCode.trim(),
         expiresOn: draft.expiresOn === "" ? null : draft.expiresOn,
         locationId: draft.locationId,
+        isBonus: draft.isBonus,
       });
     }
     setLineErrors(errors);
@@ -372,6 +390,7 @@ function ReceivingFormContent() {
         quantityRejected: line.rejected,
         batchCode: line.batchCode,
         expiresOn: line.expiresOn,
+        ...bonusFlagOf(line.line, line.isBonus),
       })),
     };
     createReceipt.mutate(
@@ -688,6 +707,25 @@ function ReceivingFormContent() {
                       autoComplete="off"
                     />
                   </FormField>
+                  {isZeroPriceLine(line) ? (
+                    <div className="flex items-start gap-3 rounded-md border p-3">
+                      <Checkbox
+                        id={`receipt-bonus-${line.id}`}
+                        checked={draft.isBonus}
+                        onCheckedChange={(checked) =>
+                          updateDraft(line.id, { isBonus: checked === true })
+                        }
+                      />
+                      <div className="grid gap-1">
+                        <Label htmlFor={`receipt-bonus-${line.id}`}>
+                          {t("inventoryReceiving.receiving.form.bonus")}
+                        </Label>
+                        <p className="text-sm text-muted-foreground">
+                          {t("inventoryReceiving.receiving.form.bonusHint")}
+                        </p>
+                      </div>
+                    </div>
+                  ) : null}
                   <div className="grid gap-3 sm:grid-cols-3">
                     <FormField
                       label={t("inventoryReceiving.receiving.form.batchCode")}
