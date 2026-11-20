@@ -4,6 +4,7 @@ import { readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { pnpmCommand, root } from "./lib.mjs";
 import { provisionRoles } from "./provision-app-role.mjs";
+import { findMissingTestFiles, normalizeTestFiles } from "./lib-test-files.mjs";
 import {
   legacySweepMinutes,
   ownerLabelValue,
@@ -35,8 +36,17 @@ if (
   process.exit(1);
 }
 const selected = process.env.LEGEND_TEST_FILES
-  ? process.env.LEGEND_TEST_FILES.trim().split(/\s+/)
+  ? normalizeTestFiles(process.env.LEGEND_TEST_FILES.trim().split(/\s+/))
   : undefined;
+// A path that matches no file would make vitest run nothing and still exit
+// quietly (two empty runs on 20 Nov): refuse before any database is prepared.
+const missing = selected ? findMissingTestFiles(selected, root) : [];
+if (missing.length) {
+  console.error(
+    `LEGEND_TEST_FILES has paths that do not exist:\n${missing.map((file) => `  ${file}`).join("\n")}\nUse src/test/x.test.ts for API tests, tests/x.test.mjs for root tests.`,
+  );
+  process.exit(2);
+}
 const targeted =
   mode === "unit" &&
   selected?.length > 0 &&
