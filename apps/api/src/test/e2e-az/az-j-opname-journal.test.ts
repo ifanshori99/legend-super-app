@@ -970,24 +970,33 @@ describe("Alur J jurnal otomatis: selisih opname masuk GL seimbang (INV-03, ACC-
     expect(debit).toBe(credit);
   });
 
-  it("ACC-01 jurnal final tidak dihapus: koreksi lewat jurnal pembalik, sekali saja", async () => {
-    const [journal] = await journalsOfCount();
+  it("ACC-01 jurnal final tidak dihapus; selisih kurang (rugi) tidak bisa dibalik manual karena menaikkan laba (1218)", async () => {
+    // This count is a net loss (Dr beban selisih opname, Cr persediaan): a manual
+    // reversal would raise profit and hide the shortage, so 1218 refuses it and
+    // sends the correction through the source flow (fix the stock movement).
+    const before = await journalsOfCount();
+    expect(before).toHaveLength(1);
+    const journal = before[0]!;
     const reverse = () =>
       finance.client
-        .post(`/api/accounting/journals/${journal!.id}/reversal`)
+        .post(`/api/accounting/journals/${journal.id}/reversal`)
         .set(originHeader)
         .send({
           entryDate: today,
           reason: "Hitungan ulang menunjukkan selisih salah catat",
           idempotencyKey: key("rev"),
         });
-    const first = await reverse();
-    expect(first.status, JSON.stringify(first.body)).toBe(201);
-    expect(first.body.data.reversalOf).toBe(journal!.id);
+    const attempt = await reverse();
+    expect(attempt.status, JSON.stringify(attempt.body)).toBe(409);
+    expect(attempt.body.error.code).toBe("AUTO_JOURNAL_LOCKED");
 
-    const second = await reverse();
-    expect(second.status).toBe(409);
-    expect(second.body.error.code).toBe("JOURNAL_ALREADY_REVERSED");
+    // The final journal is untouched: still there, balanced, never reversed.
+    expect(await journalsOfCount()).toEqual(before);
+    const { rows } = await owner.query(
+      "SELECT 1 FROM journal_entries WHERE tenant_id = $1 AND reversal_of = $2",
+      [tenantId, journal.id],
+    );
+    expect(rows).toHaveLength(0);
   });
 
   it("INV-03 hitungan ditolak tidak menghasilkan jurnal", async () => {

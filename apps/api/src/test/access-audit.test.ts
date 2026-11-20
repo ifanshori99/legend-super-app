@@ -183,7 +183,7 @@ describe("§3.7 RBAC writes append to audit_logs (legend-wt33)", () => {
       }),
       {
         actorUserId: grantor.userId,
-        reauthenticatedAt: new Date(),
+        reauthenticatedAt: new Date(Date.now() - 5_000),
         mfaVerified: true,
       },
     );

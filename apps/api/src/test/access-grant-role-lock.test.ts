@@ -198,7 +198,7 @@ async function grantWhileGrantorIsEnded(input: {
       }),
       {
         actorUserId: input.grantorUserId,
-        reauthenticatedAt: new Date(),
+        reauthenticatedAt: new Date(Date.now() - 5_000),
         mfaVerified: true,
       },
     ).then(
@@ -336,7 +336,7 @@ describe("legend-8ajy4 role grant decides after the tenant lock", () => {
       }),
       {
         actorUserId: ownerA,
-        reauthenticatedAt: new Date(),
+        reauthenticatedAt: new Date(Date.now() - 5_000),
         mfaVerified: true,
       },
     );

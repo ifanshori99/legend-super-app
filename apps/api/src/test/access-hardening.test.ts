@@ -184,7 +184,11 @@ describe("§3.7 custom-role edits follow the grant rule (C6)", () => {
       updateCustomRoleSchema.parse({
         permissions: ["menu.item.view", "payroll.view"],
       }),
-      { actorUserId: admin, reauthenticatedAt: new Date(), mfaVerified: true },
+      {
+        actorUserId: admin,
+        reauthenticatedAt: new Date(Date.now() - 5_000),
+        mfaVerified: true,
+      },
     );
     expect(updated.permissions).toContain("payroll.view");
     expect(
