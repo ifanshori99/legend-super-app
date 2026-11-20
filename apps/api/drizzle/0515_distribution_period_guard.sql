@@ -19,6 +19,7 @@ DECLARE
   payment_cols text[] := ARRAY['payment_status', 'payment_ref', 'paid_at', 'paid_by',
     'recipient_user_id'];
 BEGIN
+  -- redefine-drops: the 0239 status-only SELECT now also reads the run's fiscal period and version
   SELECT r.status, r.fiscal_period_id, r.fiscal_period_version
     INTO run_status, run_fiscal_period_id, run_fiscal_period_version
     FROM public.distribution_runs r
