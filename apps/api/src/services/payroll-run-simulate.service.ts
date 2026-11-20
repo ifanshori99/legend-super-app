@@ -753,9 +753,26 @@ export async function simulatePayrollRunInTransaction(
   );
   const openReceivableById = receivableBalances.open;
 
-  const lastTaxPeriodOf = (endDate: string | null) =>
-    run.payDate.slice(5, 7) === "12" ||
-    (endDate !== null && endDate.slice(0, 7) <= run.payDate.slice(0, 7));
+  // The last tax period of a leaver is the run whose period holds the end
+  // date (not the month of the pay date: with a cutoff before month end the
+  // run of the leaving month would otherwise be taken as last, and the next run
+  // would then fail on a prior annual slip; legend-1220). A leaver who ended in
+  // an earlier year than the pay date is refused: that year is already closed
+  // and the tax of a former employee is not supported (fail closed).
+  const lastTaxPeriodOf = (endDate: string | null) => {
+    if (endDate !== null && endDate.slice(0, 4) < run.payDate.slice(0, 4))
+      throw new HttpError(
+        422,
+        "PAYROLL_PPH21_FORMER_EMPLOYEE_UNSUPPORTED",
+        "Karyawan yang berhenti di tahun sebelum tanggal bayar belum didukung perhitungan PPh 21-nya. Bayar sisa gajinya lewat koreksi admin.",
+      );
+    return (
+      run.payDate.slice(5, 7) === "12" ||
+      (endDate !== null &&
+        run.periodStart <= endDate &&
+        endDate <= run.periodEnd)
+    );
+  };
   const priors = await loadTaxYearPriors(
     tx,
     tenantId,
