@@ -80,7 +80,7 @@ import {
 import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
-import { orderGivenOf } from "./order-given.ts";
+import { settleOrderVouchersForVoid } from "./order-voucher-void.ts";
 import { logger } from "../lib/logger.ts";
 import {
   cancelKitchenItemsForVoidedLines,
@@ -1698,19 +1698,23 @@ export async function voidPosOrder(
           "CONFLICT",
           "Pesanan sudah dibayar sebagian; selesaikan lalu koreksi dengan void/refund tertaut.",
         );
-      // legend-v6is2 (restrictive rule): the void gives every points tender
-      // back in full, so a points-paid bill that still holds an apology or
-      // CRM voucher (`orderGivenOf().vouchersIdr`: any voucher not cancelled,
-      // used or not) would hand the guest the points AND the voucher. Refused
-      // until the voucher is cancelled; nothing is cut or recomputed here.
-      // Checked before the approval is consumed.
+      // legend-v6is2: the void gives every points tender back in full, so a
+      // voucher given for this bill would be handed back twice. Same rule as
+      // the paid void (order-voucher-void.ts): an unused (`issued`) voucher is
+      // cancelled in this transaction, a used (`redeemed`) one refuses the
+      // void, `expired` / `cancelled` are ignored. Before the approval is
+      // consumed; the order row is locked by mutatePosOrder.
       if (pointsOnly) {
-        const given = await orderGivenOf(tx, tenantId, order.id);
-        if (given.vouchersIdr > 0)
+        const vouchersOfOrder = await settleOrderVouchersForVoid(tx, context, {
+          orderId: order.id,
+          actor: { userId: caller.userId },
+          now,
+        });
+        if (vouchersOfOrder.kind === "used")
           throw new HttpError(
             409,
             "VOID_POINTS_HAS_VOUCHER",
-            "Pesanan ini dibayar poin dan masih punya voucher maaf yang belum dibatalkan. Batalkan voucher dulu sebelum void.",
+            "Pesanan ini dibayar poin dan voucher maafnya sudah dipakai; tidak bisa di-void. Hubungi admin untuk koreksi.",
           );
       }
       const override = await consumeApproval(tx, context, {

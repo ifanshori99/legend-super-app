@@ -1997,42 +1997,115 @@ async function voucherOnBill(order: CreatedOrder, member: Member) {
   return voucherId;
 }
 
-describe("legend-v6is2 void of a points-paid bill with a live voucher", () => {
-  it("v6is2-01 the void is refused 409 while the voucher is live: no points back, tender stays captured", async () => {
-    const member = await newMember(1_000);
-    const order = await newOrder(member);
-    const token = await mintOk(member, order.id, 100);
-    const done = await cashierRedeem(order, 100, { token });
-    expect(redeemed(done.status), JSON.stringify(done.body)).toBe(true);
-    await voucherOnBill(order, member);
+/** Sets the voucher's status, with the columns its checks require. */
+async function setVoucherStatus(
+  order: CreatedOrder,
+  voucherId: string,
+  status: "redeemed" | "expired",
+) {
+  await asTenant(world.tenant.tenantId, (client) =>
+    client.query(
+      status === "redeemed"
+        ? `UPDATE vouchers SET status = 'redeemed', redeemed_at = now(), redeemed_order_id = $3
+            WHERE tenant_id = $1 AND id = $2`
+        : `UPDATE vouchers SET status = 'expired', redeemed_at = NULL, redeemed_order_id = NULL
+            WHERE tenant_id = $1 AND id = $2`,
+      status === "redeemed"
+        ? [world.tenant.tenantId, voucherId, ulidToUuid(order.id)]
+        : [world.tenant.tenantId, voucherId],
+    ),
+  );
+}
 
-    const refused = await voidNow(order);
+async function voucherRow(voucherId: string) {
+  const { rows } = await asTenant(world.tenant.tenantId, (client) =>
+    client.query<{ status: string; cancelled_reason: string | null }>(
+      `SELECT status, cancelled_reason FROM vouchers WHERE tenant_id = $1 AND id = $2`,
+      [world.tenant.tenantId, voucherId],
+    ),
+  );
+  return rows[0];
+}
+
+/** The void route with a given approval (voidNow mints a fresh one). */
+async function voidWith(
+  order: CreatedOrder,
+  approval: { approvedBy: string; overrideId: string },
+) {
+  const expectedStatus = await posStatusOf(order);
+  return world.cashier.client
+    .post(
+      `/api/outlets/${encodeURIComponent(order.outletId)}/pos/orders/${order.id}/void`,
+    )
+    .set(world.headers)
+    .set(originHeader)
+    .set(DEVICE_TOKEN_HEADER, deviceToken())
+    .send({
+      idempotencyKey: randomUUID(),
+      reason: "customer_cancelled",
+      reasonNote: "Pelanggan batal sebelum bayar lunas",
+      expectedStatus,
+      ...approval,
+    });
+}
+
+async function pointsPaidBill() {
+  const member = await newMember(1_000);
+  const order = await newOrder(member);
+  const token = await mintOk(member, order.id, 100);
+  const done = await cashierRedeem(order, 100, { token });
+  expect(redeemed(done.status), JSON.stringify(done.body)).toBe(true);
+  const voucherId = await voucherOnBill(order, member);
+  return { member, order, voucherId };
+}
+
+describe("legend-v6is2 void of a points-paid bill that holds a voucher", () => {
+  it("v6is2-01 an unused (issued) voucher is cancelled with the void; the points come back once", async () => {
+    const { member, order, voucherId } = await pointsPaidBill();
+
+    const voided = await voidNow(order);
+    expect(voided.status, JSON.stringify(voided.body)).toBe(200);
+    expect(await voucherRow(voucherId)).toEqual({
+      status: "cancelled",
+      cancelled_reason: "order_voided",
+    });
+    expect(await balanceNow(member)).toBe(1_000);
+    expect(await restoreRows(member)).toHaveLength(1);
+  });
+
+  it("v6is2-02 a used (redeemed) voucher refuses the void 409: no points back, tender captured, approval not consumed", async () => {
+    const { member, order, voucherId } = await pointsPaidBill();
+    await setVoucherStatus(order, voucherId, "redeemed");
+    const approval = await voidApproval(order);
+
+    const refused = await voidWith(order, approval);
     expect(refused.status, JSON.stringify(refused.body)).toBe(409);
     expect(refused.body.error?.code).toBe("VOID_POINTS_HAS_VOUCHER");
+    expect(String(refused.body.error?.message)).not.toMatch(
+      /batalkan voucher/i,
+    );
     expect(await balanceNow(member)).toBe(900);
     expect(await restoreRows(member)).toHaveLength(0);
     expect((await pointsTenders(order)).map((row) => row.status)).toEqual([
       "captured",
     ]);
+    expect((await voucherRow(voucherId))?.status).toBe("redeemed");
+
+    // The refusal rolled back before the approval was used: the same approval
+    // still voids the bill once the voucher no longer blocks.
+    await setVoucherStatus(order, voucherId, "expired");
+    const voided = await voidWith(order, approval);
+    expect(voided.status, JSON.stringify(voided.body)).toBe(200);
+    expect(await balanceNow(member)).toBe(1_000);
   });
 
-  it("v6is2-02 once the voucher is cancelled the void goes through and gives the points back once", async () => {
-    const member = await newMember(1_000);
-    const order = await newOrder(member);
-    const token = await mintOk(member, order.id, 100);
-    expect(redeemed((await cashierRedeem(order, 100, { token })).status)).toBe(
-      true,
-    );
-    const voucherId = await voucherOnBill(order, member);
-    await asTenant(world.tenant.tenantId, (client) =>
-      client.query(
-        `UPDATE vouchers SET status = 'cancelled', cancelled_reason = 'v6is2' WHERE tenant_id = $1 AND id = $2`,
-        [world.tenant.tenantId, voucherId],
-      ),
-    );
+  it("v6is2-03 an expired voucher is ignored: the void goes through and the voucher stays expired", async () => {
+    const { member, order, voucherId } = await pointsPaidBill();
+    await setVoucherStatus(order, voucherId, "expired");
 
     const voided = await voidNow(order);
     expect(voided.status, JSON.stringify(voided.body)).toBe(200);
+    expect((await voucherRow(voucherId))?.status).toBe("expired");
     expect(await balanceNow(member)).toBe(1_000);
     expect(await restoreRows(member)).toHaveLength(1);
   });
