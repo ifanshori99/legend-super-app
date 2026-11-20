@@ -258,6 +258,21 @@ export type UpdateEmployeePiiInput = z.infer<
 >;
 
 /** HR / GM brand sets (or clears with null) the direct manager of one employee. */
+/**
+ * HR (with payroll access) sets the PTKP status with the day it is in force
+ * (bead 1223, PMK 168/2023): the start of the running tax year (1 January, or
+ * the join date) to correct a wrong entry, or today for a change that applies
+ * from the next tax year. Payslips already computed are never recomputed.
+ */
+export const correctEmployeePtkpInputSchema = clientInputSchema({
+  ptkpStatus: ptkpStatusSchema,
+  effectiveFrom: businessDateSchema,
+  reason: z.string().trim().min(5).max(500),
+});
+export type CorrectEmployeePtkpInput = z.infer<
+  typeof correctEmployeePtkpInputSchema
+>;
+
 export const changeEmployeeManagerInputSchema = clientInputSchema({
   managerId: employeeIdSchema.nullable(),
   reason: z.string().trim().min(1).max(200).optional(),

@@ -3,24 +3,34 @@
 -- date, a status change records it from the Jakarta date of the change (never
 -- before the join date, so a change before the first working day replaces the
 -- joining status). Two changes on one day keep the last. A NULL status is not
--- recorded. Tenant RLS, no DELETE or TRUNCATE for the app role.
+-- recorded. Tenant RLS; the app role only reads (migration 0516): the trigger
+-- writes as its owner (SECURITY DEFINER). An HR correction sets
+-- app.ptkp_effective_from to the day in force (never before the join date).
 SELECT app.enforce_tenant_rls('public.employee_ptkp_history'::regclass);
 --> statement-breakpoint
-REVOKE TRUNCATE, DELETE ON TABLE public.employee_ptkp_history FROM legend_app;
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE public.employee_ptkp_history FROM legend_app;
 --> statement-breakpoint
 CREATE OR REPLACE FUNCTION app.employee_ptkp_history_record() RETURNS trigger
-LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
 DECLARE
   effective date;
+  requested text := current_setting('app.ptkp_effective_from', true);
 BEGIN
   IF NEW.ptkp_status IS NULL THEN
     RETURN NULL;
   END IF;
-  IF TG_OP = 'UPDATE' AND NEW.ptkp_status IS NOT DISTINCT FROM OLD.ptkp_status THEN
-    RETURN NULL;
-  END IF;
   IF TG_OP = 'INSERT' THEN
     effective := NEW.join_date;
+  ELSIF requested IS NOT NULL AND requested <> '' THEN
+    -- HR correction (hris-employee-ptkp.service.ts): the day it is in force,
+    -- recorded even when the status itself is unchanged.
+    effective := requested::date;
+    IF effective < NEW.join_date THEN
+      RAISE EXCEPTION 'HR-PTKP: PTKP status of employee % cannot start before the join date', NEW.id
+        USING ERRCODE = '23514';
+    END IF;
+  ELSIF NEW.ptkp_status IS NOT DISTINCT FROM OLD.ptkp_status THEN
+    RETURN NULL;
   ELSE
     effective := GREATEST((now() AT TIME ZONE 'Asia/Jakarta')::date, NEW.join_date);
   END IF;
@@ -35,3 +45,6 @@ $$;
 CREATE TRIGGER employees_ptkp_history_trg
   AFTER INSERT OR UPDATE OF ptkp_status ON public.employees
   FOR EACH ROW EXECUTE FUNCTION app.employee_ptkp_history_record();
+--> statement-breakpoint
+-- A trigger function needs no EXECUTE grant to fire; nobody may call it.
+REVOKE ALL ON FUNCTION app.employee_ptkp_history_record() FROM PUBLIC;

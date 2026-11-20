@@ -46,6 +46,7 @@ import {
   listPositions as listPositionsEndpoint,
   updateEmployeePii as updateEmployeePiiEndpoint,
   changeEmployeeManagerEndpoint,
+  correctEmployeePtkpEndpoint,
   setEmployeeLegalEntityEndpoint,
 } from "@starter/shared/hris";
 import { getAuth, requireAuth } from "../middleware/auth.ts";
@@ -63,6 +64,7 @@ import { loadTenantAccess } from "../services/permission-resolver.ts";
 import { loadSurfaceAccessFacts } from "../services/surface-access.service.ts";
 import * as employeesService from "../services/hris-employee.service.ts";
 import { changeEmployeeManager } from "../services/hris-employee-manager.service.ts";
+import { correctEmployeePtkp } from "../services/hris-employee-ptkp.service.ts";
 import { setEmployeeLegalEntity } from "../services/hris-employee-legal-entity.service.ts";
 import * as attendanceService from "../services/hris-attendance.service.ts";
 import * as orgService from "../services/hris-org.service.ts";
@@ -368,6 +370,29 @@ export function createHrisRouter(deps: HrisRouterDeps = {}): Router {
       const body = changeEmployeeManagerEndpoint.body.parse(req.body);
       res.json({
         data: await changeEmployeeManager(
+          hrisContext(req),
+          actor(req),
+          employeeId,
+          body,
+        ),
+      });
+    },
+  );
+
+  // Bead 1223: PTKP status with its effective day; the service also requires
+  // payroll.run on the employee's home outlet.
+  router.put(
+    "/employees/:employeeId/ptkp",
+    backOffice,
+    jsonBody,
+    requireHris(MANAGE),
+    async (req, res) => {
+      const { employeeId } = correctEmployeePtkpEndpoint.params.parse(
+        req.params,
+      );
+      const body = correctEmployeePtkpEndpoint.body.parse(req.body);
+      res.json({
+        data: await correctEmployeePtkp(
           hrisContext(req),
           actor(req),
           employeeId,

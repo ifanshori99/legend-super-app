@@ -17,6 +17,8 @@ import {
 } from "@starter/shared/core/server";
 import { payrollRunIdSchema } from "@starter/shared/hris/payroll";
 import { openPayrollValue } from "../lib/payroll-sealed.ts";
+import { backfillPtkpHistoryForTenant } from "../services/payroll-ptkp-backfill.ts";
+import { loadTaxYearPtkpStatuses } from "../services/payroll-ptkp-tax-year.ts";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { FakeObjectStorage } from "@starter/shared/adapters";
 import type { ScopedTenantContext } from "@starter/shared/core";
@@ -27,6 +29,7 @@ import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { agent, signUp } from "./helpers.ts";
 import {
+  approveSimulatedRun,
   deleteStatutoryTables,
   insertDraftRun,
   insertEmployee,
@@ -117,14 +120,19 @@ async function makeRunner() {
         roleId,
         tenant.id,
         `PTKP ${roleId.slice(0, 8)}`,
-        JSON.stringify(["payroll.view", "payroll.run", "payroll.lock"]),
+        JSON.stringify([
+          "payroll.view",
+          "payroll.run",
+          "payroll.lock",
+          "hr.employee.manage",
+        ]),
         JSON.stringify(["tenant"]),
       ],
     );
     await conn.query(
       `INSERT INTO role_assignments
          (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
-       VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 minute', $2)`,
+       VALUES ($1, $2, $3, 'tenant', NULL, '2025-01-01', $2)`,
       [tenant.id, runnerId, roleId],
     );
   });
@@ -212,6 +220,11 @@ async function simulateRun(runId: string) {
   );
 }
 
+const JAN = {
+  periodStart: "2026-01-01",
+  periodEnd: "2026-01-31",
+  payDate: "2026-01-28",
+};
 const JUL = {
   periodStart: "2026-07-01",
   periodEnd: "2026-07-31",
@@ -228,28 +241,87 @@ const JAN_NEXT = {
   payDate: "2027-01-28",
 };
 
-/** HR changes the status (the trigger records it), dated `effectiveFrom`. */
+/** HR changes the status (the trigger records it), in force from `effectiveFrom`. */
 async function changePtkp(
   employeeId: string,
   status: string,
   effectiveFrom: string,
 ) {
   await asTenant(async (conn) => {
+    await conn.query("SELECT set_config('app.ptkp_effective_from', $1, true)", [
+      effectiveFrom,
+    ]);
     await conn.query(
       "UPDATE employees SET ptkp_status = $3 WHERE tenant_id = $1 AND id = $2",
       [tenant.id, employeeId, status],
     );
-    // The trigger dates the change today (Jakarta); pin it for the scenario.
-    const moved = await conn.query(
-      `UPDATE employee_ptkp_history SET effective_from = $4
-        WHERE tenant_id = $1 AND employee_id = $2 AND ptkp_status = $3
-          AND effective_from = GREATEST((now() AT TIME ZONE 'Asia/Jakarta')::date,
-                                        (SELECT join_date FROM employees WHERE id = $2))`,
-      [tenant.id, employeeId, status, effectiveFrom],
-    );
-    expect(moved.rowCount).toBe(1);
   });
 }
+
+const historyOf = (employeeId: string) =>
+  asTenant(
+    async (conn) =>
+      (
+        await conn.query<{ effective_from: string; ptkp_status: string }>(
+          `SELECT to_char(effective_from, 'YYYY-MM-DD') AS effective_from, ptkp_status
+           FROM employee_ptkp_history WHERE tenant_id = $1 AND employee_id = $2
+          ORDER BY effective_from`,
+          [tenant.id, employeeId],
+        )
+      ).rows,
+  );
+
+async function lockRun(runId: string) {
+  const { lockPayrollRunInTransaction } =
+    await import("../services/payroll-run-lock.service.ts");
+  return withTenant(db, tenantScope(), (tx) =>
+    lockPayrollRunInTransaction(tx, tenantScope(), runnerId, {
+      payrollRunId: payrollRunIdSchema.parse(runId),
+    }),
+  );
+}
+
+async function lockedRun(
+  entityId: string,
+  policyId: string,
+  dates: { periodStart: string; periodEnd: string; payDate: string },
+) {
+  const runId = await draftRun(entityId, policyId, dates);
+  await simulateRun(runId);
+  await asTenant((conn) => approveSimulatedRun(conn, runId));
+  await lockRun(runId);
+  return runId;
+}
+
+const key = () => `ptkp-1223-${randomUUID()}`;
+
+async function correct(
+  employeeId: string,
+  body: { ptkpStatus: string; effectiveFrom: string; reason?: string },
+  now: Date,
+  actorId = runnerId,
+) {
+  const { correctEmployeePtkp } =
+    await import("../services/hris-employee-ptkp.service.ts");
+  return correctEmployeePtkp(
+    tenantScope(),
+    actorId,
+    employeeId,
+    {
+      reason: "Salah input saat data karyawan dibuat",
+      ...body,
+      idempotencyKey: key(),
+    },
+    now,
+  );
+}
+
+type Failure = { status?: number; code?: string };
+const failureOf = (promise: Promise<unknown>) =>
+  promise.then(
+    () => null,
+    (error: unknown) => error as Failure,
+  );
 
 type StoredTax = {
   ptkpStatus: string;
@@ -426,5 +498,225 @@ describe("[1223] PTKP of the tax year: status on 1 January or on the join date",
     const jul = await taxOf(entity, policy, emp, JUL);
     expect(jul.ptkpStatus).toBe("K/1");
     expect(jul.terCategory).toBe("B");
+  });
+});
+
+describe("[1223 r2] backfill of the running year from the first locked payslip", () => {
+  it("TK/0 payslip in January, K/0 since July before the deploy: after the backfill December is TK/0, next year K/0; idempotent", async () => {
+    const entity = await makeEntity("backfill");
+    const policy = await rawPolicy(entity);
+    const emp = await makeEmployee(entity, "2025-03-01", "TK/0");
+    await lockedRun(entity, policy, JAN);
+    // What 0515 left: today's status (K/0) from the join date, no trace of TK/0.
+    await asTenant(async (conn) => {
+      await conn.query(
+        "UPDATE employees SET ptkp_status = 'K/0' WHERE tenant_id = $1 AND id = $2",
+        [tenant.id, emp],
+      );
+      await conn.query(
+        "UPDATE employee_ptkp_history SET ptkp_status = 'K/0' WHERE tenant_id = $1 AND employee_id = $2",
+        [tenant.id, emp],
+      );
+    }, true);
+    const before = await withTenant(db, tenantScope(), (tx) =>
+      loadTaxYearPtkpStatuses(tx, tenant.id, 2026, [
+        { id: emp, joinDate: "2025-03-01" },
+      ]),
+    );
+    expect(before.get(emp)).toBe("K/0");
+
+    const backfill = () =>
+      asTenant((conn) =>
+        backfillPtkpHistoryForTenant(conn, tenant.id, 2026, "2026-11-20"),
+      );
+    await backfill();
+    const once = await historyOf(emp);
+    expect(once).toEqual([
+      { effective_from: "2025-03-01", ptkp_status: "K/0" },
+      { effective_from: "2026-01-01", ptkp_status: "TK/0" },
+      { effective_from: "2026-11-20", ptkp_status: "K/0" },
+    ]);
+    await backfill();
+    expect(await historyOf(emp)).toEqual(once);
+
+    const dec = await taxOf(entity, policy, emp, DEC);
+    expect(dec.ptkpStatus).toBe("TK/0");
+    expect(dec.method).toBe("annual_recalculation");
+    const next = await taxOf(entity, policy, emp, JAN_NEXT);
+    expect(next.ptkpStatus).toBe("K/0");
+  });
+});
+
+describe("[1223 r2] HR correction of the running year (hr.employee.manage + payroll.run)", () => {
+  const AUG = new Date("2026-08-03T03:00:00Z"); // 2026-08-03 Jakarta
+
+  it("a wrong entry is corrected from 1 January (December uses it), an audit row is written; any other day is 422", async () => {
+    const entity = await makeEntity("koreksi");
+    const policy = await rawPolicy(entity);
+    const emp = await makeEmployee(entity, "2025-03-01", "TK/0");
+    const odd = await failureOf(
+      correct(emp, { ptkpStatus: "K/1", effectiveFrom: "2026-03-05" }, AUG),
+    );
+    expect(odd?.status).toBe(422);
+    expect(odd?.code).toBe("PTKP_EFFECTIVE_DATE_INVALID");
+
+    const updated = await correct(
+      emp,
+      { ptkpStatus: "K/1", effectiveFrom: "2026-01-01" },
+      AUG,
+    );
+    expect(updated.ptkpStatus).toBe("K/1");
+    expect(await historyOf(emp)).toContainEqual({
+      effective_from: "2026-01-01",
+      ptkp_status: "K/1",
+    });
+    const audits = await asTenant(async (conn) =>
+      Number(
+        (
+          await conn.query<{ n: string }>(
+            "SELECT count(*) AS n FROM audit_logs WHERE tenant_id = $1 AND event->>'objectId' = $2 AND event->>'action' = 'hris.employee_ptkp.corrected'",
+            [tenant.id, emp],
+          )
+        ).rows[0]?.n,
+      ),
+    );
+    expect(audits).toBe(1);
+    const jul = await taxOf(entity, policy, emp, JUL);
+    expect(jul.ptkpStatus).toBe("K/1");
+    expect(jul.terCategory).toBe("B");
+  });
+
+  it("refused (409) once the year's December payslip is locked; a change from today still goes to the next year", async () => {
+    const entity = await makeEntity("tutup");
+    const policy = await rawPolicy(entity);
+    const emp = await makeEmployee(entity, "2025-03-01", "TK/0");
+    await lockedRun(entity, policy, DEC);
+    const DEC_30 = new Date("2026-12-30T03:00:00Z");
+    const closed = await failureOf(
+      correct(emp, { ptkpStatus: "K/0", effectiveFrom: "2026-01-01" }, DEC_30),
+    );
+    expect(closed?.status).toBe(409);
+    expect(closed?.code).toBe("PTKP_TAX_YEAR_CLOSED");
+    await correct(
+      emp,
+      { ptkpStatus: "K/0", effectiveFrom: "2026-12-30" },
+      DEC_30,
+    );
+    expect(await historyOf(emp)).toEqual([
+      { effective_from: "2025-03-01", ptkp_status: "TK/0" },
+      { effective_from: "2026-12-30", ptkp_status: "K/0" },
+    ]);
+  });
+
+  it("refused (403) without payroll.run", async () => {
+    const entity = await makeEntity("izin");
+    const emp = await makeEmployee(entity, "2025-03-01", "TK/0");
+    const client = agent(app);
+    await signUp(client, "PTKP HR only");
+    const userId = (await client.get("/api/auth/get-session")).body.user
+      .id as string;
+    createdUsers.push(userId);
+    const roleId = randomUUID();
+    createdRoles.push(roleId);
+    await asTenant(async (conn) => {
+      await conn.query(
+        `INSERT INTO roles (id, tenant_id, name, is_template, permissions, allowed_scope_types)
+         VALUES ($1, $2, $3, false, $4, $5)`,
+        [
+          roleId,
+          tenant.id,
+          `PTKP HR ${roleId.slice(0, 8)}`,
+          JSON.stringify(["hr.employee.manage"]),
+          JSON.stringify(["tenant"]),
+        ],
+      );
+      await conn.query(
+        `INSERT INTO role_assignments
+           (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+         VALUES ($1, $2, $3, 'tenant', NULL, '2025-01-01', $2)`,
+        [tenant.id, userId, roleId],
+      );
+    });
+    const denied = await failureOf(
+      correct(
+        emp,
+        { ptkpStatus: "K/0", effectiveFrom: "2026-01-01" },
+        AUG,
+        userId,
+      ),
+    );
+    expect(denied?.status).toBe(403);
+  });
+});
+
+describe("[1223 r2] history trigger and table access", () => {
+  it("insert records the join date; two corrections on one day keep the last; a day before the join date is refused", async () => {
+    const entity = await makeEntity("pemicu");
+    const emp = await makeEmployee(entity, "2026-03-02", "TK/0");
+    expect(await historyOf(emp)).toEqual([
+      { effective_from: "2026-03-02", ptkp_status: "TK/0" },
+    ]);
+    await changePtkp(emp, "K/0", "2026-03-02");
+    await changePtkp(emp, "K/1", "2026-03-02");
+    expect(await historyOf(emp)).toEqual([
+      { effective_from: "2026-03-02", ptkp_status: "K/1" },
+    ]);
+    const early = await failureOf(changePtkp(emp, "K/2", "2026-03-01"));
+    expect((early as { code?: string } | null)?.code).toBe("23514");
+    expect(await historyOf(emp)).toEqual([
+      { effective_from: "2026-03-02", ptkp_status: "K/1" },
+    ]);
+  });
+
+  it("legend_app reads only its tenant's rows and cannot write the history", async () => {
+    const entity = await makeEntity("rls");
+    const emp = await makeEmployee(entity, "2025-03-01", "TK/0");
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SET LOCAL SESSION AUTHORIZATION legend_app");
+      const countFor = async (tenantId: string) => {
+        await client.query(
+          "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+          [tenantId],
+        );
+        return Number(
+          (
+            await client.query<{ n: string }>(
+              "SELECT count(*) AS n FROM employee_ptkp_history WHERE employee_id = $1",
+              [emp],
+            )
+          ).rows[0]?.n,
+        );
+      };
+      expect(await countFor(randomUUID())).toBe(0);
+      expect(await countFor(tenant.id)).toBe(1);
+      await client.query("SAVEPOINT w");
+      const denied = await client
+        .query(
+          "UPDATE employee_ptkp_history SET ptkp_status = 'K/3' WHERE employee_id = $1",
+          [emp],
+        )
+        .then(
+          () => null,
+          (error: { code?: string }) => error.code,
+        );
+      expect(denied).toBe("42501");
+      await client.query("ROLLBACK TO SAVEPOINT w");
+      const insert = await client
+        .query(
+          `INSERT INTO employee_ptkp_history (tenant_id, employee_id, effective_from, ptkp_status)
+           VALUES ($1, $2, '2026-06-01', 'K/3')`,
+          [tenant.id, emp],
+        )
+        .then(
+          () => null,
+          (error: { code?: string }) => error.code,
+        );
+      expect(insert).toBe("42501");
+    } finally {
+      await client.query("ROLLBACK");
+      client.release();
+    }
   });
 });
