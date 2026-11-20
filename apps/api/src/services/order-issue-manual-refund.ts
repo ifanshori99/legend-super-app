@@ -164,7 +164,7 @@ export async function manualRefundAmountIdr(
     throw new HttpError(
       409,
       "EDGE_ORDER_CORRECTION_BLOCKED",
-      "Pesanan ini dibayar di kasir edge dan sudah diterima server pusat. Refund manual per item juga hanya bisa dilakukan di kasir edge tempat penjualan terjadi; hubungi kasir atau finance outlet tersebut.",
+      "Pesanan ini dibayar di kasir edge dan sudah diterima server pusat, jadi refund manual per item tidak bisa dilakukan dari pusat. Refund penjualan kasir offline belum didukung di rilis 1; hubungi finance.",
     );
 
   // Money the guest paid for the order, per tender. A tender backed by a

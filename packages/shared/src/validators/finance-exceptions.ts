@@ -16,6 +16,7 @@ export const FINANCE_EXCEPTION_KINDS = [
   "payout_recon_hold",
   "release_recon_unproven",
   "payout_batch_disputed",
+  "edge_refund_unreconciled",
 ] as const;
 export type FinanceExceptionKind = (typeof FINANCE_EXCEPTION_KINDS)[number];
 
@@ -23,6 +24,14 @@ export type FinanceExceptionKind = (typeof FINANCE_EXCEPTION_KINDS)[number];
 // frozen by a "not me" dispute is listed until it is unfrozen. Its detail is
 // the batch status at dispute time (exported, sending or completed means
 // finance checks the bank).
+
+// `edge_refund_unreconciled` (legend-ecr16, brief 1244 r2) is per outlet and
+// standing like `receipt_pending_stale`: it ignores the date window. A legacy
+// edge `order.refunded` is parked in edge_deferred_events and stays listed
+// until a native pos_order_refunds row with the same refund id exists. Detail:
+// exceeds_paid | within_paid | order_unknown | unreadable. Central refunds of
+// that order are already held (REFUND_HISTORY_UNVERIFIED); finance reverses
+// the journal by hand and checks the edge drawer before closing the period.
 
 /**
  * `receipt_pending_stale` (legend-z13t) ignores the date window: a parked

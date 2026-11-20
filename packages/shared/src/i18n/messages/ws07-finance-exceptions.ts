@@ -20,6 +20,7 @@ export const financeExceptionsMessages = {
     release_recon_unproven:
       "Kode QRIS/VA yang dilepas belum terbukti mati lebih dari 3 hari",
     payout_batch_disputed: "Pencairan dibekukan (bukan saya)",
+    edge_refund_unreconciled: "Refund edge lama belum tercatat di pusat",
   },
   kindHelp: {
     edge_tax_unsnapshotted:
@@ -46,6 +47,8 @@ export const financeExceptionsMessages = {
       "Kode QRIS atau VA yang dilepas manual masih belum dijawab final oleh penyedia setelah lebih dari 3 hari. Antrean terus bertanya tiap hari dan tidak menutup baris tanpa bukti, jadi uang masih bisa masuk ke kode ini. Tidak mengikuti rentang tanggal.",
     payout_batch_disputed:
       "Seseorang menyatakan langkah pencairan gaji atas namanya bukan dilakukan olehnya, jadi pencairan itu dibekukan. Selama beku, tidak ada langkah baru yang bisa dilakukan. Bila pencairan sudah dikirim ke bank, periksa mutasi bank. Berlaku untuk seluruh PT dan tampil sampai pembekuan dibuka.",
+    edge_refund_unreconciled:
+      "Refund dari edge lama belum tercatat di pusat. Cek laci edge, buat jurnal balik manual sebelum tutup periode. Refund berikutnya untuk order ini ditahan di pusat. Tidak mengikuti rentang tanggal.",
   },
   refTypes: {
     order: "Order edge",
@@ -76,6 +79,14 @@ export const financeExceptionsMessages = {
       "Bukti ini dipakai lebih dari satu operasi; semua langkah dengan berkas ini ditolak sampai finance menutupnya.",
     proofBindFailed:
       "Bukti lama ini belum bisa dikaitkan ke operasinya; dicoba lagi otomatis dan gerbang bukti tetap menahan.",
+    refundExceedsPaid:
+      "Refund edge ini membuat total refund order lebih besar dari yang dibayar.",
+    refundWithinPaid:
+      "Total refund order masih di bawah atau sama dengan yang dibayar.",
+    refundOrderUnknown:
+      "Order atau pembayarannya tidak ditemukan di pusat, jadi batasnya belum bisa dicek.",
+    refundUnreadable:
+      "Data refund dari edge tidak terbaca atau saling bertentangan; nilainya tidak diketahui.",
     receiptOrder: "Order",
     receiptIntent: "Tagihan pembayaran",
     receiptOutbox: "Status pembayaran lunas",

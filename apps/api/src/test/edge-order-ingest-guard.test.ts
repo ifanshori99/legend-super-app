@@ -383,15 +383,15 @@ describe("legend-771dl cloud corrections of an ingested edge sale are blocked", 
     expect(await correctionRows(bill)).toEqual(NONE);
   });
 
-  it("the refusal tells cashier/finance to correct at the edge cashier and promises no cloud void", async () => {
+  it("the refusal says offline cashier refunds are unsupported in release 1, points to finance and promises no cloud void", async () => {
     const bill = await sale(100_000, "ingested");
     for (const attempt of [refund(bill), voidOrder(bill)]) {
       const error = await attempt.then(
         () => null,
         (e: unknown) => e as Error,
       );
-      expect(error?.message).toMatch(/kasir edge tempat penjualan terjadi/);
-      expect(error?.message).toMatch(/kasir atau finance/);
+      expect(error?.message).toMatch(/belum didukung di rilis 1/);
+      expect(error?.message).toMatch(/hubungi finance/);
       expect(error?.message).not.toMatch(/akan di-?(void|refund)/i);
     }
   });

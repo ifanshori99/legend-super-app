@@ -21,6 +21,7 @@
 //     event itself is the replay key; no offline point redemption exists.
 //  R4 One lock key for order paid, void and cost recompute (`lockOrderSource`).
 import { and, eq, sql } from "drizzle-orm";
+import { hasParkedEdgeRefund } from "../services/payment-refund-edge-history.ts";
 import {
   createUlid,
   idr,
@@ -804,6 +805,11 @@ async function applyVoided(
       ),
     );
   if (refund) throw new IngestRefusal("refund_exists");
+  // Brief 1244 r2: a legacy edge refund parked for this order already paid the
+  // guest from the drawer and has no native row yet. A void row now would let a
+  // full gateway refund pay the same money again; refuse, the event stays parked.
+  if (await hasParkedEdgeRefund(tx, { tenantId, orderId: payload.orderId }))
+    throw new IngestRefusal("refund_parked");
   // legend-1042: one order, one money-back lane. A live manual per-item refund
   // (approval route) already gave the guest money back; a void would pay twice.
   const [manualRefund] = await tx
