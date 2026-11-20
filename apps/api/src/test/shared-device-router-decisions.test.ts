@@ -164,6 +164,7 @@ const DECISIONS: Record<string, Decision> = {
   "payroll-payout-overpaid": "backoffice",
   "payroll-payout-proof-closure": "backoffice",
   "payroll-payout-recon-clearance": "backoffice",
+  "payroll-payout-recon-hold": "backoffice",
   "payroll-payout-return": "backoffice",
   "payroll-payout-return-withdraw": "backoffice",
   "payroll-policy": "backoffice",
