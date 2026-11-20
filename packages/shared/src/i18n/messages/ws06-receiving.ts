@@ -28,6 +28,10 @@ export const inventoryReceivingMessages = {
     loadHint: "Periksa koneksi lalu coba lagi.",
     action: "Tindakan gagal. Periksa isian lalu coba lagi.",
     invalid: "Data belum valid. Periksa kolom yang ditandai.",
+    bonusRequired:
+      "Ada baris berharga Rp0. Centang Bonus supplier bila barangnya gratis, atau perbaiki harga di PO.",
+    bonusPricedLine:
+      "Bonus supplier hanya untuk baris berharga Rp0. Hapus centang Bonus supplier.",
     notFound: "Data tidak ditemukan. Muat ulang daftar lalu pilih ulang.",
     overReceipt:
       "Jumlah diterima melebihi sisa pesanan. Kurangi jumlah atau periksa penerimaan sebelumnya.",
@@ -144,6 +148,11 @@ export const inventoryReceivingMessages = {
         "Catatan QC melebihi 500 karakter. Ringkas alasan penolakan.",
       errorNote: "Catatan melebihi 300 karakter.",
       errorExpiry: "Tanggal kedaluwarsa butuh kode batch.",
+      bonus: "Bonus supplier (gratis)",
+      bonusHint:
+        "Harga baris ini Rp0. Centang hanya bila supplier memberi barang ini gratis.",
+      errorBonusRequired:
+        "Harga baris ini Rp0. Centang Bonus supplier atau perbaiki harga di PO.",
     },
   },
   journalize: {

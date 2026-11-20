@@ -125,6 +125,7 @@ const RECEIPT_AUDIT_FIELDS = [
   "receivedOn",
   "lineCount",
   "receivedValueIdr",
+  "bonusOrderLineIds",
 ] as const;
 const ORDER_AUDIT_FIELDS = ["status", "goodsReceiptId"] as const;
 
@@ -707,11 +708,17 @@ export async function createGoodsReceipt(
           parseDecimal4(line.quantityReceived) >
             parseDecimal4(line.quantityRejected)
         )
-          throw invalid(
+          throw new HttpError(
+            422,
+            "GOODS_RECEIPT_BONUS_REQUIRED",
             "A zero-price line must be marked as a supplier bonus (isBonus).",
           );
         if (!zeroPrice && line.isBonus === true)
-          throw invalid("Only a zero-price line can be a supplier bonus.");
+          throw new HttpError(
+            422,
+            "GOODS_RECEIPT_BONUS_PRICED_LINE",
+            "Only a zero-price line can be a supplier bonus.",
+          );
         const baseUomId = baseUomOf.get(orderLine.inventoryItemId);
         if (!baseUomId) throw invalid("The purchase order item is missing.");
         const accepted = formatDecimal4(
@@ -877,6 +884,10 @@ export async function createGoodsReceipt(
           receivedOn: detail.receipt.receivedOn,
           lineCount: detail.lines.length,
           receivedValueIdr,
+          // legend-tomda: who declared which zero-price line a supplier bonus.
+          bonusOrderLineIds: input.lines
+            .filter((line) => line.isBonus === true)
+            .map((line) => line.purchaseOrderLineId),
         },
         safeFields: RECEIPT_AUDIT_FIELDS,
       });

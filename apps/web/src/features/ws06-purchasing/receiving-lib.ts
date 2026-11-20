@@ -255,6 +255,8 @@ const ERROR_KEYS: Record<string, MessageKey> = {
   SUPPLIER_PAYMENT_NOT_PENDING_APPROVAL:
     "inventoryReceiving.errors.paymentTransition",
   SUPPLIER_PAYMENT_SELF_APPROVAL: "inventoryReceiving.errors.paymentTransition",
+  GOODS_RECEIPT_BONUS_REQUIRED: "inventoryReceiving.errors.bonusRequired",
+  GOODS_RECEIPT_BONUS_PRICED_LINE: "inventoryReceiving.errors.bonusPricedLine",
   VALIDATION_ERROR: "inventoryReceiving.errors.invalid",
   NOT_FOUND: "inventoryReceiving.errors.notFound",
   NETWORK_ERROR: "inventoryReceiving.offline",
@@ -264,6 +266,22 @@ const ERROR_KEYS: Record<string, MessageKey> = {
 export function receivingErrorKey(code: string | undefined): MessageKey {
   if (code && code in ERROR_KEYS) return ERROR_KEYS[code];
   return "inventoryReceiving.errors.action";
+}
+
+/**
+ * legend-tomda: a zero-price PO line is a supplier bonus only when the receiver
+ * ticks it; the API refuses it otherwise (GOODS_RECEIPT_BONUS_REQUIRED).
+ */
+export function isZeroPriceLine(line: { unitPriceIdr: string }): boolean {
+  return parseDecimal4(line.unitPriceIdr) === 0n;
+}
+
+/** The `isBonus` field of one receipt line body: sent only on a ticked zero-price line. */
+export function bonusFlagOf(
+  line: { unitPriceIdr: string },
+  isBonus: boolean,
+): { isBonus?: true } {
+  return isZeroPriceLine(line) && isBonus ? { isBonus: true } : {};
 }
 
 // ---- Joins used by the lists --------------------------------------------

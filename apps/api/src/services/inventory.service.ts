@@ -1205,6 +1205,10 @@ async function lockStockBalance(
  * transfer_in, production_in, a restocked order return, a positive count
  * adjustment. The difference is the full prior quantity even when the inflow
  * is smaller than the deficit (the whole negative balance is repriced).
+ *
+ * Bead legend-tomda: a zero-cost inflow (supplier bonus) is the exception. It
+ * keeps the old average, so only the covered units (min(inflow, deficit) x old
+ * average) move value, credited to HPP; the rest of the deficit is untouched.
  */
 async function recordNegativeRevaluation(
   tx: Tx,

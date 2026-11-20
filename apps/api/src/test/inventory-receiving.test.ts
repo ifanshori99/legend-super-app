@@ -1236,16 +1236,25 @@ describe("tomda zero-price receipt lines need an explicit bonus flag", () => {
   it("[tomda-GR-1] a zero-price line without isBonus, or isBonus on a priced line, is refused 422 and records nothing", async () => {
     const bx = await seedBonusFixture();
     const fx = { poId: bx.poId } as Fixture;
-    for (const lines of [
-      [rl(bx.bonusLine, bx.location, "2.0000")],
+    for (const [lines, code] of [
       [
-        rl(bx.bonusLine, bx.location, "2.0000", "0.0000", { isBonus: true }),
-        rl(bx.paidLine, bx.location, "10.0000", "0.0000", { isBonus: true }),
+        [rl(bx.bonusLine, bx.location, "2.0000")],
+        "GOODS_RECEIPT_BONUS_REQUIRED",
       ],
-    ]) {
-      const refused = await receive(receiver.client, receiptBody(fx, lines));
+      [
+        [
+          rl(bx.bonusLine, bx.location, "2.0000", "0.0000", { isBonus: true }),
+          rl(bx.paidLine, bx.location, "10.0000", "0.0000", { isBonus: true }),
+        ],
+        "GOODS_RECEIPT_BONUS_PRICED_LINE",
+      ],
+    ] as const) {
+      const refused = await receive(
+        receiver.client,
+        receiptBody(fx, [...lines]),
+      );
       expect(refused.status).toBe(422);
-      expect(refused.body.error.code).toBe("VALIDATION_ERROR");
+      expect(refused.body.error.code).toBe(code);
     }
     expect(await receiptCount(bx.poId)).toBe(0);
     expect(await ledgerCountForOrder(bx.poId)).toBe(0);
@@ -1269,6 +1278,13 @@ describe("tomda zero-price receipt lines need an explicit bonus flag", () => {
       ]),
     );
     expect(ok.status).toBe(201);
+    const { rows: audit } = await owner.query<{ bonus: unknown }>(
+      `SELECT event->'maskedChanges'->'after'->'bonusOrderLineIds' AS bonus FROM audit_logs
+        WHERE tenant_id = $1 AND event->>'action' = 'inventory.goods_receipt_recorded'
+          AND event::text LIKE '%' || $2 || '%'`,
+      [tenantA, ok.body.data.receipt.id],
+    );
+    expect(audit).toEqual([{ bonus: [bx.bonusLine] }]);
     const { rows } = await owner.query<{ value: string; prior: string }>(
       `SELECT value_idr::text AS value, prior_quantity::text AS prior
          FROM stock_negative_revaluations
