@@ -117,15 +117,15 @@ export const employeeMasterMessages = {
       trigger: "Koreksi status PTKP",
       title: "Koreksi status PTKP {name}",
       description:
-        "Perubahan biasa (menikah, anak bertambah) berlaku mulai tahun pajak berikutnya. Koreksi salah input tahun ini lewat aksi ini. Slip yang sudah dihitung tidak dihitung ulang. Perubahan dicatat di jejak audit.",
+        "Perubahan biasa (menikah, anak bertambah) berlaku mulai tahun pajak berikutnya. Slip yang sudah dihitung tidak berubah.",
       statusLabel: "Status PTKP",
       statusPlaceholder: "Pilih status PTKP",
       effectiveLabel: "Berlaku sejak",
       effectiveHint:
-        "Pilih awal tahun pajak untuk membetulkan salah input tahun ini, atau hari ini untuk perubahan yang berlaku tahun depan.",
+        "Pilih awal tahun pajak untuk membetulkan salah input tahun ini, atau tahun pajak berikutnya untuk perubahan biasa. Dicatat di jejak audit.",
       effectiveAnchor: "Awal tahun pajak ({date})",
       effectiveAnchorJoin: "Tanggal masuk ({date})",
-      effectiveToday: "Hari ini ({date})",
+      effectiveNextYear: "Mulai tahun pajak berikutnya ({date})",
       reasonLabel: "Alasan",
       reasonHint: "Wajib, 5 sampai 500 karakter.",
       reasonError: "Tulis alasan koreksi, 5 sampai 500 karakter.",
@@ -142,9 +142,9 @@ export const employeeMasterMessages = {
         "Slip gaji yang sudah dihitung tidak berubah. Perhitungan berikutnya memakai status ini.",
       errors: {
         yearClosed:
-          "Slip tahunan karyawan ini sudah dikunci, jadi PTKP tahun berjalan tidak bisa dikoreksi lagi. Pilih tanggal hari ini agar berlaku tahun berikutnya.",
+          "Slip tahunan karyawan ini sudah dikunci, jadi PTKP tahun berjalan tidak bisa dikoreksi lagi. Pilih opsi tahun pajak berikutnya agar berlaku tahun berikutnya.",
         dateInvalid:
-          "Tanggal berlaku tidak valid. Pilih awal tahun pajak atau hari ini, dan tidak boleh sebelum tanggal masuk.",
+          "Tanggal berlaku tidak valid. Pilih awal tahun pajak atau tahun pajak berikutnya, dan tidak boleh sebelum tanggal masuk.",
         forbidden:
           "Peran Anda tidak boleh mengoreksi PTKP karyawan ini. Perlu akses HR dan payroll di outlet penempatannya.",
         generic: "Status PTKP tidak dapat disimpan. Coba lagi sebentar lagi.",

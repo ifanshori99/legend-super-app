@@ -270,6 +270,8 @@ export const accountingShareMessages = {
     needsCorrection: "Perlu koreksi",
     needsCorrectionAria:
       "Distribusi {period} perlu koreksi. Buka untuk membatalkan persetujuannya.",
+    needsCorrectionOpenAria:
+      "Distribusi {period} perlu koreksi. Buka distribusi.",
     cancelApprovedAria: "Batalkan persetujuan distribusi {period}",
     /** Payment refused: the period moved since approval (SO 1216 F-P1a). */
     paymentPeriodChanged:
@@ -417,10 +419,12 @@ export const accountingShareMessages = {
     },
     cancelApproved: {
       action: "Batalkan persetujuan",
-      title: "Batalkan persetujuan distribusi",
+      back: "Kembali",
+      title: "Batalkan persetujuan distribusi {period}",
       label: "Alasan pembatalan",
-      hint: "Minimal 10 karakter. Distribusi kembali tidak aktif dan perlu dihitung ulang; alasan tercatat di jejak audit. Hanya bisa selama belum ada uang yang keluar.",
-      reasonTooShort: "Alasan minimal 10 karakter.",
+      hint: "Distribusi senilai {amount} kembali tidak aktif dan perlu dihitung ulang. Alasan minimal {min} karakter, tercatat di jejak audit. Hanya bisa selama belum ada uang yang keluar.",
+      reasonTooShort: "Alasan minimal {min} karakter.",
+      failed: "Persetujuan belum bisa dibatalkan. Coba lagi.",
       done: "Persetujuan distribusi dibatalkan. Hitung distribusi baru untuk periode ini.",
       hasAdjustment:
         "Distribusi ini punya penyesuaian yang belum dibatalkan. Batalkan atau tolak penyesuaiannya dulu, lalu coba lagi.",
