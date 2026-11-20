@@ -1421,7 +1421,12 @@ export const distributionRunSchema = z
           message: "Nothing is paid before approval",
         });
     }
-    if (run.status === "cancelled" && paidLines > 0)
+    // A zero line settled by the carry on approval is not money paid out
+    // (SO 1216 F-P1a): a run withdrawn after approval may keep it.
+    if (
+      run.status === "cancelled" &&
+      run.lines.some((line) => isMoneyPaidLine(line))
+    )
       ctx.addIssue({
         code: "custom",
         path: ["status"],
@@ -1605,6 +1610,21 @@ export function assertNoDuplicateRegularRun(
 /** Payment reference of a zero line, settled on approve (carry absorbed it). */
 export const CARRY_ABSORBED_PAYMENT_REF = "POTONG-KEKURANGAN";
 
+/**
+ * A line whose money actually went out: paid, and not a zero line settled
+ * by the carry on approval (`CARRY_ABSORBED_PAYMENT_REF`). SO 1216 F-P1a.
+ */
+export function isMoneyPaidLine(line: {
+  readonly paymentStatus: string;
+  readonly grossIdr: number;
+  readonly paymentRef: string | null;
+}): boolean {
+  return (
+    line.paymentStatus === "paid" &&
+    !(line.grossIdr === 0 && line.paymentRef === CARRY_ABSORBED_PAYMENT_REF)
+  );
+}
+
 export type DistributionRunAction =
   | { readonly type: "submit"; readonly actorId: UserId }
   | {
@@ -1698,8 +1718,7 @@ export function transitionDistributionRun(
       // withdrawn (e.g. stale after a reopen); a cancelled run has no payments.
       if (run.status !== "approved") throw invalid();
       if (action.reason.trim().length < 10) throw invalid();
-      if (run.lines.some((line) => line.paymentStatus === "paid"))
-        throw invalid();
+      if (run.lines.some((line) => isMoneyPaidLine(line))) throw invalid();
       return { ...run, status: "cancelled" };
     case "record_payment": {
       if (run.status !== "approved") throw invalid();

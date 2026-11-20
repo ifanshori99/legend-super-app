@@ -2324,7 +2324,7 @@ async function clawedBack(adjustmentIdr = -1_500_000) {
 const halfUpTax = (gross: number) => Math.floor((gross * 500 + 5_000) / 10_000);
 
 /** Scenario (4): s1 and s2 are fully absorbed (zero lines), s3 is paid for real. */
-async function paidRunWithAbsorbedHolders() {
+async function approvedRunWithAbsorbedHolders() {
   const { world, adjustment } = await clawedBack();
   await approveRunFlow(adjustment.id);
   const shortfalls = await shortfallsOf(adjustment.id);
@@ -2353,6 +2353,12 @@ async function paidRunWithAbsorbedHolders() {
       [s3.id, "pending"],
     ]),
   );
+  return { world, approved, shortfalls, second };
+}
+
+async function paidRunWithAbsorbedHolders() {
+  const { world, approved, shortfalls, second } =
+    await approvedRunWithAbsorbedHolders();
   const paid = await payAll(manager, approved);
   return { world, run: paid, shortfalls, second };
 }
@@ -3196,6 +3202,12 @@ describe("1210 an outlet profit entity refuses unallocated entity-level expense"
 // cancelled nor recalculated; a PAID run does not block (the money is out, its
 // correction is the existing adjustment run). And a payment is refused unless
 // the period is closed at the run's version, in the service and in the DB.
+// Review rounds 2-3: an approved run with no money out may be withdrawn
+// (cancel-approved, approver permission, reason): zero lines settled by the
+// carry are no payment, a live adjustment blocks it, an adjustment of a
+// cancelled run is never approved or paid, and a draft or rejected run never
+// carries an approval. The badge needsCorrection flags a regular run whose
+// period version moved until an approved claw-back follows.
 
 describe("1217 an approved distribution and a reopen of its period", () => {
   const periodRow = async (id: string) =>
@@ -3300,6 +3312,8 @@ describe("1217 an approved distribution and a reopen of its period", () => {
     const whileOpen = await payLine(manager, run.id, line.id);
     expect(whileOpen.status, JSON.stringify(whileOpen.body)).toBe(409);
     expect(errorCode(whileOpen)).toBe("PERIOD_CHANGED");
+    // The message points at the way out: withdraw the approval, recalculate.
+    expect(JSON.stringify(whileOpen.body)).toContain("Batalkan persetujuannya");
     await expect(rawPay()).rejects.toThrow(/SH-02/);
 
     await forcePeriod(period.id, "closed");
@@ -3440,5 +3454,110 @@ describe("1217 an approved distribution and a reopen of its period", () => {
     const recalculated = await createRun(manager, world, period.id);
     expect(recalculated.status, JSON.stringify(recalculated.body)).toBe(201);
     expect(parseRun(recalculated.body).status).toBe("draft");
+  });
+
+  async function approvedTopUp(world: World) {
+    const { period, run } = await approved60(world);
+    const adjusted = await adjust(manager, run.id, {
+      fiscalPeriodId: period.id,
+      adjustmentIdr: 10_000_000,
+      reason: "Tambahan laba Maret Rp10 jt",
+    });
+    expect(adjusted.status, JSON.stringify(adjusted.body)).toBe(201);
+    const adjustment = parseRun(adjusted.body);
+    expect((await submitRun(manager, adjustment.id)).status).toBe(200);
+    const decided = await decideRun(approver, adjustment.id);
+    expect(decided.status, JSON.stringify(decided.body)).toBe(200);
+    return { run, adjustment: parseRun(decided.body) };
+  }
+
+  it("refuses to cancel an approved run with a live adjustment (service and DB)", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { run, adjustment } = await approvedTopUp(world);
+    expect(adjustment.status).toBe("approved");
+
+    const refused = await cancelApproved(
+      approver,
+      run.id,
+      "Angka basi, dihitung ulang",
+    );
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(errorCode(refused)).toBe("DISTRIBUTION_HAS_ADJUSTMENT");
+    await expect(
+      owner.query(
+        `UPDATE distribution_runs SET status = 'cancelled', cancelled_by = 'raw',
+           cancelled_at = now(), cancel_reason = 'Angka basi, dihitung ulang'
+         WHERE tenant_id = $1 AND id = $2`,
+        [tenantA, run.id],
+      ),
+    ).rejects.toThrow(/live adjustment/);
+    expect(parseRun((await getRun(manager, run.id)).body).status).toBe(
+      "approved",
+    );
+  });
+
+  it("an adjustment of a cancelled run is never paid (service and DB)", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { run, adjustment } = await approvedTopUp(world);
+    // A state the guards now refuse: the target cancelled under the adjustment.
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SET LOCAL session_replication_role = replica");
+      await client.query(
+        `UPDATE distribution_runs SET status = 'cancelled', cancelled_by = 'raw',
+           cancelled_at = now(), cancel_reason = 'Dipaksa untuk test'
+         WHERE tenant_id = $1 AND id = $2`,
+        [tenantA, run.id],
+      );
+      await client.query("COMMIT");
+    } finally {
+      client.release();
+    }
+    const line = adjustment.lines.find((l) => l.paymentStatus === "pending")!;
+    const paid = await payLine(manager, adjustment.id, line.id);
+    expect(paid.status, JSON.stringify(paid.body)).toBe(422);
+    expect(errorCode(paid)).toBe("ADJUSTMENT_TARGET_INVALID");
+    await expect(
+      owner.query(
+        `UPDATE distribution_lines SET payment_status = 'paid', payment_ref = 'RAW',
+           paid_at = now(), paid_by = 'raw'
+         WHERE tenant_id = $1 AND id = $2`,
+        [tenantA, line.id],
+      ),
+    ).rejects.toThrow(/ADJUSTMENT_TARGET_INVALID/);
+  });
+
+  it("an approved run whose zero lines were settled by the carry can be cancelled", async () => {
+    const { world, approved } = await approvedRunWithAbsorbedHolders();
+    expect(
+      approved.lines.some(
+        (line) => line.grossIdr === 0 && line.paymentStatus === "paid",
+      ),
+    ).toBe(true);
+    const cancelled = await cancelApproved(
+      approver,
+      approved.id,
+      "Angka basi, dihitung ulang",
+    );
+    expect(cancelled.status, JSON.stringify(cancelled.body)).toBe(200);
+    expect(parseRun(cancelled.body).status).toBe("cancelled");
+    expect(world.profitEntityId).toBeTruthy();
+  });
+
+  it("a draft or rejected run cannot be cancelled with an approval set (DB)", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const draft = (await draftRun(world, 60_000_000)).run;
+    const rawCancel = (id: string) =>
+      owner.query(
+        `UPDATE distribution_runs SET status = 'cancelled', cancelled_by = 'raw',
+           cancelled_at = now(), cancel_reason = 'Dibatalkan mentah',
+           approved_by = 'raw-approver', approved_at = now()
+         WHERE tenant_id = $1 AND id = $2`,
+        [tenantA, id],
+      );
+    await expect(rawCancel(draft.id)).rejects.toThrow(/carries no approval/);
+    expect((await submitRun(manager, draft.id)).status).toBe(200);
+    await expect(rawCancel(draft.id)).rejects.toThrow(/carries no approval/);
   });
 });

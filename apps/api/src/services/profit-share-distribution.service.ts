@@ -40,10 +40,12 @@ import {
   inArray,
   lt,
   max,
+  ne,
   or,
   sql,
   type SQL,
 } from "drizzle-orm";
+import { messagesId } from "@starter/shared/i18n";
 import {
   AccountingError,
   assertAdjustmentMatchesTarget,
@@ -55,6 +57,7 @@ import {
   calculateAdjustmentDistribution,
   calculateDistribution,
   CARRY_ABSORBED_PAYMENT_REF,
+  isMoneyPaidLine,
   distributionApprovedEvent,
   distributionCompletedEvent,
   distributionPaidEvent,
@@ -1462,6 +1465,35 @@ async function distributionChainOf(
  * change, the `distribution.approved` event and the audit row. Shared by the
  * direct path (no chain) and the chain settle.
  */
+/**
+ * SO 1216 F-P1a: an adjustment is approved or paid only while the run it
+ * corrects stands; a cancelled target leaves nothing to correct. Locks the
+ * target FOR SHARE so a concurrent cancel-approved waits (the DB guards
+ * refuse the same).
+ */
+async function assertAdjustmentTargetStands(
+  tx: Tx,
+  tenantId: string,
+  row: RunRow,
+): Promise<void> {
+  if (row.adjustsRunId === null) return;
+  const [target] = await tx
+    .select({ status: distributionRuns.status })
+    .from(distributionRuns)
+    .where(
+      and(
+        eq(distributionRuns.tenantId, tenantId),
+        eq(distributionRuns.id, row.adjustsRunId),
+      ),
+    )
+    .for("share");
+  if (!target || target.status === "cancelled")
+    throw new AccountingError(
+      "ADJUSTMENT_TARGET_INVALID",
+      "Distribusi yang dikoreksi sudah dibatalkan; penyesuaian ini tidak bisa disetujui atau dibayar.",
+    );
+}
+
 async function applyDistributionApproval(
   tx: Tx,
   context: ScopedTenantContext,
@@ -1492,6 +1524,7 @@ async function applyDistributionApproval(
   );
   if (period.status !== "closed" || period.version !== row.fiscalPeriodVersion)
     throw new AccountingError("PERIOD_CHANGED");
+  await assertAdjustmentTargetStands(tx, tenantId, row);
   await assertOutletPayoutAllowed(tx, tenantId, entityRow, run);
   await tx
     .update(distributionRuns)
@@ -1934,14 +1967,34 @@ export async function cancelApprovedDistributionRunService(
       request: { reason: input.reason },
     });
     if (claim === "replay") return run;
+    // A zero line settled by the carry on approval is no payment.
     if (
       run.status === "approved" &&
-      run.lines.some((line) => line.paymentStatus === "paid")
+      run.lines.some((line) => isMoneyPaidLine(line))
     )
       throw new HttpError(
         409,
         "DISTRIBUTION_PARTIALLY_PAID",
         "Distribusi ini sudah dibayar sebagian dan tidak bisa dibatalkan. Catat koreksi lewat distribusi penyesuaian.",
+      );
+    // A live adjustment (any status but cancelled) corrects this run: its
+    // money would stand on nothing. The DB guard refuses the same.
+    const [liveAdjustment] = await tx
+      .select({ id: distributionRuns.id })
+      .from(distributionRuns)
+      .where(
+        and(
+          eq(distributionRuns.tenantId, tenantId),
+          eq(distributionRuns.adjustsRunId, run.id),
+          ne(distributionRuns.status, "cancelled"),
+        ),
+      )
+      .limit(1);
+    if (liveAdjustment)
+      throw new HttpError(
+        409,
+        "DISTRIBUTION_HAS_ADJUSTMENT",
+        "Distribusi ini punya penyesuaian yang belum dibatalkan. Batalkan atau tolak penyesuaiannya dulu.",
       );
     const next = transitionDistributionRun(run, {
       type: "cancel_approved",
@@ -2020,7 +2073,11 @@ export async function recordDistributionPaymentService(
       period.status !== "closed" ||
       period.version !== row.fiscalPeriodVersion
     )
-      throw new AccountingError("PERIOD_CHANGED");
+      throw new AccountingError(
+        "PERIOD_CHANGED",
+        messagesId.accounting.share.runs.paymentPeriodChanged,
+      );
+    await assertAdjustmentTargetStands(tx, tenantId, row);
     const paidAt = new Date(input.paidAt);
     const next = transitionDistributionRun(run, {
       type: "record_payment",

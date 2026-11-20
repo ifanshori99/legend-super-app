@@ -3529,6 +3529,13 @@
       "when": 1795157033900,
       "tag": "0517_distribution_cancelled_keeps_approval",
       "breakpoints": true
+    },
+    {
+      "idx": 518,
+      "version": "7",
+      "when": 1795157959018,
+      "tag": "0518_distribution_cancel_adjustment_guard",
+      "breakpoints": true
     }
   ]
 }

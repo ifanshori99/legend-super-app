@@ -268,6 +268,9 @@ export const accountingShareMessages = {
     openAria: "Buka distribusi {period}",
     progress: "{paid} dari {total} baris",
     needsCorrection: "Perlu koreksi",
+    /** Payment refused: the period moved since approval (SO 1216 F-P1a). */
+    paymentPeriodChanged:
+      "Periode buku berubah sejak distribusi ini disetujui. Batalkan persetujuannya, lalu hitung ulang distribusinya.",
     emptyTitle: "Belum ada distribusi",
     emptyHint:
       "Mulai dari periode yang sudah ditutup; angka resmi hanya dari periode tertutup (SH-02).",
