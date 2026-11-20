@@ -142,14 +142,22 @@ test("one canonical storage set, legacy names as fallback (legend-94xqo)", () =>
     STORAGE_S3_PRIVATE_BUCKET: "legend-private",
     STORAGE_S3_PUBLIC_BUCKET: "legend-public",
     STORAGE_PUBLIC_BASE_URL: "https://files.example.test",
+    STORAGE_S3_REGION: "ap-southeast-3",
   };
   assert.equal(run(canonical).status, 0);
   // Blank values (an unfilled .env.example) count as not set.
   assert.equal(
-    run({ ...canonical, STORAGE_S3_ENDPOINT: "", STORAGE_S3_REGION: "" })
-      .status,
+    run({
+      ...canonical,
+      STORAGE_S3_ENDPOINT: "",
+      STORAGE_S3_FORCE_PATH_STYLE: "",
+    }).status,
     0,
   );
+  // No region while storage is configured: refused, naming the key.
+  const noRegion = run({ ...canonical, STORAGE_S3_REGION: "" });
+  assert.equal(noRegion.status, 1);
+  assert.match(String(noRegion.stderr), /STORAGE_S3_REGION/);
   // Canonical plus the same legacy values: accepted.
   assert.equal(
     run({ ...canonical, OBJECT_STORAGE_PRIVATE_BUCKET: "legend-private" })

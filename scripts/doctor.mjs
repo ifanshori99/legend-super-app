@@ -122,12 +122,13 @@ await check("Object storage settings", () => {
     "STORAGE_S3_PRIVATE_BUCKET",
     "STORAGE_S3_PUBLIC_BUCKET",
     "STORAGE_PUBLIC_BASE_URL",
+    "STORAGE_S3_REGION",
   ];
   if (conflicts.length)
     throw new Error(
       `${conflicts.join("; ")}. Remove the deprecated OBJECT_STORAGE_* keys or make the values equal.`,
     );
-  const anySet = [...required, "STORAGE_S3_ENDPOINT", "STORAGE_S3_REGION"].some(
+  const anySet = [...required, "STORAGE_S3_ENDPOINT"].some(
     (name) => get(name) !== undefined,
   );
   if (!anySet) return;

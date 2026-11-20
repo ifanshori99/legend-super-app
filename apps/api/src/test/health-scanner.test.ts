@@ -17,6 +17,7 @@ const FULL_STORAGE_ENV = {
   STORAGE_S3_SECRET_ACCESS_KEY: "sentinel-secret-access-key",
   STORAGE_S3_PRIVATE_BUCKET: "sentinel-private-bucket",
   STORAGE_S3_PUBLIC_BUCKET: "sentinel-public-bucket",
+  STORAGE_S3_REGION: "ap-southeast-3",
   STORAGE_PUBLIC_BASE_URL: "https://sentinel.example/images",
 };
 const servers: FakeClamd[] = [];

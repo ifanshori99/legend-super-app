@@ -527,8 +527,9 @@ const schema = z
     // S3-compatible object storage (uploads, HRIS files, profit share
     // statement PDFs). Canonical set: STORAGE_S3_* plus STORAGE_PUBLIC_BASE_URL.
     // OBJECT_STORAGE_* is a deprecated fallback (legend-94xqo). All optional:
-    // with none set storage stays off. Setting any requires the five required
-    // ones (the endpoint, region and path-style flag stay optional). Never logged.
+    // with none set storage stays off. Setting any requires the six required
+    // ones, region included (a wrong region silently breaks uploads); the
+    // endpoint and path-style flag stay optional. Never logged.
     STORAGE_S3_ACCESS_KEY_ID: blankToUndefined(z.string().trim().optional()),
     STORAGE_S3_SECRET_ACCESS_KEY: blankToUndefined(
       z.string().trim().optional(),
@@ -662,11 +663,11 @@ const schema = z
       "STORAGE_S3_PRIVATE_BUCKET",
       "STORAGE_S3_PUBLIC_BUCKET",
       "STORAGE_PUBLIC_BASE_URL",
+      "STORAGE_S3_REGION",
     ] as const;
     const anySet =
       required.some((key) => storage[key] !== undefined) ||
-      storage.STORAGE_S3_ENDPOINT !== undefined ||
-      storage.STORAGE_S3_REGION !== undefined;
+      storage.STORAGE_S3_ENDPOINT !== undefined;
     if (!anySet) return;
     for (const key of required)
       if (storage[key] === undefined)

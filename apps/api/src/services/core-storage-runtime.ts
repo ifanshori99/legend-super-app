@@ -24,10 +24,10 @@ export const STORAGE_REQUIRED_ENV = [
   "STORAGE_S3_PRIVATE_BUCKET",
   "STORAGE_S3_PUBLIC_BUCKET",
   "STORAGE_PUBLIC_BASE_URL",
+  "STORAGE_S3_REGION",
 ] as const;
 const STORAGE_OPTIONAL_ENV = [
   "STORAGE_S3_ENDPOINT",
-  "STORAGE_S3_REGION",
   "STORAGE_S3_FORCE_PATH_STYLE",
 ] as const;
 
@@ -69,7 +69,7 @@ export function createObjectStorageFromEnv(
       `Incomplete storage configuration: set ${missing.join(", ")}.`,
     );
   const client = new S3Client({
-    region: source.STORAGE_S3_REGION?.trim() || "us-east-1",
+    region: source.STORAGE_S3_REGION!.trim(),
     ...(present("STORAGE_S3_ENDPOINT") && {
       endpoint: source.STORAGE_S3_ENDPOINT!.trim(),
     }),

@@ -15,6 +15,7 @@ const canonical = {
   STORAGE_S3_SECRET_ACCESS_KEY: "secret",
   STORAGE_S3_PRIVATE_BUCKET: "legend-private",
   STORAGE_S3_PUBLIC_BUCKET: "legend-public",
+  STORAGE_S3_REGION: "ap-southeast-3",
   STORAGE_PUBLIC_BASE_URL: "https://files.example.test",
 };
 const legacy = {
@@ -92,6 +93,25 @@ describe("storage env, one canonical set", () => {
       expect(message).not.toContain("other-private-bucket");
       expect(message).not.toContain("legend-private");
     }
+  });
+
+  it("configured storage without a region refuses, no silent default", () => {
+    const { STORAGE_S3_REGION: region, ...noRegion } = canonical;
+    void region;
+    for (const make of [
+      createObjectStorageFromEnv,
+      createStatementObjectStorage,
+    ])
+      expect(() => make(noRegion)).toThrow(/STORAGE_S3_REGION/);
+    // The legacy region name satisfies it.
+    const { STORAGE_S3_REGION: dropped, ...rest } = canonical;
+    void dropped;
+    expect(
+      createObjectStorageFromEnv({
+        ...rest,
+        OBJECT_STORAGE_REGION: "ap-southeast-3",
+      }),
+    ).toBeInstanceOf(S3ObjectStorage);
   });
 
   it("a partial legacy set still stops, now naming the canonical keys", () => {

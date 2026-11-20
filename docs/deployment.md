@@ -306,7 +306,7 @@ The API uses one node-postgres pool with at most ten connections per process. Mu
 
 ## Object storage settings
 
-One set only: `STORAGE_S3_ACCESS_KEY_ID`, `STORAGE_S3_SECRET_ACCESS_KEY`, `STORAGE_S3_PRIVATE_BUCKET`, `STORAGE_S3_PUBLIC_BUCKET` and `STORAGE_PUBLIC_BASE_URL` (https) are required together; `STORAGE_S3_ENDPOINT`, `STORAGE_S3_REGION` and `STORAGE_S3_FORCE_PATH_STYLE` are optional. Uploads, HRIS files and profit share statement PDFs all read this set. The older `OBJECT_STORAGE_*` names are a deprecated fallback: the API warns once at startup, and refuses to start if a legacy key and its `STORAGE_S3_*` counterpart hold different values. `pnpm run doctor` reports a partial set or a conflict. Fill `STORAGE_S3_*` only.
+One set only: `STORAGE_S3_ACCESS_KEY_ID`, `STORAGE_S3_SECRET_ACCESS_KEY`, `STORAGE_S3_PRIVATE_BUCKET`, `STORAGE_S3_PUBLIC_BUCKET`, `STORAGE_PUBLIC_BASE_URL` (https) and `STORAGE_S3_REGION` are required together (no silent default region: a wrong region breaks uploads); `STORAGE_S3_ENDPOINT` and `STORAGE_S3_FORCE_PATH_STYLE` are optional. Uploads, HRIS files and profit share statement PDFs all read this set. The older `OBJECT_STORAGE_*` names are a deprecated fallback: the API warns once at startup, and refuses to start if a legacy key and its `STORAGE_S3_*` counterpart hold different values. `pnpm run doctor` reports a partial set or a conflict. Fill `STORAGE_S3_*` only.
 
 ## Object storage permissions
 
