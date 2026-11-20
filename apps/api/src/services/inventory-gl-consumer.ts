@@ -174,7 +174,9 @@ function glSourceTypeOf(
 }
 
 /** The ledger source type behind a GL source (its id form follows it). */
-function ledgerSourceTypeOf(sourceType: InventoryGlSourceType): StockSourceType {
+function ledgerSourceTypeOf(
+  sourceType: InventoryGlSourceType,
+): StockSourceType {
   return sourceType === "negative_stock_revaluation"
     ? "goods_receipt"
     : sourceType;

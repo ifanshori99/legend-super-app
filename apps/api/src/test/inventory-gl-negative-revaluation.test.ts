@@ -315,9 +315,7 @@ describe("1214 receipt onto a negative balance revalues the units sold short", (
 
     expect(await netDebit(world, "cogs")).toBe(1000 + 100);
     const glInventory =
-      first.valueIdr +
-      receipt.valueIdr +
-      (await netDebit(world, "inventory"));
+      first.valueIdr + receipt.valueIdr + (await netDebit(world, "inventory"));
     expect(await cardValue(world, item)).toBe(600);
     expect(glInventory).toBe(600);
   });

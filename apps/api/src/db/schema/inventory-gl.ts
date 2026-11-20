@@ -31,8 +31,7 @@ import { tenants } from "./platform-org.ts";
  * never appears in `stock_ledger`.
  */
 export type InventoryGlSourceType =
-  | StockSourceType
-  | "negative_stock_revaluation";
+  StockSourceType | "negative_stock_revaluation";
 
 /**
  * `inventory_gl_postings` (T, outlet-owned): a stock ledger row that already
