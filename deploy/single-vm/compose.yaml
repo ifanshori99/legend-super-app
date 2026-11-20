@@ -92,7 +92,7 @@ services:
   # still accepted and PDFs answer 503 until clamd is up. No ports: the API
   # reaches it over the Compose network.
   clamav:
-    image: clamav/clamav:1.4.3
+    image: clamav/clamav:1.4.7
     logging: *bounded-logging
     restart: unless-stopped
     volumes:
