@@ -425,6 +425,16 @@ async function runRoundingBatch(
   return { productionId, rows, outputItem: out, receiptsIdr: 100000 };
 }
 
+/** Tracking rows (`inventory_gl_postings`) of a batch. */
+async function trackedRowsOf(productionId: string): Promise<number> {
+  const { rows } = await owner.query<{ n: string }>(
+    `SELECT count(*)::text AS n FROM inventory_gl_postings
+      WHERE tenant_id = $1 AND source_type = 'production_order' AND source_id = $2`,
+    [tenantId, productionId],
+  );
+  return Number(rows[0]!.n);
+}
+
 describe("1252 production batch journal", () => {
   it("[1252-NET] a batch moves no value between accounts: no journal, 1301 nets to zero", async () => {
     const world = await makeWorld();
@@ -540,6 +550,61 @@ describe("1252 production batch journal", () => {
     expect(journals[0]!.entry_date).toBe("2026-11-01");
     expect(journals[0]!.late_adjustment_from).toBe("2026-10-15");
     expect(await netDebit(world, "inventory")).toBe(2);
+  });
+
+  it("[1252-SPLIT] an edge batch arriving draws first, output later: nothing booked or tracked until complete, then one rounding journal", async () => {
+    const world = await makeWorld();
+    const raw = await insertItem("Daging");
+    const out = await insertItem("Rendang", "semi_finished");
+    await receive(world, raw, "1000", "100", BEFORE);
+    const productionId = randomUUID();
+    // Delivery 1 carries only the first draw, delivery 2 the second draw.
+    const draw1 = await drawMaterial(world, raw, "600", productionId, DAY);
+    expect((await deliverRow(draw1)).status).toBe("zero_value");
+    expect(await journalsOf(world, productionId)).toEqual([]);
+    expect(await trackedRowsOf(productionId)).toBe(0);
+    expect(await netDebit(world, "inventory")).toBe(0);
+    const draw2 = await drawMaterial(world, raw, "400", productionId, DAY);
+    expect((await deliverRow(draw2)).status).toBe("zero_value");
+    expect(await trackedRowsOf(productionId)).toBe(0);
+    expect(await netDebit(world, "inventory_price_variance")).toBe(0);
+    // Delivery 3: the put-away completes the batch.
+    const output = await putAwayOutput(
+      world,
+      out,
+      "70000",
+      "1.4286",
+      productionId,
+      DAY,
+    );
+    expect((await deliverRow(output)).status).toBe("posted");
+    const journals = await journalsOf(world, productionId);
+    expect(journals).toHaveLength(1);
+    expect(await balanceOf(journals[0]!.id)).toEqual({ debit: 2, credit: 2 });
+    expect(await trackedRowsOf(productionId)).toBe(3);
+    await expectBooksMatchCard(world, 100000);
+    for (const row of [draw1, draw2, output])
+      expect((await deliverRow(row)).status).toBe("already_posted");
+    expect(await journalsOf(world, productionId)).toHaveLength(1);
+    await expectBooksMatchCard(world, 100000);
+  });
+
+  it("[1252-LATE-DRAW] a draw arriving after the batch was booked: the rounding already on 5106 is subtracted", async () => {
+    const world = await makeWorld();
+    const raw = await insertItem("Daging");
+    const out = await insertItem("Rendang", "semi_finished");
+    await receive(world, raw, "1000", "100", BEFORE);
+    const productionId = randomUUID();
+    const draw1 = await drawMaterial(world, raw, "600", productionId, DAY);
+    await putAwayOutput(world, out, "70000", "1.4286", productionId, DAY);
+    expect((await deliverRow(draw1)).status).toBe("posted");
+    await expectBooksMatchCard(world, 100000);
+    const draw2 = await drawMaterial(world, raw, "400", productionId, DAY);
+    expect((await deliverRow(draw2)).status).toBe("posted");
+    expect(await journalsOf(world, productionId)).toHaveLength(2);
+    expect(await netDebit(world, "inventory")).toBe(2);
+    expect(await netDebit(world, "inventory_price_variance")).toBe(-2);
+    await expectBooksMatchCard(world, 100000);
   });
 
   it("[1252-ZERO] a batch of free materials posts no journal", async () => {

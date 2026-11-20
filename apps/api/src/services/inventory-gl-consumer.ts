@@ -51,7 +51,17 @@
 // advisory lock serializes concurrent consumers and the sweep of one document.
 
 import { createHash } from "node:crypto";
-import { and, asc, eq, inArray, lte, max, ne, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  inArray,
+  isNotNull,
+  lte,
+  max,
+  ne,
+  sql,
+} from "drizzle-orm";
 import {
   AccountingError,
   defaultPostingRules,
@@ -78,9 +88,11 @@ import {
 import { isModuleEnabled } from "@starter/shared/platform";
 import { db } from "../db/index.ts";
 import {
+  accountMappings,
   fiscalPeriods,
   inventoryGlBlocked,
   inventoryGlPostings,
+  journalLines,
   outlets,
   stockLedger,
   stockNegativeRevaluations,
@@ -567,6 +579,51 @@ function idempotencyKeyOf(
   return `stock-gl:${createHash("sha256").update(key).digest("hex")}`;
 }
 
+/**
+ * Net rounding already booked for a production batch (positive = Dr 1301 /
+ * Cr 5106): credit minus debit on inventory_price_variance over the journals
+ * of the batch's tracked rows.
+ */
+async function bookedProductionVarianceIdr(
+  tx: Tx,
+  tenantId: ScopedTenantContext["tenant"]["tenantId"],
+  legalEntityId: string,
+  sourceId: string,
+): Promise<number> {
+  const journals = tx
+    .selectDistinct({ id: inventoryGlPostings.journalEntryId })
+    .from(inventoryGlPostings)
+    .where(
+      and(
+        eq(inventoryGlPostings.tenantId, tenantId),
+        eq(inventoryGlPostings.sourceType, "production_order"),
+        eq(inventoryGlPostings.sourceId, sourceId),
+        isNotNull(inventoryGlPostings.journalEntryId),
+      ),
+    );
+  const [booked] = await tx
+    .select({
+      net: sql<string>`COALESCE(sum(${journalLines.creditIdr} - ${journalLines.debitIdr}), 0)::text`,
+    })
+    .from(journalLines)
+    .innerJoin(
+      accountMappings,
+      and(
+        eq(accountMappings.tenantId, journalLines.tenantId),
+        eq(accountMappings.accountId, journalLines.accountId),
+        eq(accountMappings.legalEntityId, legalEntityId),
+        eq(accountMappings.role, "inventory_price_variance"),
+      ),
+    )
+    .where(
+      and(
+        eq(journalLines.tenantId, tenantId),
+        inArray(journalLines.entryId, journals),
+      ),
+    );
+  return Number(booked?.net ?? 0);
+}
+
 export async function postStockSourceToGl(
   tx: Tx,
   context: ScopedTenantContext,
@@ -698,6 +755,16 @@ export async function postStockSourceToGl(
   if (!first) return { status: "already_posted" };
   if (allRows.some((row) => row.outletId !== first.outletId))
     throw new Error("Stock source spans more than one outlet");
+  // A production batch synced from an edge can arrive split (draws first, the
+  // put-away later). Until the batch has both a draw and a put-away nothing is
+  // booked and no row is marked posted, so the rows are settled together once
+  // the batch is complete (a put-away alone is never a rounding difference).
+  const isProduction = mapping.eventName === "production.completed";
+  if (isProduction) {
+    const drew = allRows.some((row) => parseDecimal4(row.quantity) < 0n);
+    const putAway = allRows.some((row) => parseDecimal4(row.quantity) > 0n);
+    if (!drew || !putAway) return { status: "zero_value", ledgerEntryIds: [] };
+  }
 
   const [outlet] = await tx
     .select({
@@ -714,7 +781,6 @@ export async function postStockSourceToGl(
   // A production batch is one journal on the date of its first row: its draw
   // and put-away rows are written together, and splitting them over a cutoff
   // would leave each journal with a one-sided amount.
-  const isProduction = mapping.eventName === "production.completed";
   const groups = new Map<BusinessDate, typeof rows>();
   for (const row of rows) {
     const date = businessDateOf(
@@ -769,24 +835,26 @@ export async function postStockSourceToGl(
       // shared over its business dates by largest remainder.
       amount = wasteAmounts.get(naturalDate)!;
     } else if (isProduction) {
-      // Output card value minus material cost, each rounded once over the
-      // batch: what the put-away adds to 1301 beyond what the draw took. A
-      // put-away without any draw is not a rounding difference: it books
-      // nothing here (restrictive: never a gain on 5106 from nothing drawn).
+      // Output card value minus material cost over every row of the batch,
+      // each rounded once, less the rounding already booked on 5106 for it
+      // (a draw that arrives after the batch was booked).
       let outputScaled = 0n;
       let materialScaled = 0n;
-      let drew = false;
-      for (const row of group) {
-        const quantity = parseDecimal4(row.quantity);
-        const scaled = quantity * parseDecimal4(row.unitCostIdr);
-        if (quantity < 0n) {
-          drew = true;
-          materialScaled -= scaled;
-        } else outputScaled += scaled;
+      for (const row of allRows) {
+        const scaled =
+          parseDecimal4(row.quantity) * parseDecimal4(row.unitCostIdr);
+        if (scaled > 0n) outputScaled += scaled;
+        else materialScaled -= scaled;
       }
-      amount = drew
-        ? scaledCostToIdr(outputScaled) - scaledCostToIdr(materialScaled)
-        : 0;
+      amount =
+        scaledCostToIdr(outputScaled) -
+        scaledCostToIdr(materialScaled) -
+        (await bookedProductionVarianceIdr(
+          tx,
+          tenantId,
+          outlet.legalEntityId,
+          target.domainId,
+        ));
     } else if (mapping.variant === "count") {
       amount = rowSum;
     } else {
