@@ -68,6 +68,7 @@ import { createHash } from "node:crypto";
 import { and, asc, eq, sql, type SQL } from "drizzle-orm";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import type { db as appDb } from "../db/index.ts";
+import { logger } from "../lib/logger.ts";
 import {
   itemVariants,
   menuCategories,
@@ -987,6 +988,34 @@ export async function listCatalogRecordsSince(
   );
 }
 
+/** Minimum gap between two "deactivation withheld" warnings per stream+tenant. */
+const DEACTIVATION_WARN_INTERVAL_MS = 10 * 60 * 1000;
+const deactivationWarnedAt = new Map<string, number>();
+
+/**
+ * legend-bg5wy: while the cloud withholds the visibility fields (rows stamped
+ * at or above the horizon after a restore), no edge deactivates anything, so a
+ * promotion or price the restored cloud no longer has keeps applying offline
+ * until the runbook restamps. Say so, once per stream+tenant per interval and
+ * per process. Only the stream name and tenant id: no personal data.
+ */
+function warnDeactivationWithheld(stream: string, tenantId: string): void {
+  const key = `${stream}:${tenantId}`;
+  const now = Date.now();
+  const last = deactivationWarnedAt.get(key);
+  if (last !== undefined && now - last < DEACTIVATION_WARN_INTERVAL_MS) return;
+  deactivationWarnedAt.set(key, now);
+  logger.warn(
+    { stream, tenantId },
+    "edge catalog: deactivation withheld, rows stamped at or above the snapshot horizon (restamp after restore)",
+  );
+}
+
+/** Test hook: forget the warning rate limit. */
+export function resetDeactivationWarnings(): void {
+  deactivationWarnedAt.clear();
+}
+
 /** Internal scanner shared with the cloud publisher in its cursor transaction. */
 export async function listCatalogRecordsSinceTx(
   tx: Parameters<Parameters<typeof withTenant>[2]>[0],
@@ -1060,8 +1089,14 @@ export async function listCatalogRecordsSinceTx(
   // visibility fields (an edge without them never deactivates anything). A
   // write committed between the horizon read and this probe also withholds
   // them for one page: safe, never a wrong deactivation.
+  //
+  // legend-bg5wy: the edge reads the visibility fields only on a last page, so
+  // the probe runs only there. A page with more rows after it sends no fields
+  // (never over-claims) and costs no extra scan.
+  const lastPage = rows.length <= limit;
   const futureStamped =
     negotiated !== undefined &&
+    lastPage &&
     (
       await scanners[stream]({
         ...scope,
@@ -1071,6 +1106,7 @@ export async function listCatalogRecordsSinceTx(
           sql`${syncTxid} >= ${horizon.toString()}::bigint`,
       })
     ).length > 0;
+  if (futureStamped) warnDeactivationWithheld(stream, tenantId);
   const page = rows.slice(0, limit);
   const last = page.at(-1);
   const lastMark =
@@ -1097,7 +1133,7 @@ export async function listCatalogRecordsSinceTx(
     hasMore: rows.length > limit,
     // Same rule as protocolVersion: only an edge that asked gets the snapshot
     // fields (an older edge's strict page schema would refuse them).
-    ...(stamped === undefined || futureStamped
+    ...(stamped === undefined || !lastPage || futureStamped
       ? {}
       : {
           visibleBelow: visibleBelow.toString(),
