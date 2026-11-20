@@ -40,3 +40,9 @@ P0: none. P1: none. P2: none.
 - Test: two completed own refunds that close the transaction plus an ambiguous no-id success; assert the chosen behaviour.
 
 Verdict: LOLOS
+
+## Keputusan CTO 20 Nov (sesudah 1205a, legend-3tyl1)
+
+- P3-1 ditutup oleh ws/1205a-refund-echo 92ccbfcf6: skip echo hanya bila refund Legend sendiri >= ukuran transaksi (max tagihan, evidence DB intent+ref, payment.amount); evidence hilang/milik intent lain = hold. Architect: bersih.
+- P3-a (echo pada transaksi parkir dibanding tagihan, selalu hold): DITERIMA apa adanya. Lebih banyak hold untuk finance, tidak ada uang hilang. Arah aman.
+- P3-2 / P3-b (bandingkan dengan jumlah semua refund kita, bukan satu refund): DITERIMA dengan dasar provider menolak refund melebihi jumlah ditagih. Bila provider baru tanpa batas ini ditambahkan, kartu ini wajib dibuka ulang.
