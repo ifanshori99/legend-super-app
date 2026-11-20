@@ -1101,6 +1101,42 @@ async function assertNotDepreciationJournal(
 }
 
 /**
+ * Automatic expense accruals whose source owns the correction (SO 1216 F-P1b):
+ * reversing one by hand removes the expense, raises the profit and so the
+ * profit share. The payroll run-lock accrual is undone by cancelling the run
+ * (payroll.reversed); the inventory GL journals (HPP and waste/count) by a
+ * stock movement. Depreciation has its own guard above. Sales, receipts,
+ * payouts and fees stay reversible here (CTO decision, deny list). Petty cash
+ * purchases and cash-out expenses are held by assertAutoCashOutSourceNotPaid.
+ */
+const INVENTORY_GL_SOURCES: ReadonlySet<string> = new Set([
+  "cogs",
+  "stock_adjustment",
+]);
+
+function assertNotSourceOwnedAccrual(row: {
+  sourceType: string;
+  idempotencyKey: string | null;
+}): void {
+  const payrollAccrual =
+    row.sourceType === "payroll" &&
+    // payrollGlKeys.locked in payroll-gl-consumer (it imports this module).
+    row.idempotencyKey?.startsWith("payroll-gl:locked:") === true;
+  if (payrollAccrual)
+    throw new HttpError(
+      409,
+      "AUTO_JOURNAL_LOCKED",
+      "Jurnal akrual payroll ini dibuat otomatis dan tidak bisa dibalik manual; batalkan payroll run-nya.",
+    );
+  if (INVENTORY_GL_SOURCES.has(row.sourceType))
+    throw new HttpError(
+      409,
+      "AUTO_JOURNAL_LOCKED",
+      "Jurnal HPP atau penyesuaian stok ini dibuat otomatis dan tidak bisa dibalik manual; perbaiki lewat pergerakan stoknya.",
+    );
+}
+
+/**
  * A manual reversal of a journal that credits the entity's CURRENT petty cash
  * account (GL 1102) would reopen cash that already left the till
  * (legend-5qqb9, bead 1091). Refused by default: only journals the finance user
@@ -1420,6 +1456,7 @@ export async function reverseJournalInTransaction(
       lines.map(toLine),
     );
   assertReversible(row, reversal?.id ?? null);
+  if (input.manualReversal === true) assertNotSourceOwnedAccrual(row);
   await assertReturnBackingNotPaidOut(tx, context.tenant.tenantId, row);
   const reversalLines = buildReversalLines(
     {
