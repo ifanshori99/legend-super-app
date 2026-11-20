@@ -17,13 +17,7 @@
 // shown as "not found", never as a PIN problem.
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Link } from "@tanstack/react-router";
-import {
-  ChevronLeft,
-  Download,
-  FileX,
-  Printer,
-  ShieldCheck,
-} from "lucide-react";
+import { ChevronLeft, FileX, ShieldCheck } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
@@ -50,6 +44,7 @@ import {
   quantityUnitKey,
 } from "../state.ts";
 import { PageHeader } from "./page-header.tsx";
+import { PayslipFileActions } from "./payslip-file-actions.tsx";
 import { PinCodeInput } from "./pin-code-input.tsx";
 import { PinLayout } from "./pin-layout.tsx";
 import { PinLocked } from "./pin-locked.tsx";
@@ -215,34 +210,7 @@ function PayslipContent({ payslip }: { payslip: Payslip }) {
         lines={deductions}
       />
 
-      {payslip.fileUrl !== null ? (
-        <div className="grid gap-1">
-          <Button asChild variant="outline" className="w-full">
-            <a href={payslip.fileUrl} target="_blank" rel="noreferrer">
-              <Download aria-hidden="true" />
-              {t("payslip.detail.download")}
-            </a>
-          </Button>
-          <p className="text-sm leading-5 text-muted-foreground">
-            {t("payslip.detail.downloadHint")}
-          </p>
-        </div>
-      ) : (
-        <div className="grid gap-1">
-          <Button
-            type="button"
-            variant="outline"
-            className="w-full"
-            onClick={() => window.print()}
-          >
-            <Printer aria-hidden="true" />
-            {t("payslip.detail.print")}
-          </Button>
-          <p className="text-sm leading-5 text-muted-foreground">
-            {t("payslip.detail.printHint")}
-          </p>
-        </div>
-      )}
+      <PayslipFileActions fileUrl={payslip.fileUrl} />
 
       <Button asChild variant="ghost" size="sm" className="w-fit">
         <Link to="/karyawan/slip-gaji">{t("payslip.backToHistory")}</Link>
