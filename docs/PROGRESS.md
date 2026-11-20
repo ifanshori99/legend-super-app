@@ -2326,3 +2326,10 @@ Langkah berikut CTO baru:
 - Bug yang tertangkap sebelum produksi: guard payout 0504 basi (kunci kas hilang), refund overpay, promo bocor offline sesudah restore, storage env/region.
 - Pemborosan: 3 full run batch98 (masing-masing 1 masalah), 2 run test kosong (path salah), 5 agent kena batas langkah.
 - Perbaikan: satu full run gabungan batch100 (memuat 98+99); aturan Retro 54 di roles merge-train.md + cto.md; tooling 1207 (cek fungsi DB ditulis ulang, normalisasi LEGEND_TEST_FILES, affected-tests) sedang dibuat.
+
+## 20 Nov malam (CTO, compact 5x -> sesi baru)
+
+- Sudah: batch98-101 mendarat m1 (7d84e37c5). Kartu 1228, 1229, 1230, 1232, 1234, 1235 selesai dan LOLOS review (architect xhigh untuk uang/migrasi). int/batch102-104 berisi fix full run.
+- Sedang: full run kedua int/batch104; 1236 merge train batch105 (1232 + 1234); 1237 diagnosa Opus flake 990 r8nas.
+- Berikut: daratkan 102-104 ke m1 bila hijau; full run batch105; laporan keputusan founder; triase P2 scope rilis; gate akhir deploy.
+- Rincian lengkap: `docs/HANDOFF-2026-11-20.md` bagian "Pembaruan 20 Nov pukul 20:30".
