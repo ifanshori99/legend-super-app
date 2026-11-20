@@ -37,7 +37,10 @@ import {
   loadPayrollRunDto,
   lockPayrollRunInTransaction,
 } from "../services/payroll-run-lock.service.ts";
-import { simulatePayrollRunInTransaction } from "../services/payroll-run-simulate.service.ts";
+import {
+  simulatePayrollRunInTransaction,
+  withExcludedFormerEmployees,
+} from "../services/payroll-run-simulate.service.ts";
 
 export const payrollRunsRouter = Router();
 
@@ -222,7 +225,11 @@ payrollRunsRouter.post(
           await lockPayrollRunInTransaction(tx, context, actorUserId, {
             payrollRunId,
           });
-          return loadPayrollRunDto(tx, context.tenant.tenantId, payrollRunId);
+          return withExcludedFormerEmployees(
+            tx,
+            context.tenant.tenantId,
+            await loadPayrollRunDto(tx, context.tenant.tenantId, payrollRunId),
+          );
         },
       ),
     );

@@ -938,6 +938,19 @@ const resultEmployeeIds = async (runId: string) =>
     )
   ).rows.map((row) => row.employee_id);
 
+/** The `payroll.run.former_employee_excluded` audit events of a run, as JSON text. */
+const excludedAudit = async (runId: string) =>
+  (
+    await asTenant((conn) =>
+      conn.query<{ event: string }>(
+        `SELECT event::text AS event FROM audit_logs
+          WHERE tenant_id = $1 AND event->>'objectId' = $2
+            AND event->>'action' = 'payroll.run.former_employee_excluded'`,
+        [tenant.id, runId],
+      ),
+    )
+  ).rows.map((row) => row.event);
+
 describe("[leaver-1220] employee who leaves under a cutoff before month end", () => {
   it("cutoff 25, leaves 30 Nov: Nov run locks, then the Dec run locks (no 422)", async () => {
     const world = await makeWorld();
@@ -985,6 +998,11 @@ describe("[leaver-1220] employee who leaves under a cutoff before month end", ()
     expect(await resultEmployeeIds(thr)).toContain(leaver.id);
     expect(await payslipCount(march)).toBe(2);
     expect(await payslipCount(april)).toBe(2);
+    // The April run holds the end date: it is the leaver's annual period.
+    const aprilLeaver = (await slipsOf([april])).find(
+      (slip) => slip.employeeId === leaver.id,
+    );
+    expect(aprilLeaver?.calc.tax.method).toBe("annual_recalculation");
   }, 600_000);
 
   it("a January run with someone who left 31 Dec: the others are still paid and the leaver is listed by name", async () => {
@@ -1005,5 +1023,43 @@ describe("[leaver-1220] employee who leaves under a cutoff before month end", ()
     const listed = simulated.excludedFormerEmployees![0]!;
     expect(listed.employeeId).toBe(leaver.id);
     expect(listed.message).toContain("Desember gross");
+    const audit = await excludedAudit(runId);
+    expect(audit).toHaveLength(1);
+    expect(audit[0]).toContain(leaver.id);
+    expect(audit[0]).not.toContain("Desember gross");
   }, 300_000);
+
+  it("no cutoff, leaves 28 March: the March run is annual, a THR paid 5 April leaves the leaver out and reports them (no TER on top)", async () => {
+    const world = await makeWorld();
+    const leaver = await makeEmployee(world, "gross");
+    const stayer = await makeEmployee(world, "gross");
+    await setEndDate(leaver.id, "2026-03-28");
+
+    const march = await lockedRun(world, monthDates(3, 28));
+    const marchLeaver = (await slipsOf([march])).find(
+      (slip) => slip.employeeId === leaver.id,
+    );
+    expect(marchLeaver?.calc.tax.method).toBe("annual_recalculation");
+
+    const thr = await draftRun(
+      world,
+      {
+        periodStart: "2026-03-01",
+        periodEnd: "2026-03-31",
+        payDate: "2026-04-05",
+      },
+      "thr",
+    );
+    const simulated = await simulateRun(thr);
+    expect(await resultEmployeeIds(thr)).toEqual([stayer.id]);
+    expect(simulated.excludedFormerEmployees?.map((e) => e.employeeId)).toEqual(
+      [leaver.id],
+    );
+    expect(simulated.excludedFormerEmployees![0]!.message).toContain(
+      "sudah dihitung tahunan",
+    );
+    const audit = await excludedAudit(thr);
+    expect(audit).toHaveLength(1);
+    expect(audit[0]).toContain(leaver.id);
+  }, 600_000);
 });

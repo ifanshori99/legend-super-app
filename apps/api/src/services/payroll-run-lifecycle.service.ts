@@ -66,6 +66,7 @@ import { recordAudit } from "./core-audit.ts";
 import { assertPayrollTenantCan } from "./payroll-access.ts";
 import { emitPayrollEvent } from "./payroll-events.ts";
 import { toRun } from "./payroll-run-lock.service.ts";
+import { withExcludedFormerEmployees } from "./payroll-run-simulate.service.ts";
 import type { Tx } from "./permission-resolver.ts";
 
 const runNotFound = () =>
@@ -349,7 +350,12 @@ async function approveInTransaction(
     run.id,
     { status: updated.status },
   );
-  return toRun(updated);
+  // The left-out leavers stay on screen up to the lock (legend-1220).
+  return withExcludedFormerEmployees(
+    tx,
+    context.tenant.tenantId,
+    toRun(updated),
+  );
 }
 
 export function approvePayrollRunHrInTransaction(

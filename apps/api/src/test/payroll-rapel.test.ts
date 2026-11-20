@@ -867,6 +867,33 @@ describe("legend-svqew rapel Q43/Q44", () => {
     expect(await frozenSnapshot(s)).toEqual(before);
   });
 
+  it("[1220] refuses allocating to a run that leaves the employee out (ended in an earlier year than its pay date), naming the employee", async () => {
+    const s = await seed();
+    // Ends before the rapel is made, so the rapel's own eligibility snapshot holds.
+    await asTenant((db) =>
+      db.query("UPDATE employees SET end_date = '2026-12-31' WHERE id = $1", [
+        s.employeeId,
+      ]),
+    );
+    const rapel = await create(s);
+    await approve(rapel.id);
+    await asTenant(async (db) => {
+      await db.query(
+        "UPDATE payroll_runs SET pay_date = '2027-01-05' WHERE id = $1",
+        [s.targetRunId],
+      );
+    });
+    const res = await post(requester.client, `${root}/${rapel.id}/allocate`, {
+      payrollRunId: s.targetRunId,
+      idempotencyKey: key(),
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(JSON.stringify(res.body)).toContain(
+      "PAYROLL_RAPEL_EMPLOYEE_EXCLUDED",
+    );
+    expect(JSON.stringify(res.body)).toContain("2026-12-31");
+  });
+
   it("[Q44] requires HR then a distinct Finance approver before allocating any payment", async () => {
     const s = await seed();
     const rapel = await create(s);

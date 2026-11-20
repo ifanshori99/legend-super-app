@@ -1000,6 +1000,18 @@ export async function allocatePayrollRapel(
           throw conflict(
             "Rapel hanya dialokasikan ke run regular draft berikutnya pada badan hukum sumber.",
           );
+        // The run leaves out someone who ended in an earlier year than its pay
+        // date (legend-1220): a rapel allocated there would stay unpaid.
+        const endDate = employee.row.endDate;
+        if (
+          endDate !== null &&
+          endDate.slice(0, 4) < target.payDate.slice(0, 4)
+        )
+          throw new HttpError(
+            409,
+            "PAYROLL_RAPEL_EMPLOYEE_EXCLUDED",
+            `Karyawan ${employee.row.fullName} (${employee.row.employeeNo}) berhenti pada ${endDate}, di tahun sebelum tanggal bayar run ini (${target.payDate}), jadi dia tidak ikut run ini. Rapelnya tidak bisa dialokasikan ke run ini: bayar di luar run.`,
+          );
         const [earliest] = await tx
           .select({ id: payrollRuns.id })
           .from(payrollRuns)

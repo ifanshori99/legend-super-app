@@ -490,7 +490,7 @@ export const payrollRunSchema = z
     heldOvertimeCorrections: z
       .array(payrollHeldOvertimeCorrectionSchema)
       .optional(),
-    /** Only present on a simulate response, when someone was left out. */
+    /** On simulate, approve and lock responses, when someone was left out. */
     excludedFormerEmployees: z
       .array(payrollExcludedFormerEmployeeSchema)
       .optional(),
