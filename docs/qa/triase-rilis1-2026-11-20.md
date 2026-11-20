@@ -200,3 +200,10 @@ Catatan: bead WS-xx BE bertanggal 1 Nov (payroll, jurnal otomatis, penerimaan ba
 - SEBAGIAN: j2l2 (settlement masih tunggu engine), 07eg (total file bank = net belum terverifikasi), 29vw (consumer goods.received/supplier_invoice.matched/supplier.paid tidak ketemu), 905j (jurnal poin/dividen/penyusutan belum dicek), 316 (QC, GR parsial), tvkuz (layar absen edge), 3tyl1 (isi fix belum dibaca).
 - BELUM atau tanpa penanda: arj.5 (angka settlement karyawan keluar masih PENDING_PAYROLL_ENGINE), x73li (laporan/dasbor web masih `mock.ts`), 0orff (panel gateway Super Admin), k0i8, xhl5j, gdjpu, ecr16, tomda.
 - Perlu kartu: x73li dan arj.5 paling besar dampaknya untuk rilis. Sisanya cek kriteria per bead dulu (architect/Explore per area), lalu kartu.
+
+## Status 21 Nov (1240 + 1247)
+
+- Ditutup (bukti kode + test di m1 6f418df53): t1ufu, 3tyl1, 94xqo, w8cwg, du7t5, l3bq, j2l2 (+8di9d, sko14, pf9u7), 316.
+- Dikerjakan gelombang 1 (`docs/briefs/1241-1247-rilis1-gelombang1.md`): arj.5 (1241), tomda (1242), xhl5j (1243), ecr16 (1244), gdjpu (1245). Sizing architect 1246: k0i8, x73li (+qlirp, ay6e6, y3huu), tvkuz, 0orff.
+- Sisa kecil untuk gelombang 2: 07eg (generator payslip PDF tidak ada, `hris-payslip.service.ts:164` hanya baca; bead s5c1 lease kedaluwarsa), 905j (dividen memakai `distribution.completed`, bukan `distribution.paid`: cek kriteria), 29vw (konsumsi/output produksi tanpa mapping jurnal sendiri), j7018 (test bayar terakhir bertanggal mundur ke periode tutup).
+- Butuh kunci sandbox dari founder: 1yig6, astv2, 7tqe8 (DOIT/Duitku sandbox). Ops saat staging: wxvt9.
