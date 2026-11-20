@@ -1,0 +1,9 @@
+# 1239 Kuota kursi tenant fixture habis di full run (20 Nov) — engineer sonnet
+
+Full run kedua batch104 (`../legend-int-batch104/.batch104-fullrun.log`): 18 gagal di `hris-employee-bank-code.test.ts` (15), `hris-leave-collective-db.test.ts` (3), `hris-overtime-db.test.ts` (1), semua `PlatformError QUOTA_EXCEEDED` dari `seatQuota` (`apps/api/src/services/hris-employee.service.ts:792`). File-file itu membuat karyawan di tenant fixture bersama `cafeLegendPlatformFixtures.tenant.id` (limit `maxActiveEmployees` di `packages/shared/src/platform/fixtures.ts`); jumlah karyawan aktif dari file lain menumpuk, urutan file berubah tiap run. Full run pertama tidak kena. Pola yang sudah dipakai: tenant sendiri per file (`worker-notification-hr-settlement-recipients.test.ts:42`, `hris-leave-release-event-db.test.ts`).
+
+Kerja di worktree `/Users/ifanshori99/Projects/legend super app/legend-int-batch104` (cabang int/batch104, sudah siap, full run sudah selesai):
+1. Cari semua test yang membuat karyawan (`createEmployee`/`create` HRIS service atau insert employees status aktif) di tenant fixture bersama. Hitung kasar total.
+2. Perbaikan akar, jangan mengubah kode produksi, jangan melemahkan test kuota: pindahkan 3 file gagal ke tenant sendiri (pola di atas). Bila banyak file lain berisiko sama, pilih cara terpusat yang aman (mis. setup test menaikkan limit tenant fixture di DB test saja, bukan di `fixtures.ts` yang juga dipakai `seed-dev-tenant.ts`), dan pastikan tidak ada test yang mengandalkan limit fixture.
+3. Bukti: `LEGEND_TEST_FILES="src/test/hris-employee-bank-code.test.ts src/test/hris-leave-collective-db.test.ts src/test/hris-overtime-db.test.ts" heavy pnpm test` hijau; prettier + eslint berkas berubah; `heavy pnpm --filter @starter/api typecheck`.
+Commit (akhiri `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`), push int/batch104. Budget 40 tool call; di 32 commit + lapor. Laporan: SHA, cara yang dipilih + alasan, file berisiko lain.
