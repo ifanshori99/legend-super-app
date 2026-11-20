@@ -49,6 +49,7 @@ import {
   createUlid,
   outletIdSchema,
   tenantIdSchema,
+  ulidToUuid,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
@@ -74,10 +75,15 @@ import {
 } from "../edge/deferred-event-applier.ts";
 import { registerOrderEdgeApplier } from "../edge/order-edge-applier.ts";
 import { edgeEventApplier, type EdgeApplyMeta } from "../edge/ports.ts";
-import { registerReceiptRunEdgeApplier } from "../edge/receipt-run-applier.ts";
+import {
+  INGEST_HOLD_EXPIRED_PREFIX,
+  RECEIPT_RUN_INGEST_HOLD_MS,
+  registerReceiptRunEdgeApplier,
+} from "../edge/receipt-run-applier.ts";
 import { registerStockMovedEdgeApplier } from "../edge/stock-moved-applier.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
+import { redriveEdgeOrderRefusalsForTenant } from "../worker/edge-order-redrive.job.ts";
 import { enrollDevice } from "../services/device.service.ts";
 import {
   authenticateEdgeCredential,
@@ -736,6 +742,232 @@ describe("legend-ain0 offline sale then offline void merges without deadlock (a)
       voided_by: cashierId,
     });
     for (const gap of await gapsOf(outletId)) expect(gap.missing).toEqual([]);
+  });
+});
+
+// ---- legend-gdjpu: a void ACKed before its ingest succeeded -----------------------
+
+describe("legend-gdjpu a run whose void ingest failed transiently stays queued until the void is redriven", () => {
+  /** Holds the tenant loyalty entity lock on another connection. */
+  async function holdLoyaltyLock() {
+    const client = await owner.connect();
+    await client.query("BEGIN");
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+      [`loyalty-entity:${tenant.tenantId}`],
+    );
+    return async () => {
+      await client.query("ROLLBACK");
+      client.release();
+    };
+  }
+
+  async function ledgerReason(orderId: string): Promise<string | null> {
+    const [row] = await rows<{ reason: string | null }>(
+      `SELECT reason FROM edge_order_ingests
+        WHERE tenant_id = $1 AND order_id = $2::uuid`,
+      [tenant.tenantId, ulidToUuid(orderId)],
+    );
+    return row?.reason ?? null;
+  }
+
+  const sweepContext = () =>
+    establishScopedTenantContext(
+      establishTenantContext({
+        tenantId: tenantIdSchema.parse(tenant.tenantId),
+        brandId: null,
+        source: "job",
+      }),
+      { kind: "tenant" },
+    );
+
+  it("legend-gdjpu the link refuses to acknowledge the run while its void is transiently refused; the sweep heals the void and the SAME queued run then merges, no manual replacement event", async () => {
+    const { outletId, deviceId, node, orders } = await offlineScenario(2);
+    const [, voidedOrder] = orders;
+
+    // The void reaches the cloud while the loyalty lock is busy: the ingest
+    // savepoint times out (55P03), the refusal is noted, and the link still
+    // acknowledges the event (R1: ingest never throws after parking).
+    const release = await holdLoyaltyLock();
+    try {
+      await deliver(node, [
+        voidedEvent(outletId, voidedOrder!, formatReceiptNumber("OFF1", 2)),
+      ]);
+    } finally {
+      await release();
+    }
+    expect(await voidCount(outletId)).toBe(0);
+    expect(await ledgerReason(voidedOrder!)).toBe(
+      "void_refused:db_error:55P03",
+    );
+
+    // The edge reporter saw order.voided acknowledged and sent the run. The
+    // cloud must not acknowledge it (no conflict, no cursor move): the edge
+    // keeps it queued and resends the same event.
+    const run = runEvent(outletId, deviceId, orders, [2]);
+    const before = await conflictCount(outletId);
+    await expect(deliver(node, [run])).rejects.toThrow();
+    expect(await conflictCount(outletId)).toBe(before);
+    expect(await receiptRows(outletId)).toHaveLength(0);
+
+    // The redrive sweep ingests the parked void.
+    await redriveEdgeOrderRefusalsForTenant(sweepContext(), {
+      log: { error: () => undefined },
+      lockTimeoutMs: 300,
+    });
+    expect(await voidCount(outletId)).toBe(1);
+    expect(await ledgerReason(voidedOrder!)).toBeNull();
+
+    // The sender's retry of the SAME event now merges every receipt.
+    await deliver(node, [run]);
+    expect(
+      (await receiptRows(outletId)).map((row) => [row.number, row.status]),
+    ).toEqual([
+      ["OFF1-000001", "issued"],
+      ["OFF1-000002", "voided"],
+    ]);
+    expect(await sequenceRows(outletId)).toEqual([
+      expect.objectContaining({ prefix: "OFF1", last_number: 2 }),
+    ]);
+    for (const gap of await gapsOf(outletId)) expect(gap.missing).toEqual([]);
+    expect(await voidCount(outletId)).toBe(1);
+    expect(await conflictCount(outletId)).toBe(before);
+  });
+
+  async function supervisorAlerts(userId: string): Promise<number> {
+    const [row] = await rows<{ n: number }>(
+      `SELECT count(*)::int AS n FROM notifications
+        WHERE tenant_id = $1 AND user_id = $2 AND category = 'edge_sync_conflict'`,
+      [tenant.tenantId, userId],
+    );
+    return row!.n;
+  }
+
+  async function orderCount(orderId: string): Promise<number> {
+    const [row] = await rows<{ n: number }>(
+      "SELECT count(*)::int AS n FROM orders WHERE tenant_id = $1 AND id = $2::uuid",
+      [tenant.tenantId, ulidToUuid(orderId)],
+    );
+    return row!.n;
+  }
+
+  async function sweep() {
+    await redriveEdgeOrderRefusalsForTenant(sweepContext(), {
+      log: { error: () => undefined },
+      lockTimeoutMs: 300,
+    });
+  }
+
+  it("legend-gdjpu order.paid with the same gap: a run of a transiently refused sale stays queued, the sweep ingests the sale, the SAME run then merges", async () => {
+    const release = await holdLoyaltyLock();
+    let scenario: Awaited<ReturnType<typeof offlineScenario>>;
+    try {
+      scenario = await offlineScenario(1);
+    } finally {
+      await release();
+    }
+    const { outletId, deviceId, node, orders } = scenario;
+    expect(await ledgerReason(orders[0]!)).toBe("db_error:55P03");
+
+    const run = runEvent(outletId, deviceId, orders);
+    const before = await conflictCount(outletId);
+    await expect(deliver(node, [run])).rejects.toThrow();
+    expect(await conflictCount(outletId)).toBe(before);
+    expect(await receiptRows(outletId)).toHaveLength(0);
+
+    await sweep();
+    expect(await ledgerReason(orders[0]!)).toBeNull();
+
+    await deliver(node, [run]);
+    expect(
+      (await receiptRows(outletId)).map((row) => [row.number, row.status]),
+    ).toEqual([["OFF1-000001", "issued"]]);
+    expect(await conflictCount(outletId)).toBe(before);
+  });
+
+  it(`legend-gdjpu a transient refusal older than the hold (${RECEIPT_RUN_INGEST_HOLD_MS / 60_000} min) no longer holds the run: it is refused as a conflict and the link moves on`, async () => {
+    const { outletId, deviceId, node, orders } = await offlineScenario(2);
+    const [, voidedOrder] = orders;
+    const release = await holdLoyaltyLock();
+    try {
+      await deliver(node, [
+        voidedEvent(outletId, voidedOrder!, formatReceiptNumber("OFF1", 2)),
+      ]);
+    } finally {
+      await release();
+    }
+    expect(await ledgerReason(voidedOrder!)).toBe(
+      "void_refused:db_error:55P03",
+    );
+    // The parked void is older than the hold (cloud clock).
+    await asOwnerTenant((client) =>
+      client.query(
+        `UPDATE edge_deferred_events
+            SET received_at = now() - make_interval(secs => $2::double precision)
+          WHERE tenant_id = $1 AND outlet_id = $3 AND event_name = 'order.voided'`,
+        [tenant.tenantId, RECEIPT_RUN_INGEST_HOLD_MS / 1000 + 60, outletId],
+      ),
+    );
+
+    // A supervisor of this outlet receives the conflict alert.
+    const supervisor = randomUUID();
+    const roleId = randomUUID();
+    await owner.query(
+      'INSERT INTO "user" (id, name, email, email_verified) VALUES ($1, $2, $3, true)',
+      [supervisor, "Supervisor Gdjpu", `gdjpu-${supervisor}@example.test`],
+    );
+    await owner.query(
+      `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
+       VALUES ($1, $2, 'Supervisor Gdjpu', true, 'supervisor', '[]', false, '["outlet"]')`,
+      [roleId, tenant.tenantId],
+    );
+    await owner.query(
+      `INSERT INTO role_assignments
+         (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+       VALUES ($1, $2, $3, 'outlet', $4, now() - interval '1 minute', $2)`,
+      [tenant.tenantId, supervisor, roleId, outletId],
+    );
+    const before = await conflictCount(outletId);
+    const alertsBefore = await supervisorAlerts(supervisor);
+    await deliver(node, [runEvent(outletId, deviceId, orders, [2])]);
+    expect(await conflictCount(outletId)).toBe(before + 1);
+    expect(await receiptRows(outletId)).toHaveLength(0);
+    // The conflict says why, and the outlet's managers are told.
+    const [expired] = await rows<{ n: number }>(
+      `SELECT count(*)::int AS n FROM edge_sync_conflicts
+        WHERE tenant_id = $1 AND outlet_id = $2 AND detail LIKE $3`,
+      [tenant.tenantId, outletId, `${INGEST_HOLD_EXPIRED_PREFIX}%`],
+    );
+    expect(expired!.n).toBe(1);
+    expect(await supervisorAlerts(supervisor)).toBeGreaterThan(alertsBefore);
+  });
+
+  it("legend-gdjpu another order.paid ahead of the held run in the same batch is rolled back with it and lands exactly once on the retry", async () => {
+    const release = await holdLoyaltyLock();
+    let scenario: Awaited<ReturnType<typeof offlineScenario>>;
+    try {
+      scenario = await offlineScenario(1);
+    } finally {
+      await release();
+    }
+    const { outletId, deviceId, node, orders } = scenario;
+    expect(await ledgerReason(orders[0]!)).toBe("db_error:55P03");
+
+    const other = createUlid(++clock);
+    const batch = [
+      paidEvent(outletId, deviceId, other),
+      runEvent(outletId, deviceId, orders),
+    ];
+    await expect(deliver(node, batch)).rejects.toThrow();
+    expect(await orderCount(other)).toBe(0);
+
+    await sweep();
+    await deliver(node, batch);
+    expect(await orderCount(other)).toBe(1);
+    expect(await ledgerReason(other)).toBeNull();
+    expect(
+      (await receiptRows(outletId)).map((row) => [row.number, row.status]),
+    ).toEqual([["OFF1-000001", "issued"]]);
   });
 });
 
