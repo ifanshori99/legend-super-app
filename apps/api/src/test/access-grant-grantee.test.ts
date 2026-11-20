@@ -133,8 +133,7 @@ function grant(userId: string, actorUserId: string = grantorId) {
     }),
     {
       actorUserId,
-      // 5 s in the past: the service reads the DB clock, which can trail the app clock by tens of ms.
-      reauthenticatedAt: new Date(Date.now() - 5_000),
+      reauthenticatedAt: new Date(),
       mfaVerified: true,
     },
   );

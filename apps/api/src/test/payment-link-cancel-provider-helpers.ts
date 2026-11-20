@@ -265,11 +265,11 @@ export async function expectLinkActive(
   label: string,
 ) {
   const { rows } = await owner.query<{ active: boolean }>(
-    `SELECT (l.expires_at IS NULL OR l.expires_at > now()) AS active
+    `SELECT (l.expires_at IS NULL OR l.expires_at > $3) AS active
        FROM payment_intents i
        JOIN payment_links l ON l.tenant_id = i.tenant_id AND l.id = i.payment_link_id
       WHERE i.tenant_id = $1 AND i.id = $2`,
-    [tenantId, intentId],
+    [tenantId, intentId, new Date()],
   );
   expect(rows, `${label}: link of intent`).toHaveLength(1);
   expect(rows[0]!.active, `${label}: link was closed locally`).toBe(true);
@@ -279,7 +279,10 @@ export async function expectLinkActive(
  * The intent's payment link was closed locally (expiry moved to now or
  * earlier). Not asserted on the intent: a gateway code already past its
  * expiry deliberately stays `pending` so the poller can still settle a late
- * payment (payment.service.ts, cancelPaymentLinkInTx).
+ * payment (payment.service.ts, cancelPaymentLinkInTx). Judged on the app
+ * clock, as the cancel stamps `expires_at` and the link page and createIntent
+ * read it (`link.expiresAt <= now`); the DB clock can trail the app clock by
+ * tens of ms, so `now()` saw a link closed a moment ago as live (1230).
  */
 export async function expectLinkClosed(
   tenantId: string,
@@ -287,11 +290,11 @@ export async function expectLinkClosed(
   label: string,
 ) {
   const { rows } = await owner.query<{ active: boolean }>(
-    `SELECT (l.expires_at IS NULL OR l.expires_at > now()) AS active
+    `SELECT (l.expires_at IS NULL OR l.expires_at > $3) AS active
        FROM payment_intents i
        JOIN payment_links l ON l.tenant_id = i.tenant_id AND l.id = i.payment_link_id
       WHERE i.tenant_id = $1 AND i.id = $2`,
-    [tenantId, intentId],
+    [tenantId, intentId, new Date()],
   );
   expect(rows, `${label}: link of intent`).toHaveLength(1);
   expect(rows[0]!.active, `${label}: link is still live`).toBe(false);

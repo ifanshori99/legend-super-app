@@ -167,8 +167,8 @@ async function waitForLockWaiter(
 type Outcome = { ok: true } | { ok: false; reason: unknown };
 
 /**
- * Hold the tenant lock, start the grant (not awaited), end Owner A with Node
- * time while the grant waits, then release the lock. Returns the grant outcome
+ * Hold the tenant lock, start the grant (not awaited), end Owner A with
+ * database time while the grant waits, then release the lock. Returns the grant outcome
  * and whether the barrier saw the grant waiting on the lock.
  */
 async function grantWhileGrantorIsEnded(input: {
@@ -198,7 +198,7 @@ async function grantWhileGrantorIsEnded(input: {
       }),
       {
         actorUserId: input.grantorUserId,
-        reauthenticatedAt: new Date(Date.now() - 5_000),
+        reauthenticatedAt: new Date(),
         mfaVerified: true,
       },
     ).then(
@@ -211,10 +211,12 @@ async function grantWhileGrantorIsEnded(input: {
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     // The grantor is ended meanwhile (simulated), then the lock is released.
-    // Node time, not DB time: avoids container clock drift.
+    // Database clock, as the real end path stamps it under this lock
+    // (readDbClock): the grant reads the same clock after the lock, so the end
+    // is strictly in its past. Node time can lead the DB clock (1230).
     await holder.query(
-      "UPDATE role_assignments SET valid_until = $2 WHERE id = $1",
-      [input.grantorAssignmentId, new Date()],
+      "UPDATE role_assignments SET valid_until = clock_timestamp() WHERE id = $1",
+      [input.grantorAssignmentId],
     );
     await holder.query("COMMIT");
   } catch (error) {
@@ -336,7 +338,7 @@ describe("legend-8ajy4 role grant decides after the tenant lock", () => {
       }),
       {
         actorUserId: ownerA,
-        reauthenticatedAt: new Date(Date.now() - 5_000),
+        reauthenticatedAt: new Date(),
         mfaVerified: true,
       },
     );

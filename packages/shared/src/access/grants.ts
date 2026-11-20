@@ -31,6 +31,31 @@ import {
 export const ROLE_GRANT_REAUTH_MAX_AGE_MS = 5 * 60 * 1000;
 
 /**
+ * How far a re-authentication stamp may lie ahead of `now` and still count as
+ * "just now" (age 0). The stamp comes from the API clock (session
+ * mfa_verified_at) while the grant path reads the database clock
+ * (readDbClock, legend-hzdy5), and the two drift by tens of milliseconds on a
+ * Docker/VM host. A stamp further in the future is still REAUTH_REQUIRED.
+ */
+export const REAUTH_CLOCK_SKEW_TOLERANCE_MS = 2_000;
+
+/**
+ * True when `reauthenticatedAt` is no older than ROLE_GRANT_REAUTH_MAX_AGE_MS
+ * at `now` and no more than REAUTH_CLOCK_SKEW_TOLERANCE_MS ahead of it.
+ */
+export function isReauthFresh(
+  reauthenticatedAt: Date | null,
+  now: Date,
+): boolean {
+  if (reauthenticatedAt === null) return false;
+  const age = now.getTime() - reauthenticatedAt.getTime();
+  return (
+    age >= -REAUTH_CLOCK_SKEW_TOLERANCE_MS &&
+    age <= ROLE_GRANT_REAUTH_MAX_AGE_MS
+  );
+}
+
+/**
  * Tenant top-authority templates (coordinator decision, legend-cyu.10): an
  * active tenant-scoped Owner or Admin Tenant assignment, with MFA verified and
  * a re-auth within ROLE_GRANT_REAUTH_MAX_AGE_MS, may grant any tenant-level
@@ -126,10 +151,7 @@ export function assertCanGrantRole(input: {
 }): RoleAssignmentId {
   if (input.granteeUserId.toLowerCase() === input.grantor.userId.toLowerCase())
     throw new AccessError("SELF_ELEVATION_FORBIDDEN");
-  const reauthAt = input.grantorReauthenticatedAt?.getTime();
-  const age =
-    reauthAt === undefined ? Infinity : input.now.getTime() - reauthAt;
-  if (!(age >= 0 && age <= ROLE_GRANT_REAUTH_MAX_AGE_MS))
+  if (!isReauthFresh(input.grantorReauthenticatedAt, input.now))
     throw new AccessError("REAUTH_REQUIRED");
   if (input.role.level !== "tenant")
     throw new AccessError("ROLE_NOT_ASSIGNABLE");
@@ -276,12 +298,8 @@ export function assertCanEditCustomRole(input: {
   // The service also gates the route on access.role.manage; keep the pure
   // rule self-contained so contract and API tests exercise the same decision.
   assertAuthorized(authorization);
-  const reauthAt = input.grantorReauthenticatedAt?.getTime();
-  const age =
-    reauthAt === undefined ? Infinity : input.now.getTime() - reauthAt;
   if (
-    age >= 0 &&
-    age <= ROLE_GRANT_REAUTH_MAX_AGE_MS &&
+    isReauthFresh(input.grantorReauthenticatedAt, input.now) &&
     topAuthorityAssignment(input, "access.role.manage") !== null
   )
     return;

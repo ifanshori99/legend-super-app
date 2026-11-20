@@ -732,6 +732,36 @@ describe("role grants (§3.7 Pemberian Role)", () => {
     throwsCode(() => grant({ grantorMfaVerified: false }), "MFA_REQUIRED");
   });
 
+  test("1230 re-auth stamped by the API clock 40 ms ahead of the DB clock counts as just now; 10 s ahead is refused", () => {
+    assert.ok(
+      grant({ grantorReauthenticatedAt: new Date(fx.now.getTime() + 40) }),
+    );
+    assert.ok(
+      grant({
+        grantorReauthenticatedAt: new Date(
+          fx.now.getTime() + access.REAUTH_CLOCK_SKEW_TOLERANCE_MS,
+        ),
+      }),
+    );
+    throwsCode(
+      () =>
+        grant({
+          grantorReauthenticatedAt: new Date(fx.now.getTime() + 10_000),
+        }),
+      "REAUTH_REQUIRED",
+    );
+    throwsCode(
+      () =>
+        grant({
+          grantorReauthenticatedAt: new Date(
+            fx.now.getTime() + access.REAUTH_CLOCK_SKEW_TOLERANCE_MS + 1,
+          ),
+        }),
+      "REAUTH_REQUIRED",
+    );
+    assert.equal(access.REAUTH_CLOCK_SKEW_TOLERANCE_MS <= 2_000, true);
+  });
+
   test("custom roles: catalog only, sensitive permissions force MFA", () => {
     throwsCode(
       () => access.normalizeCustomRolePermissions(["platform.tenant.manage"]),
