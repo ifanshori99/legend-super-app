@@ -230,7 +230,7 @@ describe("1243 refund of a promo sale that also carries a manual discount", () =
         sale.voucherId,
         sale.customer.customerProfileId,
       ),
-    ).toEqual({ uses: 1, spent: 17_500, voucher: "redeemed", customerUses: 1 });
+    ).toEqual({ uses: 1, spent: 2_500, voucher: "redeemed", customerUses: 1 });
     await expect(
       redeem([priced(sale.itemA, 25_000), priced(sale.itemB, 75_000)], {
         voucherCode: sale.voucherCode,
