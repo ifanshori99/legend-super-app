@@ -302,6 +302,11 @@ export const goodsReceiptLineInputSchema = z
     quantityRejected: nonnegativeDecimal4Schema,
     batchCode: z.string().trim().min(1).max(40).nullable().optional(),
     expiresOn: businessDateSchema.nullable().optional(),
+    /**
+     * legend-tomda: a zero-price order line is received only when the
+     * receiver marks it as a supplier bonus; a forgotten price is refused 422.
+     */
+    isBonus: z.boolean().optional(),
   })
   .refine(
     (line) =>

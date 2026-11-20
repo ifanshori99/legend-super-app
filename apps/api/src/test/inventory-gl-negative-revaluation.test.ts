@@ -679,3 +679,44 @@ describe("1232 every inflow onto a negative balance is revalued", () => {
     expect(await netDebit(world, "cogs")).toBe(500);
   });
 });
+
+// legend-tomda (second opinion 1221 B3): a zero-cost inflow (supplier bonus)
+// onto a negative balance used to reset the average to 0 and reprice the whole
+// deficit, so 2 free units credited HPP with the value of all 10 units sold
+// short (profit and profit share too high). It now keeps the old average and
+// credits HPP only for the free units that cover sold units.
+describe("tomda a zero-cost receipt onto a negative balance keeps the old average", () => {
+  it("[tomda-REVAL-1] -10 @5000, bonus 2 @0: HPP falls 10000 (2 units), not 50000; avg stays 5000; GL = stock card", async () => {
+    const world = await makeWorld();
+    const item = await insertItem("Sirup Bonus");
+    const first = await receive(world, item, "10", "5000", BEFORE);
+    const sale = await sell(world, item, "20", DAY);
+    const bonus = await receive(world, item, "2", "0", AFTER);
+    await deliverRow(first.ledgerId);
+    await deliverRow(sale);
+    expect((await deliverRow(bonus.ledgerId)).status).toBe("posted");
+
+    expect(await netDebit(world, "cogs")).toBe(100000 - 10000);
+    const glInventory =
+      first.valueIdr + bonus.valueIdr + (await netDebit(world, "inventory"));
+    expect(await cardValue(world, item)).toBe(-40000);
+    expect(glInventory).toBe(-40000);
+  });
+
+  it("[tomda-REVAL-2] -10 @5000, bonus 12 @0: only the 10 covered units credit HPP; the 2 left on hand are free", async () => {
+    const world = await makeWorld();
+    const item = await insertItem("Saus Bonus");
+    const first = await receive(world, item, "10", "5000", BEFORE);
+    const sale = await sell(world, item, "20", DAY);
+    const bonus = await receive(world, item, "12", "0", AFTER);
+    await deliverRow(first.ledgerId);
+    await deliverRow(sale);
+    expect((await deliverRow(bonus.ledgerId)).status).toBe("posted");
+
+    expect(await netDebit(world, "cogs")).toBe(100000 - 50000);
+    const glInventory =
+      first.valueIdr + bonus.valueIdr + (await netDebit(world, "inventory"));
+    expect(await cardValue(world, item)).toBe(0);
+    expect(glInventory).toBe(0);
+  });
+});

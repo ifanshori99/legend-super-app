@@ -453,6 +453,15 @@ export function applyStockMovement(
       quantity: formatDecimal4(nextQuantity),
       avgCostIdr: balance.avgCostIdr,
     };
+  // A zero-cost inflow (supplier bonus) onto a negative balance keeps the old
+  // average while the balance stays at or below zero: resetting it to 0 would
+  // reprice the whole deficit and credit HPP for units the bonus never covered
+  // (legend-tomda). Once it crosses zero the units left on hand are free.
+  if (currentQuantity < 0n && parseDecimal4(movement.unitCostIdr) === 0n)
+    return {
+      quantity: formatDecimal4(nextQuantity),
+      avgCostIdr: nextQuantity > 0n ? formatDecimal4(0n) : balance.avgCostIdr,
+    };
   // Nothing (or less than nothing, after real-time sale deduction ran ahead of
   // a receipt) is on hand: the old average values no stock, so the inflow's
   // cost becomes the average. Weighting a negative quantity would distort the

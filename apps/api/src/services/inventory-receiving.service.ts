@@ -423,9 +423,13 @@ export async function postGoodsReceiptStockInTransaction(
       ),
     )
     // Same lock order for every receipt (location, then item): no deadlocks.
+    // Within one item the priced lines post before the bonus (zero-cost)
+    // lines, so a negative balance is repriced the same way whatever the
+    // line order (legend-tomda).
     .orderBy(
       asc(goodsReceiptLines.locationId),
       asc(goodsReceiptLines.inventoryItemId),
+      asc(sql`${goodsReceiptLines.unitCostIdr} = 0`),
       asc(goodsReceiptLines.lineNo),
     );
   for (const line of lines) {
@@ -694,6 +698,20 @@ export async function createGoodsReceipt(
       const lineValues: (typeof goodsReceiptLines.$inferInsert)[] = [];
       for (const [index, line] of input.lines.entries()) {
         const orderLine = orderLineById.get(line.purchaseOrderLineId)!;
+        // legend-tomda: zero price is a bonus only when the receiver says so;
+        // a forgotten price would lower HPP and raise profit share.
+        const zeroPrice = parseDecimal4(orderLine.unitPriceIdr) === 0n;
+        if (
+          zeroPrice &&
+          line.isBonus !== true &&
+          parseDecimal4(line.quantityReceived) >
+            parseDecimal4(line.quantityRejected)
+        )
+          throw invalid(
+            "A zero-price line must be marked as a supplier bonus (isBonus).",
+          );
+        if (!zeroPrice && line.isBonus === true)
+          throw invalid("Only a zero-price line can be a supplier bonus.");
         const baseUomId = baseUomOf.get(orderLine.inventoryItemId);
         if (!baseUomId) throw invalid("The purchase order item is missing.");
         const accepted = formatDecimal4(
