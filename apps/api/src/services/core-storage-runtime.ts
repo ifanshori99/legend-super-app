@@ -9,6 +9,11 @@ import { S3ObjectStorage } from "./core-storage-provider";
 import { signedStorageUrl, signedStorageUrlInTx } from "./core-storage";
 import type { HrisFileSigner } from "./hris-contract.service";
 import { toLoggableError } from "../lib/safe-error";
+import { logger } from "../lib/logger";
+import {
+  resolveStorageEnv,
+  storageConflictMessage,
+} from "../config/storage-env";
 
 type Database = NodePgDatabase<typeof schema>;
 
@@ -44,8 +49,15 @@ export type StorageEnv = Readonly<Record<string, string | undefined>>;
  * deployment error and throws, naming only the missing keys.
  */
 export function createObjectStorageFromEnv(
-  source: StorageEnv,
+  rawSource: StorageEnv,
 ): S3ObjectStorage | null {
+  // STORAGE_S3_* is canonical; OBJECT_STORAGE_* is a deprecated fallback.
+  const resolved = resolveStorageEnv(rawSource, (message) =>
+    logger.warn(message),
+  );
+  if (resolved.conflicts.length > 0)
+    throw new Error(storageConflictMessage(resolved.conflicts));
+  const source = resolved.env;
   const present = (name: string) => Boolean(source[name]?.trim());
   const anySet = [...STORAGE_REQUIRED_ENV, ...STORAGE_OPTIONAL_ENV].some(
     present,

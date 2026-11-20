@@ -4,13 +4,12 @@
 // stayed NULL. server.ts calls `installProfitShareStatementPorts` beside the
 // other ports (not createApp, so tests keep their fakes).
 //
-// Storage comes from the optional OBJECT_STORAGE_* settings (all-or-none,
-// validated at boot in config/env.ts); email reuses the notification Brevo
+// Storage comes from the optional STORAGE_S3_* settings (all-or-none,
+// validated at boot in config/env.ts; OBJECT_STORAGE_* is a deprecated fallback); email reuses the notification Brevo
 // settings. Neither is required: without storage the issuer keeps its current
 // behavior (503, swallowed by the payment path) and one startup warning says
 // so. Messages name keys only, never values.
 
-import { S3Client } from "@aws-sdk/client-s3";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { EmailProvider, ObjectStorage } from "@starter/shared/adapters";
 import type { OutletId } from "@starter/shared/core";
@@ -22,7 +21,7 @@ import {
   createBrevoEmailProvider,
   parseNotificationProviderEnv,
 } from "../worker/notification-adapters.ts";
-import { S3ObjectStorage } from "./core-storage-provider.ts";
+import { createObjectStorageFromEnv } from "./core-storage-runtime.ts";
 import { notifyBrevoAuthFailed } from "./edge-sync-conflict-alert.ts";
 import {
   configureProfitShareStatementDeps,
@@ -35,45 +34,13 @@ const present = (env: Env, key: string) => {
   return value ? value : undefined;
 };
 
-/** `null` while no object storage is configured. Throws on a partial setup. */
+/**
+ * `null` while no object storage is configured. Throws on a partial setup or
+ * conflicting values. The same STORAGE_S3_* set as uploads (OBJECT_STORAGE_*
+ * only as a deprecated fallback).
+ */
 export function createStatementObjectStorage(env: Env): ObjectStorage | null {
-  const region = present(env, "OBJECT_STORAGE_REGION");
-  const endpoint = present(env, "OBJECT_STORAGE_ENDPOINT");
-  const accessKeyId = present(env, "OBJECT_STORAGE_ACCESS_KEY_ID");
-  const secretAccessKey = present(env, "OBJECT_STORAGE_SECRET_ACCESS_KEY");
-  const privateBucket = present(env, "OBJECT_STORAGE_PRIVATE_BUCKET");
-  const publicBucket = present(env, "OBJECT_STORAGE_PUBLIC_BUCKET");
-  const publicBaseUrl = present(env, "OBJECT_STORAGE_PUBLIC_BASE_URL");
-  if (
-    !region &&
-    !endpoint &&
-    !accessKeyId &&
-    !secretAccessKey &&
-    !privateBucket &&
-    !publicBucket &&
-    !publicBaseUrl
-  )
-    return null;
-  if (
-    !region ||
-    !accessKeyId ||
-    !secretAccessKey ||
-    !privateBucket ||
-    !publicBucket ||
-    !publicBaseUrl
-  )
-    throw new Error("Incomplete OBJECT_STORAGE_* configuration");
-  return new S3ObjectStorage({
-    client: new S3Client({
-      region,
-      credentials: { accessKeyId, secretAccessKey },
-      // A custom endpoint is a non-AWS provider, which needs path-style URLs.
-      ...(endpoint ? { endpoint, forcePathStyle: true } : {}),
-    }),
-    privateBucket,
-    publicBucket,
-    publicBaseUrl,
-  });
+  return createObjectStorageFromEnv(env);
 }
 
 /**
@@ -146,7 +113,7 @@ export function installProfitShareStatementPorts(
   });
   if (!storage)
     logger.warn(
-      "profit share statements are not issued: object storage is not configured (set the OBJECT_STORAGE_* keys)",
+      "profit share statements are not issued: object storage is not configured (set the STORAGE_S3_* keys)",
     );
   return { storage: Boolean(storage), email: Boolean(email) };
 }
