@@ -3,8 +3,11 @@
 // EDGE_API_PREFIXES) and its late offline orders land in the cloud through the
 // order ingest. A second Tutup Hari in the cloud would freeze a recap that
 // misses those orders, so the cloud refuses it: 409 DAY_CLOSE_ON_EDGE.
-// An outlet without an active primary edge (none, standby only, revoked) and
-// the edge process itself keep closing as before.
+// Founder Q24 (edge-cloud-failover.md): an edge that is down at end of day
+// (active but heartbeat stale) must not strand the day, so the cloud closes
+// and audits it. An outlet without an active primary edge (none, standby only,
+// revoked), a replay by the same key, and the edge process itself keep
+// closing as before.
 import { randomUUID } from "node:crypto";
 import type { Express } from "express";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -21,13 +24,15 @@ import {
 } from "./floor-test-helpers.ts";
 
 const roleId = randomUUID();
+const staleKey = randomUUID();
+let primaryId = "";
 
 let app: Express;
 let tenant: IsolatedTenant;
 let headers: { Host: string };
 let manager: ReturnType<typeof agent>;
 
-function close(businessDate: string) {
+function close(businessDate: string, idempotencyKey: string = randomUUID()) {
   return manager
     .post(`/api/outlets/${encodeURIComponent(tenant.outletId)}/pos/day/close`)
     .set(headers)
@@ -35,7 +40,7 @@ function close(businessDate: string) {
     .send({
       businessDate,
       inventoryDeduction: false,
-      idempotencyKey: randomUUID(),
+      idempotencyKey,
     });
 }
 
@@ -48,19 +53,33 @@ async function dailyCloseCount(businessDate: string): Promise<number> {
   return Number(rows[0]?.n ?? 0);
 }
 
-async function addEdge(role: "primary" | "standby", status: "active") {
+async function addEdge(
+  role: "primary" | "standby",
+  lastHeartbeatAt: Date | null,
+): Promise<string> {
+  const id = randomUUID();
   await owner.query(
-    `INSERT INTO edge_nodes (id, tenant_id, outlet_id, role, status, label, credential_hash)
-     VALUES ($1, $2, $3, $4, $5, 'Server lokal', $6)`,
+    `INSERT INTO edge_nodes (id, tenant_id, outlet_id, role, status, label, credential_hash, last_heartbeat_at)
+     VALUES ($1, $2, $3, $4, 'active', 'Server lokal', $5, $6)`,
     [
-      randomUUID(),
+      id,
       tenant.tenantId,
       tenant.outletId,
       role,
-      status,
       "c".repeat(64),
+      lastHeartbeatAt,
     ],
   );
+  return id;
+}
+
+async function staleCloseAudits(): Promise<number> {
+  const { rows } = await owner.query<{ n: string }>(
+    `SELECT count(*)::text AS n FROM audit_logs
+     WHERE tenant_id = $1 AND event->>'action' = 'day.closed_from_cloud_edge_stale'`,
+    [tenant.tenantId],
+  );
+  return Number(rows[0]?.n ?? 0);
 }
 
 beforeAll(async () => {
@@ -100,28 +119,48 @@ describe("Tutup Hari cloud vs edge outlet (legend-k0i8)", () => {
   });
 
   it("a standby-only edge does not block the cloud close", async () => {
-    await addEdge("standby", "active");
+    await addEdge("standby", new Date());
     const response = await close("2025-01-14");
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     expect(await dailyCloseCount("2025-01-14")).toBe(1);
+    expect(await staleCloseAudits()).toBe(0);
   });
 
-  it("an active primary edge makes the cloud refuse Tutup Hari with 409 DAY_CLOSE_ON_EDGE", async () => {
-    await addEdge("primary", "active");
-    const response = await close("2025-01-15");
+  it("Q24 an active primary whose heartbeat is stale lets the cloud close, with an audit", async () => {
+    primaryId = await addEdge("primary", new Date(Date.now() - 15 * 60_000));
+    const response = await close("2025-01-15", staleKey);
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(await dailyCloseCount("2025-01-15")).toBe(1);
+    expect(await staleCloseAudits()).toBe(1);
+  });
+
+  it("a healthy active primary makes the cloud refuse Tutup Hari with 409 DAY_CLOSE_ON_EDGE", async () => {
+    await owner.query(
+      "UPDATE edge_nodes SET last_heartbeat_at = now() WHERE id = $1",
+      [primaryId],
+    );
+    const response = await close("2025-01-16");
     expect(response.status, JSON.stringify(response.body)).toBe(409);
     expect(response.body.error.code).toBe("DAY_CLOSE_ON_EDGE");
     expect(response.body.error.message).toMatch(/server lokal/i);
-    expect(await dailyCloseCount("2025-01-15")).toBe(0);
+    expect(await dailyCloseCount("2025-01-16")).toBe(0);
+  });
+
+  it("a replay by the same key still returns 200 after the edge turned healthy", async () => {
+    const response = await close("2025-01-15", staleKey);
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.data.businessDate).toBe("2025-01-15");
+    expect(await dailyCloseCount("2025-01-15")).toBe(1);
+    expect(await staleCloseAudits()).toBe(1);
   });
 
   it("the edge process itself still closes the day", async () => {
     const before = getEdgeRuntimeState();
     setEdgeRuntimeStateForTests({ ...before, edgeMode: true });
     try {
-      const response = await close("2025-01-16");
+      const response = await close("2025-01-17");
       expect(response.status, JSON.stringify(response.body)).toBe(200);
-      expect(await dailyCloseCount("2025-01-16")).toBe(1);
+      expect(await dailyCloseCount("2025-01-17")).toBe(1);
     } finally {
       setEdgeRuntimeStateForTests(before);
     }
