@@ -831,9 +831,24 @@ describe("[1223 r3] lock vs a concurrent PTKP correction", () => {
         "SELECT id FROM employees WHERE tenant_id = $1 AND id = $2 FOR UPDATE",
         [tenant.id, emp],
       );
+      const holder = (
+        await a.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")
+      ).rows[0]!.pid;
       lock = failureOf(lockRun(runId));
-      // Give the lock time to reach the employee row and wait on it.
-      await new Promise((resolve) => setTimeout(resolve, 700));
+      // Wait until the lock's connection is blocked by this one (a Lock wait),
+      // at most 10 s, instead of a fixed sleep.
+      const deadline = Date.now() + 10_000;
+      for (;;) {
+        const waiting = await owner.query(
+          `SELECT 1 FROM pg_stat_activity
+            WHERE wait_event_type = 'Lock' AND $1 = ANY (pg_blocking_pids(pid))`,
+          [holder],
+        );
+        if (waiting.rows.length > 0) break;
+        if (Date.now() > deadline)
+          throw new Error("The lock never waited on the employee row");
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
       await a.query(
         "SELECT set_config('app.ptkp_effective_from', '2026-01-01', true)",
       );
