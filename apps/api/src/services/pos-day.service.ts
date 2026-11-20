@@ -64,6 +64,8 @@ import {
   type EndOfDayRecapView,
 } from "@starter/shared/pos";
 import { db } from "../db/index.ts";
+import { edgeNodes } from "../db/schema/edge-node.ts";
+import { getEdgeRuntimeState } from "../edge/runtime.ts";
 import {
   domainEventOutbox,
   outlets,
@@ -776,6 +778,35 @@ export async function getEndOfDayRecap(
   });
 }
 
+/**
+ * legend-k0i8: an outlet served by an active primary edge closes its day on
+ * the edge (day/close is an edge route). Late offline orders reach the cloud
+ * only through the order ingest, so a cloud close would freeze a recap that
+ * misses them. Same edge-process rule as pos-receipt (static EDGE_MODE counts
+ * in the boot window): the edge itself never refuses.
+ */
+async function assertDayClosesOnCloud(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: OutletId,
+): Promise<void> {
+  if (getEdgeRuntimeState().edgeMode || process.env.EDGE_MODE === "true")
+    return;
+  const [edge] = await tx
+    .select({ id: edgeNodes.id })
+    .from(edgeNodes)
+    .where(
+      and(
+        eq(edgeNodes.tenantId, context.tenant.tenantId),
+        eq(edgeNodes.outletId, outletId),
+        eq(edgeNodes.role, "primary"),
+        eq(edgeNodes.status, "active"),
+      ),
+    )
+    .limit(1);
+  if (edge) throw new PosError("DAY_CLOSE_ON_EDGE");
+}
+
 /** POST close business day (Tutup Hari): freezes the recap, emits `day.closed`. */
 export async function closePosDay(
   context: ScopedTenantContext,
@@ -797,6 +828,7 @@ export async function closePosDay(
       now,
       CLOSE_PERMISSIONS,
     );
+    await assertDayClosesOnCloud(tx, context, outletId);
     // Same per-outlet lock as openPosShift first, so a shift cannot open on
     // a day that is closing (check-then-insert on both sides), then the day.
     await tx.execute(
