@@ -102,6 +102,8 @@ Envelope: `{ "error": { "code", "message", "details"?: [{ field, message }], "re
 | `SUPPLIER_NAME_TAKEN`                   | 409  |
 | `PURCHASE_ORDER_NOT_SENDABLE`           | 409  |
 | `PURCHASE_ORDER_SHARE_LINK_UNAVAILABLE` | 409  |
+| `GOODS_RECEIPT_BONUS_REQUIRED`          | 422  |
+| `GOODS_RECEIPT_BONUS_PRICED_LINE`       | 422  |
 
 ### D-CORE-5 Pagination
 

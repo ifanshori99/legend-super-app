@@ -1269,3 +1269,30 @@ test("[APAR-I1] invoice status, policy and decision contracts", () => {
   ])
     assert.ok(shared.purchasingEndpoints.includes(endpoint), endpoint.id);
 });
+
+test("[tomda-CT-1] the receipt bonus codes are 422 with Indonesian text", () => {
+  for (const code of [
+    "GOODS_RECEIPT_BONUS_REQUIRED",
+    "GOODS_RECEIPT_BONUS_PRICED_LINE",
+  ]) {
+    assert.ok(shared.PURCHASING_ERROR_CODES.includes(code), code);
+    assert.equal(shared.purchasingErrorHttpStatus[code], 422, code);
+    assert.match(shared.purchasingErrorMessages[code], /Rp0/, code);
+  }
+  const line = {
+    purchaseOrderLineId: "00000000-0000-4000-8000-000000000001",
+    locationId: "00000000-0000-4000-8000-000000000002",
+    quantityReceived: "2.0000",
+    quantityRejected: "0.0000",
+  };
+  assert.equal(
+    shared.goodsReceiptLineInputSchema.safeParse({ ...line, isBonus: true })
+      .success,
+    true,
+  );
+  assert.equal(
+    shared.goodsReceiptLineInputSchema.safeParse({ ...line, isBonus: "ya" })
+      .success,
+    false,
+  );
+});

@@ -708,14 +708,12 @@ export async function createGoodsReceipt(
           parseDecimal4(line.quantityReceived) >
             parseDecimal4(line.quantityRejected)
         )
-          throw new HttpError(
-            422,
+          throw new PurchasingError(
             "GOODS_RECEIPT_BONUS_REQUIRED",
             "A zero-price line must be marked as a supplier bonus (isBonus).",
           );
         if (!zeroPrice && line.isBonus === true)
-          throw new HttpError(
-            422,
+          throw new PurchasingError(
             "GOODS_RECEIPT_BONUS_PRICED_LINE",
             "Only a zero-price line can be a supplier bonus.",
           );
