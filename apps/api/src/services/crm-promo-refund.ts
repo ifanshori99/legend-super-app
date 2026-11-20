@@ -336,6 +336,7 @@ export async function recomputeAfterPartialRefund(
       "PROMO_APPLICATION_RELEASED",
       "Promo pesanan ini sudah dibatalkan.",
     );
+  const paidIdr = requirePaidIdr(application.paidIdr);
   const standing = application.subtotalIdr - application.refundedSubtotalIdr;
   if (keptSubtotal > standing)
     throw new HttpError(
@@ -530,6 +531,8 @@ export async function recomputeAfterPartialRefund(
   };
 
   const withdrawn: WithdrawnPromotion[] = [];
+  const withdrawnLines: ((typeof lines)[number] & { promotionId: string })[] =
+    [];
   for (const line of lines) {
     if (line.promotionId === null) {
       // Value voucher: no condition (never withdrawn; it keeps Rp0 when
@@ -563,68 +566,10 @@ export async function recomputeAfterPartialRefund(
       discountIdr: line.discountIdr,
       reason: failure,
     });
-
-    await tx
-      .update(promotions)
-      .set({
-        usesTotal: sql`${promotions.usesTotal} - 1`,
-        spentIdr: sql`${promotions.spentIdr} - ${line.discountIdr}`,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(promotions.tenantId, tenantId),
-          eq(promotions.id, line.promotionId),
-        ),
-      );
-    if (line.customerProfileId !== null)
-      await tx
-        .update(promotionCustomerUsage)
-        .set({ uses: sql`${promotionCustomerUsage.uses} - 1`, updatedAt: now })
-        .where(
-          and(
-            eq(promotionCustomerUsage.tenantId, tenantId),
-            eq(promotionCustomerUsage.promotionId, line.promotionId),
-            eq(
-              promotionCustomerUsage.customerProfileId,
-              line.customerProfileId,
-            ),
-            sql`${promotionCustomerUsage.uses} > 0`,
-          ),
-        );
-    await tx
-      .update(promotionRedemptions)
-      .set({ status: "released", releasedAt: now })
-      .where(
-        and(
-          eq(promotionRedemptions.tenantId, tenantId),
-          eq(promotionRedemptions.id, line.id),
-          eq(promotionRedemptions.status, "applied"),
-        ),
-      );
+    withdrawnLines.push({ ...line, promotionId: line.promotionId });
   }
 
   const withdrawnIds = withdrawn.map((entry) => entry.promotionId);
-  const voucherIds: string[] = [];
-  const withdrawnVoucher = withdrawn.find(
-    (entry) =>
-      entry.voucherId !== null && entry.voucherId === application.voucherId,
-  );
-  if (withdrawnVoucher?.voucherId) {
-    const restored = await tx
-      .update(vouchers)
-      .set({ status: "issued", redeemedAt: null, redeemedOrderId: null })
-      .where(
-        and(
-          eq(vouchers.tenantId, tenantId),
-          eq(vouchers.id, withdrawnVoucher.voucherId),
-          eq(vouchers.status, "redeemed"),
-          eq(vouchers.redeemedOrderId, orderId),
-        ),
-      )
-      .returning({ id: vouchers.id });
-    voucherIds.push(...restored.map((row) => row.id));
-  }
   const revoked =
     withdrawnIds.length === 0
       ? []
@@ -710,15 +655,84 @@ export async function recomputeAfterPartialRefund(
   const keptDiscount = keptAmounts.reduce((sum, amount) => sum + amount, 0);
   const totalDiscount = keptDiscount;
   const keptPayableIdr = keptSubtotal - keptDiscount;
-  const paidIdr =
-    application.paidIdr ??
-    idr(Math.max(0, application.subtotalIdr - application.totalDiscountIdr));
   const remainingPaidIdr = Math.max(0, paidIdr - application.refundedPaidIdr);
   const refundDueIdr = Math.max(
     0,
     Math.min(remainingPaidIdr, remainingPaidIdr - keptPayableIdr),
   );
   const uncoveredIdr = Math.max(0, keptPayableIdr - remainingPaidIdr);
+
+  // SO 1216 H-P2 (limiting rule): while part of a withdrawn discount stays
+  // with the guest (uncovered), the voucher, quota and customer usage are not
+  // handed back, and spent_idr drops only by the discount actually taken
+  // back. The uncovered part is charged to the withdrawn lines in order. The
+  // lines are still released so a later refund cannot withdraw them again.
+  let uncoveredLeft = uncoveredIdr;
+  for (const line of withdrawnLines) {
+    const stillGiven = Math.min(line.discountIdr, uncoveredLeft);
+    uncoveredLeft -= stillGiven;
+    const takenBack = line.discountIdr - stillGiven;
+    const handBack = uncoveredIdr === 0;
+    await tx
+      .update(promotions)
+      .set({
+        ...(handBack ? { usesTotal: sql`${promotions.usesTotal} - 1` } : {}),
+        spentIdr: sql`${promotions.spentIdr} - ${takenBack}`,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(promotions.tenantId, tenantId),
+          eq(promotions.id, line.promotionId),
+        ),
+      );
+    if (handBack && line.customerProfileId !== null)
+      await tx
+        .update(promotionCustomerUsage)
+        .set({ uses: sql`${promotionCustomerUsage.uses} - 1`, updatedAt: now })
+        .where(
+          and(
+            eq(promotionCustomerUsage.tenantId, tenantId),
+            eq(promotionCustomerUsage.promotionId, line.promotionId),
+            eq(
+              promotionCustomerUsage.customerProfileId,
+              line.customerProfileId,
+            ),
+            sql`${promotionCustomerUsage.uses} > 0`,
+          ),
+        );
+    await tx
+      .update(promotionRedemptions)
+      .set({ status: "released", releasedAt: now })
+      .where(
+        and(
+          eq(promotionRedemptions.tenantId, tenantId),
+          eq(promotionRedemptions.id, line.id),
+          eq(promotionRedemptions.status, "applied"),
+        ),
+      );
+  }
+
+  const voucherIds: string[] = [];
+  const withdrawnVoucher = withdrawn.find(
+    (entry) =>
+      entry.voucherId !== null && entry.voucherId === application.voucherId,
+  );
+  if (uncoveredIdr === 0 && withdrawnVoucher?.voucherId) {
+    const restored = await tx
+      .update(vouchers)
+      .set({ status: "issued", redeemedAt: null, redeemedOrderId: null })
+      .where(
+        and(
+          eq(vouchers.tenantId, tenantId),
+          eq(vouchers.id, withdrawnVoucher.voucherId),
+          eq(vouchers.status, "redeemed"),
+          eq(vouchers.redeemedOrderId, orderId),
+        ),
+      )
+      .returning({ id: vouchers.id });
+    voucherIds.push(...restored.map((row) => row.id));
+  }
   const withdrawnReason = new Map(
     withdrawn.map((entry) => [entry.promotionId, entry.reason]),
   );
@@ -836,6 +850,22 @@ export async function recomputeAfterPartialRefund(
 }
 
 /**
+ * SO 1216 H-P3: an application from before `paid_idr` was stored cannot be
+ * refunded with a promo recompute. Rebuilding the paid amount from a discount
+ * that an earlier refund already lowered would overpay, so it stops here for an
+ * admin correction.
+ */
+function requirePaidIdr(paidIdr: number | null): number {
+  if (paidIdr === null)
+    throw new HttpError(
+      409,
+      "PROMO_REFUND_PAID_UNKNOWN",
+      "Nilai bayar promo pesanan ini tidak tersimpan. Refund ditahan, minta admin mengoreksi data pesanan.",
+    );
+  return paidIdr;
+}
+
+/**
  * Records a payout decided by the caller (see `deferPayout`). Same lock order
  * as the recompute: per-order advisory lock, then the application row.
  */
@@ -868,9 +898,7 @@ export async function recordPartialRefundPayout(
       "PROMO_APPLICATION_RELEASED",
       "Promo pesanan ini sudah dibatalkan.",
     );
-  const paidIdr =
-    application.paidIdr ??
-    Math.max(0, application.subtotalIdr - application.totalDiscountIdr);
+  const paidIdr = requirePaidIdr(application.paidIdr);
   const remainingPaid = Math.max(0, paidIdr - application.refundedPaidIdr);
   const recordedIdr = Math.min(input.payoutIdr, remainingPaid);
   if (recordedIdr > 0)
