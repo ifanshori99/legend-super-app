@@ -447,18 +447,8 @@ describe("legend-h1dyy dua item gagal diselesaikan sebelum event mana pun berjal
   });
 });
 
-describe("legend-xhl5j (1243) refund item gagal: diskon manual ikut keputusan uncovered", () => {
-  /** uses_total and spent_idr of the free-roti promotion. */
-  async function promotionCounters() {
-    const { rows } = await owner.query<{ uses: number; spent: number }>(
-      `SELECT uses_total::int AS uses, spent_idr::int AS spent
-         FROM promotions WHERE tenant_id = $1 AND id = $2`,
-      [w.tenant.tenantId, freeRotiPromotion],
-    );
-    return rows[0]!;
-  }
-
-  it("kopi gagal pada pesanan dengan diskon manual 20.000 (dibaca dari data order): promo ditarik tetapi kuota tidak dikembalikan dan spent turun hanya 15.909", async () => {
+describe("legend-xhl5j (1243) refund item gagal: diskon manual pada pesanan QR diblokir", () => {
+  it("diskon manual 20.000 (dibaca dari data order): tidak ada refund, audit diblokir manual_discount, promo tidak disentuh", async () => {
     const paid = await paidPromoOrder();
     // The manual discount sits on the order's own rows (read by the server).
     await asOwnerTenant(w.tenant.tenantId, async (client) => {
@@ -475,19 +465,23 @@ describe("legend-xhl5j (1243) refund item gagal: diskon manual ikut keputusan un
         ],
       );
     });
-    const before = await promotionCounters();
     const kopi = await approvedRefund(paid.kopi.id, 25_000);
 
     await deliver(kopi.event);
 
-    // Promo withdrawn (18.000 on the line). Kept teh + roti = 30.000 carry
-    // 10.909 of the 20.000 manual discount and the guest paid 37.000 - 20.000:
-    // 2.091 of the withdrawn discount stays with the guest.
-    const after = await promotionCounters();
-    expect(after.uses - before.uses, "quota not handed back").toBe(0);
-    expect(after.spent - before.spent).toBe(-15_909);
+    expect(await issueRefunds(kopi.issueId), "no refund row").toEqual([]);
+    expect(await w.outboxRows("order.refunded", paid.order.id)).toHaveLength(0);
+    const blocked = await auditRows(kopi.issueId, "order_issue.refund_blocked");
+    expect(blocked).toHaveLength(1);
+    expect(JSON.stringify(blocked[0])).toContain("manual_discount");
+    // The recompute never ran: the promo stands as checkout left it.
+    expect(await application(paid.order.id)).toMatchObject({
+      status: "applied",
+      refunded_subtotal_idr: 0,
+      refunded_paid_idr: 0,
+    });
     expect(await redemptionDiscounts(paid.order.id)).toEqual([
-      expect.objectContaining({ status: "released" }),
+      expect.objectContaining({ status: "applied" }),
     ]);
   });
 });

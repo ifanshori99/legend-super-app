@@ -222,11 +222,12 @@ function pos() {
     manual: (
       orderId: string,
       approval: { approvedBy: string; overrideId: string },
+      percentBp = 1_000,
     ) =>
       send(`/${orderId}/discounts`, {
         source: "manual",
         kind: "percent",
-        percentBp: 1_000,
+        percentBp,
         reason: "manager_goodwill",
         reasonNote: "Pelanggan tetap",
         ...approval,
@@ -252,7 +253,9 @@ const newCode = () =>
   `T${randomUUID().replaceAll("-", "").slice(0, 11).toUpperCase()}`;
 
 /** A code-gated promotion: Rp20.000 off a bill holding item A or B. */
-async function seedPromotion(opts: { minSpendIdr?: number } = {}) {
+async function seedPromotion(
+  opts: { minSpendIdr?: number; promoIdr?: number } = {},
+) {
   const id = randomUUID();
   const code = newCode();
   const conditions: unknown[] = [
@@ -279,7 +282,10 @@ async function seedPromotion(opts: { minSpendIdr?: number } = {}) {
         `Refund promo ${id.slice(0, 8)}`,
         sha(code),
         JSON.stringify(conditions),
-        JSON.stringify({ kind: "nominal_off", amountIdr: 20_000 }),
+        JSON.stringify({
+          kind: "nominal_off",
+          amountIdr: opts.promoIdr ?? 20_000,
+        }),
         `g${id.slice(0, 8)}`,
       ],
     ),
@@ -304,6 +310,9 @@ async function promoSale(
   opts: {
     minSpendIdr?: number;
     manual?: boolean;
+    /** Promo amount (default 20.000) and manual percent (default 1000 = 10%). */
+    promoIdr?: number;
+    manualBp?: number;
     expectedTotalIdr?: number;
     /**
      * Pay with these captured QRIS tenders (oldest first, each with its own
@@ -324,7 +333,8 @@ async function promoSale(
   if (opts.manual) {
     const manual = await pos().manual(
       orderId,
-      await pinApproval(orderId, 10_000, "discount"),
+      await pinApproval(orderId, (opts.manualBp ?? 1_000) * 10, "discount"),
+      opts.manualBp,
     );
     expect(manual.status, JSON.stringify(manual.body)).toBeLessThan(300);
   }
@@ -521,6 +531,16 @@ async function refundRows(orderId: string) {
     amount: Number(row.amount_idr),
     items: row.items as { itemId: string; quantity: number }[],
   }));
+}
+
+async function usesOf(promotionId: string) {
+  const { rows } = await asOwnerTenant((client) =>
+    client.query(
+      "SELECT uses_total FROM promotions WHERE tenant_id = $1 AND id = $2",
+      [tenant.tenantId, promotionId],
+    ),
+  );
+  return Number(rows[0]?.uses_total);
 }
 
 async function spentOf(promotionId: string) {
@@ -1029,6 +1049,37 @@ describe("legend-q1e0 refund of a promo order that also carries a manual discoun
       setPosPromoRefundPort(null);
     }
     expect(seen).toEqual([10_000]);
+  });
+
+  it("legend-xhl5j: manual 30% + Rp40.000 promo (min spend 100k), paid Rp30.000, refund one Rp50.000 item: the promo is withdrawn but the guest keeps Rp5.000 of it, so the quota stays used", async () => {
+    const sale = await promoSale({
+      manual: true,
+      manualBp: 3_000,
+      promoIdr: 40_000,
+      minSpendIdr: 100_000,
+      expectedTotalIdr: 30_000,
+    });
+    const refunded = await pos().refund(
+      sale.orderId,
+      await refundBody(sale.orderId, {
+        amountIdr: 10_000,
+        items: [{ itemId: sale.itemA, quantity: 1 }],
+      }),
+    );
+    expect(refunded.status, JSON.stringify(refunded.body)).toBeLessThan(300);
+    // Cashier rule: kept B costs 50k - 15k manual share = 35k, the guest paid
+    // 30k: nothing is paid out (the return is recorded at Rp0).
+    expect(refunded.body.data.amountIdr).toBe(0);
+    expect(await application(sale.orderId)).toMatchObject({
+      paid: 60_000,
+      refundedPaid: 0,
+      refundedSubtotal: 50_000,
+    });
+    // Uncovered 5.000 (50k - 15k - (60k - 30k)): the promo line is released,
+    // spent_idr drops only by the 35.000 taken back, the quota is not handed
+    // back (before the fix: spent 0 and uses back to 0).
+    expect(await spentOf(sale.promotionId)).toBe(5_000);
+    expect(await usesOf(sale.promotionId)).toBe(1);
   });
 
   it("manual 10% stacked with a min-spend Rp100.000 promo, paid Rp70.000: promo withdrawn -> refund pays Rp25.000", async () => {
