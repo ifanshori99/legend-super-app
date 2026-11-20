@@ -501,9 +501,7 @@ export const payrollRunSchema = z
      * On lock and reversal responses: Coretax exports of the run's month (or
      * year) that no longer match the payslips (legend 1229).
      */
-    taxExportsSuperseded: z
-      .array(payrollTaxExportSupersededSchema)
-      .optional(),
+    taxExportsSuperseded: z.array(payrollTaxExportSupersededSchema).optional(),
     createdBy: userIdSchema,
     createdAt: isoDateTimeSchema,
     updatedAt: isoDateTimeSchema,

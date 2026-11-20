@@ -1430,8 +1430,10 @@ describe("legend 1229 a Coretax export goes stale after a later lock or a revers
       "payroll.view",
       "payroll.cancel.approve",
     ]);
-    const { requestPayrollRunReversalInTransaction, decidePayrollRunReversalInTransaction } =
-      await import("../services/payroll-run-reversal.service.ts");
+    const {
+      requestPayrollRunReversalInTransaction,
+      decidePayrollRunReversalInTransaction,
+    } = await import("../services/payroll-run-reversal.service.ts");
     await withTenant(db, context, (tx) =>
       requestPayrollRunReversalInTransaction(
         tx,
