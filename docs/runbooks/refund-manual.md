@@ -12,7 +12,9 @@ Catatan sumber: nomor `[n]` di tiap langkah menunjuk ke bagian "Sumber" di bawah
 
 ## A. Refund Duitku dibayar manual
 
-Kapan: refund berstatus `approved` (sudah disetujui) tetapi tidak dikirim otomatis. Contoh: refund otomatis penyedia dimatikan, atau refund macet di penyedia dan sudah ditandai untuk dicek manual. [4]
+Kapan: refund berstatus `approved` (sudah disetujui) tetapi tidak dikirim otomatis. Contoh: refund otomatis penyedia dimatikan, atau refund macet dan ditandai untuk dicek manual. [4]
+
+Batas layar: refund macet yang sudah punya referensi penyedia (tanda `MANUAL_RECONCILIATION` atau `PAYOUT_NOT_FOUND_MAYBE_SENT`) TIDAK bisa dicatat dari layar; tombol "Catat refund manual" tidak muncul. Eskalasi ke tim teknis untuk memastikan di penyedia. Layar sengaja dibatasi supaya pembeli tidak dibayar dua kali (keputusan CTO). [23]
 
 Langkah:
 
@@ -35,9 +37,11 @@ Langkah:
 Penolakan lain yang mungkin muncul:
 
 - `REFUND_CAP_EXCEEDED`: refund melebihi sisa yang boleh direfund. Jangan bayar. [15]
-- `REFUND_PAYOUT_IN_FLIGHT`: ada percobaan kirim berjalan. Coba lagi beberapa menit kemudian (sistem menunggu masa sewa ditambah 10 menit). [16]
+- `REFUND_PAYOUT_IN_FLIGHT`: ada percobaan kirim berjalan. Coba lagi beberapa menit kemudian (sistem menunggu sampai masa sewa percobaan kirim berakhir, ditambah 10 menit: `SETTLEMENT_STALL_MARGIN_MS`). [16]
 - `REFUND_LOOKUP_STALE`: data refund berubah saat penyedia ditanya. Ulangi. [17]
 - `MFA_REQUIRED`: login ulang dengan verifikasi dua langkah. [3]
+
+- `PROVIDER_REFUNDED`: penyedia sudah mengembalikan dana ke pembeli. Jangan transfer dan jangan dicatat; tutup lewat jalur release. [18] [24]
 
 Bila refund sudah terlanjur dikembalikan penyedia ke pembeli, jangan dicatat manual; refund dilepas/ditutup lewat jalur release. [18]
 
@@ -91,6 +95,7 @@ Kode yang dibaca (path relatif ke root repo; worktree `legend-int-batch106` untu
 - [20] `apps/api/src/services/accounting-finance-exceptions.service.ts:1060-1110` (cabang 1244)
 - [21] `apps/api/src/services/accounting-finance-exceptions.service.ts:963-967` (cabang 1244); `apps/api/src/services/payment-refund-approval-limits.ts:409`, `:517` (cabang 1244)
 - [22] `apps/api/src/services/accounting-finance-exceptions.service.ts:987-1008`, `:1039-1048` (cabang 1244)
+- [24] `apps/api/src/services/payment-provider-refunded-guard.ts:26`, `:143`
 - [23] `apps/web/src/features/ws05-payment-admin/components/refund-followup-dialog.tsx` (`ManualSettleStep`), `manual-settlement.ts` (cabang 1259)
 
 ## Yang belum pasti

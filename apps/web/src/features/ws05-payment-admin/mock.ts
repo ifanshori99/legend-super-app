@@ -21,6 +21,7 @@ import {
   rejectRefund,
   releaseQuarantinedRefund,
   reopenQuarantinedRefund,
+  settleRefundManually,
   resolveReconciliationCase,
   resolveUnallocatedFund,
   retryRefundPayout,
@@ -804,6 +805,53 @@ registerMock(reopenQuarantinedRefund, ({ params, body }) =>
     actOnQuarantineOnce(params.refundId, "reopen", body.note),
   ),
 );
+
+// Manual settlement (card 1259). Like the API: MFA first (the mock session has
+// none on the first try, so the screen shows MFA_REQUIRED once), then state,
+// provider hold and amount.
+let manualMfaChallenged = false;
+registerMock(settleRefundManually, ({ params, body }) => {
+  if (!manualMfaChallenged) {
+    manualMfaChallenged = true;
+    throw new ApiError(
+      403,
+      "MFA_REQUIRED",
+      "Verifikasi dua langkah diperlukan.",
+    );
+  }
+  return replay(
+    body.idempotencyKey,
+    `settle:${params.refundId}:${body.externalReference}:${body.amountIdr}`,
+    () => {
+      const { state, refund } = refundOrThrow(params.refundId);
+      if (refund.status !== "approved")
+        throw new ApiError(
+          409,
+          "REFUND_NOT_SETTLEABLE",
+          "Only an approved refund can be settled manually.",
+        );
+      if (refund.providerRef !== null)
+        throw new ApiError(
+          409,
+          "REFUND_AT_PROVIDER",
+          "The provider holds this refund.",
+        );
+      if (body.amountIdr !== refund.amountIdr)
+        throw new ApiError(
+          409,
+          "SETTLEMENT_AMOUNT_MISMATCH",
+          "The paid amount must equal the refund amount.",
+        );
+      return saveRefund(state, {
+        ...refund,
+        status: "completed",
+        lastPayoutError: null,
+        note: body.note,
+        completedAt: now(),
+      });
+    },
+  );
+});
 
 // ---- Unallocated funds ---------------------------------------------------
 

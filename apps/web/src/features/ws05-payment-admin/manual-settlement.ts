@@ -127,6 +127,7 @@ const REFUSAL_KEYS: Record<string, MessageKey> = {
     "paymentAdmin.manualSettle.refusal.providerUnknown",
   REFUND_LOOKUP_STALE: "paymentAdmin.manualSettle.refusal.lookupStale",
   REFUND_CAP_EXCEEDED: "paymentAdmin.manualSettle.refusal.capExceeded",
+  PROVIDER_REFUNDED: "paymentAdmin.manualSettle.refusal.providerRefunded",
   APPROVER_IS_REQUESTER: "paymentAdmin.manualSettle.refusal.sameActor",
   MFA_REQUIRED: "paymentAdmin.manualSettle.refusal.mfaRequired",
   REAUTH_REQUIRED: "paymentAdmin.manualSettle.refusal.mfaRequired",
@@ -141,6 +142,7 @@ export function manualSettlementRefusalKey(
   status: number,
   code: string | undefined,
 ): MessageKey | null {
-  if (status === 422) return "paymentAdmin.manualSettle.refusal.paidAtWindow";
+  if (status === 422 && code === "VALIDATION_ERROR")
+    return "paymentAdmin.manualSettle.refusal.paidAtWindow";
   return code ? (REFUSAL_KEYS[code] ?? null) : null;
 }

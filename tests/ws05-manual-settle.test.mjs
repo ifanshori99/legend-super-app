@@ -111,6 +111,7 @@ test("every server refusal has Indonesian text; 422 is the date window", () => {
     "PROVIDER_REFUND_STATUS_UNKNOWN",
     "REFUND_LOOKUP_STALE",
     "REFUND_CAP_EXCEEDED",
+    "PROVIDER_REFUNDED",
     "APPROVER_IS_REQUESTER",
     "MFA_REQUIRED",
   ];
@@ -122,6 +123,8 @@ test("every server refusal has Indonesian text; 422 is the date window", () => {
   const window = manualSettlementRefusalKey(422, "VALIDATION_ERROR");
   assert.equal(window, "paymentAdmin.manualSettle.refusal.paidAtWindow");
   assert.equal(manualSettlementRefusalKey(500, "SOMETHING_ELSE"), null);
+  // Only the validation 422 is the date window; any other 422 stays generic.
+  assert.equal(manualSettlementRefusalKey(422, "OTHER_422"), null);
 });
 
 test("every catalog key the screen uses exists", () => {

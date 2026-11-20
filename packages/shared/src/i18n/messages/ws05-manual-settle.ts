@@ -64,6 +64,8 @@ export const paymentManualSettleMessages = {
     lookupStale:
       "Data refund berubah saat penyedia ditanya. Ulangi pencatatan.",
     capExceeded: "Refund melebihi sisa yang boleh direfund. Jangan dibayar.",
+    providerRefunded:
+      "Penyedia sudah mengembalikan dana ke pembeli. Jangan transfer dan jangan dicatat; tutup lewat jalur release.",
     sameActor:
       "Pemohon refund tidak boleh mencatatnya sendiri. Minta rekan lain yang berwenang.",
     mfaRequired:
