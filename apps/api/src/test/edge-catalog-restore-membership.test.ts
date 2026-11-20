@@ -62,6 +62,11 @@ import { cafeLegendAccessFixtures } from "@starter/shared/access";
 import { promotionAvailability } from "@starter/shared/crm";
 import { db } from "../db/index.ts";
 import { pullCatalog } from "../edge/catalog-puller.ts";
+import {
+  installPromoFreshnessProvider,
+  promosEnabled,
+  setPromoGateEdgeModeForTests,
+} from "../edge/promo-gate.ts";
 import { EdgeCloudHttpError } from "../edge/cloud-http.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
@@ -891,6 +896,103 @@ describe("7r7q6 B: a promotion missing from the restored cloud stops applying of
     });
     expect(await availability(Q), "Q still applies").toBeNull();
   }, 120_000);
+
+  describe("1199 P2-B: automatic promos stay off while the replay marker exists", () => {
+    const checkpointAge = async () =>
+      (
+        await edge.rows(
+          "SELECT last_success_at AS at FROM edge_pull_checkpoints WHERE edge_node_id = $1 AND stream = $2",
+          [node.id, `catalog:${PROMOS}`],
+        )
+      )[0]?.at as Date | undefined;
+
+    beforeEach(() => {
+      // Edge process whose 24 h freshness provider says fresh: only the
+      // catalog stream state can close the gate here.
+      setPromoGateEdgeModeForTests(() => true);
+      installPromoFreshnessProvider(() => true);
+    });
+    afterAll(() => {
+      installPromoFreshnessProvider(null);
+      setPromoGateEdgeModeForTests(null);
+    });
+
+    it("off from the restore replay until the deactivation commits, then Q applies again", async () => {
+      const base = BigInt(String(template.syncTxid));
+      const seeded = await pull(
+        scriptedCatalogCloud(
+          {
+            [PROMOS]: [
+              promoRecord(P, "Promo P", base + 10n),
+              promoRecord(Q, "Promo Q", base + 11n),
+            ],
+          },
+          1,
+        ),
+        undefined,
+        [PROMOS],
+      );
+      expect(seeded.streams[PROMOS]?.error, "seed pull").toBeFalsy();
+      expect(promosEnabled(), "seed: promos on").toBe(true);
+
+      await rewind(PROMOS);
+      const served = {
+        fetchPage: withVisibility(
+          scriptedCatalogCloud(
+            {
+              [PROMOS]: [promoRecord(Q, "Promo Q na restore", base + 500n)],
+            },
+            1,
+          ).fetchPage,
+          () => SETTLED,
+        ),
+      };
+
+      await pull(served, undefined, [PROMOS]);
+      expect(await replayMarker(PROMOS), "replay pinned").toBe("h:1000");
+      expect(
+        promosEnabled(),
+        "replay marker exists: P may still be on this edge, promos stay off",
+      ).toBe(false);
+      expect(
+        (await checkpointAge())?.getTime(),
+        "freshness of the stream is closed durably (survives a restart)",
+      ).toBe(0);
+
+      await pull(served, undefined, [PROMOS]);
+      expect(await replayMarker(PROMOS), "deactivation committed").toBeNull();
+      expect(await availability(P), "P is off").not.toBeNull();
+      expect(promosEnabled(), "marker gone: promos on again").toBe(true);
+      expect(
+        (await checkpointAge())?.getTime(),
+        "freshness reopened",
+      ).toBeGreaterThan(0);
+      expect(await availability(Q), "Q applies again").toBeNull();
+    }, 120_000);
+
+    it("an older cloud without visibility fields never ends the replay: promos stay off", async () => {
+      const base = BigInt(String(template.syncTxid));
+      await pull(
+        scriptedCatalogCloud(
+          { [PROMOS]: [promoRecord(P, "Promo P", base + 10n)] },
+          1,
+        ),
+        undefined,
+        [PROMOS],
+      );
+      await rewind(PROMOS);
+      const old = scriptedCatalogCloud(
+        { [PROMOS]: [promoRecord(Q, "Promo Q", base + 500n)] },
+        1,
+      );
+      for (let n = 0; n < 3; n += 1) await pull(old, undefined, [PROMOS]);
+
+      expect(await replayMarker(PROMOS)).not.toBeNull();
+      expect(promosEnabled(), "fail closed until a deactivation commits").toBe(
+        false,
+      );
+    }, 120_000);
+  });
 
   it("without the cloud's visibility fields P keeps applying (never inferred from an older cloud)", async () => {
     const base = BigInt(String(template.syncTxid));

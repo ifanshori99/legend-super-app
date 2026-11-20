@@ -90,6 +90,7 @@ import {
   type CatalogApplyResult,
   type DeferredCategoryParent,
 } from "../services/edge-catalog-apply.ts";
+import { logger } from "../lib/logger.ts";
 import { CATALOG_CURSOR_REJECTED_MARKER } from "./catalog-cursor-marker.ts";
 import {
   CATALOG_RECEIPT_FLOOR_CHECKPOINT,
@@ -713,6 +714,12 @@ type StreamProgress = {
   watermark: string | null;
   backlog: boolean;
   lastSuccessAt: Date | null;
+  /**
+   * The promotions stream ended its last page while a replay marker still
+   * exists (legend-1199 P2-B): the deactivation is not committed yet, so the
+   * discount stays closed.
+   */
+  replayOpen?: boolean;
 };
 
 async function pullStream(
@@ -966,11 +973,16 @@ async function pullStream(
             pinned !== null &&
             BigInt(page.visibleBelow) >= BigInt(pinned[1] ?? "0")
           ) {
-            await deactivateAbsentCatalogRows(tx, {
+            const deactivated = await deactivateAbsentCatalogRows(tx, {
               tenantId,
               stream,
               at: succeededAt,
             });
+            // Count only, per stream: no row ids, names or other PII.
+            logger.info(
+              { stream, deactivated },
+              "edge catalog: replay deactivated rows the restored cloud no longer has",
+            );
             await tx
               .delete(edgePullCheckpoints)
               .where(
@@ -985,21 +997,43 @@ async function pullStream(
           }
         }
       }
+      // Fail closed (legend-1199 P2-B): while the replay marker of promotions
+      // exists, a promo the cloud no longer has may still be on this edge
+      // (the cloud withholds its snapshot fields until a restamp is
+      // committed), so the stream's freshness stays closed until the
+      // deactivation above commits and deletes the marker.
+      let replayOpen = false;
+      if (stream === "promotions" && !page.hasMore) {
+        const [open] = await tx
+          .select({ watermark: edgePullCheckpoints.watermark })
+          .from(edgePullCheckpoints)
+          .where(
+            and(
+              eq(edgePullCheckpoints.edgeNodeId, options.edgeNodeId),
+              eq(edgePullCheckpoints.stream, catalogReplayCheckpoint(stream)),
+            ),
+          )
+          .limit(1);
+        replayOpen = open !== undefined;
+      }
       await saveCatalogCheckpoint(
         tx,
         options.edgeNodeId,
         stream,
         checkpoint,
-        succeededAt,
+        replayOpen ? PROMO_INVALIDATED_AT : succeededAt,
         rewindFrom,
       );
-      return outcome;
+      return { ...outcome, replayOpen };
     });
     // The page is committed: only now does the stream's progress move.
     rejectedCursor = null;
     progress.watermark = checkpoint;
+    progress.replayOpen = result.replayOpen;
     progress.lastSuccessAt =
-      isPromoStream(stream) && page.hasMore ? null : succeededAt;
+      (isPromoStream(stream) && page.hasMore) || result.replayOpen
+        ? null
+        : succeededAt;
     progress.applied += result.applied;
     progress.skipped += result.skipped;
     progress.deleted += result.deleted;
@@ -1217,7 +1251,7 @@ async function runCatalogPull(
         stored.cursor,
         progress,
       );
-      if (!progress.backlog)
+      if (!progress.backlog && !progress.replayOpen)
         completePromoCatalogStream(
           catalogCheckpointStream(stream),
           promoGeneration,

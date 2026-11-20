@@ -37,8 +37,10 @@ type Switch = {
 
 /**
  * Streams with a safe off-switch column. Skipped on purpose: printers
- * (removal is a versioned tombstone table) and vouchers (a voucher only
- * applies through its promotion). menu_item_modifier_groups is a link row
+ * (removal is a versioned tombstone table) and vouchers (a voucher of a fixed
+ * value can exist without a promotion, crm-promo-engine.ts; it stays safe
+ * because the edge refuses every voucher code, see promo-gate.ts
+ * `assertEdgePromoCodeAllowed`). menu_item_modifier_groups is a link row
  * with `deleted_at`: a link the restored cloud no longer has is tombstoned.
  *
  * promotions: the promo engine only applies `status = 'active'` rows, so a
