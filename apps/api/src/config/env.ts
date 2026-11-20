@@ -21,6 +21,7 @@ import {
   parseHrisPiiKeys,
 } from "../lib/hris-pii-keys.ts";
 import { sealKeyConfigProblems } from "../lib/selfie-seal.ts";
+import { resolveStorageEnv } from "./storage-env.ts";
 
 // Environment values are loaded by Node (`--env-file-if-exists` in the package
 // scripts) from the repository root's .env.local and .env. Values already in the
@@ -523,18 +524,39 @@ const schema = z
       .min(60)
       .max(86_400)
       .default(3600),
-    // S3-compatible object storage for generated documents, today the profit
-    // share statement PDFs (legend-33im6). All optional: with none set the
-    // statement issuer stays unconfigured (503, key stays null) and the API
-    // logs one warning at startup. Setting any of them requires the others
-    // (the endpoint stays optional, for AWS itself). Never logged.
-    OBJECT_STORAGE_REGION: z.string().trim().min(1).optional(),
-    OBJECT_STORAGE_ENDPOINT: z.url().optional(),
-    OBJECT_STORAGE_ACCESS_KEY_ID: z.string().trim().min(1).optional(),
-    OBJECT_STORAGE_SECRET_ACCESS_KEY: z.string().trim().min(1).optional(),
-    OBJECT_STORAGE_PRIVATE_BUCKET: z.string().trim().min(1).optional(),
-    OBJECT_STORAGE_PUBLIC_BUCKET: z.string().trim().min(1).optional(),
-    OBJECT_STORAGE_PUBLIC_BASE_URL: z.url().optional(),
+    // S3-compatible object storage (uploads, HRIS files, profit share
+    // statement PDFs). Canonical set: STORAGE_S3_* plus STORAGE_PUBLIC_BASE_URL.
+    // OBJECT_STORAGE_* is a deprecated fallback (legend-94xqo). All optional:
+    // with none set storage stays off. Setting any requires the six required
+    // ones, region included (a wrong region silently breaks uploads); the
+    // endpoint and path-style flag stay optional. Never logged.
+    STORAGE_S3_ACCESS_KEY_ID: blankToUndefined(z.string().trim().optional()),
+    STORAGE_S3_SECRET_ACCESS_KEY: blankToUndefined(
+      z.string().trim().optional(),
+    ),
+    STORAGE_S3_PRIVATE_BUCKET: blankToUndefined(z.string().trim().optional()),
+    STORAGE_S3_PUBLIC_BUCKET: blankToUndefined(z.string().trim().optional()),
+    STORAGE_PUBLIC_BASE_URL: blankToUndefined(z.string().trim().optional()),
+    STORAGE_S3_ENDPOINT: blankToUndefined(z.string().trim().optional()),
+    STORAGE_S3_REGION: blankToUndefined(z.string().trim().optional()),
+    STORAGE_S3_FORCE_PATH_STYLE: blankToUndefined(z.string().trim().optional()),
+    OBJECT_STORAGE_REGION: blankToUndefined(z.string().trim().optional()),
+    OBJECT_STORAGE_ENDPOINT: blankToUndefined(z.string().trim().optional()),
+    OBJECT_STORAGE_ACCESS_KEY_ID: blankToUndefined(
+      z.string().trim().optional(),
+    ),
+    OBJECT_STORAGE_SECRET_ACCESS_KEY: blankToUndefined(
+      z.string().trim().optional(),
+    ),
+    OBJECT_STORAGE_PRIVATE_BUCKET: blankToUndefined(
+      z.string().trim().optional(),
+    ),
+    OBJECT_STORAGE_PUBLIC_BUCKET: blankToUndefined(
+      z.string().trim().optional(),
+    ),
+    OBJECT_STORAGE_PUBLIC_BASE_URL: blankToUndefined(
+      z.string().trim().optional(),
+    ),
     // Browser web push for the panic alarm (legend-ofq4f). The API only serves
     // the public key; the worker signs and sends (its own NOTIFICATION_* checks
     // stay). With web_push all three VAPID values are required. Never logged:
@@ -620,44 +642,71 @@ const schema = z
       );
   })
   .superRefine((values, ctx) => {
+    const { env: storage, conflicts } = resolveStorageEnv(
+      Object.fromEntries(
+        Object.entries(values).filter(
+          ([key, value]) =>
+            /^(STORAGE_|OBJECT_STORAGE_)/.test(key) &&
+            typeof value === "string",
+        ),
+      ) as Record<string, string>,
+    );
+    for (const { legacy, canonical } of conflicts)
+      ctx.addIssue({
+        code: "custom",
+        path: [legacy],
+        message: `Differs from ${canonical}. Remove the deprecated ${legacy} or make the values equal.`,
+      });
     const required = [
-      "OBJECT_STORAGE_REGION",
-      "OBJECT_STORAGE_ACCESS_KEY_ID",
-      "OBJECT_STORAGE_SECRET_ACCESS_KEY",
-      "OBJECT_STORAGE_PRIVATE_BUCKET",
-      "OBJECT_STORAGE_PUBLIC_BUCKET",
-      "OBJECT_STORAGE_PUBLIC_BASE_URL",
+      "STORAGE_S3_ACCESS_KEY_ID",
+      "STORAGE_S3_SECRET_ACCESS_KEY",
+      "STORAGE_S3_PRIVATE_BUCKET",
+      "STORAGE_S3_PUBLIC_BUCKET",
+      "STORAGE_PUBLIC_BASE_URL",
+      "STORAGE_S3_REGION",
     ] as const;
     const anySet =
-      required.some((key) => values[key] !== undefined) ||
-      values.OBJECT_STORAGE_ENDPOINT !== undefined;
+      required.some((key) => storage[key] !== undefined) ||
+      storage.STORAGE_S3_ENDPOINT !== undefined ||
+      storage.STORAGE_S3_FORCE_PATH_STYLE !== undefined;
     if (!anySet) return;
     for (const key of required)
-      if (values[key] === undefined)
+      if (storage[key] === undefined)
         ctx.addIssue({
           code: "custom",
           path: [key],
-          message: "Required once any OBJECT_STORAGE_* setting is set.",
+          message: "Required once any storage setting is set.",
         });
     // S3ObjectStorage refuses these too; failing here names the key at boot.
     if (
-      values.OBJECT_STORAGE_PRIVATE_BUCKET !== undefined &&
-      values.OBJECT_STORAGE_PRIVATE_BUCKET ===
-        values.OBJECT_STORAGE_PUBLIC_BUCKET
+      storage.STORAGE_S3_PRIVATE_BUCKET !== undefined &&
+      storage.STORAGE_S3_PRIVATE_BUCKET === storage.STORAGE_S3_PUBLIC_BUCKET
     )
       ctx.addIssue({
         code: "custom",
-        path: ["OBJECT_STORAGE_PUBLIC_BUCKET"],
+        path: ["STORAGE_S3_PUBLIC_BUCKET"],
         message: "The public and private buckets must differ.",
       });
     if (
-      values.OBJECT_STORAGE_PUBLIC_BASE_URL !== undefined &&
-      !values.OBJECT_STORAGE_PUBLIC_BASE_URL.startsWith("https://")
+      storage.STORAGE_PUBLIC_BASE_URL !== undefined &&
+      !(
+        storage.STORAGE_PUBLIC_BASE_URL.startsWith("https://") &&
+        z.url().safeParse(storage.STORAGE_PUBLIC_BASE_URL).success
+      )
     )
       ctx.addIssue({
         code: "custom",
-        path: ["OBJECT_STORAGE_PUBLIC_BASE_URL"],
+        path: ["STORAGE_PUBLIC_BASE_URL"],
         message: "Use an https:// URL.",
+      });
+    if (
+      storage.STORAGE_S3_ENDPOINT !== undefined &&
+      !z.url().safeParse(storage.STORAGE_S3_ENDPOINT).success
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["STORAGE_S3_ENDPOINT"],
+        message: "Use a full URL.",
       });
   })
   .superRefine((values, ctx) => {

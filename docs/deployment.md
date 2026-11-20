@@ -304,6 +304,10 @@ Both servers write one JSON object per line to stdout with `level`, `time`, `ser
 
 The API uses one node-postgres pool with at most ten connections per process. Multiple instances multiply the connection count: use your provider's pooler and tune limits. Better Auth's rate-limit storage is in memory per instance; for several API instances configure shared rate-limit storage (see Better Auth's rate-limit docs). The web server keeps no state.
 
+## Object storage settings
+
+One set only: `STORAGE_S3_ACCESS_KEY_ID`, `STORAGE_S3_SECRET_ACCESS_KEY`, `STORAGE_S3_PRIVATE_BUCKET`, `STORAGE_S3_PUBLIC_BUCKET`, `STORAGE_PUBLIC_BASE_URL` (https) and `STORAGE_S3_REGION` are required together (no silent default region: a wrong region breaks uploads); `STORAGE_S3_ENDPOINT` and `STORAGE_S3_FORCE_PATH_STYLE` are optional. Uploads, HRIS files and profit share statement PDFs all read this set. The older `OBJECT_STORAGE_*` names are a deprecated fallback: the API warns once at startup, and refuses to start if a legacy key and its `STORAGE_S3_*` counterpart hold different values. `pnpm run doctor` reports a partial set or a conflict. Fill `STORAGE_S3_*` only.
+
 ## Object storage permissions
 
 Payout payment proofs are checked with a read of the object before resolve, return, confirm or an overpaid record. On S3-compatible storage the API key must hold `s3:ListBucket` on the private bucket as well as `s3:GetObject` and `s3:PutObject`. Without `ListBucket`, a missing object answers AccessDenied instead of NoSuchKey, and a key that was never uploaded then fails with a 500 instead of 422 `PAYOUT_EVIDENCE_INVALID`. No payment is recorded either way.

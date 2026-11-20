@@ -135,6 +135,65 @@ test("object storage settings are all-or-none (legend-33im6)", () => {
   assert.doesNotMatch(run(partial).stderr, /access|legend-private/);
 });
 
+test("one canonical storage set, legacy names as fallback (legend-94xqo)", () => {
+  const canonical = {
+    STORAGE_S3_ACCESS_KEY_ID: "access",
+    STORAGE_S3_SECRET_ACCESS_KEY: "secret",
+    STORAGE_S3_PRIVATE_BUCKET: "legend-private",
+    STORAGE_S3_PUBLIC_BUCKET: "legend-public",
+    STORAGE_PUBLIC_BASE_URL: "https://files.example.test",
+    STORAGE_S3_REGION: "ap-southeast-3",
+  };
+  assert.equal(run(canonical).status, 0);
+  // Blank values (an unfilled .env.example) count as not set.
+  assert.equal(
+    run({
+      ...canonical,
+      STORAGE_S3_ENDPOINT: "",
+      STORAGE_S3_FORCE_PATH_STYLE: "",
+    }).status,
+    0,
+  );
+  // No region while storage is configured: refused, naming the key.
+  const noRegion = run({ ...canonical, STORAGE_S3_REGION: "" });
+  assert.equal(noRegion.status, 1);
+  assert.match(String(noRegion.stderr), /STORAGE_S3_REGION/);
+  // Canonical plus the same legacy values: accepted.
+  assert.equal(
+    run({ ...canonical, OBJECT_STORAGE_PRIVATE_BUCKET: "legend-private" })
+      .status,
+    0,
+  );
+  // Conflicting values: refused at boot, naming both keys and no values.
+  const conflict = run({
+    ...canonical,
+    OBJECT_STORAGE_PRIVATE_BUCKET: "other-private-bucket",
+  });
+  assert.equal(conflict.status, 1);
+  assert.match(String(conflict.stderr), /OBJECT_STORAGE_PRIVATE_BUCKET/);
+  assert.match(String(conflict.stderr), /STORAGE_S3_PRIVATE_BUCKET/);
+  assert.doesNotMatch(String(conflict.stderr), /other-private-bucket/);
+  // Only the path-style flag set: storage counts as configured, so the
+  // missing required keys are named (same as the runtime).
+  const flagOnly = run({ STORAGE_S3_FORCE_PATH_STYLE: "true" });
+  assert.equal(flagOnly.status, 1);
+  assert.match(String(flagOnly.stderr), /STORAGE_S3_ACCESS_KEY_ID/);
+  // Endpoint must be a URL.
+  assert.equal(
+    run({ ...canonical, STORAGE_S3_ENDPOINT: "not a url" }).status,
+    1,
+  );
+  // Partial canonical, same buckets, non-https URL: refused.
+  const { STORAGE_S3_SECRET_ACCESS_KEY: _secret, ...partial } = canonical;
+  void _secret;
+  for (const settings of [
+    partial,
+    { ...canonical, STORAGE_S3_PUBLIC_BUCKET: "legend-private" },
+    { ...canonical, STORAGE_PUBLIC_BASE_URL: "http://files.example.test" },
+  ])
+    assert.equal(run(settings).status, 1);
+});
+
 // legend-ideif: an edge node never holds the root staff pin pepper.
 const edgeNode = {
   DEPLOYMENT_MODE: "production",

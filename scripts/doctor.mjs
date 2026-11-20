@@ -92,6 +92,74 @@ await check("Session cookie reaches the web server", () => {
       `Set COOKIE_DOMAIN to a parent domain of both ${api.hostname} and ${web.hostname} (e.g. .example.com) so SSR can read the session.`,
     );
 });
+await check("Object storage settings", () => {
+  // Same rules as apps/api/src/config/storage-env.ts: STORAGE_S3_* is canonical,
+  // OBJECT_STORAGE_* a deprecated fallback; never print values.
+  const legacy = {
+    OBJECT_STORAGE_REGION: "STORAGE_S3_REGION",
+    OBJECT_STORAGE_ENDPOINT: "STORAGE_S3_ENDPOINT",
+    OBJECT_STORAGE_ACCESS_KEY_ID: "STORAGE_S3_ACCESS_KEY_ID",
+    OBJECT_STORAGE_SECRET_ACCESS_KEY: "STORAGE_S3_SECRET_ACCESS_KEY",
+    OBJECT_STORAGE_PRIVATE_BUCKET: "STORAGE_S3_PRIVATE_BUCKET",
+    OBJECT_STORAGE_PUBLIC_BUCKET: "STORAGE_S3_PUBLIC_BUCKET",
+    OBJECT_STORAGE_PUBLIC_BASE_URL: "STORAGE_PUBLIC_BASE_URL",
+  };
+  const value = (name) => process.env[name]?.trim() || undefined;
+  const conflicts = [];
+  const deprecated = [];
+  for (const [old, name] of Object.entries(legacy)) {
+    if (value(old) === undefined) continue;
+    deprecated.push(old);
+    if (value(name) !== undefined && value(name) !== value(old))
+      conflicts.push(`${old} differs from ${name}`);
+  }
+  const get = (name) =>
+    value(name) ??
+    value(Object.keys(legacy).find((old) => legacy[old] === name) ?? "");
+  const required = [
+    "STORAGE_S3_ACCESS_KEY_ID",
+    "STORAGE_S3_SECRET_ACCESS_KEY",
+    "STORAGE_S3_PRIVATE_BUCKET",
+    "STORAGE_S3_PUBLIC_BUCKET",
+    "STORAGE_PUBLIC_BASE_URL",
+    "STORAGE_S3_REGION",
+  ];
+  if (conflicts.length)
+    throw new Error(
+      `${conflicts.join("; ")}. Remove the deprecated OBJECT_STORAGE_* keys or make the values equal.`,
+    );
+  const anySet = [
+    ...required,
+    "STORAGE_S3_ENDPOINT",
+    "STORAGE_S3_FORCE_PATH_STYLE",
+  ].some((name) => get(name) !== undefined);
+  if (!anySet) return;
+  const missing = required.filter((name) => get(name) === undefined);
+  if (missing.length)
+    throw new Error(
+      `Incomplete storage settings: set ${missing.join(", ")} (or none of them to keep storage off).`,
+    );
+  if (get("STORAGE_S3_PRIVATE_BUCKET") === get("STORAGE_S3_PUBLIC_BUCKET"))
+    throw new Error("The public and private buckets must differ.");
+  const isUrl = (text) => {
+    try {
+      new URL(text);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const baseUrl = get("STORAGE_PUBLIC_BASE_URL");
+  if (!baseUrl.startsWith("https://") || !isUrl(baseUrl))
+    throw new Error("STORAGE_PUBLIC_BASE_URL must be an https:// URL.");
+  const endpoint = get("STORAGE_S3_ENDPOINT");
+  if (endpoint !== undefined && !isUrl(endpoint))
+    throw new Error("STORAGE_S3_ENDPOINT must be a full URL.");
+  if (deprecated.length)
+    console.warn(
+      `! Deprecated storage settings in use: ${deprecated.join(", ")}. Rename them to the STORAGE_S3_* set.`,
+    );
+});
 await check("PostgreSQL connection and tables", async () => {
   const pool = new Pool({
     connectionString: databaseUrl(),

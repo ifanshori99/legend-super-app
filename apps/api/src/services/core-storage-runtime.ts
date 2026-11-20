@@ -9,6 +9,11 @@ import { S3ObjectStorage } from "./core-storage-provider";
 import { signedStorageUrl, signedStorageUrlInTx } from "./core-storage";
 import type { HrisFileSigner } from "./hris-contract.service";
 import { toLoggableError } from "../lib/safe-error";
+import { logger } from "../lib/logger";
+import {
+  resolveStorageEnv,
+  storageConflictMessage,
+} from "../config/storage-env";
 
 type Database = NodePgDatabase<typeof schema>;
 
@@ -19,10 +24,10 @@ export const STORAGE_REQUIRED_ENV = [
   "STORAGE_S3_PRIVATE_BUCKET",
   "STORAGE_S3_PUBLIC_BUCKET",
   "STORAGE_PUBLIC_BASE_URL",
+  "STORAGE_S3_REGION",
 ] as const;
 const STORAGE_OPTIONAL_ENV = [
   "STORAGE_S3_ENDPOINT",
-  "STORAGE_S3_REGION",
   "STORAGE_S3_FORCE_PATH_STYLE",
 ] as const;
 
@@ -44,8 +49,15 @@ export type StorageEnv = Readonly<Record<string, string | undefined>>;
  * deployment error and throws, naming only the missing keys.
  */
 export function createObjectStorageFromEnv(
-  source: StorageEnv,
+  rawSource: StorageEnv,
 ): S3ObjectStorage | null {
+  // STORAGE_S3_* is canonical; OBJECT_STORAGE_* is a deprecated fallback.
+  const resolved = resolveStorageEnv(rawSource, (message) =>
+    logger.warn(message),
+  );
+  if (resolved.conflicts.length > 0)
+    throw new Error(storageConflictMessage(resolved.conflicts));
+  const source = resolved.env;
   const present = (name: string) => Boolean(source[name]?.trim());
   const anySet = [...STORAGE_REQUIRED_ENV, ...STORAGE_OPTIONAL_ENV].some(
     present,
@@ -57,7 +69,7 @@ export function createObjectStorageFromEnv(
       `Incomplete storage configuration: set ${missing.join(", ")}.`,
     );
   const client = new S3Client({
-    region: source.STORAGE_S3_REGION?.trim() || "us-east-1",
+    region: source.STORAGE_S3_REGION!.trim(),
     ...(present("STORAGE_S3_ENDPOINT") && {
       endpoint: source.STORAGE_S3_ENDPOINT!.trim(),
     }),

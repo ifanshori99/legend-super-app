@@ -82,7 +82,7 @@ setDeviceOutletResolver(createDeviceOutletResolver());
 // Staff PIN down-sync (legend-obh5): edge credentials are verified against the
 // cloud edge_nodes registry (legend-2pi); anything else is denied.
 setEdgeCredentialVerifier(verifyEdgeNodeCredential);
-// Profit share statements (legend-33im6): object storage from OBJECT_STORAGE_*
+// Profit share statements (legend-33im6): object storage from STORAGE_S3_*
 // and email from the Brevo settings; without storage issuing stays off and one
 // warning is logged. Read from process.env: the notification keys are not part
 // of the validated `env`.
