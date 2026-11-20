@@ -5,12 +5,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import {
-  createUlid,
-  idr,
-  outletIdSchema,
-  ulidToUuid,
-} from "@starter/shared/core";
+import { createUlid, idr, outletIdSchema } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
@@ -23,10 +18,7 @@ import {
   redeemPromotions,
   type RedeemPromotionsInput,
 } from "../services/crm-promo-engine";
-import {
-  recomputeAfterPartialRefund,
-  recordPartialRefundPayout,
-} from "../services/crm-promo-refund";
+import { recomputeAfterPartialRefund } from "../services/crm-promo-refund";
 import { seedPromoCustomer } from "./crm-promo-test-helpers";
 
 const tenantId = cafeLegendPlatformFixtures.tenant.id;
