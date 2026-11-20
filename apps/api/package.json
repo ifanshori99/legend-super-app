@@ -20,6 +20,7 @@
     "purchase-return:variance-check": "tsx src/scripts/purchase-return-variance-check.ts",
     "db:rotate-data-key": "tsx src/db/rotate-data-key.ts",
     "role:set": "tsx src/set-role.ts",
+    "gateway:set": "tsx src/set-gateway.ts",
     "worker": "node --enable-source-maps dist/worker.js"
   },
   "dependencies": {
