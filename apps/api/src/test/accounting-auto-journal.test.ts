@@ -6458,6 +6458,35 @@ describe("legend-x1i1h legend-j0ag5 a void or a finance reversal of what backs a
     expect(await balanceOf(world, "customer_deposit")).toBe(0);
   });
 
+  // Card 1218: a sale raises profit, so its mirror lowers it; the manual
+  // reversal stays allowed (as does the payout, AJ-AYZ7Q-PAYOUT-REVERSED, and
+  // the unpaid POS refund behind its guard, AJ-J0AG5-01).
+  it("[1218-SALE] a posted POS sale journal is still reversed by hand", async () => {
+    const world = await makeWorld(shared);
+    const intentId = await seedIntent(world, { amountIdr: 100_000 });
+    await post(world, paymentPaid(world, intentId, 100_000));
+    const orderUlid = createUlid();
+    const sale: SaleAmounts = {
+      grossSalesIdr: 100_000,
+      completedAt: T_SALE,
+      tenders: allQris(intentId),
+    };
+    await seedPosOrder(world, orderUlid, sale);
+    const posted = await post(world, orderPaid(world, orderUlid, sale));
+    const reversal = await reverseJournal(
+      contextOf(world.tenant),
+      posted.journalEntryId,
+      {
+        entryDate: "2026-10-15",
+        reason: "Koreksi keuangan (1218)",
+        idempotencyKey: `fin-${randomUUID()}`,
+      },
+      userIdSchema.parse(await seedUser()),
+    );
+    expect(reversal.reversalOf).toBe(posted.journalEntryId);
+    await expectBalanced(world, reversal.id);
+  });
+
   it("AJ-J0AG5-01 a POS refund journal that finance reversed backs nothing: a 30k payout parks POSTING_AMOUNTS_MISMATCH and customer_deposit never goes above 0", async () => {
     const { world, intentId, orderUlid } = await soldOnIntent(shared, allQris);
     const lines = [{ method: "qris" as const, amountIdr: 30_000 }];

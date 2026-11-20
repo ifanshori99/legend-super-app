@@ -35,6 +35,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   createUlid,
   tenantIdSchema,
+  userIdSchema,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
@@ -55,7 +56,10 @@ import { withTenant } from "../db/tenant.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import { provisionStandardChart } from "../services/accounting-provisioning.service.ts";
-import { reverseJournalInTransaction } from "../services/accounting-journal.service.ts";
+import {
+  reverseJournal,
+  reverseJournalInTransaction,
+} from "../services/accounting-journal.service.ts";
 import {
   deliverPayrollGlEvent,
   type PayrollGlResult,
@@ -737,6 +741,35 @@ describe("payroll GL guards (architect review)", () => {
       /already paid/,
     );
     expect(await entriesOf(world)).toHaveLength(2);
+  });
+
+  // Card 1218 (SO 1216 F-P1b): the manual endpoint refuses the run-lock
+  // accrual; mirroring it removes the salary expense and raises the profit
+  // share. The correction is cancelling the run (payroll.reversed).
+  it("[1218-PAYROLL-LOCK] a locked run's accrual cannot be reversed by hand: 409 AUTO_JOURNAL_LOCKED, nothing posted", async () => {
+    const world = await makeWorld();
+    const runId = randomUUID();
+    const totals = totalsOf();
+    expect((await deliver(lockedEvent(world, runId, totals))).status).toBe(
+      "posted",
+    );
+    const [locked] = await byKey(world, `payroll-gl:locked:${runId}`);
+    await expect(
+      reverseJournal(
+        context(),
+        locked!.id,
+        {
+          entryDate: "2026-11-10",
+          reason: "Dibalik manual (1218)",
+          idempotencyKey: `manual:${randomUUID()}`,
+        },
+        userIdSchema.parse(randomUUID()),
+        NOW,
+      ),
+    ).rejects.toMatchObject({ status: 409, code: "AUTO_JOURNAL_LOCKED" });
+    expect(
+      await entriesOf(world, "reversal_of = $3", [locked!.id]),
+    ).toHaveLength(0);
   });
 
   it("skips when the locked entry was already reversed by hand", async () => {

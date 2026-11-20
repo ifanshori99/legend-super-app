@@ -39,6 +39,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   createUlid,
   tenantIdSchema,
+  userIdSchema,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
@@ -54,6 +55,7 @@ import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
+import { reverseJournal } from "../services/accounting-journal.service.ts";
 import {
   deliverAutoJournalEvent,
   retryParkedAutoJournals,
@@ -658,6 +660,38 @@ describe("legend-89pn cash_movement.recorded posts a balanced journal per type",
       debit: 30_000,
       credit: 0,
     });
+    expect(await balanceOf(world, "cash_on_hand")).toBe(-30_000);
+  });
+
+  // Card 1218 (SO 1216 F-P1b): a drawer cash-out (Dr expense / Cr 1101) is not
+  // a petty cash (1102) journal, so no source guard proves the cash came back;
+  // mirroring it removes the expense and raises the profit share.
+  it("[1218-CASHOUT] a posted drawer cash_out cannot be reversed by hand: 409 AUTO_JOURNAL_LOCKED, nothing posted", async () => {
+    const world = await makeWorld();
+    const movement = await seedSingle(world, "cash_out", 30_000);
+    const entryId = await expectPostedOnce(
+      world,
+      movement,
+      await deliver(world.tenant, movementRecorded(world, movement)),
+    );
+    const { rows } = await owner.query<{ day: string }>(
+      "SELECT entry_date::text AS day FROM journal_entries WHERE tenant_id = $1 AND id = $2",
+      [world.tenant.id, entryId],
+    );
+    await expect(
+      reverseJournal(
+        contextOf(world.tenant),
+        entryId,
+        {
+          entryDate: rows[0]!.day,
+          reason: "Dibalik manual (1218)",
+          idempotencyKey: `manual-${randomUUID()}`,
+        },
+        userIdSchema.parse(await seedUser()),
+        NOW,
+      ),
+    ).rejects.toMatchObject({ status: 409, code: "AUTO_JOURNAL_LOCKED" });
+    expect(await journalCount(world)).toBe(1);
     expect(await balanceOf(world, "cash_on_hand")).toBe(-30_000);
   });
 

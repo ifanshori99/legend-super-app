@@ -1112,20 +1112,45 @@ async function assertNotDepreciationJournal(
  * (fees, MDR). A sale, a receipt, a DP or a payout (no profit raised) stays
  * reversible. Journals finance writes by hand (manual, recurring) and the
  * system reversals (payroll cancel, sale void) are not judged here.
- * Depreciation has its own guard.
+ * Depreciation has its own guard. The only exceptions are the source guards
+ * on PROFIT_RAISING_REVERSAL_ALLOWED that applied and passed.
  */
 const PROFIT_JUDGED_EXEMPT_SOURCES: ReadonlySet<string> = new Set([
   "manual",
   "recurring",
 ]);
 
+type ProfitRaisingReversalGuard =
+  "order-refund-backing-not-paid-out" | "petty-cash-out-source-not-paid";
+
+/**
+ * Allow list: a profit-raising manual reversal passes only when one of these
+ * guards applied to the journal AND passed, proving no money left. A guard
+ * that does not apply opens nothing; any other journal stays refused.
+ */
+const PROFIT_RAISING_REVERSAL_ALLOWED: ReadonlySet<ProfitRaisingReversalGuard> =
+  new Set<ProfitRaisingReversalGuard>([
+    // assertReturnBackingNotPaidOut (legend-ayz7q): only the POS refund
+    // journal `aj:order-refund:<uuid>`, whose DP backing funded no completed
+    // payout, so the refund money never left.
+    "order-refund-backing-not-paid-out",
+    // assertAutoCashOutSourceNotPaid (legend-5qqb9): only a journal that
+    // credits petty cash 1102 and whose known cash-out source (loan, cash
+    // reimbursement, cash payroll settle, supplier payment) is no longer paid.
+    // A drawer cash-out (Cr 1101) never passes here.
+    "petty-cash-out-source-not-paid",
+  ]);
+
 async function assertReversalDoesNotRaiseProfit(
   tx: TenantTransaction,
   tenantId: TenantId,
   row: { sourceType: string },
   lines: readonly LineRow[],
+  passedGuards: readonly ProfitRaisingReversalGuard[],
 ): Promise<void> {
   if (PROFIT_JUDGED_EXEMPT_SOURCES.has(row.sourceType)) return;
+  if (passedGuards.some((guard) => PROFIT_RAISING_REVERSAL_ALLOWED.has(guard)))
+    return;
   const accountIds = [...new Set(lines.map((line) => line.accountId))];
   if (accountIds.length === 0) return;
   const accounts = await tx
@@ -1177,8 +1202,9 @@ async function assertAutoCashOutSourceNotPaid(
   tenantId: TenantId,
   row: EntryRow,
   lines: readonly { accountId: string; debitIdr: number; creditIdr: number }[],
-): Promise<void> {
-  if (row.sourceType === "manual" || row.sourceType === "recurring") return;
+): Promise<boolean> {
+  if (row.sourceType === "manual" || row.sourceType === "recurring")
+    return false;
   // Two cash accounts are judged, each on its own net credit, never summed:
   // the petty cash account the journal was posted on (its snapshot) and the one
   // petty_cash maps to today. Summing lets a remap cancel a real credit: Dr C /
@@ -1212,16 +1238,13 @@ async function assertAutoCashOutSourceNotPaid(
     (row.postingAccountSnapshot === null ||
       row.postingAccountSnapshot === undefined) &&
     knownCashOutSource;
-  if (!judgeOnSourceOnly) {
-    if (cashAccountIds.size === 0) return;
-    const creditsCash = [...cashAccountIds].some(
-      (accountId) =>
-        lines
-          .filter((line) => line.accountId === accountId)
-          .reduce((sum, line) => sum + line.creditIdr - line.debitIdr, 0) > 0,
-    );
-    if (!creditsCash) return;
-  }
+  const creditsCash = [...cashAccountIds].some(
+    (accountId) =>
+      lines
+        .filter((line) => line.accountId === accountId)
+        .reduce((sum, line) => sum + line.creditIdr - line.debitIdr, 0) > 0,
+  );
+  if (!judgeOnSourceOnly && !creditsCash) return false;
   const uuidPart = (prefix: string): string | null | undefined => {
     if (key === null || !key.startsWith(prefix)) return undefined;
     const id = uuidSchema.safeParse(key.slice(prefix.length));
@@ -1309,6 +1332,10 @@ async function assertAutoCashOutSourceNotPaid(
       "CASH_OUT_JOURNAL_LOCKED",
       "This journal takes cash out of petty cash and cannot be reversed by hand; correct it through its source (return flow).",
     );
+  // The guard applied and passed only when the journal really credits petty
+  // cash (1102) and its known source says the cash came back. A journal held
+  // on its source alone (no snapshot, no 1102 credit seen) proves nothing.
+  return creditsCash;
 }
 
 /**
@@ -1318,22 +1345,24 @@ async function assertAutoCashOutSourceNotPaid(
  * consumers. No intent lock is acquired here: consumers lock intents before
  * source journals. A payout journal reversal alone does not recover cash, so
  * it does not release this guard; finance must reconcile the paid refund.
+ * Returns true only when the guard applied (an `aj:order-refund:<uuid>`
+ * journal) and passed; false when it does not apply.
  */
 async function assertReturnBackingNotPaidOut(
   tx: TenantTransaction,
   tenantId: TenantId,
   row: EntryRow,
-): Promise<void> {
+): Promise<boolean> {
   if (
     row.sourceType !== "refund" ||
     row.sourceId === null ||
     row.idempotencyKey !== `aj:order-refund:${row.sourceId}`
   )
-    return;
+    return false;
   // Journal sources also accept ULIDs (for example legacy refund events).
   // Q81's pos_order_refunds uses UUIDs; other sources have no Q81 release.
   const sourceId = uuidSchema.safeParse(row.sourceId);
-  if (!sourceId.success) return;
+  if (!sourceId.success) return false;
   // Follow all historical credit-use edges too: Q82 can move the same DP to
   // another session, where a different intent's payout consumes shared room.
   // Refuse conservatively once any later payout of that component was booked.
@@ -1379,6 +1408,7 @@ async function assertReturnBackingNotPaidOut(
       "JOURNAL_BACKING_IN_USE",
       "DP return journal backs a completed payout; reconcile that refund before correcting its backing.",
     );
+  return true;
 }
 
 /**
@@ -1472,22 +1502,30 @@ export async function reverseJournalInTransaction(
       "PAYOUT_WAIVE_JOURNAL_LOCKED",
       "This journal corrects a waived cash payroll handover and cannot be reversed.",
     );
-  if (input.manualReversal === true)
-    await assertAutoCashOutSourceNotPaid(
+  const passedGuards: ProfitRaisingReversalGuard[] = [];
+  if (
+    input.manualReversal === true &&
+    (await assertAutoCashOutSourceNotPaid(
       tx,
       context.tenant.tenantId,
       row,
       lines.map(toLine),
-    );
+    ))
+  )
+    passedGuards.push("petty-cash-out-source-not-paid");
   assertReversible(row, reversal?.id ?? null);
+  if (await assertReturnBackingNotPaidOut(tx, context.tenant.tenantId, row))
+    passedGuards.push("order-refund-backing-not-paid-out");
+  // After the source guards: only a guard on the allow list that applied and
+  // passed opens a profit-raising reversal.
   if (input.manualReversal === true)
     await assertReversalDoesNotRaiseProfit(
       tx,
       context.tenant.tenantId,
       row,
       lines,
+      passedGuards,
     );
-  await assertReturnBackingNotPaidOut(tx, context.tenant.tenantId, row);
   const reversalLines = buildReversalLines(
     {
       lines: lines.map(toLine),
