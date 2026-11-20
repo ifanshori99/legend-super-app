@@ -46,4 +46,6 @@ test("the full mock transport boots and serves routing without crypto.randomUUID
   // capabilities; it must keep the transport usable too.
   resetMocks();
   expect(await readRouting()).toEqual(first);
-});
+  // The eager graph imports every mock handler; a cold transform under a
+  // loaded full run took over the 5 s default (batch104 full run 4).
+}, 60_000);
