@@ -1,0 +1,2 @@
+ALTER TABLE "inventory_gl_postings" DROP CONSTRAINT "inventory_gl_postings_tenant_ledger_entry_key";--> statement-breakpoint
+ALTER TABLE "inventory_gl_postings" ADD CONSTRAINT "inventory_gl_postings_tenant_source_ledger_entry_key" UNIQUE("tenant_id","source_type","ledger_entry_id");

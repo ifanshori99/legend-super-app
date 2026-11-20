@@ -1547,3 +1547,117 @@ describe("§3.19 a real stock count posts to the GL", () => {
     );
   });
 });
+
+// Card 1232 review P2: the real opname posting path (inventory-count postLine)
+// onto a negative balance. The line is valued at the reference cost (avg 0 on
+// hand), so the gain resets the average and the deficit is revalued.
+describe("1232 a real stock count onto a negative balance is revalued", () => {
+  it("INV-GL-COUNT-05 balance -7 at avg 0, counted 1 at 110: count journal + revaluation, GL inventory = card, redelivery already_posted", async () => {
+    const world = await makeWorld();
+    const today = businessDateOf(new Date(), {
+      timeZone: "Asia/Jakarta",
+      cutoff: "04:00",
+    });
+    await openPeriod(world.entity, today.slice(0, 7));
+    const counter = await insertUser("Reval Counter");
+    const approver = await insertUser("Reval Approver");
+    await grantRole(counter, "warehouse", {
+      type: "outlet",
+      id: world.outletId,
+    });
+    const managerRole = await grantRole(approver, "outlet_manager", {
+      type: "outlet",
+      id: world.outletId,
+    });
+    await owner.query(
+      `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels)
+       VALUES ($1, 'stock_adjustment', NULL, $2, 1)
+       ON CONFLICT DO NOTHING`,
+      [tenantId, managerRole],
+    );
+    const item = await insertItem("Reval Opname");
+    // The reference cost 110 comes from another outlet's receipt (tenant-wide).
+    const elsewhere = await makeWorld();
+    await receive(elsewhere, item, "10.0000", "110.0000");
+    // Sold 7 here with nothing on hand: -7 at avg 0, HPP 0.
+    const sale = await move(world, {
+      movementType: "sale",
+      sourceType: "order",
+      sourceId: randomUUID(),
+      itemId: item,
+      quantity: "-7.0000",
+      occurredAt: BEFORE,
+    });
+    expect((await deliverRow(sale)).status).toBe("zero_value");
+
+    const created = await createStockCount(
+      context(),
+      counter,
+      createStockCountInputSchema.parse({
+        outletId: world.outletId,
+        locationId: world.locationId,
+        type: "cycle",
+        blind: false,
+        businessDate: today,
+        inventoryItemIds: [item],
+        idempotencyKey: key("sc"),
+      }),
+    );
+    const countId = created.count.id as string;
+    const step = (userId: string, action: string, mfaVerified: boolean) =>
+      transitionStockCount(
+        context(),
+        userId,
+        countId as never,
+        transitionStockCountInputSchema.parse({
+          action,
+          idempotencyKey: key(action),
+        }),
+        { mfaVerified },
+      );
+    await step(counter, "start", false);
+    for (const line of created.lines)
+      await updateStockCountLine(
+        context(),
+        counter,
+        countId as never,
+        line.id as never,
+        updateStockCountLineInputSchema.parse({ countedQty: "1.0000" }),
+      );
+    await step(counter, "submit", false);
+    await step(approver, "approve", true);
+    expect((await step(approver, "post", true)).status).toBe("posted");
+
+    const outbox = await owner.query<{ event: unknown }>(
+      `SELECT event FROM domain_event_outbox
+        WHERE tenant_id = $1 AND event->>'name' = 'stock.moved'
+          AND event->'payload'->>'sourceId' = $2`,
+      [tenantId, countId],
+    );
+    expect(outbox.rows).toHaveLength(1);
+    const event = eventEnvelopeSchema.parse(outbox.rows[0]!.event);
+    expect((await deliver(event)).status).toBe("posted");
+    expect((await deliver(event)).status).toBe("already_posted");
+
+    const net = async (role: Role) => {
+      const { rows } = await owner.query<{ net: string }>(
+        `SELECT COALESCE(sum(l.debit_idr - l.credit_idr), 0)::text AS net
+           FROM journal_lines l
+           JOIN journal_entries e ON e.tenant_id = l.tenant_id AND e.id = l.entry_id
+          WHERE l.tenant_id = $1 AND e.legal_entity_id = $2 AND l.account_id = $3`,
+        [tenantId, world.entity, world.accounts[role]],
+      );
+      return Number(rows[0]!.net);
+    };
+    const { rows: card } = await owner.query<{ value: string }>(
+      `SELECT (quantity * avg_cost_idr)::text AS value FROM stock_balances
+        WHERE tenant_id = $1 AND location_id = $2 AND inventory_item_id = $3`,
+      [tenantId, world.locationId, item],
+    );
+    // Gain 8 x 110 = 880; revaluation -7 x (110 - 0) = -770 to HPP.
+    expect(Number(card[0]!.value)).toBe(110);
+    expect(await net("inventory")).toBe(110);
+    expect(await net("inventory_adjustment")).toBe(-880);
+    expect(await net("cogs")).toBe(770);
+  });
+});

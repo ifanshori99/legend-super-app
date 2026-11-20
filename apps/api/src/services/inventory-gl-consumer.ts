@@ -41,7 +41,7 @@
 // advisory lock serializes concurrent consumers and the sweep of one document.
 
 import { createHash } from "node:crypto";
-import { and, asc, eq, inArray, lte, max, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, lte, max, ne, sql } from "drizzle-orm";
 import {
   AccountingError,
   defaultPostingRules,
@@ -55,6 +55,7 @@ import {
   createUlid,
   extendCostIdr,
   parseDecimal4,
+  ulidSchema,
   type BusinessDate,
   type ScopedTenantContext,
 } from "@starter/shared/core";
@@ -153,33 +154,47 @@ const MAPPINGS: readonly GlMapping[] = [
   // Bead 1214: a goods receipt row that landed on a negative balance. Its
   // `stock_negative_revaluations` row (not the ledger row: the receipt journal
   // already books the receipt) posts Dr HPP / Cr inventory, reversed when the
-  // new cost is below the old average.
+  // new cost is below the old average. Bead legend-slssv (1232): every inflow
+  // onto a negative balance records one (transfer, production output, order
+  // return, positive count adjustment), keyed by its own source id.
   {
     sourceType: "negative_stock_revaluation",
-    movementTypes: ["receipt"],
+    movementTypes: [
+      "receipt",
+      "transfer_in",
+      "production_in",
+      "return",
+      "adjustment",
+    ],
     eventName: "stock.deducted",
     variant: "negative_revaluation",
     amountKey: "costIdr",
   },
 ];
 
-/** The GL source a ledger movement feeds (a receipt feeds its revaluation). */
-function glSourceTypeOf(
-  sourceType: StockSourceType,
-  movementType: StockMovementType,
-): InventoryGlSourceType {
-  return sourceType === "goods_receipt" && movementType === "receipt"
-    ? "negative_stock_revaluation"
-    : sourceType;
-}
-
-/** The ledger source type behind a GL source (its id form follows it). */
-function ledgerSourceTypeOf(
-  sourceType: InventoryGlSourceType,
-): StockSourceType {
-  return sourceType === "negative_stock_revaluation"
-    ? "goods_receipt"
-    : sourceType;
+/**
+ * The GL sources a ledger movement feeds: its own source when the bridge maps
+ * it (a goods receipt is booked by the AP side, never here), and the
+ * revaluation source of any inflow (it has a row only when the inflow landed
+ * on a negative balance; otherwise it is ignored).
+ */
+function glSourceTypesOf(payload: {
+  sourceType: StockSourceType;
+  movementType: StockMovementType;
+  quantity: string;
+}): InventoryGlSourceType[] {
+  const sources: InventoryGlSourceType[] = [];
+  if (
+    payload.sourceType !== "goods_receipt" &&
+    mappingOf(payload.sourceType, payload.movementType)
+  )
+    sources.push(payload.sourceType);
+  if (
+    parseDecimal4(payload.quantity) > 0n &&
+    mappingOf("negative_stock_revaluation", payload.movementType)
+  )
+    sources.push("negative_stock_revaluation");
+  return sources;
 }
 
 const LATE_AUDIT_FIELDS = [
@@ -216,11 +231,17 @@ function normalizeSource(source: {
   sourceId: string;
 }) {
   const dbId = sourceIdToDb(source.sourceId);
-  return {
-    sourceType: source.sourceType,
-    dbId,
-    domainId: sourceIdFromDb(ledgerSourceTypeOf(source.sourceType), dbId),
-  };
+  // A revaluation keeps the id form of the document behind it (bead 1232):
+  // an order's ULID stays a ULID (its uuid storage form is not a valid
+  // journal source id), a uuid document stays a uuid. The event payload and
+  // the blocked row both carry that domain form, so it is stable per source.
+  const domainId =
+    source.sourceType === "negative_stock_revaluation"
+      ? ulidSchema.safeParse(source.sourceId).success
+        ? source.sourceId
+        : dbId
+      : sourceIdFromDb(source.sourceType, dbId);
+  return { sourceType: source.sourceType, dbId, domainId };
 }
 
 /** Outlet of a source's first row (ledger or revaluation), or null. */
@@ -277,16 +298,22 @@ export async function deliverInventoryGlEvent(
   if (event.name !== "stock.moved") return { status: "ignored" };
   if (event.tenantId !== context.tenant.tenantId) return { status: "ignored" };
   const payload = stockMovedEventPayloadSchema.parse(event.payload);
-  const sourceType = glSourceTypeOf(payload.sourceType, payload.movementType);
-  if (!mappingOf(sourceType, payload.movementType))
-    return { status: "ignored" };
+  const sourceTypes = glSourceTypesOf(payload);
+  if (sourceTypes.length === 0) return { status: "ignored" };
   if (!(await accountingEnabled(tx, context))) return { status: "ignored" };
-  return settleStockSource(
-    tx,
-    context,
-    { sourceType, sourceId: payload.sourceId },
-    now,
-  );
+  // The movement's own source first; its result is reported unless it was
+  // ignored (a revaluation-only inflow reports the revaluation).
+  let result: InventoryGlResult = { status: "ignored" };
+  for (const sourceType of sourceTypes) {
+    const settled = await settleStockSource(
+      tx,
+      context,
+      { sourceType, sourceId: payload.sourceId },
+      now,
+    );
+    if (result.status === "ignored") result = settled;
+  }
+  return result;
 }
 
 /**
@@ -547,6 +574,8 @@ export async function postStockSourceToGl(
           eq(stockLedger.tenantId, tenantId),
           eq(stockLedger.sourceType, "order"),
           eq(stockLedger.sourceId, target.dbId),
+          // A revaluation posted on the same row is not an order posting.
+          eq(inventoryGlPostings.sourceType, "order"),
         ),
       )
       .limit(1);
@@ -556,7 +585,6 @@ export async function postStockSourceToGl(
     }
   }
   await lockSource(tx, tenantId, target);
-  const ledgerSourceType = ledgerSourceTypeOf(target.sourceType);
   let rows =
     target.sourceType === "negative_stock_revaluation"
       ? await tx
@@ -581,6 +609,7 @@ export async function postStockSourceToGl(
                 inventoryGlPostings.ledgerEntryId,
                 stockNegativeRevaluations.ledgerEntryId,
               ),
+              eq(inventoryGlPostings.sourceType, "negative_stock_revaluation"),
             ),
           )
           .where(
@@ -609,12 +638,17 @@ export async function postStockSourceToGl(
               and(
                 eq(inventoryGlPostings.tenantId, stockLedger.tenantId),
                 eq(inventoryGlPostings.ledgerEntryId, stockLedger.id),
+                // The same row's revaluation posting is a separate source.
+                ne(
+                  inventoryGlPostings.sourceType,
+                  "negative_stock_revaluation",
+                ),
               ),
             )
             .where(
               and(
                 eq(stockLedger.tenantId, tenantId),
-                eq(stockLedger.sourceType, ledgerSourceType),
+                eq(stockLedger.sourceType, target.sourceType),
                 eq(stockLedger.sourceId, target.dbId),
                 inArray(stockLedger.movementType, [...mapping.movementTypes]),
               ),
