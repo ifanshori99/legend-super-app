@@ -83,6 +83,7 @@ Putaran 2 (20 Nov): 1203-70..82 ditambah (51 test: 48 merah, 3 hijau = 37, 76, 7
 ## Status 20 Nov (implementasi)
 
 Selesai (commit af4548552 + fix tipe):
+
 - (b) Token QR mengikat versi ledger poin member (`v` = max posting_seq); POS menolak redeem bila ledger bergerak sesudah mint (naik/turun), token tanpa `v` tidak pernah redeem. Mint memeriksa: tagihan milik member sesi (SQL), tenant, PT program, status terbuka, bukti member (member_qr/pwa_session), outlet tidak offline (edge node aktif + alert `edge_offline` terbuka, atau proses edge), points <= maxPoints; menolak token hidup kedua per tagihan lewat tabel baru `member_qr_redeem_mints` (migrasi 0733, journal idx 733, RLS tenant+outlet; `db:generate` kosong).
 - (a) `services/member-points-redeem.service.ts` + rute `GET /api/member/open-bills`, `GET .../:orderId/points-quote`, `POST /api/member/points-redeem/status` (allow pending: suspended melihat `membership_inactive`).
 - (c) Tidak ada kode baru (keputusan CTO 20 Nov): void bill poin+tunai captured tetap ditolak (SO-R-09), refund bill berpoin tetap ditolak (REFUND_POINTS_TENDER_UNSUPPORTED); void points-only mengembalikan tepat sekali (sudah ada; 1203-60/61/75 hijau).
@@ -92,6 +93,7 @@ Selesai (commit af4548552 + fix tipe):
 Test: 1203 (51/51), member-qr-mint + pos-1059 (74/74 bersama 1203), migration-fk-force-rls, migration-force-rls-guard, data-import-registry, member-isolation, pos-936-points/so-points/so-refund/ticket (165/165). Typecheck api lolos. Web/shared tidak disentuh.
 
 Sisa / risiko untuk CTO:
+
 - Quote (GET) tidak menjalankan expiry poin (read-only); mint menjalankannya, jadi saldo di quote bisa lebih tinggi dari saldo saat mint bila ada poin kedaluwarsa yang belum dibukukan.
 - Binding versi ledger: earn apa pun dalam 120 s jendela QR membuat QR ditolak (member harus buat QR baru). Dua QR untuk dua tagihan berbeda: hanya yang pertama ditukar yang lolos.
 - Status `invalid` dipakai juga untuk QR basi (versi berubah, sisa tagihan turun di bawah nilai token).
