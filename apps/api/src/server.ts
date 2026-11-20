@@ -9,6 +9,7 @@ import { closePayoutGrantorPool } from "./db/grantor";
 import { startCatalogPublisherWorker } from "./services/edge-master-data-publisher.ts";
 import { startEdgeOfflineSweepWorker } from "./services/edge-offline-sweep.ts";
 import { logger } from "./lib/logger";
+import { initSentry } from "./lib/sentry.ts";
 import { createDoitGateway } from "./services/payment-doit.ts";
 import { createDuitkuGateway } from "./services/payment-duitku.ts";
 import { registerPaymentGateway } from "./services/payment-gateway.ts";
@@ -45,6 +46,8 @@ import {
 import { edgeShutdownForceMs, startEdgeEdcAgent } from "./edge/edc/runtime.ts";
 import { startEdgePrintAgent } from "./edge/print/runtime.ts";
 
+// legend-17az7: opt-in error monitoring, a no-op without SENTRY_DSN.
+initSentry({ dsn: env.SENTRY_DSN, environment: env.DEPLOYMENT_MODE });
 const app = createApp();
 // WS-05 payment gateway (legend-b9i): DOIT, fails closed without credentials.
 // Installed here, not in createApp, so tests keep their fake gateways. The

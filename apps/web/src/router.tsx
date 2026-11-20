@@ -4,6 +4,7 @@ import { setupRouterSsrQueryIntegration } from "@tanstack/react-router-ssr-query
 import { useT } from "@/components/i18n";
 import { ApiError } from "@/lib/api/client";
 import { ANONYMOUS_ACCESS } from "@/lib/areas/access";
+import { initWebSentry } from "@/lib/sentry";
 import { routeTree } from "./routeTree.gen";
 
 function Pending() {
@@ -18,7 +19,17 @@ function Pending() {
   );
 }
 
+let sentryStarted = false;
+
 export function getRouter() {
+  // legend-17az7: browser error monitoring, once, and only with a DSN.
+  if (typeof window !== "undefined" && !sentryStarted) {
+    sentryStarted = true;
+    void initWebSentry({
+      dsn: import.meta.env.VITE_SENTRY_DSN,
+      environment: import.meta.env.MODE,
+    }).catch(() => {});
+  }
   // A fresh QueryClient per router: during SSR that means per request, so one
   // visitor's cached data never leaks into another's render.
   const queryClient = new QueryClient({
