@@ -1912,6 +1912,21 @@ export async function recordDistributionPaymentService(
       request: { paymentRef: input.paymentRef, paidAt: input.paidAt },
     });
     if (claim === "replay") return { run, paid: false };
+    // SO 1216 F-P1a: the money goes out only at the figures it was approved
+    // on. A reopen (or a reopen + re-close) bumps the version: refuse
+    // (PERIOD_CHANGED), the DB line guard refuses the same.
+    const period = await loadPeriod(
+      tx,
+      tenantId,
+      await legalEntityOf(tx, tenantId, entityRow),
+      run.fiscalPeriodId,
+      true,
+    );
+    if (
+      period.status !== "closed" ||
+      period.version !== row.fiscalPeriodVersion
+    )
+      throw new AccountingError("PERIOD_CHANGED");
     const paidAt = new Date(input.paidAt);
     const next = transitionDistributionRun(run, {
       type: "record_payment",

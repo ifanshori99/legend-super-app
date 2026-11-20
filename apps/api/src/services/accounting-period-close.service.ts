@@ -49,6 +49,7 @@ import {
 } from "@starter/shared/core";
 import { db } from "../db";
 import {
+  distributionRuns,
   fiscalPeriods,
   fiscalPeriodSnapshotLines,
   fiscalPeriodSnapshots,
@@ -652,6 +653,28 @@ export async function approvePeriodReopen(
     });
     if (decision.requestStatus !== "approved")
       throw new AccountingError("INVALID_TRANSITION");
+    // SO 1216 F-P1a: an approved (not fully paid) distribution run of this
+    // period can neither be cancelled nor recalculated; reopening would let it
+    // pay out stale profit. Fail closed: pay it first (a paid run is corrected
+    // by an adjustment run). The period row lock above serializes this with an
+    // approval; the DB trigger on fiscal_periods refuses the same.
+    const [approvedRun] = await tx
+      .select({ id: distributionRuns.id })
+      .from(distributionRuns)
+      .where(
+        and(
+          eq(distributionRuns.tenantId, tenantId),
+          eq(distributionRuns.fiscalPeriodId, periodRow.id),
+          eq(distributionRuns.status, "approved"),
+        ),
+      )
+      .limit(1);
+    if (approvedRun)
+      throw new HttpError(
+        409,
+        "PERIOD_HAS_APPROVED_DISTRIBUTION",
+        "Periode ini punya distribusi bagi hasil yang sudah disetujui tetapi belum dibayar. Selesaikan pembayarannya dulu, baru buka ulang periode.",
+      );
     const reopened = decision.period;
     const [updatedRequest] = await tx
       .update(periodReopenRequests)

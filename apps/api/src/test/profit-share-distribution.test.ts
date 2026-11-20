@@ -3185,3 +3185,135 @@ describe("1210 an outlet profit entity refuses unallocated entity-level expense"
     );
   });
 });
+
+// ---- 1217 / SO 1216 F-P1a: a distribution paid from a reopened period ---------
+//
+// Scenario of the report: March closed, a profit distribution of Rp60 jt
+// approved, March reopened, a forgotten Rp30 jt payroll posted, closed again
+// again: the payment still went out at Rp60 jt. Decision (fail closed, the
+// simplest rule that stops the money): a period with an APPROVED (not yet fully
+// paid) run cannot be reopened, because an approved run can neither be
+// cancelled nor recalculated; a PAID run does not block (the money is out, its
+// correction is the existing adjustment run). And a payment is refused unless
+// the period is closed at the run's version, in the service and in the DB.
+
+describe("1217 an approved distribution and a reopen of its period", () => {
+  const periodRow = async (id: string) =>
+    (
+      await owner.query<{ status: string; version: number }>(
+        "SELECT status, version FROM fiscal_periods WHERE tenant_id = $1 AND id = $2",
+        [tenantA, id],
+      )
+    ).rows[0];
+
+  const requestReopen = (periodId: string) =>
+    requestPeriodReopen(
+      scopedContext(),
+      periodId,
+      { reason: "Gaji Maret Rp30 jt terlewat" },
+      userIdSchema.parse(randomUUID()),
+    );
+  const approveReopen = (requestId: string) =>
+    approvePeriodReopen(
+      scopedContext(),
+      requestId,
+      { note: null },
+      userIdSchema.parse(randomUUID()),
+    );
+
+  /** Moves the period with every trigger off: a state the guards now refuse. */
+  async function forcePeriod(id: string, status: "open" | "closed") {
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SET LOCAL session_replication_role = replica");
+      await client.query(
+        status === "open"
+          ? `UPDATE fiscal_periods SET status = 'open', version = version + 1,
+               closed_by = NULL, closed_at = NULL
+             WHERE tenant_id = $1 AND id = $2`
+          : `UPDATE fiscal_periods SET status = 'closed', version = version + 1,
+               closed_by = $3, closed_at = now()
+             WHERE tenant_id = $1 AND id = $2`,
+        status === "open" ? [tenantA, id] : [tenantA, id, closer],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async function approved60(world: World) {
+    const drafted = await draftRun(world, 60_000_000);
+    expect((await submitRun(manager, drafted.run.id)).status).toBe(200);
+    const decided = await decideRun(approver, drafted.run.id);
+    expect(decided.status, JSON.stringify(decided.body)).toBe(200);
+    return { period: drafted.period, run: parseRun(decided.body) };
+  }
+
+  it("Maret Rp60 jt approved: the reopen is refused (service and DB) until the run is paid", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { period, run } = await approved60(world);
+
+    const request = await requestReopen(period.id);
+    await expect(approveReopen(request.id)).rejects.toMatchObject({
+      status: 409,
+      code: "PERIOD_HAS_APPROVED_DISTRIBUTION",
+    });
+    await expect(
+      owner.query(
+        `UPDATE fiscal_periods SET status = 'open', version = version + 1,
+           closed_by = NULL, closed_at = NULL
+         WHERE tenant_id = $1 AND id = $2`,
+        [tenantA, period.id],
+      ),
+    ).rejects.toThrow(/PERIOD_HAS_APPROVED_DISTRIBUTION/);
+    expect(await periodRow(period.id)).toEqual({
+      status: "closed",
+      version: 2,
+    });
+
+    // Control: paid at the figures of v1, the period may reopen (a correction
+    // is then an adjustment run).
+    expect((await payAll(manager, run)).status).toBe("paid");
+    // The refused approval left the request pending; it now goes through.
+    await approveReopen(request.id);
+    expect(await periodRow(period.id)).toEqual({ status: "open", version: 3 });
+  });
+
+  it("a run whose period was reopened or closed again is never paid", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { period, run } = await approved60(world);
+    const line = run.lines.find((l) => l.paymentStatus === "pending")!;
+    const rawPay = () =>
+      owner.query(
+        `UPDATE distribution_lines SET payment_status = 'paid', payment_ref = 'RAW',
+           paid_at = now(), paid_by = 'raw'
+         WHERE tenant_id = $1 AND id = $2`,
+        [tenantA, line.id],
+      );
+
+    await forcePeriod(period.id, "open");
+    const whileOpen = await payLine(manager, run.id, line.id);
+    expect(whileOpen.status, JSON.stringify(whileOpen.body)).toBe(409);
+    expect(errorCode(whileOpen)).toBe("PERIOD_CHANGED");
+    await expect(rawPay()).rejects.toThrow(/SH-02/);
+
+    await forcePeriod(period.id, "closed");
+    expect(await periodRow(period.id)).toEqual({
+      status: "closed",
+      version: 4,
+    });
+    const afterReclose = await payLine(manager, run.id, line.id);
+    expect(afterReclose.status, JSON.stringify(afterReclose.body)).toBe(409);
+    expect(errorCode(afterReclose)).toBe("PERIOD_CHANGED");
+    await expect(rawPay()).rejects.toThrow(/SH-02/);
+
+    const after = parseRun((await getRun(manager, run.id)).body);
+    expect(after.status).toBe("approved");
+    expect(after.lines.every((l) => l.paymentStatus === "pending")).toBe(true);
+  });
+});
