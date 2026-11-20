@@ -944,6 +944,12 @@ export async function issueApologyVoucherForStaff(
           customerProfileId: input.customerProfileId ?? null,
         },
         idempotencyKey: `apology:${digest}`,
+        // SO 1221 B1 (legend-1222): without a failed-item report nothing caps
+        // the value to what the guest paid, and a fresh Idempotency-Key per
+        // call would let one supervisor mint many vouchers under the lowest
+        // tier. So a voucher with no report always takes the lowest tier's
+        // approval chain, whatever its value. Founder may loosen this later.
+        alwaysRequire: orderIssueId === null,
         now,
       });
       if (opened.required)

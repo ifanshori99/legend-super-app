@@ -118,6 +118,40 @@ const voucherCount = async (issueId: string) => {
   return Number(rows[0]!.n);
 };
 
+/**
+ * SO 1221 B1 (legend-1222): a standalone voucher (no failed-item report) always
+ * needs approval, whatever its value. Asks for it, approves the request and
+ * returns the body to post again with the approval attached.
+ */
+async function approvedStandalone(
+  body: Record<string, unknown>,
+  who = w.outletSupervisor,
+  key: string = randomUUID(),
+): Promise<Record<string, unknown>> {
+  const asked = await issueVoucherWithKey(key, body, who);
+  expect(asked.status, JSON.stringify(asked.body)).toBe(409);
+  expect(asked.body.error.code).toBe("APPROVAL_REQUIRED");
+  const found = JSON.stringify(asked.body.error).match(UUID_PATTERN) ?? [];
+  const { rows } = await owner.query<{ id: string }>(
+    "SELECT id FROM approval_requests WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+    [w.tenant.tenantId, found],
+  );
+  await w.approveExisting(rows[0]!.id);
+  return { ...body, approvalRequestId: rows[0]!.id };
+}
+
+const issueVoucherWithKey = (
+  key: string,
+  body: Record<string, unknown>,
+  who = w.outletSupervisor,
+) =>
+  who.client
+    .post("/api/apology-vouchers")
+    .set("Host", w.tenant.hostname)
+    .set(originHeader)
+    .set("Idempotency-Key", key)
+    .send(body);
+
 describe("legend-4qu voucher maaf di bawah batas matriks", () => {
   it("supervisor menerbitkan voucher: kontrak terpenuhi, status issued, kadaluarsa sesuai hari", async () => {
     const { issueId } = await failedItem();
@@ -389,6 +423,91 @@ describe("legend-4qu voucher maaf di atas batas matriks", () => {
   });
 });
 
+describe("legend-1222 voucher maaf tanpa laporan item gagal selalu butuh approval (SO 1221 B1)", () => {
+  const countByReason = async (reason: string) =>
+    Number(
+      (
+        await owner.query<{ n: string }>(
+          "SELECT count(*) AS n FROM apology_vouchers WHERE tenant_id = $1 AND reason = $2",
+          [w.tenant.tenantId, reason],
+        )
+      ).rows[0]!.n,
+    );
+  const NO_REPORT_VALUE = VOUCHER_APPROVAL_FLOOR_IDR - 1_000;
+
+  it("supervisor terbit 99.000 tanpa laporan: menunggu approval, voucher belum ada; key baru tidak melewati approval", async () => {
+    const reason = `Tanpa laporan ${randomUUID()}`;
+    const first = await issueVoucher(
+      { valueIdr: NO_REPORT_VALUE, reason },
+      w.outletSupervisor,
+    );
+    expect(first.status, JSON.stringify(first.body)).toBe(409);
+    expect(first.body.error.code).toBe("APPROVAL_REQUIRED");
+    expect(await countByReason(reason)).toBe(0);
+
+    // A fresh Idempotency-Key is the same ask: still no voucher.
+    const again = await issueVoucher(
+      { valueIdr: NO_REPORT_VALUE, reason },
+      w.outletSupervisor,
+    );
+    expect(again.status).toBe(409);
+    expect(await countByReason(reason)).toBe(0);
+
+    const found = JSON.stringify(first.body.error).match(UUID_PATTERN) ?? [];
+    const { rows } = await owner.query<{ status: string; amount_idr: string }>(
+      "SELECT status, amount_idr FROM approval_requests WHERE tenant_id = $1 AND id = ANY($2::uuid[]) AND action_type = 'apology_voucher'",
+      [w.tenant.tenantId, found],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.status).toBe("pending");
+    expect(Number(rows[0]!.amount_idr)).toBe(NO_REPORT_VALUE);
+
+    // One pending request per outlet at a time: close it so later cases can ask.
+    await owner.query(
+      "UPDATE approval_requests SET status = 'rejected', decided_by = $3, decided_at = now(), reason = 'Ditolak' WHERE tenant_id = $1 AND id = ANY($2::uuid[]) AND action_type = 'apology_voucher'",
+      [w.tenant.tenantId, found, w.approverUserId],
+    );
+  });
+
+  it("dengan laporan item gagal di bawah cap: langsung terbit seperti sebelumnya", async () => {
+    const { issueId } = await failedItem();
+    const response = await issueVoucher({
+      valueIdr: BELOW,
+      reason: REASON,
+      orderIssueId: issueId,
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    expect(response.body.data.approvalRequestId).toBeNull();
+  });
+
+  it("setelah approve voucher bisa terbit dan dipakai; approval yang sama tidak bisa dipakai lagi", async () => {
+    const reason = `Disetujui ${randomUUID()}`;
+    const body = await approvedStandalone({
+      valueIdr: NO_REPORT_VALUE,
+      reason,
+    });
+    const issued = await issueVoucher(body, w.outletSupervisor);
+    expect(issued.status, JSON.stringify(issued.body)).toBe(201);
+    expect(apologyVoucherSchema.parse(issued.body.data)).toMatchObject({
+      valueIdr: NO_REPORT_VALUE,
+      status: "issued",
+      approvalRequestId: body.approvalRequestId,
+      orderIssueId: null,
+    });
+    const { rows } = await owner.query<{ status: string }>(
+      `SELECT v.status FROM vouchers v JOIN apology_vouchers a
+         ON a.tenant_id = v.tenant_id AND a.voucher_id = v.id
+        WHERE a.tenant_id = $1 AND a.id = $2`,
+      [w.tenant.tenantId, issued.body.data.id],
+    );
+    expect(rows[0]!.status).toBe("issued");
+
+    const reused = await issueVoucher(body, w.outletSupervisor);
+    expect([409, 422]).toContain(reused.status);
+    expect(await countByReason(reason)).toBe(1);
+  });
+});
+
 describe("legend-4qu voucher maaf: validasi, izin, isolasi", () => {
   it("nilai nol, alasan pendek, hari di luar 1-90, dan field asing ditolak 422", async () => {
     const { issueId } = await failedItem();
@@ -657,7 +776,10 @@ describe("legend-4qu voucher maaf menyelesaikan issue dan approval sekali pakai"
 describe("legend-4qu staf menyelesaikan issue dengan voucher yang ada", () => {
   const standalone = async () => {
     const issued = await issueVoucher(
-      { valueIdr: BELOW, reason: REASON },
+      await approvedStandalone({
+        valueIdr: BELOW,
+        reason: `${REASON} ${randomUUID()}`,
+      }),
       w.outletSupervisor,
     );
     expect(issued.status).toBe(201);
@@ -727,17 +849,7 @@ describe("legend-4qu staf menyelesaikan issue dengan voucher yang ada", () => {
 
 describe("legend-4qu voucher maaf: header Idempotency-Key", () => {
   /** Standalone vouchers: no order issue, so only the key can dedupe them. */
-  const withKey = (
-    key: string,
-    body: Record<string, unknown>,
-    who = w.outletSupervisor,
-  ) =>
-    who.client
-      .post("/api/apology-vouchers")
-      .set("Host", w.tenant.hostname)
-      .set(originHeader)
-      .set("Idempotency-Key", key)
-      .send(body);
+  const withKey = issueVoucherWithKey;
   const rowsWithReason = async (reason: string) =>
     Number(
       (
@@ -751,7 +863,11 @@ describe("legend-4qu voucher maaf: header Idempotency-Key", () => {
   it("klik ganda bersamaan dengan key dan isi sama: satu voucher, kode sama", async () => {
     const reason = `Klik ganda ${randomUUID()}`;
     const key = randomUUID();
-    const body = { valueIdr: BELOW, reason };
+    const body = await approvedStandalone(
+      { valueIdr: BELOW, reason },
+      undefined,
+      key,
+    );
     const results = await Promise.all([withKey(key, body), withKey(key, body)]);
     for (const result of results) expect([200, 201]).toContain(result.status);
     expect(results[1]!.body.data.id).toBe(results[0]!.body.data.id);
@@ -792,7 +908,11 @@ describe("legend-4qu voucher maaf: header Idempotency-Key", () => {
     const temporary = await w.newOutletSupervisor();
     const key = randomUUID();
     const reason = `Izin dicabut ${randomUUID()}`;
-    const body = { valueIdr: BELOW, reason };
+    const body = await approvedStandalone(
+      { valueIdr: BELOW, reason },
+      temporary,
+      key,
+    );
     const first = await withKey(key, body, temporary);
     expect(first.status).toBe(201);
     const replay = await withKey(key, body, temporary);
@@ -815,10 +935,11 @@ describe("legend-4qu voucher maaf: header Idempotency-Key", () => {
       ).rows[0]!.voucher_id;
 
     const cancelledKey = randomUUID();
-    const cancelledBody = {
-      valueIdr: BELOW,
-      reason: `Dibatalkan ${randomUUID()}`,
-    };
+    const cancelledBody = await approvedStandalone(
+      { valueIdr: BELOW, reason: `Dibatalkan ${randomUUID()}` },
+      undefined,
+      cancelledKey,
+    );
     const cancelled = await withKey(cancelledKey, cancelledBody);
     expect(cancelled.status).toBe(201);
     expect(cancelled.body.data.status).toBe("issued");
@@ -833,7 +954,11 @@ describe("legend-4qu voucher maaf: header Idempotency-Key", () => {
 
     const { order } = await failedItem();
     const redeemedKey = randomUUID();
-    const redeemedBody = { valueIdr: BELOW, reason: `Ditebus ${randomUUID()}` };
+    const redeemedBody = await approvedStandalone(
+      { valueIdr: BELOW, reason: `Ditebus ${randomUUID()}` },
+      undefined,
+      redeemedKey,
+    );
     const redeemed = await withKey(redeemedKey, redeemedBody);
     expect(redeemed.status).toBe(201);
     await owner.query(
@@ -854,7 +979,10 @@ describe("legend-4qu voucher maaf: header Idempotency-Key", () => {
   it("key sama dengan isi berbeda 409 IDEMPOTENCY_KEY_REUSED dan tidak ada voucher kedua", async () => {
     const reason = `Isi beda ${randomUUID()}`;
     const key = randomUUID();
-    const first = await withKey(key, { valueIdr: BELOW, reason });
+    const first = await withKey(
+      key,
+      await approvedStandalone({ valueIdr: BELOW, reason }, undefined, key),
+    );
     expect(first.status).toBe(201);
     const changed = await withKey(key, { valueIdr: BELOW + 1_000, reason });
     expect(changed.status).toBe(409);
@@ -865,10 +993,14 @@ describe("legend-4qu voucher maaf: header Idempotency-Key", () => {
   it("key yang sama dari staf lain 409 dan tidak menerbitkan voucher", async () => {
     const { issueId } = await failedItem();
     const key = randomUUID();
-    const first = await withKey(key, {
-      valueIdr: BELOW,
-      reason: `Milik staf pertama ${randomUUID()}`,
-    });
+    const first = await withKey(
+      key,
+      await approvedStandalone(
+        { valueIdr: BELOW, reason: `Milik staf pertama ${randomUUID()}` },
+        undefined,
+        key,
+      ),
+    );
     expect(first.status).toBe(201);
     const other = await withKey(
       key,
