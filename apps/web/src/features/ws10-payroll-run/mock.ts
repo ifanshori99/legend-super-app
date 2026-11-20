@@ -710,6 +710,7 @@ registerMock(createPayrollTaxExport, ({ body }) => {
       fileUrl: `https://files.legend.example/signed/tax-${body.taxPeriod}-${body.kind}.csv?sig=demo`,
       createdBy: currentActor(),
       createdAt: now(),
+      supersededAt: null,
     }),
   );
   if (!state().taxExports.some((row) => row.id === file.id))

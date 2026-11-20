@@ -67,6 +67,7 @@ import { recordAudit } from "./core-audit.ts";
 import type { Tx } from "./hris-access.ts";
 import { assertPayrollTenantCan } from "./payroll-access.ts";
 import { emitPayrollEvent } from "./payroll-events.ts";
+import { supersedeTaxExportsInTransaction } from "./payroll-tax-export-supersede.ts";
 import {
   assertNoSettledOvertimeCorrectionFromRun,
   lockOvertimeCorrectionScope,
@@ -867,5 +868,21 @@ export async function decidePayrollRunReversalInTransaction(
     now,
   });
   await audit(tx, context, actor, "payroll.run.reversed", run, next, now);
-  return next;
+  // legend 1229: an export of this month (or year) still lists the reversed
+  // slips. Same transaction, under the month lock above.
+  const taxExportsSuperseded = await supersedeTaxExportsInTransaction(
+    tx,
+    context,
+    actor,
+    {
+      payrollRunId,
+      legalEntityId: row.legalEntityId,
+      payDate: row.payDate,
+      reason: "run_reversed",
+    },
+    now,
+  );
+  return taxExportsSuperseded.length > 0
+    ? { ...next, taxExportsSuperseded }
+    : next;
 }

@@ -222,14 +222,20 @@ payrollRunsRouter.post(
         "payroll.run.lock",
         { actorUserId, payrollRunId },
         async () => {
-          await lockPayrollRunInTransaction(tx, context, actorUserId, {
-            payrollRunId,
-          });
-          return withExcludedFormerEmployees(
+          const { taxExportsSuperseded } = await lockPayrollRunInTransaction(
+            tx,
+            context,
+            actorUserId,
+            { payrollRunId },
+          );
+          const run = await withExcludedFormerEmployees(
             tx,
             context.tenant.tenantId,
             await loadPayrollRunDto(tx, context.tenant.tenantId, payrollRunId),
           );
+          return taxExportsSuperseded.length > 0
+            ? { ...run, taxExportsSuperseded }
+            : run;
         },
       ),
     );

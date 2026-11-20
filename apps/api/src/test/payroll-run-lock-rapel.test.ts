@@ -1327,3 +1327,147 @@ describe("legend-ele0u rapel runs lock through the general run lock", () => {
     expect(await countOf("payslips", s.runId)).toBe(0);
   });
 });
+
+describe("legend 1229 a Coretax export goes stale after a later lock or a reversal", () => {
+  it("[tax-export-superseded] lock of a new run in the month, then its reversal, mark the earlier exports stale with an audit row; a stale replay is 409, an export made after the reversal replays", async () => {
+    const s = await seedScenario("superseded");
+    await simulatedAndApproved(s);
+    const locked = await lockRun(s.runId);
+    expect(locked.status, JSON.stringify(locked.body)).toBe(200);
+    const exportJuly = (idempotencyKey: string) =>
+      post(exporter, TAX_EXPORT_PATH, {
+        legalEntityId: s.entityId,
+        kind: "monthly_withholding",
+        taxPeriod: "2026-07",
+        idempotencyKey,
+      });
+    const exportRow = (id: string) =>
+      asTenant(async (conn) => {
+        const result = await conn.query<{
+          superseded_at: Date | null;
+          superseded_reason: string | null;
+        }>(
+          "SELECT superseded_at, superseded_reason FROM payroll_tax_exports WHERE id = $1",
+          [id],
+        );
+        return result.rows[0]!;
+      });
+    const supersededAudits = (id: string) =>
+      asTenant(async (conn) => {
+        const result = await conn.query<{ text: string }>(
+          `SELECT event::text AS text FROM audit_logs
+            WHERE tenant_id = $1 AND event::text LIKE '%' || $2 || '%'
+              AND event::text LIKE '%payroll.tax_export.superseded%'`,
+          [tenant.id, id],
+        );
+        return result.rows;
+      });
+    const message =
+      "Ekspor pajak bulan Juli 2026 sudah tidak sesuai. Buat ekspor baru dan lakukan pembetulan SPT bila sudah dilaporkan.";
+
+    // Export A of July, before the THR run is locked.
+    const keyA = key();
+    const a = await exportJuly(keyA);
+    expect(a.status, JSON.stringify(a.body)).toBe(201);
+    const fileA = payrollTaxExportSchema.parse(a.body.data);
+    expect(fileA.supersededAt).toBeNull();
+
+    // A THR run of the same entity and month is locked: A is stale.
+    const thrRunId = randomUUID();
+    const scheduleId = randomUUID();
+    createdRuns.push(thrRunId);
+    createdThrSchedules.push(scheduleId);
+    await asTenant(async (conn) => {
+      await conn.query(
+        `INSERT INTO thr_schedules (id, tenant_id, legal_entity_id, name, holiday_name,
+                                    holiday_date, tenure_as_of_date, pay_date, created_by)
+         VALUES ($1, $2, $3, 'THR uji ekspor basi', 'Hari raya uji', '2026-07-28',
+                 '2026-07-28', '2026-07-28', 'lock-rapel-test')`,
+        [scheduleId, tenant.id, s.entityId],
+      );
+      await conn.query(
+        `INSERT INTO payroll_runs (id, tenant_id, legal_entity_id, payroll_policy_id, run_type,
+                                   period_start, period_end, pay_date, thr_schedule_id, created_by)
+         VALUES ($1, $2, $3, $4, 'thr', '2026-07-01', '2026-07-31', '2026-07-28', $5, $6)`,
+        [thrRunId, tenant.id, s.entityId, s.policyId, scheduleId, CREATOR],
+      );
+    });
+    const simulated = await simulateRun(thrRunId);
+    expect(simulated.status, JSON.stringify(simulated.body)).toBe(200);
+    await approveBySql(thrRunId);
+    const thrLocked = await lockRun(thrRunId);
+    expect(thrLocked.status, JSON.stringify(thrLocked.body)).toBe(200);
+    expect(thrLocked.body.data.taxExportsSuperseded).toEqual([
+      expect.objectContaining({
+        id: fileA.id,
+        kind: "monthly_withholding",
+        taxPeriod: "2026-07",
+        message,
+      }),
+    ]);
+    const rowA = await exportRow(fileA.id);
+    expect(rowA.superseded_at).not.toBeNull();
+    expect(rowA.superseded_reason).toBe("run_locked");
+    expect(await supersededAudits(fileA.id)).toHaveLength(1);
+
+    // A replay of the stale export gives no link.
+    const replayA = await exportJuly(keyA);
+    expect(replayA.status, JSON.stringify(replayA.body)).toBe(409);
+    expect(replayA.body.error.code).toBe("PAYROLL_TAX_EXPORT_SUPERSEDED");
+    expect(replayA.body.error.message).toBe(message);
+
+    // Export B after the lock is current and replays.
+    const keyB = key();
+    const b = await exportJuly(keyB);
+    expect(b.status, JSON.stringify(b.body)).toBe(201);
+    const fileB = payrollTaxExportSchema.parse(b.body.data);
+    expect(fileB.supersededAt).toBeNull();
+    expect((await exportJuly(keyB)).status).toBe(201);
+
+    // The THR run is reversed (request + a second person approves): B is stale.
+    const approver = await signedInClient("Lock rapel cancel approver");
+    await grantRole(approver.userId, [
+      "payroll.view",
+      "payroll.cancel.approve",
+    ]);
+    const { requestPayrollRunReversalInTransaction, decidePayrollRunReversalInTransaction } =
+      await import("../services/payroll-run-reversal.service.ts");
+    await withTenant(db, context, (tx) =>
+      requestPayrollRunReversalInTransaction(
+        tx,
+        context,
+        exporterUserId,
+        thrRunId as never,
+        "Salah hitung THR (uji ekspor basi)",
+      ),
+    );
+    const reversed = await withTenant(db, context, (tx) =>
+      decidePayrollRunReversalInTransaction(
+        tx,
+        context,
+        approver.userId,
+        thrRunId as never,
+        "approve",
+      ),
+    );
+    expect(reversed.status).toBe("reversed");
+    expect(reversed.taxExportsSuperseded?.map((row) => row.id)).toEqual([
+      fileB.id,
+    ]);
+    const rowB = await exportRow(fileB.id);
+    expect(rowB.superseded_reason).toBe("run_reversed");
+    expect(await supersededAudits(fileB.id)).toHaveLength(1);
+    // A was already stale: not marked (or audited) twice.
+    expect(await supersededAudits(fileA.id)).toHaveLength(1);
+    expect((await exportJuly(keyB)).status).toBe(409);
+
+    // Export C after the reversal is correct and replays (a reversed run
+    // of the month alone no longer blocks the link).
+    const keyC = key();
+    const c = await exportJuly(keyC);
+    expect(c.status, JSON.stringify(c.body)).toBe(201);
+    const replayC = await exportJuly(keyC);
+    expect(replayC.status, JSON.stringify(replayC.body)).toBe(201);
+    expect(replayC.body.data.supersededAt).toBeNull();
+  });
+});

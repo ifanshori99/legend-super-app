@@ -37,6 +37,7 @@ import { recordAudit } from "./core-audit.ts";
 import { notFound, type Tx } from "./hris-access.ts";
 import { assertPayrollTenantCan } from "./payroll-access.ts";
 import { lockPayrollRunMonth } from "./payroll-run-pph21.service.ts";
+import { supersedeTaxExportsInTransaction } from "./payroll-tax-export-supersede.ts";
 import { snapshotPayeeBankForLock } from "./payroll-bank-snapshot.service.ts";
 import {
   computeEmployeeGrossInTransaction,
@@ -495,6 +496,19 @@ export async function finalizePayrollRapelRunInTransaction(
       createdAt: now.toISOString(),
     },
     ["employeeCount"],
+  );
+  // legend 1229: the new rapel slips leave an export of the month stale.
+  await supersedeTaxExportsInTransaction(
+    tx,
+    context,
+    actor,
+    {
+      payrollRunId: run.id,
+      legalEntityId: run.legalEntityId,
+      payDate: run.payDate,
+      reason: "run_locked",
+    },
+    now,
   );
   return result(run.id, calculated, revisions);
 }
