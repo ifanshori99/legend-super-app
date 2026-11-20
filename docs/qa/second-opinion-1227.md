@@ -1,0 +1,6 @@
+# Second opinion 1227: sisa SO 1221 (int/batch101, baca kode saja)
+
+1. P2 Ekspor pajak sesudah run dibalik: `payroll-run-reversal.service.ts:825-835` hanya cek file bank, tidak `payroll_tax_exports`; status ekspor hanya pending/ready/failed (`db/schema/payroll.ts:843`). Ekspor PPh21 yang sudah diunduh/difile tidak ditandai basi saat run dibalik atau run baru dikunci di bulan/tahun itu. Replay idempotency (`payroll-export.service.ts:1348-1364`) tidak menutup run baru sesudah ekspor (P3). Fix: kolom `superseded_at`, set saat reversal dan saat lock run di bulan/tahun ekspor, audit, notice "perlu pembetulan", replay berdasarkan `superseded_at`.
+2. OK. Link 300 dtk, tenant-scoped, izin dicek ulang, audit. P3: daftar file bank lama hanya butuh `payroll.view` padahal berisi rekening semua karyawan (`payroll-export.service.ts:686-700`); usul `payroll.lock`.
+3. OK. Reset PIN slip hanya menghapus PIN, set ulang hanya dari sesi karyawan. P3: tanpa rate limit/rank; notifikasi karyawan saat HR reset PIN.
+4. OK (dorman). Distribusi service charge belum ada route. P3 laten: `distributeServiceChargePoolToRun` (`payroll-service-charge.service.ts:602-700`) tidak menambah total run, restore kosong; perbaiki sebelum diwire.
