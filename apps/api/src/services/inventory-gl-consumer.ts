@@ -59,6 +59,7 @@ import {
   isNotNull,
   lte,
   max,
+  min,
   ne,
   sql,
 } from "drizzle-orm";
@@ -100,6 +101,7 @@ import {
   type InventoryGlSourceType,
 } from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
+import { logger } from "../lib/logger.ts";
 import { isTrainingOrder } from "./device-training.ts";
 import { postJournalFromRuleInTransaction } from "./accounting-journal.service.ts";
 import { wouldPostingBeBlockedByClosedPeriod } from "./accounting-period.service.ts";
@@ -411,10 +413,86 @@ async function settleStockSource(
           lastFailedAt: now,
         },
       });
+    // Card 1260: a parked source is invisible otherwise (a production batch
+    // can stay parked for good). Ids and codes only, no personal data.
+    logger.warn(
+      {
+        event: "inventory_gl.parked",
+        tenantId,
+        outletId,
+        sourceType: target.sourceType,
+        sourceId: target.domainId,
+        errorCode: code,
+      },
+      "Inventory GL source parked in inventory_gl_blocked",
+    );
     return { status: "blocked", code };
   }
   if (result.status !== "ignored") await clearBlocked(tx, tenantId, target);
   return result;
+}
+
+/**
+ * Card 1260: how many sources of the legal entity sit parked in
+ * `inventory_gl_blocked` with stock rows before `periodEnd` (exclusive, UTC
+ * start of the next month). Closing a period over them would freeze books
+ * that still miss their COGS, waste, count or production journal. UTC is
+ * conservative for the outlets' east-of-UTC business days: a source on the
+ * edge can count for the earlier period, never be missed.
+ */
+export async function countBlockedInventoryGlBefore(
+  tx: Tx,
+  tenantId: ScopedTenantContext["tenant"]["tenantId"],
+  legalEntityId: string,
+  periodEnd: Date,
+): Promise<number> {
+  const blocked = await tx
+    .select({
+      sourceType: inventoryGlBlocked.sourceType,
+      sourceId: inventoryGlBlocked.sourceId,
+    })
+    .from(inventoryGlBlocked)
+    .innerJoin(
+      outlets,
+      and(
+        eq(outlets.tenantId, inventoryGlBlocked.tenantId),
+        eq(outlets.id, inventoryGlBlocked.outletId),
+      ),
+    )
+    .where(
+      and(
+        eq(inventoryGlBlocked.tenantId, tenantId),
+        eq(outlets.legalEntityId, legalEntityId),
+      ),
+    );
+  let count = 0;
+  for (const source of blocked) {
+    const dbId = sourceIdToDb(source.sourceId);
+    const [first] =
+      source.sourceType === "negative_stock_revaluation"
+        ? await tx
+            .select({ at: min(stockNegativeRevaluations.occurredAt) })
+            .from(stockNegativeRevaluations)
+            .where(
+              and(
+                eq(stockNegativeRevaluations.tenantId, tenantId),
+                eq(stockNegativeRevaluations.sourceId, dbId),
+              ),
+            )
+        : await tx
+            .select({ at: min(stockLedger.occurredAt) })
+            .from(stockLedger)
+            .where(
+              and(
+                eq(stockLedger.tenantId, tenantId),
+                eq(stockLedger.sourceType, source.sourceType),
+                eq(stockLedger.sourceId, dbId),
+              ),
+            );
+    // No stock row to date it: count it (fail closed).
+    if (!first?.at || first.at < periodEnd) count += 1;
+  }
+  return count;
 }
 
 async function clearBlocked(

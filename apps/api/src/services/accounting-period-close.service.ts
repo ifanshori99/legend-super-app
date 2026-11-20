@@ -58,6 +58,7 @@ import {
   periodReopenRequests,
 } from "../db/schema";
 import { withTenant } from "../db/tenant";
+import { countBlockedInventoryGlBefore } from "./inventory-gl-consumer.ts";
 import { HttpError } from "../lib/http-error";
 import {
   lockLegalEntityForPeriodChange,
@@ -374,6 +375,23 @@ export async function closeFiscalPeriod(
       actorId,
       now: now.toISOString(),
     });
+
+    // Card 1260: stock sources parked in inventory_gl_blocked up to this
+    // period have no journal yet. Refuse the close (fail closed) and say how
+    // many; retry or fix the mapping first.
+    const [year, month] = row.period.split("-").map(Number) as [number, number];
+    const blockedGl = await countBlockedInventoryGlBefore(
+      tx,
+      tenantId,
+      row.legalEntityId,
+      new Date(Date.UTC(year, month, 1)),
+    );
+    if (blockedGl > 0)
+      throw new AccountingError(
+        "PERIOD_INVENTORY_GL_BLOCKED",
+        `Masih ada ${blockedGl} sumber persediaan yang belum terjurnal (diparkir). Selesaikan dulu, lalu tutup periode.`,
+        { count: blockedGl },
+      );
 
     const balances = await cumulativeBalances(tx, tenantId, row, entityPeriods);
     let snapshot: { id: string } | undefined;
