@@ -40,7 +40,9 @@ compose --profile migration run --rm migrate node dist/predeploy-check.js || {
 compose --profile migration run --rm migrate
 "$script_dir/provision-roles.sh" --env-file "$env_file" --audit ||
   { echo "Database role audit failed: services were not started. Run provision-roles.sh (docs/deployment.md) and deploy again." >&2; exit 1; }
-# The scanner (legend-w9hwh) starts without --wait: its first signature download
-# outlasts the others, and the API answers scanner "unavailable" until it is up.
+# The scanner (legend-w9hwh) starts on its own, before and apart from the --wait
+# below: api has no depends_on clamav, because --wait on api would then wait for
+# clamav to turn healthy (minutes of signature download). Until clamd is up the
+# API answers scanner "unavailable".
 compose up -d clamav
 compose up -d --wait api web worker caddy
