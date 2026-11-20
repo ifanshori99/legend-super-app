@@ -18,6 +18,7 @@ import {
   decimal4,
   isoDateTimeSchema,
   tenantIdSchema,
+  userIdSchema,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
@@ -30,6 +31,7 @@ import {
 } from "@starter/shared/events";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
+import { reverseJournal } from "../services/accounting-journal.service.ts";
 import { recordStockMovement } from "../services/inventory.service.ts";
 import {
   deliverInventoryGlEvent,
@@ -281,6 +283,48 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await owner.end();
+});
+
+// Card 1218 (SO 1216 F-P1b): the HPP journal a sale posts through the stock
+// consumer (`stock-gl:`) cannot be reversed by hand; that removes HPP and
+// raises the profit share. The correction is the stock movement.
+describe("1218 the HPP journal of a sale is not reversible by hand", () => {
+  it("[1218-COGS] receive 10 @100, sell 5: the posted HPP journal is refused 409 AUTO_JOURNAL_LOCKED and nothing is posted", async () => {
+    const world = await makeWorld();
+    const item = await insertItem("Kopi");
+    // The receipt lands on a zero balance: no revaluation, its journal is the
+    // AP side's, so only the sale is bridged here.
+    await receive(world, item, "10", "100", BEFORE);
+    const sale = await sell(world, item, "5", DAY);
+    expect((await deliverRow(sale)).status).toBe("posted");
+    const { rows } = await owner.query<{ id: string }>(
+      `SELECT id FROM journal_entries
+        WHERE tenant_id = $1 AND legal_entity_id = $2 AND source_type = 'cogs'
+          AND idempotency_key LIKE 'stock-gl:%'`,
+      [tenantId, world.entity],
+    );
+    expect(rows).toHaveLength(1);
+    const hpp = rows[0]!.id;
+    expect(await balanceOf(hpp)).toEqual({ debit: 500, credit: 500 });
+    await expect(
+      reverseJournal(
+        context(),
+        hpp,
+        {
+          entryDate: "2026-10-20",
+          reason: "Dibalik manual (1218)",
+          idempotencyKey: `manual-${randomUUID()}`,
+        },
+        userIdSchema.parse(randomUUID()),
+        NOW,
+      ),
+    ).rejects.toMatchObject({ status: 409, code: "AUTO_JOURNAL_LOCKED" });
+    const reversals = await owner.query(
+      "SELECT 1 FROM journal_entries WHERE tenant_id = $1 AND reversal_of = $2",
+      [tenantId, hpp],
+    );
+    expect(reversals.rows).toHaveLength(0);
+  });
 });
 
 describe("1214 receipt onto a negative balance revalues the units sold short", () => {

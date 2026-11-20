@@ -1101,6 +1101,98 @@ async function assertNotDepreciationJournal(
 }
 
 /**
+ * A manual reversal of an automatic journal may not raise net profit (SO 1216
+ * F-P1b): mirroring a payroll accrual, HPP, waste, a cashier cash-out (Dr
+ * expense / Cr 1101), a supplier bill, a refund or a points deferral removes
+ * an expense or restores income, so the profit share would be overpaid. The
+ * rule reads the account type from the COA: the original's income and
+ * expense lines summing credit - debit below zero mean the mirror raises
+ * profit, and it is refused. The correction goes through the source flow
+ * (cancel the payroll run, fix the stock movement) or a manual journal
+ * (fees, MDR). A sale, a receipt, a DP or a payout (no profit raised) stays
+ * reversible. Journals finance writes by hand (manual, recurring) and the
+ * system reversals (payroll cancel, sale void) are not judged here.
+ * Depreciation has its own guard. The only exceptions are the source guards
+ * on PROFIT_RAISING_REVERSAL_ALLOWED that applied and passed.
+ */
+const PROFIT_JUDGED_EXEMPT_SOURCES: ReadonlySet<string> = new Set([
+  "manual",
+  "recurring",
+]);
+
+type ProfitRaisingReversalGuard =
+  "order-refund-backing-not-paid-out" | "petty-cash-out-source-not-paid";
+
+/**
+ * Allow list: a profit-raising manual reversal passes only when one of these
+ * guards applied to the journal AND passed, proving no money left. A guard
+ * that does not apply opens nothing; any other journal stays refused.
+ */
+const PROFIT_RAISING_REVERSAL_ALLOWED: ReadonlySet<ProfitRaisingReversalGuard> =
+  new Set<ProfitRaisingReversalGuard>([
+    // assertReturnBackingNotPaidOut (legend-ayz7q): only the POS refund
+    // journal `aj:order-refund:<uuid>`, whose DP backing funded no completed
+    // payout, so the refund money never left.
+    "order-refund-backing-not-paid-out",
+    // assertAutoCashOutSourceNotPaid (legend-5qqb9): only a journal that
+    // credits petty cash 1102 and whose known cash-out source (loan, cash
+    // reimbursement, cash payroll settle, supplier payment) is no longer paid.
+    // A drawer cash-out (Cr 1101) never passes here.
+    "petty-cash-out-source-not-paid",
+  ]);
+
+async function assertReversalDoesNotRaiseProfit(
+  tx: TenantTransaction,
+  tenantId: TenantId,
+  row: { sourceType: string },
+  lines: readonly LineRow[],
+  passedGuards: readonly ProfitRaisingReversalGuard[],
+): Promise<void> {
+  if (PROFIT_JUDGED_EXEMPT_SOURCES.has(row.sourceType)) return;
+  if (passedGuards.some((guard) => PROFIT_RAISING_REVERSAL_ALLOWED.has(guard)))
+    return;
+  const accountIds = [...new Set(lines.map((line) => line.accountId))];
+  if (accountIds.length === 0) return;
+  const accounts = await tx
+    .select({ id: chartOfAccounts.id, type: chartOfAccounts.type })
+    .from(chartOfAccounts)
+    .where(
+      and(
+        eq(chartOfAccounts.tenantId, tenantId),
+        inArray(chartOfAccounts.id, accountIds),
+      ),
+    );
+  const typeOf = new Map(accounts.map((account) => [account.id, account.type]));
+  // Judged per outlet (null = entity level): moving an expense from outlet A
+  // to B nets to zero on the entity but raises A's profit share (1218 r4).
+  const profitByOutlet = new Map<string | null, bigint>();
+  for (const line of lines) {
+    const type = typeOf.get(line.accountId);
+    // An account missing from the COA cannot be judged: fail closed.
+    if (type === undefined)
+      throw new HttpError(
+        409,
+        "AUTO_JOURNAL_LOCKED",
+        "Akun jurnal ini tidak ditemukan di bagan akun; pembalikan manual ditolak.",
+      );
+    if (type !== "revenue" && type !== "expense") continue;
+    const outlet = line.outletId ?? null;
+    profitByOutlet.set(
+      outlet,
+      (profitByOutlet.get(outlet) ?? 0n) +
+        BigInt(String(line.creditIdr)) -
+        BigInt(String(line.debitIdr)),
+    );
+  }
+  if ([...profitByOutlet.values()].some((profit) => profit < 0n))
+    throw new HttpError(
+      409,
+      "AUTO_JOURNAL_LOCKED",
+      "Jurnal otomatis ini tidak bisa dibalik manual karena pembalikannya menaikkan laba; koreksi lewat alur sumbernya (batalkan payroll run, perbaiki pergerakan stok) atau dengan jurnal manual.",
+    );
+}
+
+/**
  * A manual reversal of a journal that credits the entity's CURRENT petty cash
  * account (GL 1102) would reopen cash that already left the till
  * (legend-5qqb9, bead 1091). Refused by default: only journals the finance user
@@ -1117,8 +1209,9 @@ async function assertAutoCashOutSourceNotPaid(
   tenantId: TenantId,
   row: EntryRow,
   lines: readonly { accountId: string; debitIdr: number; creditIdr: number }[],
-): Promise<void> {
-  if (row.sourceType === "manual" || row.sourceType === "recurring") return;
+): Promise<boolean> {
+  if (row.sourceType === "manual" || row.sourceType === "recurring")
+    return false;
   // Two cash accounts are judged, each on its own net credit, never summed:
   // the petty cash account the journal was posted on (its snapshot) and the one
   // petty_cash maps to today. Summing lets a remap cancel a real credit: Dr C /
@@ -1152,16 +1245,13 @@ async function assertAutoCashOutSourceNotPaid(
     (row.postingAccountSnapshot === null ||
       row.postingAccountSnapshot === undefined) &&
     knownCashOutSource;
-  if (!judgeOnSourceOnly) {
-    if (cashAccountIds.size === 0) return;
-    const creditsCash = [...cashAccountIds].some(
-      (accountId) =>
-        lines
-          .filter((line) => line.accountId === accountId)
-          .reduce((sum, line) => sum + line.creditIdr - line.debitIdr, 0) > 0,
-    );
-    if (!creditsCash) return;
-  }
+  const creditsCash = [...cashAccountIds].some(
+    (accountId) =>
+      lines
+        .filter((line) => line.accountId === accountId)
+        .reduce((sum, line) => sum + line.creditIdr - line.debitIdr, 0) > 0,
+  );
+  if (!judgeOnSourceOnly && !creditsCash) return false;
   const uuidPart = (prefix: string): string | null | undefined => {
     if (key === null || !key.startsWith(prefix)) return undefined;
     const id = uuidSchema.safeParse(key.slice(prefix.length));
@@ -1212,7 +1302,8 @@ async function assertAutoCashOutSourceNotPaid(
               ),
             )
             .limit(1);
-    paid = !claim || (claim.status === "paid" && claim.payout === "cash");
+    // Only a claim that is no longer paid opens the exception (1218 r4).
+    paid = !claim || claim.status === "paid";
   } else if (payoutSettle) {
     // Cash payroll settle journal: its posting row (journal_key) in kind settle.
     const [posting] = await tx
@@ -1249,6 +1340,10 @@ async function assertAutoCashOutSourceNotPaid(
       "CASH_OUT_JOURNAL_LOCKED",
       "This journal takes cash out of petty cash and cannot be reversed by hand; correct it through its source (return flow).",
     );
+  // The guard applied and passed only when the journal really credits petty
+  // cash (1102) and its known source says the cash came back. A journal held
+  // on its source alone (no snapshot, no 1102 credit seen) proves nothing.
+  return creditsCash;
 }
 
 /**
@@ -1258,28 +1353,37 @@ async function assertAutoCashOutSourceNotPaid(
  * consumers. No intent lock is acquired here: consumers lock intents before
  * source journals. A payout journal reversal alone does not recover cash, so
  * it does not release this guard; finance must reconcile the paid refund.
+ * Returns true only when the guard applied (an `aj:order-refund:<uuid>`
+ * journal) and passed; false when it does not apply.
  */
 async function assertReturnBackingNotPaidOut(
   tx: TenantTransaction,
   tenantId: TenantId,
   row: EntryRow,
-): Promise<void> {
+  lines: readonly LineRow[],
+): Promise<boolean> {
   if (
     row.sourceType !== "refund" ||
     row.sourceId === null ||
     row.idempotencyKey !== `aj:order-refund:${row.sourceId}`
   )
-    return;
+    return false;
   // Journal sources also accept ULIDs (for example legacy refund events).
   // Q81's pos_order_refunds uses UUIDs; other sources have no Q81 release.
   const sourceId = uuidSchema.safeParse(row.sourceId);
-  if (!sourceId.success) return;
+  if (!sourceId.success) return false;
   // Follow all historical credit-use edges too: Q82 can move the same DP to
   // another session, where a different intent's payout consumes shared room.
   // Refuse conservatively once any later payout of that component was booked.
-  const paid = await tx.execute(sql`
+  const [verdict] = (
+    await tx.execute<{
+      release_count: string;
+      release_sum: string;
+      booked_payout: boolean;
+      completed_refund: boolean;
+    }>(sql`
     WITH RECURSIVE releases AS (
-      SELECT payment_intent_id, released_at
+      SELECT payment_intent_id, released_at, amount_idr
         FROM pos_deposit_refunds
        WHERE tenant_id = ${tenantId}::uuid
          AND pos_refund_id = ${sourceId.data}::uuid
@@ -1303,22 +1407,69 @@ async function assertReturnBackingNotPaidOut(
         JOIN sources s ON c.node = 's:' || s.session_id::text
                        OR c.node = 'i:' || s.intent_id::text
     )
-    SELECT 1 FROM payment_refunds p
-      JOIN journal_entries j
-        ON j.tenant_id = p.tenant_id
-       AND j.idempotency_key = 'aj:payout:' || p.id::text
-     WHERE p.tenant_id = ${tenantId}::uuid
-       AND p.status = 'completed' AND p.unallocated_fund_id IS NULL
-       AND 'i:' || p.payment_intent_id::text IN (SELECT node FROM connected)
-       AND p.completed_at >= (SELECT min(released_at) FROM releases)
-     LIMIT 1
-  `);
-  if (paid.rows.length > 0)
+    SELECT (SELECT count(*) FROM releases)::text AS release_count,
+           (SELECT coalesce(sum(amount_idr), 0) FROM releases)::text AS release_sum,
+           EXISTS (
+             SELECT 1 FROM payment_refunds p
+               JOIN journal_entries j
+                 ON j.tenant_id = p.tenant_id
+                AND j.idempotency_key = 'aj:payout:' || p.id::text
+              WHERE p.tenant_id = ${tenantId}::uuid
+                AND p.status = 'completed' AND p.unallocated_fund_id IS NULL
+                AND 'i:' || p.payment_intent_id::text IN (SELECT node FROM connected)
+                AND p.completed_at >= (SELECT min(released_at) FROM releases)
+           ) AS booked_payout,
+           EXISTS (
+             SELECT 1 FROM payment_refunds p
+              WHERE p.tenant_id = ${tenantId}::uuid
+                AND p.status NOT IN ('failed', 'rejected')
+                AND 'i:' || p.payment_intent_id::text IN (SELECT node FROM connected)
+           ) AS completed_refund
+  `)
+  ).rows;
+  if (verdict?.booked_payout === true)
     throw new HttpError(
       409,
       "JOURNAL_BACKING_IN_USE",
       "DP return journal backs a completed payout; reconcile that refund before correcting its backing.",
     );
+  // Applied and passed (opens a profit-raising reversal) only when the refund
+  // went back to the DP and no money left (1218 r4): (a) the refund released
+  // DP; (b) every credit line is on customer_deposit, in total no more than
+  // the released DP, so no cash or bank credit hides in it; (c) no payment
+  // refund in the DP component that is not failed or rejected: completed,
+  // booked or not, and pending/approved/sending (1218 r5; an unknown status
+  // also holds the journal). Refund request and approve take this journal
+  // FOR SHARE (assertDepositReturnNotReversed), so they queue with us.
+  if (verdict === undefined || BigInt(verdict.release_count) === 0n)
+    return false;
+  if (verdict.completed_refund) return false;
+  const depositIds = new Set<string>();
+  const snapshotDepositId = row.postingAccountSnapshot?.customer_deposit;
+  if (typeof snapshotDepositId === "string") depositIds.add(snapshotDepositId);
+  const [mapping] = await tx
+    .select({ accountId: accountMappings.accountId })
+    .from(accountMappings)
+    .where(
+      and(
+        eq(accountMappings.tenantId, tenantId),
+        eq(accountMappings.legalEntityId, row.legalEntityId),
+        eq(accountMappings.role, "customer_deposit"),
+      ),
+    )
+    .limit(1);
+  if (mapping) depositIds.add(mapping.accountId);
+  // The snapshot and today's mapping must agree on one account.
+  if (depositIds.size !== 1) return false;
+  const [depositId] = [...depositIds];
+  let credited = 0n;
+  for (const line of lines) {
+    const credit = BigInt(String(line.creditIdr));
+    if (credit === 0n) continue;
+    if (line.accountId !== depositId) return false;
+    credited += credit;
+  }
+  return credited > 0n && credited <= BigInt(verdict.release_sum);
 }
 
 /**
@@ -1412,15 +1563,32 @@ export async function reverseJournalInTransaction(
       "PAYOUT_WAIVE_JOURNAL_LOCKED",
       "This journal corrects a waived cash payroll handover and cannot be reversed.",
     );
-  if (input.manualReversal === true)
-    await assertAutoCashOutSourceNotPaid(
+  const passedGuards: ProfitRaisingReversalGuard[] = [];
+  if (
+    input.manualReversal === true &&
+    (await assertAutoCashOutSourceNotPaid(
       tx,
       context.tenant.tenantId,
       row,
       lines.map(toLine),
-    );
+    ))
+  )
+    passedGuards.push("petty-cash-out-source-not-paid");
   assertReversible(row, reversal?.id ?? null);
-  await assertReturnBackingNotPaidOut(tx, context.tenant.tenantId, row);
+  if (
+    await assertReturnBackingNotPaidOut(tx, context.tenant.tenantId, row, lines)
+  )
+    passedGuards.push("order-refund-backing-not-paid-out");
+  // After the source guards: only a guard on the allow list that applied and
+  // passed opens a profit-raising reversal.
+  if (input.manualReversal === true)
+    await assertReversalDoesNotRaiseProfit(
+      tx,
+      context.tenant.tenantId,
+      row,
+      lines,
+      passedGuards,
+    );
   const reversalLines = buildReversalLines(
     {
       lines: lines.map(toLine),

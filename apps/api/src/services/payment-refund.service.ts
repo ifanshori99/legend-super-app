@@ -73,6 +73,7 @@ import {
 import { failedRefundHoldsOrderSql } from "./payment-refund-failed-open.ts";
 import { fileOwnRefundFailedHoldInTx } from "./refund-recon-hold.service.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
+import { assertDepositReturnNotReversed } from "./payment-refund-deposit-return.ts";
 import {
   lockRefundApprovalScope,
   refundApprovalDecisionTime,
@@ -1263,6 +1264,13 @@ async function settleLocked(
   if (outcome === "approved") {
     const last = rows.at(-1);
     if (!last?.decidedBy) throw new Error("approved chain has no approver");
+    // 1218 r5: the intent is locked (lockRefundGraph); a reversed DP return
+    // backs nothing, so the chain approval does not open the payout.
+    await assertDepositReturnNotReversed(
+      tx,
+      refund.tenantId,
+      refund.paymentIntentId,
+    );
     // Every approver must hold payment.reconcile or pos.refund.approve at this
     // outlet (the inbox route does not check the outlet), and at least one must
     // hold pos.refund.approve (supervisor authority). The chain is already
@@ -1466,6 +1474,12 @@ async function decideRefund(
         // legend-7uqbs: money the provider already refunded is never approved
         // for a second payout (a reject stays open to staff).
         await assertNotProviderRefunded(tx, refund.tenantId, refund);
+        // 1218 r5: a DP return whose journal finance reversed backs nothing.
+        await assertDepositReturnNotReversed(
+          tx,
+          refund.tenantId,
+          refund.paymentIntentId,
+        );
       }
       // Idempotent by key, in this same transaction: a retried call (also a
       // submit-only call or a direct reject, which leave no keyed chain row)

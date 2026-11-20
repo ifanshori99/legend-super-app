@@ -77,6 +77,15 @@ import {
 } from "@starter/shared/events";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
+import { assertDepositReturnNotReversed } from "../services/payment-refund-deposit-return.ts";
+import {
+  approveRefund,
+  createRefund,
+} from "../services/payment-admin.service.ts";
+import {
+  approveRefundInputSchema,
+  createRefundInputSchema,
+} from "@starter/shared/payment/admin";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import { lockIntentsForFact } from "../services/payment-refund-fact-time.ts";
@@ -5526,13 +5535,15 @@ async function seedPosRefund(
     paymentIntentId?: string | null;
   }[],
   refundedAt: string,
+  /** Returned items; an amount-0 refund (DP-only return) must name them. */
+  items: { itemId: string; quantity: number }[] = [],
 ): Promise<string> {
   return asTenant(world.tenant, async (client) => {
     const { rows } = await client.query<{ id: string }>(
       `INSERT INTO pos_order_refunds (tenant_id, outlet_id, order_id, amount_idr, reason, reason_note,
-          lines, requested_by, approved_by, approval_request_id, refunded_at)
+          lines, requested_by, approved_by, approval_request_id, refunded_at, items)
        VALUES ($1, $2, $3, $4, 'customer_cancelled', 'Uji', $5::jsonb,
-               'kasir-uji', 'supervisor-uji', $6, $7)
+               'kasir-uji', 'supervisor-uji', $6, $7, $8::jsonb)
        RETURNING id`,
       [
         world.tenant.id,
@@ -5542,6 +5553,7 @@ async function seedPosRefund(
         JSON.stringify(lines.map((line) => ({ ...line, reference: null }))),
         randomUUID(),
         refundedAt,
+        JSON.stringify(items),
       ],
     );
     return rows[0]!.id;
@@ -6458,8 +6470,84 @@ describe("legend-x1i1h legend-j0ag5 a void or a finance reversal of what backs a
     expect(await balanceOf(world, "customer_deposit")).toBe(0);
   });
 
-  it("AJ-J0AG5-01 a POS refund journal that finance reversed backs nothing: a 30k payout parks POSTING_AMOUNTS_MISMATCH and customer_deposit never goes above 0", async () => {
-    const { world, intentId, orderUlid } = await soldOnIntent(shared, allQris);
+  // Card 1218: a sale raises profit, so its mirror lowers it; the manual
+  // reversal stays allowed (as does the payout, AJ-AYZ7Q-PAYOUT-REVERSED, and
+  // the unpaid POS refund behind its guard, AJ-J0AG5-01).
+  it("[1218-CASH-REFUND] a 100k cash POS refund (Cr cash, money handed over) cannot be reversed by hand: 409 AUTO_JOURNAL_LOCKED (1218 r4)", async () => {
+    const world = await makeWorld(shared);
+    const orderUlid = createUlid();
+    const sale: SaleAmounts = {
+      grossSalesIdr: 100_000,
+      completedAt: T_SALE,
+      tenders: [{ method: "cash", amountIdr: 100_000 }],
+    };
+    await seedPosOrder(world, orderUlid, sale);
+    await post(world, orderPaid(world, orderUlid, sale));
+    const lines = [{ method: "cash" as const, amountIdr: 100_000 }];
+    const posRefundId = await seedPosRefund(
+      world,
+      orderUlid,
+      lines,
+      T_POS_REFUND,
+    );
+    const refund = await post(
+      world,
+      orderRefunded(
+        world,
+        orderUlid,
+        posRefundId,
+        { grossSalesIdr: 100_000, pbjtIdr: 0, lines },
+        T_POS_REFUND,
+      ),
+    );
+    expect(await linesOf(world, refund.journalEntryId)).toContainEqual({
+      role: "cash_on_hand",
+      debit: 0,
+      credit: 100_000,
+    });
+    await expect(
+      reverseJournal(
+        contextOf(world.tenant),
+        refund.journalEntryId,
+        {
+          entryDate: "2026-10-15",
+          reason: "Koreksi keuangan (1218)",
+          idempotencyKey: `fin-${randomUUID()}`,
+        },
+        userIdSchema.parse(await seedUser()),
+      ),
+    ).rejects.toMatchObject({ status: 409, code: "AUTO_JOURNAL_LOCKED" });
+    expect(await journalCount(world)).toBe(2);
+  });
+
+  it("[1218-SALE] a posted POS sale journal is still reversed by hand", async () => {
+    const world = await makeWorld(shared);
+    const intentId = await seedIntent(world, { amountIdr: 100_000 });
+    await post(world, paymentPaid(world, intentId, 100_000));
+    const orderUlid = createUlid();
+    const sale: SaleAmounts = {
+      grossSalesIdr: 100_000,
+      completedAt: T_SALE,
+      tenders: allQris(intentId),
+    };
+    await seedPosOrder(world, orderUlid, sale);
+    const posted = await post(world, orderPaid(world, orderUlid, sale));
+    const reversal = await reverseJournal(
+      contextOf(world.tenant),
+      posted.journalEntryId,
+      {
+        entryDate: "2026-10-15",
+        reason: "Koreksi keuangan (1218)",
+        idempotencyKey: `fin-${randomUUID()}`,
+      },
+      userIdSchema.parse(await seedUser()),
+    );
+    expect(reversal.reversalOf).toBe(posted.journalEntryId);
+    await expectBalanced(world, reversal.id);
+  });
+
+  it("AJ-J0AG5-01 a POS refund journal without a DP release cannot be reversed by hand: 409 AUTO_JOURNAL_LOCKED, nothing posted (1218 r4)", async () => {
+    const { world, orderUlid } = await soldOnIntent(shared, allQris);
     const lines = [{ method: "qris" as const, amountIdr: 30_000 }];
     const posRefundId = await seedPosRefund(
       world,
@@ -6477,32 +6565,23 @@ describe("legend-x1i1h legend-j0ag5 a void or a finance reversal of what backs a
         T_POS_REFUND,
       ),
     );
-    await reverseJournal(
-      contextOf(world.tenant),
-      posRefund.journalEntryId,
-      {
-        entryDate: "2026-10-15",
-        reason: "Koreksi keuangan",
-        idempotencyKey: `fin-${randomUUID()}`,
-      },
-      userIdSchema.parse(await seedUser()),
-    );
-    expect(await balanceOf(world, "customer_deposit")).toBe(0);
-    const refundId = await seedRefund(world, intentId, 30_000);
-
-    expect(
-      await deliver(
-        world.tenant,
-        paymentRefunded(world, refundId, intentId, 30_000),
+    // Card 1218 r4: the refund journal credits cash or has no DP release, or
+    // a completed payment refund exists in its DP component, so no guard
+    // proves the money stayed; mirroring it restores revenue (profit up).
+    await expect(
+      reverseJournal(
+        contextOf(world.tenant),
+        posRefund.journalEntryId,
+        {
+          entryDate: "2026-10-15",
+          reason: "Koreksi keuangan",
+          idempotencyKey: `fin-${randomUUID()}`,
+        },
+        userIdSchema.parse(await seedUser()),
       ),
-    ).toEqual({
-      status: "parked",
-      code: "POSTING_AMOUNTS_MISMATCH",
-      retryable: false,
-    });
-    // receipt + sale + POS refund + its reversal
-    expect(await journalCount(world)).toBe(4);
-    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+    ).rejects.toMatchObject({ status: 409, code: "AUTO_JOURNAL_LOCKED" });
+    // receipt + sale + POS refund, no reversal
+    expect(await journalCount(world)).toBe(3);
   });
 
   /** Finance reverses the journal (ACC-01). */
@@ -6838,9 +6917,19 @@ describe("legend-41li5 payouts with equal completedAt", () => {
 describe("legend-77r0 Q81 DP return accounting never funds a payout twice", () => {
   const T_RETURN = "2026-10-15T08:00:00.000Z";
 
+  /**
+   * `dpOnly`: the return gives back only the 25k DP over QRIS: no cash line
+   * and no discount, so the refund journal is exactly Dr sales_revenue 25k /
+   * Cr customer_deposit 25k (card 1218 r4: provable unpaid DP-only return).
+   */
   async function returnedDeposit(
-    state: "posted" | "pending" | "reversed" = "posted",
+    arg:
+      | "posted"
+      | "pending"
+      | { state?: "posted" | "pending"; dpOnly?: boolean } = "posted",
   ) {
+    const { state = "posted", dpOnly = false } =
+      typeof arg === "string" ? { state: arg } : arg;
     const world = await makeWorld();
     const dp = await seedSeatedDeposit(world, 50_000);
     await post(world, paymentPaid(world, dp.intentId, 50_000));
@@ -6857,8 +6946,10 @@ describe("legend-77r0 Q81 DP return accounting never funds a payout twice", () =
     const posRefundId = await seedPosRefund(
       world,
       orderUlid,
-      [{ method: "cash", amountIdr: 15_000 }],
+      dpOnly ? [] : [{ method: "cash", amountIdr: 15_000 }],
       T_RETURN,
+      // Amount 0 + items: the DB lets a refund carry no tender line only then.
+      dpOnly ? [{ itemId: randomUUID(), quantity: 1 }] : [],
     );
     await asTenant(world.tenant, (client) =>
       client.query(
@@ -6880,12 +6971,14 @@ describe("legend-77r0 Q81 DP return accounting never funds a payout twice", () =
       orderUlid,
       posRefundId,
       {
-        grossSalesIdr: 40_000,
+        grossSalesIdr: dpOnly ? 25_000 : 40_000,
         pbjtIdr: 0,
-        lines: [
-          { method: "cash", amountIdr: 15_000 },
-          { method: "qris", amountIdr: 25_000 },
-        ],
+        lines: dpOnly
+          ? [{ method: "qris", amountIdr: 25_000 }]
+          : [
+              { method: "cash", amountIdr: 15_000 },
+              { method: "qris", amountIdr: 25_000 },
+            ],
       },
       T_RETURN,
     );
@@ -6895,17 +6988,6 @@ describe("legend-77r0 Q81 DP return accounting never funds a payout twice", () =
       outboxId = await seedOutboxEvent(world, event, ulidToUuid(orderUlid));
     else {
       journalId = (await post(world, event)).journalEntryId;
-      if (state === "reversed")
-        await reverseJournal(
-          contextOf(world.tenant),
-          journalId,
-          {
-            entryDate: "2026-10-15",
-            reason: "Koreksi DP retur",
-            idempotencyKey: randomUUID(),
-          },
-          userIdSchema.parse(await seedUser()),
-        );
     }
     return { world, dp, event, journalId, outboxId, posRefundId };
   }
@@ -6963,8 +7045,181 @@ describe("legend-77r0 Q81 DP return accounting never funds a payout twice", () =
     expect(await balanceOf(world, "customer_deposit")).toBe(0);
   });
 
-  it("AJ-Q81-04: finance reversing the return removes its DP backing, so original payer payout cannot post", async () => {
-    const { world, dp } = await returnedDeposit("reversed");
+  it("AJ-Q81-05: a DP-only return (no cash line, no discount) can be reversed by hand: the reversal posts balanced and customer_deposit returns to 0", async () => {
+    const { world, journalId } = await returnedDeposit({ dpOnly: true });
+    expect(await linesOf(world, journalId!)).toEqual([
+      { role: "customer_deposit", debit: 0, credit: 25_000 },
+      { role: "sales_revenue", debit: 25_000, credit: 0 },
+    ]);
+    const reversal = await reverseJournal(
+      contextOf(world.tenant),
+      journalId!,
+      {
+        entryDate: "2026-10-15",
+        reason: "Koreksi DP retur murni",
+        idempotencyKey: randomUUID(),
+      },
+      userIdSchema.parse(await seedUser()),
+    );
+    await expectBalanced(world, reversal.id);
+    expect(await journalCount(world)).toBe(4);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+  });
+
+  // Card 1218 r5: a payer refund still in flight (pending, approved,
+  // sending) holds the DP-only return just like a completed one.
+  for (const status of ["pending", "approved"] as const) {
+    it(`[1218-R5-OPEN-REFUND] a ${status} payer refund of the DP keeps a DP-only return from a manual reversal: 409 AUTO_JOURNAL_LOCKED`, async () => {
+      const { world, dp, journalId } = await returnedDeposit({ dpOnly: true });
+      await owner.query(
+        `INSERT INTO payment_refunds
+           (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status,
+            requested_by, approved_by, decided_at)
+         VALUES ($1, $2, $3, $4, 25000, 'Pengembalian dana', $5, 'requester', $6, $7)`,
+        [
+          randomUUID(),
+          world.tenant.id,
+          world.outletId,
+          dp.intentId,
+          status,
+          status === "approved" ? "approver" : null,
+          status === "approved" ? REFUND_DAY : null,
+        ],
+      );
+      await expect(
+        reverseJournal(
+          contextOf(world.tenant),
+          journalId!,
+          {
+            entryDate: "2026-10-15",
+            reason: "Koreksi DP retur murni saat refund berjalan",
+            idempotencyKey: randomUUID(),
+          },
+          userIdSchema.parse(await seedUser()),
+        ),
+      ).rejects.toMatchObject({ status: 409, code: "AUTO_JOURNAL_LOCKED" });
+      expect(await journalCount(world)).toBe(3);
+    });
+  }
+
+  it("[1218-R5-REVERSED-DP] once the DP-only return is reversed, refund request and approve (their shared guard after the intent lock) answer 409 DEPOSIT_RETURN_REVERSED", async () => {
+    const { world, dp, journalId } = await returnedDeposit({ dpOnly: true });
+    const guard = () =>
+      withTenant(db, contextOf(world.tenant), async (tx) => {
+        await tx.execute(
+          sql`SELECT 1 FROM payment_intents WHERE tenant_id = ${world.tenant.id}::uuid AND id = ${dp.intentId}::uuid FOR UPDATE`,
+        );
+        await assertDepositReturnNotReversed(tx, world.tenant.id, dp.intentId);
+      });
+    await expect(guard(), "control: before the reversal").resolves.toBe(
+      undefined,
+    );
+    await reverseJournal(
+      contextOf(world.tenant),
+      journalId!,
+      {
+        entryDate: "2026-10-15",
+        reason: "Koreksi DP retur murni",
+        idempotencyKey: randomUUID(),
+      },
+      userIdSchema.parse(await seedUser()),
+    );
+    await expect(guard()).rejects.toMatchObject({
+      status: 409,
+      code: "DEPOSIT_RETURN_REVERSED",
+    });
+  });
+
+  it("[1218-R5-REVERSED-DP-PROD] after a manual DP-only reversal, the production refund request and approve answer 409 DEPOSIT_RETURN_REVERSED and the refund is not approved", async () => {
+    const { world, dp, journalId } = await returnedDeposit({ dpOnly: true });
+    const requesterId = await seedUser();
+    const approverId = await seedUser();
+    const roleId = randomUUID();
+    await owner.query(
+      `INSERT INTO roles (id, tenant_id, name, is_template, permissions, allowed_scope_types)
+       VALUES ($1, $2, 'Finance Uji 1218', false, $3, '["tenant"]')`,
+      [
+        roleId,
+        world.tenant.id,
+        JSON.stringify(["payment.reconcile", "pos.refund.approve"]),
+      ],
+    );
+    for (const userId of [requesterId, approverId]) {
+      await owner.query(
+        `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+         VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 hour', $2)`,
+        [world.tenant.id, userId, roleId],
+      );
+    }
+    await owner.query(
+      `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels)
+       VALUES ($1, 'refund', NULL, $2, 1)`,
+      [world.tenant.id, roleId],
+    );
+    await reverseJournal(
+      contextOf(world.tenant),
+      journalId!,
+      {
+        entryDate: "2026-10-15",
+        reason: "Koreksi DP retur murni",
+        idempotencyKey: randomUUID(),
+      },
+      userIdSchema.parse(await seedUser()),
+    );
+    const requestKey = `req-${randomUUID()}`;
+    // Request: refused up front by the shared guard.
+    await expect(
+      createRefund(
+        contextOf(world.tenant),
+        requesterId,
+        createRefundInputSchema.parse({
+          idempotencyKey: requestKey,
+          paymentIntentId: dp.intentId,
+          amountIdr: 25_000,
+          reason: "Pengembalian DP uji",
+        }),
+        requestKey,
+      ),
+    ).rejects.toMatchObject({ status: 409, code: "DEPOSIT_RETURN_REVERSED" });
+    // Approve: a pending refund filed before the guard existed still cannot
+    // be approved.
+    const refundId = randomUUID();
+    await owner.query(
+      `INSERT INTO payment_refunds
+         (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status, requested_by)
+       VALUES ($1, $2, $3, $4, 25000, 'Pengembalian dana', 'pending', $5)`,
+      [refundId, world.tenant.id, world.outletId, dp.intentId, requesterId],
+    );
+    const approveKey = `apr-${randomUUID()}`;
+    await expect(
+      approveRefund(
+        contextOf(world.tenant),
+        approverId,
+        { refundId },
+        approveRefundInputSchema.parse({ idempotencyKey: approveKey }),
+        approveKey,
+        { mfaVerified: true },
+      ),
+    ).rejects.toMatchObject({ status: 409, code: "DEPOSIT_RETURN_REVERSED" });
+    const { rows } = await owner.query<{ status: string }>(
+      "SELECT status FROM payment_refunds WHERE tenant_id = $1 AND payment_intent_id = $2",
+      [world.tenant.id, dp.intentId],
+    );
+    expect(rows.map((r) => r.status)).toEqual(["pending"]);
+  });
+
+  it("AJ-Q81-06: after a DP-only return was reversed by hand, the original payer payout parks non-retryable POSTING_AMOUNTS_MISMATCH and customer_deposit never goes negative", async () => {
+    const { world, dp, journalId } = await returnedDeposit({ dpOnly: true });
+    await reverseJournal(
+      contextOf(world.tenant),
+      journalId!,
+      {
+        entryDate: "2026-10-15",
+        reason: "Koreksi DP retur murni",
+        idempotencyKey: randomUUID(),
+      },
+      userIdSchema.parse(await seedUser()),
+    );
     const refundId = await seedRefund(world, dp.intentId, 25_000);
     expect(
       await deliver(
@@ -6977,9 +7232,34 @@ describe("legend-77r0 Q81 DP return accounting never funds a payout twice", () =
       retryable: false,
     });
     expect(await balanceOf(world, "customer_deposit")).toBe(0);
+    expect(await journalCount(world)).toBe(4);
   });
 
-  for (const first of ["payout", "reversal"] as const) {
+  it("AJ-Q81-04: a return with a cash line cannot be reversed by hand (1218 r4): 409 AUTO_JOURNAL_LOCKED, its DP backing stays", async () => {
+    const { world, journalId } = await returnedDeposit();
+    // Card 1218 r4: the refund journal credits cash or has no DP release, or
+    // a completed payment refund exists in its DP component, so no guard
+    // proves the money stayed; mirroring it restores revenue (profit up).
+    await expect(
+      reverseJournal(
+        contextOf(world.tenant),
+        journalId!,
+        {
+          entryDate: "2026-10-15",
+          reason: "Koreksi DP retur",
+          idempotencyKey: randomUUID(),
+        },
+        userIdSchema.parse(await seedUser()),
+      ),
+    ).rejects.toMatchObject({ status: 409, code: "AUTO_JOURNAL_LOCKED" });
+    expect(await journalCount(world)).toBe(3);
+    expect(await balanceOf(world, "customer_deposit")).toBe(-25_000);
+  });
+
+  // Card 1218 r4: with the reversal first, it is now refused before any write
+  // (a completed payment refund exists in the DP component), so only the
+  // payout-first race remains reachable; AJ-AYZ7Q-UNPOSTED covers the refusal.
+  for (const first of ["payout"] as ("payout" | "reversal")[]) {
     it(`AJ-AYZ7Q-RACE ${first} locks first: concurrent finance reversal and payout never leave an unbacked debit`, async () => {
       const { world, dp, journalId } = await returnedDeposit();
       const refundId = await seedRefund(world, dp.intentId, 25_000);
@@ -7156,33 +7436,27 @@ describe("legend-77r0 Q81 DP return accounting never funds a payout twice", () =
     });
   }
 
-  it("AJ-AYZ7Q-UNPOSTED: a completed refund without a payout journal does not prevent source reversal; its later delivery cannot debit the deposit", async () => {
+  it("AJ-AYZ7Q-UNPOSTED: a completed refund without a payout journal keeps its source locked against a manual reversal (1218 r4)", async () => {
     const { world, dp, journalId } = await returnedDeposit();
     const refundId = await seedRefund(world, dp.intentId, 25_000);
-    const reversed = await reverseJournal(
-      contextOf(world.tenant),
-      journalId!,
-      {
-        entryDate: "2026-10-15",
-        reason: "Koreksi DP retur sebelum jurnal payout",
-        idempotencyKey: randomUUID(),
-      },
-      userIdSchema.parse(await seedUser()),
-    );
-    await expectBalanced(world, reversed.id);
-    expect(
-      await deliver(
-        world.tenant,
-        paymentRefunded(world, refundId, dp.intentId, 25_000),
+    // Card 1218 r4: the refund journal credits cash or has no DP release, or
+    // a completed payment refund exists in its DP component, so no guard
+    // proves the money stayed; mirroring it restores revenue (profit up).
+    await expect(
+      reverseJournal(
+        contextOf(world.tenant),
+        journalId!,
+        {
+          entryDate: "2026-10-15",
+          reason: "Koreksi DP retur sebelum jurnal payout",
+          idempotencyKey: randomUUID(),
+        },
+        userIdSchema.parse(await seedUser()),
       ),
-    ).toEqual({
-      status: "parked",
-      code: "POSTING_AMOUNTS_MISMATCH",
-      retryable: false,
-    });
-    expect(await journalCount(world)).toBe(4);
-    expect(await balanceOf(world, "customer_deposit")).toBe(0);
-    expect(await balanceOf(world, "gateway_clearing")).toBe(50_000);
+    ).rejects.toMatchObject({ status: 409, code: "AUTO_JOURNAL_LOCKED" });
+    expect(refundId).toBeDefined();
+    expect(await journalCount(world)).toBe(3);
+    expect(await balanceOf(world, "customer_deposit")).toBe(-25_000);
   });
 
   it("AJ-AYZ7Q-SOURCE-VISIBILITY: a source committed after the empty lock read cannot fund that payout attempt", async () => {
@@ -7243,25 +7517,23 @@ describe("legend-77r0 Q81 DP return accounting never funds a payout twice", () =
     await expectBalanced(world, sourceJournalId!);
     expect(await journalCount(world)).toBe(3);
     expect(await balanceOf(world, "customer_deposit")).toBe(-25_000);
-    const sourceReversal = await reverseJournal(
-      contextOf(world.tenant),
-      sourceJournalId!,
-      {
-        entryDate: "2026-10-15",
-        reason: "Koreksi jurnal retur yang baru terlihat worker",
-        idempotencyKey: randomUUID(),
-      },
-      userIdSchema.parse(await seedUser()),
-    );
-    await expectBalanced(world, sourceReversal.id);
-    expect(await deliver(world.tenant, payoutEvent)).toEqual({
-      status: "parked",
-      code: "POSTING_AMOUNTS_MISMATCH",
-      retryable: false,
-    });
-    expect(await journalCount(world)).toBe(4);
-    expect(await balanceOf(world, "customer_deposit")).toBe(0);
-    expect(await balanceOf(world, "gateway_clearing")).toBe(50_000);
+    // Card 1218 r4: the refund journal credits cash or has no DP release, or
+    // a completed payment refund exists in its DP component, so no guard
+    // proves the money stayed; mirroring it restores revenue (profit up).
+    await expect(
+      reverseJournal(
+        contextOf(world.tenant),
+        sourceJournalId!,
+        {
+          entryDate: "2026-10-15",
+          reason: "Koreksi jurnal retur yang baru terlihat worker",
+          idempotencyKey: randomUUID(),
+        },
+        userIdSchema.parse(await seedUser()),
+      ),
+    ).rejects.toMatchObject({ status: 409, code: "AUTO_JOURNAL_LOCKED" });
+    expect(await journalCount(world)).toBe(3);
+    expect(await balanceOf(world, "customer_deposit")).toBe(-25_000);
   });
 
   it("AJ-AYZ7Q-PAYOUT-REVERSED: reversing the payout journal does not reclaim cash or permit reversing its source", async () => {
@@ -7327,21 +7599,43 @@ describe("legend-77r0 Q81 DP return accounting never funds a payout twice", () =
         },
         userIdSchema.parse(await seedUser()),
       );
-      if (connected) {
-        await expect(reversal).rejects.toMatchObject({
-          status: 409,
-          code: "JOURNAL_BACKING_IN_USE",
-        });
-      } else {
-        await expectBalanced(world, (await reversal).id);
-      }
-      expect(await journalCount(world)).toBe(connected ? 5 : 6);
-      expect(await balanceOf(world, "customer_deposit")).toBe(
-        connected ? -25_000 : 0,
-      );
+      // Card 1218 r4: unconnected, the return's cash line still keeps it
+      // locked (409 AUTO_JOURNAL_LOCKED) once JOURNAL_BACKING_IN_USE is clear.
+      await expect(reversal).rejects.toMatchObject({
+        status: 409,
+        code: connected ? "JOURNAL_BACKING_IN_USE" : "AUTO_JOURNAL_LOCKED",
+      });
+      expect(await journalCount(world)).toBe(5);
+      expect(await balanceOf(world, "customer_deposit")).toBe(-25_000);
       expect(await balanceOf(world, "gateway_clearing")).toBe(50_000);
     });
   }
+
+  it("AJ-AYZ7Q-COMPONENT connected=false DP-only return: another intent's booked payout in a separate DP component does not block the source reversal", async () => {
+    const { world, dp, journalId } = await returnedDeposit({ dpOnly: true });
+    expect(dp.sessionId).toBeDefined();
+    const other = await seedSeatedDeposit(world, 20_000);
+    await post(world, paymentPaid(world, other.intentId, 20_000));
+    const otherRefund = await seedRefund(world, other.intentId, 20_000);
+    await post(
+      world,
+      paymentRefunded(world, otherRefund, other.intentId, 20_000),
+    );
+    const reversal = await reverseJournal(
+      contextOf(world.tenant),
+      journalId!,
+      {
+        entryDate: "2026-10-15",
+        reason: "Koreksi DP retur murni dengan payout intent lain",
+        idempotencyKey: randomUUID(),
+      },
+      userIdSchema.parse(await seedUser()),
+    );
+    await expectBalanced(world, reversal.id);
+    expect(await journalCount(world)).toBe(6);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+    expect(await balanceOf(world, "gateway_clearing")).toBe(50_000);
+  });
 });
 
 // Q82 credit retains the original payer's money across table sessions.

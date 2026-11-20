@@ -237,7 +237,7 @@ async function reverseTheJournal(key: string) {
     entry,
     "premise: the fee journal exists before it is reversed",
   ).toBeDefined();
-  await reverseJournal(
+  return reverseJournal(
     W.scope(),
     entry!.id as string,
     {
@@ -386,14 +386,29 @@ describe("990 B recon: the overpaid fee journal is checked", () => {
     ).toBe(true);
   });
 
-  it("[legend-d9pxr-recon-fee-reversed] once the fee journal is reversed the night run flags journal_reversed", async () => {
+  // Card 1218: a manual reversal of the fee journal (Dr 8101 / Cr 1103) removes
+  // an expense and raises profit, so it is refused 409 AUTO_JOURNAL_LOCKED; the
+  // fee is corrected with a manual journal. The old shortcut (reverse, then the
+  // night run flags journal_reversed) is no longer reachable by hand.
+  it("[legend-d9pxr-recon-fee-reversed] the fee journal cannot be reversed by hand (409 AUTO_JOURNAL_LOCKED): it stays, and the night run flags nothing", async () => {
     const w = await overpaidWorld();
     await runRecon();
     expect(await exceptionsOf(w.itemId), "control").toHaveLength(0);
 
-    await reverseTheJournal(await feeKeyOf(w.itemId, w.postingId));
+    const key = await feeKeyOf(w.itemId, w.postingId);
+    await expect(reverseTheJournal(key)).rejects.toMatchObject({
+      status: 409,
+      code: "AUTO_JOURNAL_LOCKED",
+    });
+    const reversals = await W.rowsOf(
+      `SELECT r.id FROM journal_entries r
+         JOIN journal_entries j ON j.tenant_id = r.tenant_id AND j.id = r.reversal_of
+        WHERE j.tenant_id = $1 AND j.idempotency_key = $2`,
+      [W.tenantId, key],
+    );
+    expect(reversals, "nothing was posted").toHaveLength(0);
     await runRecon();
-    await expectFlagged(w.itemId, "journal_reversed", "fee journal reversed");
+    expect(await exceptionsOf(w.itemId), "fee journal intact").toHaveLength(0);
   });
 });
 

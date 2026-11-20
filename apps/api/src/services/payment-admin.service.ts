@@ -30,6 +30,7 @@ import {
 } from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { assertDepositReturnNotReversed } from "./payment-refund-deposit-return.ts";
 import { providerRefundedForeignIdrSql } from "./payment-provider-refunded-foreign-sql.ts";
 import { assertNotProviderRefunded } from "./payment-provider-refunded-guard.ts";
 import { recordAudit } from "./core-audit.ts";
@@ -636,6 +637,12 @@ export async function createRefund(
       "refund.create",
       body,
       async () => {
+        // 1218 r5: after the intent lock, before the refund row exists.
+        await assertDepositReturnNotReversed(
+          tx,
+          context.tenant.tenantId,
+          intent.id,
+        );
         if (hasSourceDocument(intent))
           throw new HttpError(
             409,
