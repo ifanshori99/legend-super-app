@@ -17,7 +17,7 @@ import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createUlid, cafeLegendFixtures } from "@starter/shared/core";
+import { createUlid, outletIdSchema } from "@starter/shared/core";
 import type { ScopedTenantContext } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
@@ -25,6 +25,7 @@ import {
 } from "@starter/shared/core/server";
 import { eventEnvelopeSchema, eventFixture } from "@starter/shared/events";
 import type { Employee } from "@starter/shared/hris";
+import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import * as schema from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
@@ -39,9 +40,14 @@ const owner = new Pool({
 });
 const appPool = new Pool({ connectionString: process.env.APP_DATABASE_URL });
 const database = drizzle(appPool, { schema });
-const tenantId = cafeLegendFixtures.tenant.id;
-const homeOutlet = cafeLegendFixtures.outlets[1].id; // employee's current home
-const oldAttendanceOutlet = cafeLegendFixtures.outlets[0].id; // where the flagged log was
+// Own tenant, brand, entity and outlets: createEmployee counts seats per tenant
+// against `limits.maxActiveEmployees` (QUOTA_EXCEEDED "Kuota paket sudah
+// tercapai."), so sharing the fixture tenant with other files that create
+// employees concurrently exhausts the quota (same pattern as
+// hris-leave-release-event-db.test.ts).
+const tenantId = randomUUID();
+const homeOutlet = outletIdSchema.parse(randomUUID()); // employee's current home
+const oldAttendanceOutlet = outletIdSchema.parse(randomUUID()); // where the flagged log was
 const EVENT = "leave.rededucted_after_settlement";
 
 const tenantCtx = (source: "session" | "job"): ScopedTenantContext =>
@@ -51,7 +57,6 @@ const tenantCtx = (source: "session" | "job"): ScopedTenantContext =>
   );
 
 const createdUsers: string[] = [];
-const createdRoles: string[] = [];
 const u = {} as Record<
   "homeHr" | "homePayroll" | "oldHr" | "homeNoPermission" | "actor",
   string
@@ -70,7 +75,6 @@ async function outletUser(
     [userId, label, `${userId}@example.test`],
   );
   const roleId = randomUUID();
-  createdRoles.push(roleId);
   await owner.query(
     `INSERT INTO roles (id, tenant_id, name, is_template, permissions, allowed_scope_types)
      VALUES ($1, $2, $3, false, $4::jsonb, $5::jsonb)`,
@@ -144,6 +148,48 @@ const ours = <T extends { userId: string }>(recipients: T[]) =>
 
 describe("legend-852 T3 settlement notification recipients", () => {
   beforeAll(async () => {
+    if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
+      throw new Error("Requires the disposable test database");
+    const fixture = cafeLegendPlatformFixtures.tenant;
+    await owner.query(
+      `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
+       VALUES ($1, $2, 'Settlement recipients tenant', $3, $4, $5, $6, $7, $8)`,
+      [
+        tenantId,
+        `wnhs-${tenantId}`,
+        fixture.plan,
+        fixture.status,
+        fixture.deploymentMode,
+        JSON.stringify(fixture.featureFlags),
+        JSON.stringify(fixture.limits),
+        fixture.createdBy,
+      ],
+    );
+    const brandId = randomUUID();
+    const entityId = randomUUID();
+    await owner.query(
+      `INSERT INTO brands (id, tenant_id, slug, name) VALUES ($1, $2, 'wnhs', 'Settlement brand')`,
+      [brandId, tenantId],
+    );
+    await owner.query(
+      `INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'Settlement entity', false)`,
+      [entityId, tenantId],
+    );
+    for (const [index, outletId] of [oldAttendanceOutlet, homeOutlet].entries())
+      await owner.query(
+        `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
+         VALUES ($1, $2, $3, $4, $5, 'Settlement outlet', 'Jl. Uji', 'Asia/Jakarta', $6, 'active')`,
+        [
+          outletId,
+          tenantId,
+          brandId,
+          entityId,
+          `WNHS-${index + 1}`,
+          JSON.stringify(
+            cafeLegendPlatformFixtures.outlets[index].openingHours,
+          ),
+        ],
+      );
     u.actor = await outletUser("Actor 852", null, ["hr.employee.manage"]);
     u.homeHr = await outletUser("HR rumah", homeOutlet, ["hr.employee.manage"]);
     u.homePayroll = await outletUser("Payroll rumah", homeOutlet, [
@@ -159,12 +205,40 @@ describe("legend-852 T3 settlement notification recipients", () => {
   });
 
   afterAll(async () => {
-    await owner.query(
-      "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id = ANY($2::text[])",
-      [tenantId, createdUsers],
-    );
-    await owner.query("DELETE FROM roles WHERE id = ANY($1::uuid[])", [
-      createdRoles,
+    // Leave/HR services write append-only audit_logs rows with outlet_id (FK to
+    // outlets): disable the trigger for one purge so the tenant can be removed
+    // (same pattern as hris-leave-release-event-db.test.ts).
+    const purge = await owner.connect();
+    try {
+      await purge.query("BEGIN");
+      await purge.query(
+        "ALTER TABLE audit_logs DISABLE TRIGGER audit_logs_append_only",
+      );
+      await purge.query("DELETE FROM audit_logs WHERE tenant_id = $1", [
+        tenantId,
+      ]);
+      await purge.query(
+        "ALTER TABLE audit_logs ENABLE TRIGGER audit_logs_append_only",
+      );
+      await purge.query("COMMIT");
+    } catch (error) {
+      await purge.query("ROLLBACK");
+      throw error;
+    } finally {
+      purge.release();
+    }
+    for (const statement of [
+      "DELETE FROM employees WHERE tenant_id = $1",
+      "DELETE FROM role_assignments WHERE tenant_id = $1",
+      "DELETE FROM outlets WHERE tenant_id = $1",
+      "DELETE FROM legal_entities WHERE tenant_id = $1",
+      "DELETE FROM brands WHERE tenant_id = $1",
+      "DELETE FROM roles WHERE tenant_id = $1",
+      "DELETE FROM tenants WHERE id = $1",
+    ])
+      await owner.query(statement, [tenantId]);
+    await owner.query('DELETE FROM "user" WHERE id = ANY($1::text[])', [
+      createdUsers,
     ]);
     await owner.end();
     await appPool.end();
