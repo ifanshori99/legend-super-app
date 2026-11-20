@@ -162,4 +162,45 @@ describe("API environment", () => {
       expect(result.status).toBe(0);
     });
   });
+  // 1209: production origins must be https, except loopback hosts (the e2e
+  // suite runs production builds on localhost).
+  describe("production origins use https", () => {
+    const production = (
+      overrides: Record<string, string | undefined> = {},
+    ) => ({
+      NODE_ENV: "production",
+      DATABASE_URL: "postgresql://owner:pw@localhost:5432/legend",
+      BETTER_AUTH_SECRET: "a".repeat(40),
+      STAFF_PIN_PEPPER: "b".repeat(40),
+      PAYOUT_GRANTOR_DATABASE_URL:
+        "postgresql://legend_grant_0123456789abcdef:pw@localhost:5432/legend",
+      ...overrides,
+    });
+
+    it.each(["BETTER_AUTH_URL", "WEB_URL"])(
+      "refuses an http %s for a public host in production",
+      (key) => {
+        const result = loadEnv(production({ [key]: "http://app.example.com" }));
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain(key);
+        expect(result.stderr).toContain("https");
+      },
+    );
+
+    it.each([
+      "https://app.example.com",
+      "http://localhost:3000",
+      "http://127.0.0.1:3000",
+      "http://[::1]:3000",
+    ])("lets production start with WEB_URL %s", (value) => {
+      const result = loadEnv(production({ WEB_URL: value }));
+      expect(result.stderr).toBe("");
+      expect(result.status).toBe(0);
+    });
+
+    it("keeps http allowed outside production", () => {
+      const result = loadEnv({ WEB_URL: "http://app.example.com" });
+      expect(result.status).toBe(0);
+    });
+  });
 });

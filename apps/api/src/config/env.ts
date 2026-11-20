@@ -756,6 +756,21 @@ const schema = z
           message: reason,
         });
     }
+    // 1209: public origins must be https in production. Loopback hosts stay
+    // allowed because the e2e suite runs production builds on localhost.
+    for (const key of ["BETTER_AUTH_URL", "WEB_URL"] as const) {
+      const url = new URL(values[key]);
+      if (
+        values.NODE_ENV === "production" &&
+        url.protocol === "http:" &&
+        !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)
+      )
+        ctx.addIssue({
+          code: "custom",
+          path: [key],
+          message: "Use an https URL in production (http only on localhost).",
+        });
+    }
     for (const key of [
       "DUITKU_CALLBACK_BASE_URL",
       "DUITKU_RETURN_URL",
