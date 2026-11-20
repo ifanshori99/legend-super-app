@@ -10,14 +10,15 @@
 // Payslips already computed are never recomputed. The trigger on employees
 // writes the history row (app.ptkp_effective_from, migration 0516); the app
 // role cannot write the history table.
-import { and, eq, sql } from "drizzle-orm";
+import { and, desc, eq, gt, sql } from "drizzle-orm";
 import type { ScopedTenantContext } from "@starter/shared/core";
 import {
   correctEmployeePtkpInputSchema,
-  type Employee,
+  type EmployeePtkpChange,
 } from "@starter/shared/hris";
 import { db } from "../db/index.ts";
 import { employees } from "../db/schema/hris.ts";
+import { employeePtkpHistory } from "../db/schema/hris-ptkp-history.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { readDbClock } from "./access.service.ts";
@@ -31,7 +32,10 @@ import {
   notFound,
 } from "./hris-access.ts";
 import { idempotentHrisWrite, toEmployee } from "./hris-employee.service.ts";
-import { ptkpAnchorDate } from "./payroll-ptkp-tax-year.ts";
+import {
+  loadTaxYearPtkpStatuses,
+  ptkpAnchorDate,
+} from "./payroll-ptkp-tax-year.ts";
 
 export const PTKP_CORRECTED_ACTION = "hris.employee_ptkp.corrected";
 const PAYROLL_RUN_CODE = "payroll.run";
@@ -53,7 +57,7 @@ export async function correctEmployeePtkp(
   employeeId: string,
   body: CorrectPtkpBody,
   now?: Date,
-): Promise<Employee> {
+): Promise<EmployeePtkpChange> {
   const { idempotencyKey, ...rest } = body;
   const input = correctEmployeePtkpInputSchema.parse(rest);
   const tenantId = context.tenant.tenantId;
@@ -139,6 +143,64 @@ export async function correctEmployeePtkp(
           sql`SELECT set_config('app.ptkp_effective_from', '', true)`,
         );
         if (!updated) throw notFound();
+        // Bead 1223 r3: a correction from the start of the year must not hide
+        // a later change (today's marriage, in force next year): the profile
+        // keeps the latest status. Re-applied with that row's own day, so the
+        // trigger rewrites the same row.
+        const [later] = await tx
+          .select({
+            effectiveFrom: employeePtkpHistory.effectiveFrom,
+            ptkpStatus: employeePtkpHistory.ptkpStatus,
+          })
+          .from(employeePtkpHistory)
+          .where(
+            and(
+              eq(employeePtkpHistory.tenantId, tenantId),
+              eq(employeePtkpHistory.employeeId, row.id),
+              gt(employeePtkpHistory.effectiveFrom, input.effectiveFrom),
+            ),
+          )
+          .orderBy(desc(employeePtkpHistory.effectiveFrom))
+          .limit(1);
+        let current = updated;
+        if (later && later.ptkpStatus !== updated.ptkpStatus) {
+          await tx.execute(
+            sql`SELECT set_config('app.ptkp_effective_from', ${later.effectiveFrom}, true)`,
+          );
+          const [restored] = await tx
+            .update(employees)
+            .set({ ptkpStatus: later.ptkpStatus, updatedAt: clock })
+            .where(
+              and(eq(employees.tenantId, tenantId), eq(employees.id, row.id)),
+            )
+            .returning();
+          await tx.execute(
+            sql`SELECT set_config('app.ptkp_effective_from', '', true)`,
+          );
+          if (!restored) throw notFound();
+          current = restored;
+        }
+        const taxYearPtkp = await loadTaxYearPtkpStatuses(
+          tx,
+          tenantId,
+          taxYear,
+          [{ id: row.id, joinDate: row.joinDate }],
+        );
+        const [next] = await tx
+          .select({
+            effectiveFrom: employeePtkpHistory.effectiveFrom,
+            ptkpStatus: employeePtkpHistory.ptkpStatus,
+          })
+          .from(employeePtkpHistory)
+          .where(
+            and(
+              eq(employeePtkpHistory.tenantId, tenantId),
+              eq(employeePtkpHistory.employeeId, row.id),
+              gt(employeePtkpHistory.effectiveFrom, anchor),
+            ),
+          )
+          .orderBy(desc(employeePtkpHistory.effectiveFrom))
+          .limit(1);
         await recordAudit(
           tx,
           context,
@@ -156,7 +218,12 @@ export async function correctEmployeePtkp(
           }),
           [...HRIS_AUDIT_SAFE_FIELDS, "ptkpStatus", "effectiveFrom"],
         );
-        return toEmployee(updated);
+        return {
+          employee: toEmployee(current),
+          taxYear,
+          taxYearPtkpStatus: taxYearPtkp.get(row.id) ?? input.ptkpStatus,
+          next: next ?? null,
+        };
       },
     );
   });

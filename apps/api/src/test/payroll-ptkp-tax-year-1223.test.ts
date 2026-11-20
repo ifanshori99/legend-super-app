@@ -30,6 +30,7 @@ import { withTenant } from "../db/tenant.ts";
 import { agent, signUp } from "./helpers.ts";
 import {
   approveSimulatedRun,
+  returnRunToDraft,
   deleteStatutoryTables,
   insertDraftRun,
   insertEmployee,
@@ -224,6 +225,11 @@ const JAN = {
   periodStart: "2026-01-01",
   periodEnd: "2026-01-31",
   payDate: "2026-01-28",
+};
+const MAY = {
+  periodStart: "2026-05-01",
+  periodEnd: "2026-05-31",
+  payDate: "2026-05-28",
 };
 const JUL = {
   periodStart: "2026-07-01",
@@ -527,7 +533,9 @@ describe("[1223 r2] backfill of the running year from the first locked payslip",
 
     const backfill = () =>
       asTenant((conn) =>
-        backfillPtkpHistoryForTenant(conn, tenant.id, 2026, "2026-11-20"),
+        // force: the test database may already hold HR corrections of other
+        // tests (the refusal itself is tested below).
+        backfillPtkpHistoryForTenant(conn, tenant.id, 2026, "2026-11-20", true),
       );
     await backfill();
     const once = await historyOf(emp);
@@ -565,7 +573,9 @@ describe("[1223 r2] HR correction of the running year (hr.employee.manage + payr
       { ptkpStatus: "K/1", effectiveFrom: "2026-01-01" },
       AUG,
     );
-    expect(updated.ptkpStatus).toBe("K/1");
+    expect(updated.employee.ptkpStatus).toBe("K/1");
+    expect(updated.taxYearPtkpStatus).toBe("K/1");
+    expect(updated.next).toBeNull();
     expect(await historyOf(emp)).toContainEqual({
       effective_from: "2026-01-01",
       ptkp_status: "K/1",
@@ -718,5 +728,84 @@ describe("[1223 r2] history trigger and table access", () => {
       await client.query("ROLLBACK");
       client.release();
     }
+  });
+});
+
+describe("[1223 r3] lock, profile, leaver, backfill guard", () => {
+  const AUG = new Date("2026-08-03T03:00:00Z");
+
+  it("a correction after the December simulation makes the lock stale (409); simulated again it locks with the new PTKP", async () => {
+    const entity = await makeEntity("lock");
+    const policy = await rawPolicy(entity);
+    const emp = await makeEmployee(entity, "2025-03-01", "TK/0");
+    const runId = await draftRun(entity, policy, DEC);
+    await simulateRun(runId);
+    await asTenant((conn) => approveSimulatedRun(conn, runId));
+    await correct(emp, { ptkpStatus: "K/0", effectiveFrom: "2026-01-01" }, AUG);
+    const stale = await failureOf(lockRun(runId));
+    expect(stale?.status).toBe(409);
+    expect(stale?.code).toBe("PAYROLL_RUN_RESULT_STALE");
+    await asTenant((conn) => returnRunToDraft(conn, runId));
+    await simulateRun(runId);
+    await asTenant((conn) => approveSimulatedRun(conn, runId));
+    await lockRun(runId);
+    expect((await simulatedTax(runId, emp)).ptkpStatus).toBe("K/0");
+  });
+
+  it("a correction from 1 January keeps the profile on the later status (next year's): answer names both", async () => {
+    const entity = await makeEntity("profil");
+    const emp = await makeEmployee(entity, "2025-03-01", "TK/0");
+    await changePtkp(emp, "K/0", "2026-07-15");
+    const result = await correct(
+      emp,
+      { ptkpStatus: "TK/1", effectiveFrom: "2026-01-01" },
+      AUG,
+    );
+    expect(result.employee.ptkpStatus).toBe("K/0");
+    expect(result.taxYearPtkpStatus).toBe("TK/1");
+    expect(result.next).toEqual({
+      ptkpStatus: "K/0",
+      effectiveFrom: "2026-07-15",
+    });
+    expect(await historyOf(emp)).toEqual([
+      { effective_from: "2025-03-01", ptkp_status: "TK/0" },
+      { effective_from: "2026-01-01", ptkp_status: "TK/1" },
+      { effective_from: "2026-07-15", ptkp_status: "K/0" },
+    ]);
+  });
+
+  it("a leaver whose last-period payslip (May) is locked: the correction of the year is 409", async () => {
+    const entity = await makeEntity("keluar");
+    const policy = await rawPolicy(entity);
+    const emp = await makeEmployee(entity, "2025-03-01", "TK/0");
+    await asTenant((conn) =>
+      conn.query(
+        "UPDATE employees SET end_date = '2026-05-20' WHERE tenant_id = $1 AND id = $2",
+        [tenant.id, emp],
+      ),
+    );
+    const runId = await lockedRun(entity, policy, MAY);
+    expect((await simulatedTax(runId, emp)).method).toBe(
+      "annual_recalculation",
+    );
+    const closed = await failureOf(
+      correct(emp, { ptkpStatus: "K/0", effectiveFrom: "2026-01-01" }, AUG),
+    );
+    expect(closed?.status).toBe(409);
+    expect(closed?.code).toBe("PTKP_TAX_YEAR_CLOSED");
+  });
+
+  it("the backfill refuses a tenant with an audited HR correction unless forced", async () => {
+    const entity = await makeEntity("guard");
+    const emp = await makeEmployee(entity, "2025-03-01", "TK/0");
+    await correct(emp, { ptkpStatus: "K/0", effectiveFrom: "2026-01-01" }, AUG);
+    await expect(
+      asTenant((conn) =>
+        backfillPtkpHistoryForTenant(conn, tenant.id, 2026, "2026-11-20"),
+      ),
+    ).rejects.toThrow(/koreksi PTKP/);
+    await asTenant((conn) =>
+      backfillPtkpHistoryForTenant(conn, tenant.id, 2026, "2026-11-20", true),
+    );
   });
 });

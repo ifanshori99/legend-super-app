@@ -273,6 +273,21 @@ export type CorrectEmployeePtkpInput = z.infer<
   typeof correctEmployeePtkpInputSchema
 >;
 
+/**
+ * Answer of a PTKP change: the employee (his profile shows the latest status,
+ * the one in force from the next change on), the status payroll uses for the
+ * running tax year, and the later status when there is one.
+ */
+export const employeePtkpChangeSchema = z.object({
+  employee: employeeSchema,
+  taxYear: z.number().int(),
+  taxYearPtkpStatus: ptkpStatusSchema,
+  next: z
+    .object({ ptkpStatus: ptkpStatusSchema, effectiveFrom: businessDateSchema })
+    .nullable(),
+});
+export type EmployeePtkpChange = z.infer<typeof employeePtkpChangeSchema>;
+
 export const changeEmployeeManagerInputSchema = clientInputSchema({
   managerId: employeeIdSchema.nullable(),
   reason: z.string().trim().min(1).max(200).optional(),

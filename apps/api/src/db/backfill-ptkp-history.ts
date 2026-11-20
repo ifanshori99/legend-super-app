@@ -1,7 +1,9 @@
 // One-shot PTKP history backfill (bead 1223 r2). Run once after migration
 // 0516 and BEFORE the next payroll simulate (docs/deployment.md), from apps/api
 // with the migration owner's connection:
-//   pnpm exec tsx src/db/backfill-ptkp-history.ts [--year YYYY]
+//   pnpm exec tsx src/db/backfill-ptkp-history.ts [--year YYYY] [--force]
+// Refused in a tenant where HR already corrected a PTKP (PUT
+// /api/hris/employees/:id/ptkp) unless --force.
 // Default year: the running tax year in Jakarta. Idempotent; prints counts
 // only (no status, name or payroll value).
 import { Pool } from "pg";
@@ -15,11 +17,13 @@ let pool: Pool | undefined;
 try {
   const today = jakartaToday();
   let taxYear = Number(today.slice(0, 4));
-  if (args.length === 2 && args[0] === "--year" && /^\d{4}$/.test(args[1]!))
-    taxYear = Number(args[1]);
-  else if (args.length !== 0)
+  const force = args.includes("--force");
+  const rest = args.filter((arg) => arg !== "--force");
+  if (rest.length === 2 && rest[0] === "--year" && /^\d{4}$/.test(rest[1]!))
+    taxYear = Number(rest[1]);
+  else if (rest.length !== 0)
     throw new Error(
-      "Usage: pnpm exec tsx src/db/backfill-ptkp-history.ts [--year YYYY]",
+      "Usage: pnpm exec tsx src/db/backfill-ptkp-history.ts [--year YYYY] [--force]",
     );
   await import("../load-env.ts");
   const { backfillPtkpHistoryForTenant } =
@@ -49,6 +53,7 @@ try {
         id,
         taxYear,
         today,
+        force,
       );
       await client.query("COMMIT");
       employees += result.employees;

@@ -187,8 +187,11 @@ held back while the services were stopped; check that the queue drains.
 ### PTKP history backfill: after 0516, before the next payroll simulate (bead 1223)
 
 A release that contains 0515/0516 (`employee_ptkp_history`) needs a one-shot
-backfill right after `pnpm db:migrate` and before anyone simulates a payroll
-run. Migration 0515 recorded each employee's status of today from his join
+backfill, run ONCE: right after `pnpm db:migrate`, before anyone simulates a
+payroll run, before any HR PTKP correction (`PUT /api/hris/employees/:id/ptkp`)
+and before 1 January (it reads the running year's locked slips). The script
+refuses a tenant where an HR correction is already audited; `--force` overrides
+that only when the correction may be overwritten. Migration 0515 recorded each employee's status of today from his join
 date; an employee whose status changed earlier this year would otherwise be
 computed with the new status for the whole tax year. From `apps/api`, with the
 migration owner's connection (`MIGRATION_DATABASE_URL`):

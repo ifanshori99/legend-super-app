@@ -65,6 +65,7 @@ import {
   updateEmployeePiiInputSchema,
   changeEmployeeManagerInputSchema,
   correctEmployeePtkpInputSchema,
+  employeePtkpChangeSchema,
 } from "./organization.ts";
 import {
   checklistTaskActionInputSchema,
@@ -229,7 +230,7 @@ export const correctEmployeePtkpEndpoint = defineEndpoint({
   body: correctEmployeePtkpInputSchema.extend({
     idempotencyKey: idempotencyKeySchema,
   }),
-  response: dataResponseSchema(employeeSchema),
+  response: dataResponseSchema(employeePtkpChangeSchema),
 });
 
 export const changeEmployeeManagerEndpoint = defineEndpoint({

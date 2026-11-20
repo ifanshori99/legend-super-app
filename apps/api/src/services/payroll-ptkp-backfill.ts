@@ -8,7 +8,8 @@
 //   with;
 // - when today's status differs, today's status on the deploy date (Jakarta),
 //   in force from the next tax year.
-// Idempotent (upsert on employee + day). Runs as the migration owner (the app
+// Idempotent (upsert on employee + day). Refused once HR has corrected a
+// PTKP in the tenant unless forced. Runs as the migration owner (the app
 // role cannot write the history) inside the tenant's context; see
 // src/db/backfill-ptkp-history.ts and docs/deployment.md.
 import type { PoolClient } from "pg";
@@ -39,7 +40,20 @@ export async function backfillPtkpHistoryForTenant(
   tenantId: string,
   taxYear: number,
   deployDate: string,
+  force = false,
 ): Promise<{ employees: number; changed: number }> {
+  // Run once, before any HR correction (PUT /api/hris/employees/:id/ptkp): a
+  // correction made since then would be overwritten by the first slip's status.
+  const corrections = await client.query(
+    `SELECT 1 FROM audit_logs
+      WHERE tenant_id = $1 AND event->>'action' = 'hris.employee_ptkp.corrected'
+      LIMIT 1`,
+    [tenantId],
+  );
+  if (corrections.rows.length > 0 && !force)
+    throw new Error(
+      "Sudah ada koreksi PTKP oleh HR di tenant ini; backfill PTKP ditolak (pakai --force hanya bila yakin koreksi itu boleh ditimpa).",
+    );
   const slips = await client.query<SlipRow>(
     `SELECT DISTINCT ON (ps.employee_id)
             ps.id, ps.employee_id, to_char(e.join_date, 'YYYY-MM-DD') AS join_date,
