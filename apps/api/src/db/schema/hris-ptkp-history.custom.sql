@@ -16,6 +16,8 @@ DECLARE
   effective date;
   requested text := current_setting('app.ptkp_effective_from', true);
 BEGIN
+  -- redefine-drops: now SECURITY DEFINER (the app role cannot write the
+  -- history), and the unchanged-status skip moved below the HR correction branch.
   IF NEW.ptkp_status IS NULL THEN
     RETURN NULL;
   END IF;
