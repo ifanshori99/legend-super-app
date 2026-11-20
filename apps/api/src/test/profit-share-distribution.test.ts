@@ -2902,3 +2902,133 @@ describe("Q83 carry: the unabsorbed rest is kept per shareholder and cut from th
     expect(completed.cut).toBe("270001");
   });
 });
+
+// ---- 1210: an outlet entity fails closed on unallocated entity-level expense ---
+
+describe("1210 an outlet profit entity refuses a period with unallocated entity-level expense", () => {
+  async function outletWorld(): Promise<{ world: World; outletId: string }> {
+    const { legalEntityId, accounts } = await makeLegalEntity();
+    const brand = await owner.query<{ id: string }>(
+      "SELECT id FROM brands WHERE tenant_id = $1 ORDER BY id LIMIT 1",
+      [tenantA],
+    );
+    const outletId = randomUUID();
+    await owner.query(
+      `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, business_day_cutoff, opening_hours, status)
+       VALUES ($1, $2, $3, $4, $5, 'Outlet bagi hasil', 'Jl. Uji', 'Asia/Jakarta', '04:00', '{}', 'active')`,
+      [
+        outletId,
+        tenantA,
+        brand.rows[0]!.id,
+        legalEntityId,
+        `PS-${unique()}`.toUpperCase(),
+      ],
+    );
+    const created = await post(manager, "/profit-entities", {
+      name: `Outlet ${unique()}`,
+      type: "outlet",
+      legalEntityId: null,
+      outletId,
+      policy: {
+        basis: "closed_period_net_profit",
+        frequency: "monthly",
+        ...roundingPolicy,
+      },
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const profitEntityId = created.body.data.id as string;
+    await seedVersion(profitEntityId, roundingShares(), "approved");
+    return {
+      world: { legalEntityId, accounts, profitEntityId, nextPeriod: 0 },
+      outletId,
+    };
+  }
+
+  /** Closed period: outlet-tagged sales 10jt and expense 4jt; optional payroll. */
+  async function closedOutletPeriod(
+    world: World,
+    outletId: string,
+    entityLevelExpense: number,
+  ) {
+    const period = periodKey(world.nextPeriod++);
+    const { rows } = await owner.query<{ id: string }>(
+      `INSERT INTO fiscal_periods (tenant_id, legal_entity_id, period)
+       VALUES ($1, $2, $3) RETURNING id`,
+      [tenantA, world.legalEntityId, period],
+    );
+    const date = `${period}-15`;
+    const tagged = (accountId: string, debit: number, credit: number) => ({
+      ...journalLine(accountId, debit, credit),
+      outletId: outletId as never,
+    });
+    const context = scopedContext();
+    const entry = (
+      lines: ReturnType<typeof journalLine>[],
+      outlet: string | null,
+    ) =>
+      withTenant(db, context, (tx) =>
+        postJournalInTransaction(tx, context, {
+          legalEntityId: world.legalEntityId,
+          outletId: outlet as never,
+          entryDate: businessDateSchema.parse(date),
+          sourceType: "sale" as const,
+          sourceId: randomUUID(),
+          description: "Uji bagi hasil outlet",
+          lines,
+          postedBy: null,
+          idempotencyKey: `post-${randomUUID()}`,
+        }),
+      );
+    await entry(
+      [
+        tagged(world.accounts.cash, 10_000_000, 0),
+        tagged(world.accounts.revenue, 0, 10_000_000),
+      ],
+      outletId,
+    );
+    await entry(
+      [
+        tagged(world.accounts.expense, 4_000_000, 0),
+        tagged(world.accounts.cash, 0, 4_000_000),
+      ],
+      outletId,
+    );
+    if (entityLevelExpense > 0)
+      await entry(
+        [
+          journalLine(world.accounts.expense, entityLevelExpense, 0),
+          journalLine(world.accounts.cash, 0, entityLevelExpense),
+        ],
+        null,
+      );
+    await closeFiscalPeriod(
+      scopedContext(),
+      rows[0]!.id,
+      { expectedVersion: 1, idempotencyKey: `close-${randomUUID()}` },
+      userIdSchema.parse(closer),
+    );
+    return rows[0]!.id;
+  }
+
+  it("refuses with UNALLOCATED_ENTITY_EXPENSE when payroll sits at entity level", async () => {
+    const { world, outletId } = await outletWorld();
+    const periodId = await closedOutletPeriod(world, outletId, 3_000_000);
+    const response = await createRun(manager, world, periodId);
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(errorCode(response)).toBe("UNALLOCATED_ENTITY_EXPENSE");
+    expect(JSON.stringify(response.body)).toContain("belum dialokasikan");
+    const runs = await owner.query(
+      "SELECT 1 FROM distribution_runs WHERE tenant_id = $1 AND profit_entity_id = $2",
+      [tenantA, world.profitEntityId],
+    );
+    expect(runs.rowCount).toBe(0);
+  });
+
+  it("calculates as before when no entity-level expense exists (control)", async () => {
+    const { world, outletId } = await outletWorld();
+    const periodId = await closedOutletPeriod(world, outletId, 0);
+    const response = await createRun(manager, world, periodId);
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    expect(parseRun(response.body).periodNetProfitIdr).toBe(6_000_000);
+  });
+});

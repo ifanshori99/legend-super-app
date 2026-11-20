@@ -6,8 +6,14 @@
 // exactly the profit the P&L statement shows. An outlet profit entity passes its
 // outlet and only lines tagged with that outlet count (ACC-03). Journals are
 // append-only, so every stored line is a posted line.
+//
+// Fail closed (bead 1210): payroll and other central expense journals carry no
+// outlet tag, so an outlet entity would count the outlet's revenue and tagged
+// cost but none of that expense and overstate its profit. Until expense can be
+// allocated to outlets, an outlet entity refuses a period that has any
+// untagged expense line in its legal entity.
 
-import { and, eq, gte, lte } from "drizzle-orm";
+import { and, eq, gte, isNull, lte, or, sql } from "drizzle-orm";
 import {
   accountSchema,
   buildProfitAndLoss,
@@ -16,6 +22,7 @@ import {
 } from "@starter/shared/accounting";
 import type { Idr, OutletId } from "@starter/shared/core";
 import { chartOfAccounts, journalEntries, journalLines } from "../db/schema";
+import { HttpError } from "../lib/http-error";
 import type { TenantTransaction } from "./accounting-shared";
 
 export type ClosedPeriodNetProfitInput = {
@@ -33,6 +40,45 @@ export async function loadClosedPeriodNetProfit(
   input: ClosedPeriodNetProfitInput,
 ): Promise<Idr> {
   const bounds = periodBounds(input.period);
+  if (input.outletId !== null) {
+    const [unallocated] = await tx
+      .select({ lines: sql<number>`count(*)::int` })
+      .from(journalLines)
+      .innerJoin(
+        journalEntries,
+        and(
+          eq(journalEntries.tenantId, journalLines.tenantId),
+          eq(journalEntries.id, journalLines.entryId),
+        ),
+      )
+      .innerJoin(
+        chartOfAccounts,
+        and(
+          eq(chartOfAccounts.tenantId, journalLines.tenantId),
+          eq(chartOfAccounts.id, journalLines.accountId),
+        ),
+      )
+      .where(
+        and(
+          eq(journalLines.tenantId, tenantId),
+          eq(journalEntries.legalEntityId, input.legalEntityId),
+          gte(journalEntries.entryDate, bounds.start),
+          lte(journalEntries.entryDate, bounds.end),
+          isNull(journalLines.outletId),
+          eq(chartOfAccounts.type, "expense"),
+          or(
+            sql`${journalLines.debitIdr} <> 0`,
+            sql`${journalLines.creditIdr} <> 0`,
+          ),
+        ),
+      );
+    if ((unallocated?.lines ?? 0) > 0)
+      throw new HttpError(
+        422,
+        "UNALLOCATED_ENTITY_EXPENSE",
+        "Gaji dan beban pusat periode ini belum dialokasikan ke outlet, jadi bagi hasil outlet belum bisa dihitung. Alokasikan bebannya ke outlet atau hubungi pemilik sistem.",
+      );
+  }
   const accountRows = await tx
     .select()
     .from(chartOfAccounts)
