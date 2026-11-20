@@ -8,7 +8,26 @@
 	servers {
 		# Only trust forwarding headers when the immediate peer is Cloudflare.
 		# Keep this list and the external firewall current with Cloudflare's list.
+		# Slow clients (outlet uplinks, mobile) must be able to finish a 10 MiB
+		# upload, but a stalled connection must not hold a socket open.
+		timeouts {
+			read_header 10s
+			# Whole-request deadline (Go ReadTimeout): 5m lets a 10 MiB upload finish
+			# at ~300 kbit/s and keeps slow API calls (AI up to 300 s) alive.
+			# read_header alone stops slowloris.
+			read_body 5m
+			idle 2m
+		}
 		trusted_proxies static 173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22 2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32
+	}
+}
+
+(api_upload) {
+	request_body {
+		max_size 12MB
+	}
+	reverse_proxy api:4000 {
+		header_up X-Forwarded-Host {http.request.host}
 	}
 }
 
@@ -40,7 +59,28 @@ http://127.0.0.1:2019 {
 	handle @internal {
 		respond 404
 	}
+	# Body caps sit above the app's own caps, so the app still answers its
+	# typed errors. JSON: the app cap is 100 kB, with 1 MiB image and ~1.4 MB
+	# menu import bodies; 2 MB covers them. Uploads (multer 10 MiB file, edge
+	# selfie PUT 6 MiB sealed) get 12 MB for multipart overhead.
+	@upload_multipart {
+		path /api/*
+		header Content-Type multipart/form-data*
+	}
+	@upload_put {
+		path /api/*
+		method PUT
+	}
+	handle @upload_multipart {
+		import api_upload
+	}
+	handle @upload_put {
+		import api_upload
+	}
 	handle /api/* {
+		request_body {
+			max_size 2MB
+		}
 		reverse_proxy api:4000 {
 			header_up X-Forwarded-Host {http.request.host}
 		}
@@ -48,6 +88,9 @@ http://127.0.0.1:2019 {
 	handle {
 		# Keep the application's explicit Cache-Control: only its public routes
 		# opt in; personalized SSR and token-bearing pages stay private/no-store.
+		request_body {
+			max_size 2MB
+		}
 		reverse_proxy web:3000
 	}
 }
