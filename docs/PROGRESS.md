@@ -10,8 +10,9 @@ Status kartu:
 - 1259 tombol refund manual: screenshot berjalan; review TIDAK LOLOS (PROVIDER_REFUNDED belum dipetakan, runbook A eskalasi refund macet ber-referensi) -> fix dikirim.
 - 1260 GL terparkir: fix cutoff jam bisnis outlet + daftar sumber berjalan, lalu re-review.
 - 1261 template deploy: 83f666e51, review TIDAK LOLOS (deploy.sh tidak menyalakan clamav) -> fix dikirim.
-- 1262 redrive stock.moved (legend-fp3eu, Opus): berjalan, base int/batch106.
-Langkah berikut: tiap LOLOS -> pesan merge train (1256 lalu 1261, 1255, 1259, 1260, 1262). Semua masuk -> satu full `heavy pnpm test` CTO di int/batch106 -> ff milestone/m1, push, `docs/merge-queue.md`. Hapus worktree legend-1242..1262 yang bersih. Tutup bead: tomda, xhl5j, gdjpu, k0i8, x73li, 0orff, 905j, j7018, 29vw, ecr16, 07eg, ff393, 17az7, mtbq9, ait0n (cek kriteria). Rilis: build, e2e, checklist keamanan operator, restore drill, Caddyfile; sisa legend-5c0a, wxvt9. Founder: jawaban no.19, lihat bagian B (layar) + screenshot 1259 `docs/review/img/refund-manual-*.png`.
+- 1262 dibatalkan: redrive dari cloud tidak relevan (draw hilang tertahan di edge). fp3eu dibuka lagi untuk desain pemulihan edge pasca rilis. Q19 diperbarui: usulan override pemilik dengan alasan dan audit.
+- 1260 LOLOS (b2f0dc9c0) antre merge sesudah 1244. 1261 fix bf739e303 dan 1256 fix 1841d4828: re-review berjalan. 1255 LOLOS, penguatan staf masa depan berjalan.
+Langkah berikut: tiap LOLOS -> pesan merge train (1256 lalu 1261, 1255, 1259). Semua masuk -> satu full `heavy pnpm test` CTO di int/batch106 -> ff milestone/m1, push, `docs/merge-queue.md`. Hapus worktree legend-1242..1262 yang bersih. Tutup bead: tomda, xhl5j, gdjpu, k0i8, x73li, 0orff, 905j, j7018, 29vw, ecr16, 07eg, ff393, 17az7, mtbq9, ait0n (cek kriteria). Rilis: build, e2e, checklist keamanan operator, restore drill, Caddyfile; sisa legend-5c0a, wxvt9. Founder: jawaban no.19, lihat bagian B (layar) + screenshot 1259 `docs/review/img/refund-manual-*.png`.
 RAM: mode merah (swap ~4.1 GB); Ghostex/Codex sudah dimatikan. Restart Mac sesudah gelombang.
 
 > 20 Nov 2026: keadaan terbaru di `docs/HANDOFF-2026-11-20.md` (batch98-101, kartu 1207-1214, keputusan founder yang ditunggu).
