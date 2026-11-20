@@ -193,3 +193,10 @@ Catatan: bead WS-xx BE bertanggal 1 Nov (payroll, jurnal otomatis, penerimaan ba
 | legend-y3huu | P2 | WS-11 laporan SDM: absensi, payroll, kinerja | SESUDAH | Laporan, ekspor, dasbor, target penjualan; pelaporan sekunder. |
 | legend-y9o7 | P2 | WS-08 BE: Waitlist with ETA + browser notification call, reservation reminders (email | SESUDAH | Waitlist/pengingat reservasi bukan inti tahap 1. |
 | legend-zlc6 | P2 | POS-04 immutability blocks tenant/outlet purge (edge_nodes no-delete, final orders fr | SESUDAH | Kebijakan retensi purge tenant; belum relevan di rilis awal. |
+
+## Verifikasi kode 1238 (int/batch104, grep tingkat modul, indikatif)
+
+- Kode ada (tutup sesudah cek kriteria + test): l3bq, w8cwg, 94xqo, t1ufu.
+- SEBAGIAN: j2l2 (settlement masih tunggu engine), 07eg (total file bank = net belum terverifikasi), 29vw (consumer goods.received/supplier_invoice.matched/supplier.paid tidak ketemu), 905j (jurnal poin/dividen/penyusutan belum dicek), 316 (QC, GR parsial), tvkuz (layar absen edge), 3tyl1 (isi fix belum dibaca).
+- BELUM atau tanpa penanda: arj.5 (angka settlement karyawan keluar masih PENDING_PAYROLL_ENGINE), x73li (laporan/dasbor web masih `mock.ts`), 0orff (panel gateway Super Admin), k0i8, xhl5j, gdjpu, ecr16, tomda.
+- Perlu kartu: x73li dan arj.5 paling besar dampaknya untuk rilis. Sisanya cek kriteria per bead dulu (architect/Explore per area), lalu kartu.
