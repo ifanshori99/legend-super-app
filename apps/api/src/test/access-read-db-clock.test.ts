@@ -141,6 +141,17 @@ async function withAppClockBehindDb<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+/** Run `fn` with only the app `Date` faked 60 s AHEAD of the real clock. */
+async function withAppClockAheadOfDb<T>(fn: () => Promise<T>): Promise<T> {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  try {
+    vi.setSystemTime(new Date(Date.now() + APP_CLOCK_SKEW_MS));
+    return await fn();
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
 type Client = ReturnType<typeof agent>;
 type Seen = {
   routeStatus: number;
@@ -278,6 +289,59 @@ describe("sub-1201 permission reads use the DB clock", () => {
     expect(await dbReached(rows[0]!.until)).toBe(true);
 
     expectInactive(await seen(who.client));
+  });
+});
+
+// legend-7zwmv (P3-5 of the 1201 second opinion): the app clock AHEAD of the DB.
+// The DB clock decides: a grant whose valid_from is still in the DB's future is
+// not active (the app must not activate it early), and a grant whose valid_until
+// the app clock already passed is still active until the DB clock passes it.
+describe("legend-7zwmv permission reads with the app clock ahead of the DB", () => {
+  async function seenAhead(client: Client): Promise<Seen> {
+    return withAppClockAheadOfDb(async () => {
+      const route = await client.get(ROUTE);
+      const access = await client.get("/api/me/access");
+      return {
+        routeStatus: route.status,
+        routeBody: route.body,
+        accessStatus: access.status,
+        permissions: (access.body?.data?.permissions ?? []) as string[],
+      };
+    });
+  }
+
+  it("a grant stamped valid_from = DB now is active", async () => {
+    const roleId = await viewRole();
+    const who = await member("Jam Depan Grant Baru");
+    await assign(who.userId, roleId, "clock_timestamp()", "NULL");
+
+    expectActive(await seenAhead(who.client));
+  });
+
+  it("a grant whose valid_from is 30 s in the DB's future is NOT active although the app clock is 60 s ahead", async () => {
+    const roleId = await viewRole();
+    const who = await member("Jam Depan Grant Masa Depan");
+    await assign(
+      who.userId,
+      roleId,
+      "clock_timestamp() + interval '30 seconds'",
+      "NULL",
+    );
+
+    expectInactive(await seenAhead(who.client));
+  });
+
+  it("a grant with valid_until 30 s ahead of the DB clock is still active although the app clock is 60 s ahead", async () => {
+    const roleId = await viewRole();
+    const who = await member("Jam Depan Grant Berbatas");
+    await assign(
+      who.userId,
+      roleId,
+      "now() - interval '10 minutes'",
+      "clock_timestamp() + interval '30 seconds'",
+    );
+
+    expectActive(await seenAhead(who.client));
   });
 });
 

@@ -71,6 +71,8 @@ async function staffWithRole(
     label: string;
     /** Mark the session's second factor as verified (default true). */
     mfa?: boolean;
+    /** SQL for valid_until (default NULL: open-ended). */
+    validUntilSql?: string;
   },
 ): Promise<Staff> {
   const email = await signUp(agent(createApp()), input.label);
@@ -91,8 +93,8 @@ async function staffWithRole(
   if (!rows[0]) throw new Error(`No role template ${input.template}`);
   await pool.query(
     `INSERT INTO role_assignments
-       (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
-     VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 minute', $2)`,
+       (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, valid_until, assigned_by)
+     VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 minute', ${input.validUntilSql ?? "NULL"}, $2)`,
     [seededTenantId, userId, rows[0].id],
   );
   return { client, userId };
@@ -488,6 +490,59 @@ describe("521 override authentication uses the trusted edge clock", () => {
         "DELETE FROM edge_catalog_sale_overrides WHERE granted_by = $1",
         [staff.userId],
       );
+    }
+  });
+});
+
+// legend-7zwmv (P3-1 of the 1201 second opinion): on the edge the Owner gate
+// judges an assignment's validity by the trusted monotonic clock, not by the
+// edge box's wall clock (statement_timestamp()), and fails closed without it.
+describe("legend-7zwmv the Owner gate uses the trusted edge clock", () => {
+  it("refuses an Owner whose valid_until the trusted clock passed although the local DB clock has not", async () => {
+    const temporary = await staffWithRole(app, {
+      template: "owner",
+      label: "Owner Sementara Jam Edge",
+      validUntilSql: "now() + interval '1 hour'",
+    });
+    // Control: the DB clock and the trusted clock agree, so the Owner is valid.
+    const before = await temporary.client
+      .get(PATH)
+      .set(headers)
+      .set(originHeader);
+    expect(before.status, JSON.stringify(before.body)).toBe(200);
+
+    // The trusted clock is 2 hours on: valid_until (1 h ahead of the DB clock)
+    // is over for the edge. The local DB clock still says "valid".
+    setCatalogOverrideClock(() => new Date(Date.now() + 2 * 3_600_000));
+    try {
+      const read = await temporary.client
+        .get(PATH)
+        .set(headers)
+        .set(originHeader);
+      expect(read.status, JSON.stringify(read.body)).toBe(403);
+      const rowsBefore = (await rowsOf(temporary.userId)).length;
+      const grant = await post(temporary, { minutes: 60, reason: REASON });
+      expect(grant.status, JSON.stringify(grant.body)).toBe(403);
+      expect(await rowsOf(temporary.userId)).toHaveLength(rowsBefore);
+    } finally {
+      setCatalogOverrideClock(() => new Date());
+    }
+    await pool.query("DELETE FROM role_assignments WHERE user_id = $1", [
+      temporary.userId,
+    ]);
+  });
+
+  it("fails closed for even a valid Owner while the trusted clock is not ready", async () => {
+    setCatalogOverrideClock(null);
+    try {
+      const read = await ownerStaff.client
+        .get(PATH)
+        .set(headers)
+        .set(originHeader);
+      expect(read.status, JSON.stringify(read.body)).toBe(503);
+      expect(errorCode(read.body)).toBe("EDGE_CLOCK_NOT_READY");
+    } finally {
+      setCatalogOverrideClock(() => new Date());
     }
   });
 });

@@ -36,6 +36,7 @@ import { countBlockedOutboxAggregates } from "../services/core-outbox-dead-alert
 import {
   catalogOverrideInputSchema,
   catalogOverrideNow,
+  isCatalogOverrideClockReady,
   grantCatalogOverride,
   loadActiveCatalogOverride,
   type CatalogOverride,
@@ -140,7 +141,13 @@ async function sessionSnapshot(req: Request) {
   const tenantWide = establishScopedTenantContext(identity.context.tenant, {
     kind: "tenant",
   });
-  const data = await loadTenantAccess(tenantWide, userId);
+  // legend-7zwmv (P3-1 of the 1201 second opinion): on the edge, validity is
+  // judged by the trusted monotonic clock (`now`), never the edge box's wall
+  // clock behind statement_timestamp(). includeInactive returns every row and
+  // no DB `clock`, so `now` decides each assignment's valid_from/valid_until.
+  const data = await loadTenantAccess(tenantWide, userId, {
+    includeInactive: true,
+  });
   return resolveAccessSnapshot({
     tenant: identity.context.tenant,
     userId,
@@ -177,6 +184,13 @@ const sessionReader: RequestHandler = async (req, _res, next) => {
  */
 const ownerReader: RequestHandler = async (req, _res, next) => {
   const { identity } = edgeIdentity();
+  // Fail closed: without the trusted clock an Owner's validity cannot be judged.
+  if (!isCatalogOverrideClockReady())
+    throw new HttpError(
+      503,
+      "EDGE_CLOCK_NOT_READY",
+      "Jam perangkat belum siap. Coba lagi sebentar lagi.",
+    );
   const snapshot = await sessionSnapshot(req);
   const allowed = snapshot.allowsVia("owner", "device.registry.manage", {
     type: "outlet",
