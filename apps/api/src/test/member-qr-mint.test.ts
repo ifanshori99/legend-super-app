@@ -1,6 +1,7 @@
 // weexf: POST /api/member/qr-token mints a redeem token when the member sends
-// { orderId, points }, and an attach-only token otherwise. The mint does not
-// check the order; the POS does on redeem.
+// { orderId, points }, and an attach-only token otherwise. Since legend-0ne0z
+// the mint checks the order too (the member's own open bill, points <= max):
+// the happy path and every bill check live in member-points-redeem-1203.test.ts.
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Express } from "express";
@@ -45,21 +46,11 @@ const mint = (
 };
 
 describe("weexf member QR mint", () => {
-  it("a member mints a redeem token bound to the order and points", async () => {
+  it("a redeem token for an order that is not the member's bill is refused (legend-0ne0z)", async () => {
     const member = await newMemberUser(app, { profile: "active" });
-    const orderId = randomUUID();
-    const response = await mint(member, { orderId, points: 150 });
-    expect(response.status).toBe(200);
-    const verified = verifyMemberQrRedeemToken(
-      response.body.data.token,
-      seededTenantId,
-      new Date(),
-    );
-    expect(verified).toMatchObject({
-      customerProfileId: member.profileId,
-      orderId,
-      points: 150,
-    });
+    const response = await mint(member, { orderId: randomUUID(), points: 150 });
+    expect(response.status).toBe(404);
+    expect(response.body.data).toBeUndefined();
   });
 
   it("no body (and an empty JSON body) mints an attach token that does not redeem", async () => {

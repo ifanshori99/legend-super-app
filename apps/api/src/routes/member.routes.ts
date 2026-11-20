@@ -11,6 +11,8 @@ import { Router, type RequestHandler } from "express";
 import {
   crmErrorMessages,
   customerProfileDtoSchema,
+  getMemberPointsQuote,
+  getMemberPointsRedeemStatus,
   listMemberPoints as listMemberPointsEndpoint,
   updateMemberConsentInputSchema,
 } from "@starter/shared/crm";
@@ -35,6 +37,12 @@ import {
 import { expiringSoonOf } from "../services/loyalty-expiry.service.ts";
 import { ensureReferralCode } from "../services/referral.service.ts";
 import { listLedgerForProfile } from "../services/point-ledger.service.ts";
+import {
+  listMemberOpenBills,
+  memberPointsRedeemStatus,
+  mintMemberRedeemToken,
+  quoteMemberBillPoints,
+} from "../services/member-points-redeem.service.ts";
 import {
   findProfileByUser,
   toCustomerProfileDto,
@@ -142,7 +150,9 @@ const optionalJsonBody: RequestHandler = (req, res, next) => {
 };
 
 // Mints an attach token, or a redeem token when `{ orderId, points }` come
-// along. The mint does not trust the order: the POS verifies it on redeem.
+// along. A redeem token is checked like the POS will (legend-0ne0z: the
+// member's own bill, eligible, points <= max, no other live token) and binds
+// the ledger version; the POS still verifies everything on redeem.
 memberRouter.post(
   "/qr-token",
   ...base,
@@ -151,15 +161,71 @@ memberRouter.post(
   async (req, res) => {
     const scope = getMemberScope(req);
     const input = memberQrTokenMintInputSchema.parse(req.body ?? {});
+    const profileId = profileIdOf(scope);
+    const { orderId, points } = input;
+    if (orderId === undefined || points === undefined) {
+      res.json({
+        data: issueMemberQrToken(
+          { tenantId: scope.tenantId, customerProfileId: profileId },
+          new Date(),
+        ),
+      });
+      return;
+    }
     res.json({
-      data: issueMemberQrToken(
-        {
-          tenantId: scope.tenantId,
-          customerProfileId: profileIdOf(scope),
-          orderId: input.orderId,
-          points: input.points,
-        },
-        new Date(),
+      data: await withMemberScope(db, scope, (tx) =>
+        mintMemberRedeemToken(tx, scope, { orderId, points }, new Date()),
+      ),
+    });
+  },
+);
+
+// Tukar poin, flow A (legend-0ne0z). Reads answer a suspended member too: the
+// quote then says `membership_inactive` instead of hiding the bill.
+memberRouter.get(
+  "/open-bills",
+  ...base,
+  requireMember({ allow: "pending" }),
+  async (req, res) => {
+    const scope = getMemberScope(req);
+    profileIdOf(scope);
+    res.json({
+      data: await withMemberScope(db, scope, (tx) =>
+        listMemberOpenBills(tx, scope),
+      ),
+    });
+  },
+);
+
+memberRouter.get(
+  "/open-bills/:orderId/points-quote",
+  ...base,
+  requireMember({ allow: "pending" }),
+  async (req, res) => {
+    const scope = getMemberScope(req);
+    profileIdOf(scope);
+    const { orderId } = getMemberPointsQuote.params.parse(req.params);
+    res.json({
+      data: await withMemberScope(db, scope, (tx) =>
+        quoteMemberBillPoints(tx, scope, orderId, new Date()),
+      ),
+    });
+  },
+);
+
+// POST so the token never lands in a URL or an access log.
+memberRouter.post(
+  "/points-redeem/status",
+  ...base,
+  jsonBody,
+  requireMember({ allow: "pending" }),
+  async (req, res) => {
+    const scope = getMemberScope(req);
+    profileIdOf(scope);
+    const input = getMemberPointsRedeemStatus.body.parse(req.body);
+    res.json({
+      data: await withMemberScope(db, scope, (tx) =>
+        memberPointsRedeemStatus(tx, scope, input, new Date()),
       ),
     });
   },

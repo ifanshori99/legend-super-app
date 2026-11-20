@@ -47,6 +47,7 @@ import { Route as CustomerMemberKunjunganRouteImport } from './routes/_customer/
 import { Route as CustomerMemberMisiRouteImport } from './routes/_customer/member.misi'
 import { Route as CustomerMemberPoinRouteImport } from './routes/_customer/member.poin'
 import { Route as CustomerMemberRewardRouteImport } from './routes/_customer/member.reward'
+import { Route as CustomerMemberTukarPoinRouteImport } from './routes/_customer/member.tukar-poin'
 import { Route as CustomerMemberVoucherRouteImport } from './routes/_customer/member.voucher'
 import { Route as CustomerTTokenRouteImport } from './routes/_customer/t.$token'
 import { Route as KaryawanKaryawanIndexRouteImport } from './routes/_karyawan/karyawan.index'
@@ -577,6 +578,11 @@ const CustomerMemberPoinRoute = CustomerMemberPoinRouteImport.update({
 const CustomerMemberRewardRoute = CustomerMemberRewardRouteImport.update({
   id: '/reward',
   path: '/reward',
+  getParentRoute: () => CustomerMemberRoute,
+} as any)
+const CustomerMemberTukarPoinRoute = CustomerMemberTukarPoinRouteImport.update({
+  id: '/tukar-poin',
+  path: '/tukar-poin',
   getParentRoute: () => CustomerMemberRoute,
 } as any)
 const CustomerMemberVoucherRoute = CustomerMemberVoucherRouteImport.update({
@@ -2618,6 +2624,7 @@ export interface FileRoutesByFullPath {
   '/member/misi': typeof CustomerMemberMisiRoute
   '/member/poin': typeof CustomerMemberPoinRoute
   '/member/reward': typeof CustomerMemberRewardRoute
+  '/member/tukar-poin': typeof CustomerMemberTukarPoinRoute
   '/member/voucher': typeof CustomerMemberVoucherRoute
   '/t/$token': typeof CustomerTTokenRouteWithChildren
   '/karyawan/kasbon': typeof KaryawanKaryawanKasbonRoute
@@ -2997,6 +3004,7 @@ export interface FileRoutesByTo {
   '/member/misi': typeof CustomerMemberMisiRoute
   '/member/poin': typeof CustomerMemberPoinRoute
   '/member/reward': typeof CustomerMemberRewardRoute
+  '/member/tukar-poin': typeof CustomerMemberTukarPoinRoute
   '/member/voucher': typeof CustomerMemberVoucherRoute
   '/karyawan/kasbon': typeof KaryawanKaryawanKasbonRoute
   '/karyawan/libur': typeof KaryawanKaryawanLiburRoute
@@ -3387,6 +3395,7 @@ export interface FileRoutesById {
   '/_customer/member/misi': typeof CustomerMemberMisiRoute
   '/_customer/member/poin': typeof CustomerMemberPoinRoute
   '/_customer/member/reward': typeof CustomerMemberRewardRoute
+  '/_customer/member/tukar-poin': typeof CustomerMemberTukarPoinRoute
   '/_customer/member/voucher': typeof CustomerMemberVoucherRoute
   '/_customer/t/$token': typeof CustomerTTokenRouteWithChildren
   '/_karyawan/karyawan/kasbon': typeof KaryawanKaryawanKasbonRoute
@@ -3770,6 +3779,7 @@ export interface FileRouteTypes {
     | '/member/misi'
     | '/member/poin'
     | '/member/reward'
+    | '/member/tukar-poin'
     | '/member/voucher'
     | '/t/$token'
     | '/karyawan/kasbon'
@@ -4149,6 +4159,7 @@ export interface FileRouteTypes {
     | '/member/misi'
     | '/member/poin'
     | '/member/reward'
+    | '/member/tukar-poin'
     | '/member/voucher'
     | '/karyawan/kasbon'
     | '/karyawan/libur'
@@ -4538,6 +4549,7 @@ export interface FileRouteTypes {
     | '/_customer/member/misi'
     | '/_customer/member/poin'
     | '/_customer/member/reward'
+    | '/_customer/member/tukar-poin'
     | '/_customer/member/voucher'
     | '/_customer/t/$token'
     | '/_karyawan/karyawan/kasbon'
@@ -5179,6 +5191,13 @@ declare module '@tanstack/react-router' {
       path: '/reward'
       fullPath: '/member/reward'
       preLoaderRoute: typeof CustomerMemberRewardRouteImport
+      parentRoute: typeof CustomerMemberRoute
+    }
+    '/_customer/member/tukar-poin': {
+      id: '/_customer/member/tukar-poin'
+      path: '/tukar-poin'
+      fullPath: '/member/tukar-poin'
+      preLoaderRoute: typeof CustomerMemberTukarPoinRouteImport
       parentRoute: typeof CustomerMemberRoute
     }
     '/_customer/member/voucher': {
@@ -7660,6 +7679,7 @@ interface CustomerMemberRouteChildren {
   CustomerMemberMisiRoute: typeof CustomerMemberMisiRoute
   CustomerMemberPoinRoute: typeof CustomerMemberPoinRoute
   CustomerMemberRewardRoute: typeof CustomerMemberRewardRoute
+  CustomerMemberTukarPoinRoute: typeof CustomerMemberTukarPoinRoute
   CustomerMemberVoucherRoute: typeof CustomerMemberVoucherRoute
   CustomerMemberIndexRoute: typeof CustomerMemberIndexRoute
   CustomerMemberFasilitasTicketIdRoute: typeof CustomerMemberFasilitasTicketIdRoute
@@ -7674,6 +7694,7 @@ const CustomerMemberRouteChildren: CustomerMemberRouteChildren = {
   CustomerMemberMisiRoute: CustomerMemberMisiRoute,
   CustomerMemberPoinRoute: CustomerMemberPoinRoute,
   CustomerMemberRewardRoute: CustomerMemberRewardRoute,
+  CustomerMemberTukarPoinRoute: CustomerMemberTukarPoinRoute,
   CustomerMemberVoucherRoute: CustomerMemberVoucherRoute,
   CustomerMemberIndexRoute: CustomerMemberIndexRoute,
   CustomerMemberFasilitasTicketIdRoute: CustomerMemberFasilitasTicketIdRoute,

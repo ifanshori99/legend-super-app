@@ -4,10 +4,12 @@
 // profile and nothing else:
 //   token = base64url(payload).base64url(HMAC-SHA256(key, base64url(payload)))
 //   payload = { t: tenantId, p: customerProfileId, e: expiry (Unix seconds),
-//               n: random nonce, o?: orderId, a?: points }
+//               n: random nonce, o?: orderId, a?: points, v?: ledger version }
 // `o` and `a` bind a token to one order and one amount (weexf): redeeming
 // points at the POS needs both, and spends the nonce once. A token without them
-// still attaches a member, but never redeems.
+// still attaches a member, but never redeems. `v` (legend-0ne0z) is the
+// member's point-ledger version at mint (latest posting_seq): the POS refuses a
+// redeem when the ledger moved since, so a quote is never silently adjusted.
 // The key is derived from BETTER_AUTH_SECRET with a fixed label (like device
 // tokens), so no extra deployment variable is needed. Every failure verifies
 // to the same null so the answer is not an oracle.
@@ -26,6 +28,7 @@ const payloadSchema = z.strictObject({
   n: z.string().min(1).max(64),
   o: z.string().min(1).max(64).optional(),
   a: z.number().int().positive().max(1_000_000).optional(),
+  v: z.number().int().nonnegative().optional(),
 });
 
 let cachedKey: Buffer | undefined;
@@ -48,6 +51,8 @@ export function issueMemberQrToken(
     /** Bind the token to one order and one amount of points (weexf). */
     orderId?: string;
     points?: number;
+    /** Point-ledger version of the member at mint (legend-0ne0z). */
+    ledgerVersion?: number;
   },
   now: Date,
 ): { token: string; expiresAt: string } {
@@ -60,7 +65,13 @@ export function issueMemberQrToken(
       e: expiresAtSeconds,
       n: randomBytes(12).toString("base64url"),
       ...(input.orderId !== undefined && input.points !== undefined
-        ? { o: input.orderId, a: input.points }
+        ? {
+            o: input.orderId,
+            a: input.points,
+            ...(input.ledgerVersion === undefined
+              ? {}
+              : { v: input.ledgerVersion }),
+          }
         : {}),
     }),
     "utf8",
@@ -124,6 +135,8 @@ export function verifyMemberQrRedeemToken(
   orderId: string;
   points: number;
   exp: number;
+  /** Null for a token minted without a ledger version: never redeems. */
+  ledgerVersion: number | null;
 } | null {
   const payload = parseToken(token, tenantId, now);
   if (!payload || payload.o === undefined || payload.a === undefined)
@@ -134,5 +147,42 @@ export function verifyMemberQrRedeemToken(
     orderId: payload.o,
     points: payload.a,
     exp: payload.e,
+    ledgerVersion: payload.v ?? null,
+  };
+}
+
+/**
+ * A redeem token judged for the member's status screen (legend-0ne0z): a
+ * signed token of this tenant with order and points is `live` or `expired`;
+ * anything else is `invalid`. Expiry is reported, not hidden, so the member
+ * knows to make a new QR.
+ */
+export function inspectMemberQrRedeemToken(
+  token: string,
+  tenantId: string,
+  now: Date,
+):
+  | { state: "invalid" }
+  | {
+      state: "live" | "expired";
+      customerProfileId: string;
+      nonce: string;
+      orderId: string;
+      points: number;
+      exp: number;
+      ledgerVersion: number | null;
+    } {
+  // Judge the signature and tenant at the token's own birth, then the clock.
+  const payload = parseToken(token, tenantId, new Date(0));
+  if (!payload || payload.o === undefined || payload.a === undefined)
+    return { state: "invalid" };
+  return {
+    state: payload.e * 1000 <= now.getTime() ? "expired" : "live",
+    customerProfileId: payload.p,
+    nonce: payload.n,
+    orderId: payload.o,
+    points: payload.a,
+    exp: payload.e,
+    ledgerVersion: payload.v ?? null,
   };
 }

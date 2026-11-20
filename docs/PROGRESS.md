@@ -49,6 +49,14 @@ Log asli `inflf`: `/private/tmp/claude-501/-Users-ifanshori99-Projects-legend-su
 
 Subagent: total 10, puncak 5 bersamaan; token heavy final dipegang test-runner. Skrip `session-usage.py` tidak menemukan transkrip Codex dan `parallel-report` hanya menghitung sesi Claude, jadi biaya/rata-rata Codex tidak tersedia dari kedua skrip itu.
 
+## 1165 Member tukar poin alur A: UI (ui-engineer, legend-0ne0z, cabang ws/1165-member-tukar-poin-ui dari 3ad22a061, 19 Nov 2026)
+
+- Layar `/member/tukar-poin` (tautan dari `/member/poin`): tagihan terbuka atas nama member, pilih tagihan bila lebih dari satu, pilih jumlah poin (batas `min(maxPoints, saldo, floor(sisa/nilaiPoin))`), QR penukaran 120 detik berisi token server, kedaluwarsa, gagal, sudah dipakai, poin setelah penukaran, tanpa tagihan (QR identitas lewat `QrTokenDialog`), loading, offline. Alur B tidak dibangun.
+- Kontrak aditif `packages/shared/src/crm/member-points-redeem.ts`: `GET /api/member/open-bills`, `GET /api/member/open-bills/:orderId/points-quote`, `POST /api/member/points-redeem/status` body `{orderId, token}`; mint memakai `issueMemberQrToken` yang sudah ada dengan `{orderId, points}`. Data mock (`VITE_API_MOCK`), skenario baru `points-consumed`, `points-redeemed`, `points-mint-fail`, `points-multi-bill`.
+- Aturan uang di UI: QR hanya dirender dari token server; token yang masih hidup (termasuk jawaban mint terlambat sesudah timeout 15 detik) dipoll dan memblokir mint kedua sampai expired/consumed/invalid. Server tetap penentu (pos-points.service.ts).
+- Review: reviewer 3 ronde + ui-auditor 1 ronde, temuan nyata dibetulkan (token hidup saat kembali, cap poin, breakpoint, fokus, live region, timer mint basi, hijack outstanding). Gate: typecheck shared+web lewat heavy hijau, test terarah 12+36 lulus, prettier+eslint 27 file hijau, 28 screenshot `docs/review/img/member-tukar-poin-*.png` (`heavy --browser node scripts/shot-1165.mjs`).
+- Berikut: gerbang UI founder, lalu backend tiga endpoint + validasi kepemilikan order pada mint (brief terpisah).
+
 ## legend-e3k4p: pengirim digest reconciliation edge berkala (18 Nov 2026)
 
 - Dasar: `a915c9409` (`ghostex/bawa-kai-upsync-ke-m1`, ledger 0684), cabang kerja `ghostex/job-rekonsiliasi-edge-berkala`. Referensi runtime S1-S5 dibaca tanpa merge. Tidak merencanakan migrasi atau perubahan perhitungan ledger.

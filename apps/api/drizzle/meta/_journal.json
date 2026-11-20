@@ -3487,6 +3487,13 @@
       "when": 1795000021101,
       "tag": "0511_payout_1192_hold_release_functions",
       "breakpoints": true
+    },
+    {
+      "idx": 512,
+      "version": "7",
+      "when": 1795000022101,
+      "tag": "0512_member_qr_redeem_mints",
+      "breakpoints": true
     }
   ]
 }

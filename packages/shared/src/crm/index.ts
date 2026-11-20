@@ -5,6 +5,7 @@ export * from "./schemas.ts";
 export * from "./events.ts";
 export * from "./errors.ts";
 export * from "./endpoints.ts";
+export * from "./member-points-redeem.ts";
 export * from "./fixtures.ts";
 export * from "./consent-sources.ts";
 export * from "./config-codec.ts";

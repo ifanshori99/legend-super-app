@@ -32,6 +32,17 @@ export const MOCK_SCENARIOS = [
    * account (`requiresLogin`), so the claim card shows its /masuk sign-in CTA.
    */
   "claim-login",
+  /**
+   * legend-0ne0z (member "tukar poin di kasir"): the first points-redeem status
+   * check reports the cashier scanned the QR; balance and bill follow.
+   */
+  "points-consumed",
+  /** legend-0ne0z: the open bill already has 500 poin (Rp50.000) redeemed. */
+  "points-redeemed",
+  /** legend-0ne0z: bills and quote load, minting the QR fails with 503. */
+  "points-mint-fail",
+  /** legend-0ne0z: two open bills (LG-0248 Kemang, LG-0251 Senopati). */
+  "points-multi-bill",
 ] as const;
 export type MockScenario = (typeof MOCK_SCENARIOS)[number];
 

@@ -20,6 +20,7 @@ import { and, eq, sql } from "drizzle-orm";
 import {
   CoreError,
   outletIdSchema,
+  tenantIdSchema,
   type OutletId,
   type ScopedTenantContext,
 } from "@starter/shared/core";
@@ -30,7 +31,7 @@ import type {
 } from "@starter/shared/pos/points";
 import { db } from "../db/index.ts";
 import { withProfileLock } from "../db/member-scope.ts";
-import { memberQrRedeemNonces } from "../db/schema/crm-ledger.ts";
+import { memberQrRedeemNonces, pointLedger } from "../db/schema/crm-ledger.ts";
 import { customerProfiles, loyaltyPrograms } from "../db/schema/crm-member.ts";
 import { orders } from "../db/schema/qr-order.ts";
 import { getEdgeRuntimeState } from "../edge/runtime.ts";
@@ -73,8 +74,32 @@ async function loadProgram(
   return row ?? null;
 }
 
+/**
+ * The member's point-ledger version (legend-0ne0z): the latest posting_seq of
+ * the profile, 0 before any row. Any ledger move (earn, redeem, expiry,
+ * adjust) changes it; a redeem QR binds it at mint.
+ */
+export async function memberLedgerVersion(
+  tx: Tx,
+  tenantId: string,
+  profileId: string,
+): Promise<number> {
+  const [row] = await tx
+    .select({
+      version: sql<string>`coalesce(max(${pointLedger.postingSeq}), 0)`,
+    })
+    .from(pointLedger)
+    .where(
+      and(
+        eq(pointLedger.tenantId, tenantIdSchema.parse(tenantId)),
+        eq(pointLedger.customerProfileId, profileId),
+      ),
+    );
+  return Number(row?.version ?? 0);
+}
+
 /** Whole points that fit `remainingIdr` (rounded down) and the balance. */
-function maxPointsFor(
+export function maxPointsFor(
   balance: number,
   remaining: number,
   pointValueIdr: number,
@@ -280,6 +305,15 @@ export const posPointsTenderSettlement: PosExternalTenderPort = async (
   // balance again under the same lock.
   await expirePointsForProfile(tx, tenantId, profileId, lockedAt);
   const profile = await withProfileLock(tx, tenantId, profileId);
+  // legend-0ne0z (CTO decision): the QR binds the ledger version seen at mint.
+  // Any move since (another redeem, an earn, an expiry) refuses the whole
+  // redeem; it is never shrunk to fit. A QR without a version never redeems.
+  if (
+    qrClaims &&
+    qrClaims.ledgerVersion !==
+      (await memberLedgerVersion(tx, tenantId, profileId))
+  )
+    throw memberQrRefusal();
   const program = await loadProgram(tx, tenantId);
   const valueIdr = priceRedemption({
     program,

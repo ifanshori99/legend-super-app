@@ -70,7 +70,7 @@ import {
   type Profile,
 } from "./member-loyalty-helpers.ts";
 import { grantPoints } from "./member-rewards-helpers.ts";
-import { memberQrFor } from "./member-qr-redeem-helper.ts";
+import { ledgerVersionOf, memberQrFor } from "./member-qr-redeem-helper.ts";
 
 const KOPI_IDR = 25_000;
 /** Kopi x2 = Rp50.000 + PBJT 10%. */
@@ -569,17 +569,22 @@ describe("R2-01 redeem refuses a program owned by another PT", () => {
 
 type QrOptions = { at?: Date; tenantId?: string; profile?: Profile };
 
-function mintRedeemQr(
+async function mintRedeemQr(
   member: Profile,
   order: CreatedOrder,
   points: number,
   options: QrOptions = {},
-): string {
+): Promise<string> {
   const claims = {
     tenantId: options.tenantId ?? world.tenant.tenantId,
     customerProfileId: (options.profile ?? member).id,
     orderId: order.id,
     points,
+    // legend-0ne0z: the API mint binds the member's ledger version.
+    ledgerVersion: await ledgerVersionOf(
+      world.tenant.tenantId,
+      (options.profile ?? member).id,
+    ),
   };
   return issueMemberQrToken(
     claims as Parameters<typeof issueMemberQrToken>[0],
@@ -595,7 +600,7 @@ async function expectControlRedeems(
   before: number,
 ) {
   const response = await redeem(order, points, {
-    memberToken: mintRedeemQr(member, order, points),
+    memberToken: await mintRedeemQr(member, order, points),
   });
   expect(redeemed(response.status), JSON.stringify(response.body)).toBe(true);
   expect(await balanceOf(world.tenant.tenantId, member.id)).toBe(
@@ -617,7 +622,7 @@ describe("weexf member QR for redeeming points", () => {
   it("weexf-02 the same QR sent again with a new key is refused: still exactly one debit", async () => {
     const member = await memberWith(1_000);
     const order = await newOrder({ member });
-    const token = mintRedeemQr(member, order, 100);
+    const token = await mintRedeemQr(member, order, 100);
 
     const first = await redeem(order, 100, { memberToken: token });
     expect(redeemed(first.status), JSON.stringify(first.body)).toBe(true);
@@ -632,7 +637,7 @@ describe("weexf member QR for redeeming points", () => {
   it("weexf-03 a legitimate replay (same QR, same idempotency key) still answers the same result and stays ONE debit", async () => {
     const member = await memberWith(1_000);
     const order = await newOrder({ member });
-    const token = mintRedeemQr(member, order, 100);
+    const token = await mintRedeemQr(member, order, 100);
     const key = randomUUID();
 
     const first = await redeem(order, 100, { memberToken: token, key });
@@ -648,7 +653,7 @@ describe("weexf member QR for redeeming points", () => {
     const member = await memberWith(1_000);
     const mine = await newOrder({ member });
     const other = await newOrder({ member });
-    const token = mintRedeemQr(member, mine, 100);
+    const token = await mintRedeemQr(member, mine, 100);
 
     expectRefused(await redeem(other, 100, { memberToken: token }));
     await expectNothingSpent(other, member, 1_000);
@@ -660,7 +665,7 @@ describe("weexf member QR for redeeming points", () => {
     const member = await memberWith(1_000);
     const first = await newOrder({ member });
     const second = await newOrder({ member });
-    const token = mintRedeemQr(member, first, 100);
+    const token = await mintRedeemQr(member, first, 100);
 
     const used = await redeem(first, 100, { memberToken: token });
     expect(redeemed(used.status), JSON.stringify(used.body)).toBe(true);
@@ -679,7 +684,7 @@ describe("weexf member QR for redeeming points", () => {
     async (_label, requested) => {
       const member = await memberWith(1_000);
       const order = await newOrder({ member });
-      const token = mintRedeemQr(member, order, 100);
+      const token = await mintRedeemQr(member, order, 100);
 
       expectRefused(await redeem(order, requested, { memberToken: token }));
       await expectNothingSpent(order, member, 1_000);
@@ -691,7 +696,7 @@ describe("weexf member QR for redeeming points", () => {
     const member = await memberWith(1_000);
     const order = await newOrder({ member });
     // 150 s old: clearly past the 120 s life of the token.
-    const stale = mintRedeemQr(member, order, 100, {
+    const stale = await mintRedeemQr(member, order, 100, {
       at: new Date(Date.now() - 150_000),
     });
 
@@ -704,7 +709,9 @@ describe("weexf member QR for redeeming points", () => {
     const member = await memberWith(1_000);
     const stranger = await memberWith(1_000);
     const order = await newOrder({ member });
-    const strangers = mintRedeemQr(member, order, 100, { profile: stranger });
+    const strangers = await mintRedeemQr(member, order, 100, {
+      profile: stranger,
+    });
 
     expectRefused(await redeem(order, 100, { memberToken: strangers }));
     await expectNothingSpent(order, member, 1_000);
@@ -716,7 +723,7 @@ describe("weexf member QR for redeeming points", () => {
   it("weexf-09 a QR minted for another tenant is refused, nothing spent", async () => {
     const member = await memberWith(1_000);
     const order = await newOrder({ member });
-    const foreign = mintRedeemQr(member, order, 100, {
+    const foreign = await mintRedeemQr(member, order, 100, {
       tenantId: seededTenantId,
     });
 
@@ -728,7 +735,7 @@ describe("weexf member QR for redeeming points", () => {
   it("weexf-10 an altered QR is refused, nothing spent", async () => {
     const member = await memberWith(1_000);
     const order = await newOrder({ member });
-    const token = mintRedeemQr(member, order, 100);
+    const token = await mintRedeemQr(member, order, 100);
     const tail = token.slice(-4);
     const altered = token.slice(0, -4) + (tail === "AAAA" ? "BBBB" : "AAAA");
 
@@ -740,7 +747,7 @@ describe("weexf member QR for redeeming points", () => {
   it("weexf-11 four requests at once with the same QR and different keys: exactly one pays, one debit, one tender", async () => {
     const member = await memberWith(1_000);
     const order = await newOrder({ member });
-    const token = mintRedeemQr(member, order, 100);
+    const token = await mintRedeemQr(member, order, 100);
 
     const responses = await Promise.all(
       [1, 2, 3, 4].map(() => redeem(order, 100, { memberToken: token })),
@@ -762,7 +769,7 @@ describe("weexf member QR for redeeming points", () => {
     const member = await memberWith(1_000);
     const mine = await newOrder({ member });
     const other = await newOrder({ member });
-    const token = mintRedeemQr(member, mine, 100);
+    const token = await mintRedeemQr(member, mine, 100);
 
     const [forMine, forOther] = await Promise.all([
       redeem(mine, 100, { memberToken: token }),
@@ -780,8 +787,8 @@ describe("weexf member QR for redeeming points", () => {
   it("weexf-13 the same QR racing with a fresh QR of the same amount on one bill: the bill takes at most the points of one payment per QR", async () => {
     const member = await memberWith(1_000);
     const order = await newOrder({ member });
-    const token = mintRedeemQr(member, order, 100);
-    const spare = mintRedeemQr(member, order, 100);
+    const token = await mintRedeemQr(member, order, 100);
+    const spare = await mintRedeemQr(member, order, 100);
 
     const responses = await Promise.all([
       redeem(order, 100, { memberToken: token }),
@@ -812,7 +819,7 @@ describe("weexf training mode", () => {
     const member = await memberWith(1_000);
     const training = await newOrder({ member });
     await markTraining(world.tenant.tenantId, training.id);
-    const token = mintRedeemQr(member, training, 100);
+    const token = await mintRedeemQr(member, training, 100);
 
     const response = await redeem(training, 100, { memberToken: token });
     expect(response.status, JSON.stringify(response.body)).toBe(409);
