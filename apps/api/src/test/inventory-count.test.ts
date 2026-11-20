@@ -40,11 +40,19 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
-import { createWasteLogInputSchema } from "@starter/shared/inventory";
+import {
+  createWasteLogInputSchema,
+  inventoryEvents,
+  stockMovedEventPayloadSchema,
+} from "@starter/shared/inventory";
+import type { EventEnvelope } from "@starter/shared/events";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
+import { db } from "../db/index.ts";
+import { withTenant } from "../db/tenant.ts";
 import {
   createStockBatch,
+  recordReplicatedStockMovementInTransaction,
   recordStockMovement,
 } from "../services/inventory.service.ts";
 import {
@@ -2713,4 +2721,245 @@ describe("W4-3 a decrease is valued at the moving average at posting", () => {
       expect(Number(line.rows[0]!.posted)).toBe(-3000);
     });
   }
+});
+
+describe("late movements dated before the count (SO 1208 P1)", () => {
+  // The deduction paths post with the sale's own `occurred_at`
+  // (postRecipeDeduction: close_of_day at day close, real_time through the
+  // outbox, a late edge order or a repost): a backdated sale row is what reaches
+  // the ledger in every one of them.
+  async function sellAt(
+    locationId: string,
+    itemId: string,
+    quantity: string,
+    occurredAt: Date,
+  ) {
+    await recordStockMovement(tenantContext(), {
+      outletId: outletA,
+      locationId,
+      inventoryItemId: itemId,
+      movementType: "sale",
+      quantity: decimal4(quantity),
+      sourceType: "order",
+      sourceId: randomUUID(),
+      occurredAt: occurredAt.toISOString() as never,
+      actor: { type: "system" },
+    });
+  }
+
+  async function postedAfterSale(counted: string) {
+    const { locationId, itemIds } = await seedStock([{ onHand: "10.0000" }]);
+    const item = itemIds[0]!;
+    const { count } = await createCount(counter, locationId, itemIds);
+    await ok(await transition(counter, count.id, "start"));
+    // Sold 2 before the count; the deduction is not in the ledger yet.
+    const soldAt = new Date(Date.now() - 60_000);
+    await enterCounts(counter, count.id, false, { [item]: counted });
+    return { locationId, item, countId: count.id, soldAt };
+  }
+
+  it("close_of_day: the day close posts a sale made before the count after the count posted -> stock stays at the counted 8", async () => {
+    const { locationId, item, countId, soldAt } =
+      await postedAfterSale("8.0000");
+    await ok(await transition(counter, countId, "submit"));
+    await ok(await transition(approver, countId, "approve"));
+    expect(await balanceOf(locationId, item)).toBe("8.0000");
+
+    await sellAt(locationId, item, "-2.0000", soldAt); // day close
+    expect(await balanceOf(locationId, item)).toBe("8.0000");
+    const ledger = await countLedger(countId);
+    expect(ledger.map((row) => row.quantity).sort()).toEqual([
+      "-2.0000",
+      "2.0000",
+    ]);
+
+    // A sale made after the count still moves the stock.
+    await sellAt(locationId, item, "-1.0000", new Date(Date.now() + 1000));
+    expect(await balanceOf(locationId, item)).toBe("7.0000");
+  });
+
+  it("real_time: a lagging sale made before the count reaches the ledger before approval -> no variance, stock 8", async () => {
+    const { locationId, item, countId, soldAt } =
+      await postedAfterSale("8.0000");
+    await ok(await transition(counter, countId, "submit"));
+    await sellAt(locationId, item, "-2.0000", soldAt); // outbox caught up
+    expect(await balanceOf(locationId, item)).toBe("8.0000");
+
+    await ok(await transition(approver, countId, "approve"));
+    expect(await countLedger(countId)).toHaveLength(0);
+    expect(await balanceOf(locationId, item)).toBe("8.0000");
+    const { rows } = await owner.query<{ system_qty: string }>(
+      "SELECT system_qty::text FROM stock_count_lines WHERE tenant_id = $1 AND stock_count_id = $2",
+      [tenantA, countId],
+    );
+    expect(rows[0]!.system_qty).toBe("8.0000");
+  });
+
+  /** An edge `stock.moved` sale as the cloud applier receives it. */
+  async function edgeSaleAt(
+    locationId: string,
+    itemId: string,
+    quantity: string,
+    occurredAt: Date,
+  ) {
+    const ledgerEntryId = createUlid(occurredAt.getTime());
+    const event = inventoryEvents["stock.moved"].envelopeSchema.parse({
+      id: createUlid(),
+      tenantId: tenantA,
+      outletId: outletA,
+      name: "stock.moved",
+      version: 1,
+      aggregateType: "stock",
+      aggregateId: ledgerEntryId,
+      sequence: 1,
+      occurredAt: occurredAt.toISOString(),
+      actor: { type: "system" },
+      deviceId: null,
+      idempotencyKey: `stock.moved:${ledgerEntryId}`,
+      payloadSchemaRef: "stock.moved.v1",
+      payload: {
+        ledgerEntryId,
+        inventoryItemId: itemId,
+        locationId,
+        movementType: "sale",
+        quantity,
+        unitCostIdr: "1500.0000",
+        batchId: null,
+        sourceType: "order",
+        sourceId: randomUUID(),
+        occurredAt: occurredAt.toISOString(),
+      },
+    }) as EventEnvelope;
+    const context = tenantContext(tenantA, [outletA]);
+    await withTenant(db, context, (tx) =>
+      recordReplicatedStockMovementInTransaction(
+        tx,
+        context,
+        event,
+        stockMovedEventPayloadSchema.parse(event.payload),
+      ),
+    );
+  }
+
+  it("edge: a sale made offline before a cloud count lands after the count posted -> stock stays at the counted 8", async () => {
+    const { locationId, item, countId, soldAt } =
+      await postedAfterSale("8.0000");
+    await ok(await transition(counter, countId, "submit"));
+    await ok(await transition(approver, countId, "approve"));
+    expect(await balanceOf(locationId, item)).toBe("8.0000");
+
+    await edgeSaleAt(locationId, item, "-2.0000", soldAt);
+    expect(await balanceOf(locationId, item)).toBe("8.0000");
+  });
+
+  it("a receipt dated before the count and posted after it is not absorbed", async () => {
+    const { locationId, item, countId, soldAt } =
+      await postedAfterSale("8.0000");
+    await ok(await transition(counter, countId, "submit"));
+    await ok(await transition(approver, countId, "approve"));
+    await recordStockMovement(tenantContext(), {
+      outletId: outletA,
+      locationId,
+      inventoryItemId: item,
+      movementType: "receipt",
+      quantity: decimal4("5.0000"),
+      unitCostIdr: decimal4("1500.0000"),
+      batchId: null,
+      sourceType: "goods_receipt",
+      sourceId: randomUUID(),
+      occurredAt: soldAt.toISOString() as never,
+      actor: { type: "system" },
+    });
+    expect(await balanceOf(locationId, item)).toBe("13.0000");
+    expect(await countLedger(countId)).toHaveLength(1);
+  });
+
+  it("a late return dated before the count that grows the variance asks for a fresh approval (409), nothing posts", async () => {
+    const { locationId, item, countId, soldAt } =
+      await postedAfterSale("10.0000"); // counted = system: no variance
+    await ok(await transition(counter, countId, "submit"));
+    await recordStockMovement(tenantContext(), {
+      outletId: outletA,
+      locationId,
+      inventoryItemId: item,
+      movementType: "return",
+      quantity: decimal4("2.0000"),
+      unitCostIdr: decimal4("1500.0000"),
+      batchId: null,
+      sourceType: "order",
+      sourceId: randomUUID(),
+      occurredAt: soldAt.toISOString() as never,
+      actor: { type: "system" },
+    });
+    expectError(
+      await transition(approver, countId, "approve"),
+      409,
+      "STOCK_COUNT_VERSION_MISMATCH",
+    );
+    expect(await countLedger(countId)).toHaveLength(0);
+    const { rows } = await owner.query<{ status: string; gross: string }>(
+      "SELECT status, gross_variance_idr::text AS gross FROM stock_counts WHERE tenant_id = $1 AND id = $2",
+      [tenantA, countId],
+    );
+    expect(rows[0]!.status).toBe("pending_approval");
+    expect(Number(rows[0]!.gross)).toBe(3000);
+    expect(await balanceOf(locationId, item)).toBe("12.0000");
+    const { rows: audits } = await owner.query<{ event: unknown }>(
+      `SELECT event FROM audit_logs
+        WHERE tenant_id = $1 AND event->>'objectId' = $2`,
+      [tenantA, countId],
+    );
+    const reopened = audits
+      .map((row) => JSON.stringify(row.event))
+      .filter((event) => event.includes("stock_count_approval_reopened"));
+    expect(reopened).toHaveLength(1);
+    expect(reopened[0]).toContain("variance_grew");
+    expect(reopened[0]).not.toContain("approver_is_counter");
+
+    // The fresh chain approved: the count posts -2 once, stock = counted 10.
+    const posted = await ok(await transition(approver, countId, "approve"));
+    expect(posted.body.data.status).toBe("posted");
+    const ledger = await countLedger(countId);
+    expect(ledger.map((row) => row.quantity)).toEqual(["-2.0000"]);
+    expect(await balanceOf(locationId, item)).toBe("10.0000");
+  });
+
+  it("one line's loss grows while another shrinks and the total drops -> still a fresh approval (409)", async () => {
+    const { locationId, itemIds } = await seedStock([
+      { onHand: "10.0000", cost: "1000.0000" },
+      { onHand: "10.0000", cost: "1000.0000" },
+    ]);
+    const [itemA, itemB] = itemIds as [string, string];
+    const { count } = await createCount(counter, locationId, itemIds);
+    await ok(await transition(counter, count.id, "start"));
+    const soldAt = new Date(Date.now() - 60_000);
+    // A: loss 1 (Rp1000), B: loss 3 (Rp3000).
+    await enterCounts(counter, count.id, false, {
+      [itemA]: "9.0000",
+      [itemB]: "7.0000",
+    });
+    await ok(await transition(counter, count.id, "submit"));
+    // Late, dated before the count: a return on A (loss 2 = Rp2000) and a
+    // sale on B (loss 1 = Rp1000): gross 4000 -> 3000.
+    await recordStockMovement(tenantContext(), {
+      outletId: outletA,
+      locationId,
+      inventoryItemId: itemA,
+      movementType: "return",
+      quantity: decimal4("1.0000"),
+      unitCostIdr: decimal4("1000.0000"),
+      batchId: null,
+      sourceType: "order",
+      sourceId: randomUUID(),
+      occurredAt: soldAt.toISOString() as never,
+      actor: { type: "system" },
+    });
+    await sellAt(locationId, itemB, "-2.0000", soldAt);
+    expectError(
+      await transition(approver, count.id, "approve"),
+      409,
+      "STOCK_COUNT_VERSION_MISMATCH",
+    );
+    expect(await countLedger(count.id)).toHaveLength(0);
+  });
 });

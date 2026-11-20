@@ -54,6 +54,7 @@ import {
   asc,
   desc,
   eq,
+  gt,
   inArray,
   lt,
   or,
@@ -93,6 +94,7 @@ import { db } from "../db/index.ts";
 import {
   inventoryItems,
   stockBalances,
+  stockLedger,
   stockLocations,
 } from "../db/schema/inventory.ts";
 import { stockCountLines, stockCounts } from "../db/schema/inventory-count.ts";
@@ -1319,6 +1321,7 @@ async function reopenApproval(
   row: CountRow,
   requestedBy: string,
   now: Date,
+  reason: "approver_is_counter" | "variance_grew",
 ): Promise<CountRow | null> {
   const blind = row.blind;
   const opened = await openApprovalRequest(tx, context, {
@@ -1354,7 +1357,7 @@ async function reopenApproval(
     "inventory.stock_count_approval_reopened",
     row,
     updated!,
-    "approver_is_counter",
+    reason,
   );
   return updated!;
 }
@@ -1524,6 +1527,7 @@ async function settle(
       row,
       levels[levels.length - 1]!.requestedBy,
       now,
+      "approver_is_counter",
     );
     if (reopened === null)
       return revertToCounting(
@@ -1548,6 +1552,59 @@ async function settle(
       "STOCK_COUNT_VERSION_MISMATCH",
       "The counted lines changed after the approval request was opened.",
     );
+  // The system quantity is the ledger balance at each line's counted_at
+  // (refreshSystemQty). A late inflow can make the variance bigger than what
+  // the approver saw: then a fresh approval is asked, the lines stay counted.
+  await lockLocations(tx, row.tenantId, [row.locationId]);
+  const refreshed: LineRow[] = [];
+  // Any line whose loss or gain grew needs a fresh approval, even when the
+  // other lines shrink and the total drops.
+  let lineGrew = false;
+  for (const line of lines) {
+    const atCount = await refreshSystemQty(tx, row, line);
+    if (Math.abs(atCount.varianceIdr ?? 0) > Math.abs(line.varianceIdr ?? 0))
+      lineGrew = true;
+    refreshed.push(atCount);
+  }
+  const variance = sumVariance(refreshed.map((line) => line.varianceIdr ?? 0));
+  if (refreshed.some((line, index) => line !== lines[index])) {
+    const [current] = await tx
+      .update(stockCounts)
+      .set({
+        totalVarianceIdr: variance.total,
+        grossVarianceIdr: variance.gross,
+        linesHash: countLinesHash(refreshed),
+        updatedAt: now,
+      })
+      .where(eq(stockCounts.id, row.id))
+      .returning();
+    if (lineGrew || variance.gross > (row.grossVarianceIdr ?? 0)) {
+      const reopened = await reopenApproval(
+        tx,
+        context,
+        actorUserId,
+        current!,
+        levels[levels.length - 1]!.requestedBy,
+        now,
+        "variance_grew",
+      );
+      if (reopened === null)
+        return revertToCounting(
+          tx,
+          context,
+          actorUserId,
+          current!,
+          now,
+          "variance_grew",
+        );
+      deferred.error = countError(
+        "STOCK_COUNT_VERSION_MISMATCH",
+        "The system quantity changed after approval and the variance grew; a fresh approval was requested.",
+      );
+      return reopened;
+    }
+    row = current!;
+  }
   const [approved] = await tx
     .update(stockCounts)
     .set({
@@ -1593,14 +1650,17 @@ async function postLines(
   const lines = await loadLines(tx, row.id);
   await lockLocations(tx, row.tenantId, [row.locationId]);
   const moved: { locationId: string; inventoryItemId: string }[] = [];
+  const varianceIdrs: number[] = [];
   for (const line of [...lines].sort((left, right) =>
     left.inventoryItemId < right.inventoryItemId ? -1 : 1,
   )) {
     if (line.countedQty === null)
       throw new Error("An approved stock count has an uncounted line");
-    const delta = lineDelta(line);
+    const atCount = await refreshSystemQty(tx, row, line);
+    varianceIdrs.push(atCount.varianceIdr ?? 0);
+    const delta = lineDelta(atCount);
     if (delta === 0n) continue;
-    await postLine(tx, context, postedBy, row, line, delta);
+    await postLine(tx, context, postedBy, row, atCount, delta);
     moved.push({
       locationId: row.locationId,
       inventoryItemId: line.inventoryItemId,
@@ -1612,7 +1672,13 @@ async function postLines(
     });
   const [posted] = await tx
     .update(stockCounts)
-    .set({ status: "posted", postedAt: now, updatedAt: now })
+    .set({
+      status: "posted",
+      postedAt: now,
+      totalVarianceIdr: sumVariance(varianceIdrs).total,
+      grossVarianceIdr: sumVariance(varianceIdrs).gross,
+      updatedAt: now,
+    })
     .where(and(eq(stockCounts.id, row.id), eq(stockCounts.status, "approved")))
     .returning();
   if (!posted) throw new Error("Stock count changed under its row lock");
@@ -1625,6 +1691,73 @@ async function postLines(
     posted,
   );
   return posted;
+}
+
+/**
+ * SO 1208 P1: the system quantity the count is compared with is the ledger
+ * balance at the line's `counted_at`, read at posting under the location lock:
+ * the balance now minus every movement dated after the count. A movement that
+ * happened before the count but reached the ledger after the entry (pending
+ * close_of_day deduction posted, lagging outbox, late edge order, repost) is
+ * then part of the system quantity instead of being counted twice. What still
+ * arrives after the posting is absorbed by `absorbIntoPostedCount`.
+ */
+async function refreshSystemQty(
+  tx: Tx,
+  row: CountRow,
+  line: LineRow,
+): Promise<LineRow> {
+  if (line.countedAt === null) return line;
+  const [balance] = await tx
+    .select({ quantity: stockBalances.quantity })
+    .from(stockBalances)
+    .where(
+      and(
+        eq(stockBalances.locationId, row.locationId),
+        eq(stockBalances.inventoryItemId, line.inventoryItemId),
+      ),
+    );
+  const [later] = await tx
+    .select({
+      quantity: sql<string>`COALESCE(SUM(${stockLedger.quantity}), 0)::numeric(20, 4)::text`,
+    })
+    .from(stockLedger)
+    .where(
+      and(
+        eq(stockLedger.tenantId, row.tenantId),
+        eq(stockLedger.locationId, row.locationId),
+        eq(stockLedger.inventoryItemId, line.inventoryItemId),
+        gt(stockLedger.occurredAt, line.countedAt),
+      ),
+    );
+  const systemQty = formatDecimal4(
+    parseDecimal4(balance?.quantity ?? ZERO) - parseDecimal4(later!.quantity),
+  );
+  if (systemQty === line.systemQty) return line;
+  const refreshed = { ...line, systemQty };
+  const [updated] = await tx
+    .update(stockCountLines)
+    .set({
+      systemQty,
+      varianceQty: formatDecimal4(lineDelta(refreshed)),
+      varianceIdr: stockCountVarianceIdr(
+        {
+          systemQty,
+          countedQty: line.countedQty!,
+          unitCostIdr: line.unitCostIdr,
+        },
+        ROUNDING_MODE,
+      ),
+      updatedAt: sql`now()`,
+    })
+    .where(
+      and(
+        eq(stockCountLines.tenantId, row.tenantId),
+        eq(stockCountLines.id, line.id),
+      ),
+    )
+    .returning();
+  return updated ?? refreshed;
 }
 
 /** Splits a decrease FEFO over the batches; what the batches cannot hold goes unbatched. */
