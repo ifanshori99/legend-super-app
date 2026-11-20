@@ -159,7 +159,13 @@ export function otherAllocationClaimsSql(
  * it already. Resolved `not_this_intent` gives the credit back in full;
  * `counted_against_intent` is a provider refund of the intent from then on.
  */
-export function openReconHoldIdrSql(tenant: SQL, intent: SQL): SQL {
+export function openReconHoldIdrSql(
+  tenant: SQL,
+  intent: SQL,
+  // legend-byws7: the order-given paid basis has no pool already net of the
+  // credit-used surplus, so it counts that hold too (restrictive).
+  options: { includeCreditUsed?: boolean } = {},
+): SQL {
   return sql`coalesce((SELECT sum(
       CASE
         -- 1072 I3 (A2): a transaction-conflict hold limits the credit in full
@@ -177,7 +183,7 @@ export function openReconHoldIdrSql(tenant: SQL, intent: SQL): SQL {
       END) FROM refund_recon_holds h
     WHERE h.tenant_id=${tenant} AND h.payment_intent_id=${intent}
       AND h.resolved_at IS NULL
-      AND h.reason<>'credit_used_before_provider_refund'), 0)`;
+      ${options.includeCreditUsed ? sql`` : sql`AND h.reason<>'credit_used_before_provider_refund'`}), 0)`;
 }
 
 type AllocationCredit = {
