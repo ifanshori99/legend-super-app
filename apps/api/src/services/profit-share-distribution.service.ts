@@ -131,7 +131,10 @@ import {
   PROFIT_SHARE_APPROVAL_SOURCE_MODULE,
 } from "./profit-share-approval";
 import { claimProfitShareCommand } from "./profit-share-idempotency";
-import { loadClosedPeriodNetProfit } from "./profit-share-net-profit";
+import {
+  assertNoUnallocatedEntityExpense,
+  loadClosedPeriodNetProfit,
+} from "./profit-share-net-profit";
 import { issueDistributionStatement } from "./profit-share-statement.service";
 
 type Tx = TenantTransaction;
@@ -304,6 +307,25 @@ async function legalEntityOf(
     .limit(1);
   if (!outlet) throw new HttpError(404, "NOT_FOUND", "Outlet not found.");
   return outlet.legalEntityId;
+}
+
+/**
+ * Bead 1210: an outlet entity must not pay out (regular run or top-up) while
+ * the period holds expense that reaches no outlet. Re-checked at approval and
+ * payment because the ledger can change after the run was calculated.
+ */
+async function assertOutletPayoutAllowed(
+  tx: Tx,
+  tenantId: string,
+  entityRow: EntityRow,
+  run: { period: string; distributableIdr: number },
+): Promise<void> {
+  if (entityRow.type !== "outlet" || run.distributableIdr <= 0) return;
+  await assertNoUnallocatedEntityExpense(tx, tenantId, {
+    legalEntityId: await legalEntityOf(tx, tenantId, entityRow),
+    outletId: entityRow.outletId,
+    period: run.period,
+  });
 }
 
 /** A fiscal period that belongs to the entity's legal entity, else 404. */
@@ -1006,6 +1028,11 @@ export async function createAdjustmentDistributionService(
         input.fiscalPeriodId,
         true,
       );
+      if (input.adjustmentIdr > 0)
+        await assertOutletPayoutAllowed(tx, tenantId, entityRow, {
+          period: period.period,
+          distributableIdr: input.adjustmentIdr,
+        });
       const held =
         input.adjustmentIdr < 0
           ? await paidStillHeld(tx, tenantId, target)
@@ -1443,6 +1470,7 @@ async function applyDistributionApproval(
   );
   if (period.status !== "closed" || period.version !== row.fiscalPeriodVersion)
     throw new AccountingError("PERIOD_CHANGED");
+  await assertOutletPayoutAllowed(tx, tenantId, entityRow, run);
   await tx
     .update(distributionRuns)
     .set({
@@ -1892,6 +1920,7 @@ export async function recordDistributionPaymentService(
       paymentRef: input.paymentRef,
       paidAt: isoDateTimeSchema.parse(paidAt.toISOString()),
     });
+    await assertOutletPayoutAllowed(tx, tenantId, entityRow, run);
     const now = new Date();
     // The payment cannot predate the approval or lie in the future.
     if (

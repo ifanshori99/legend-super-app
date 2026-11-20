@@ -90,6 +90,8 @@ export const accountingErrorHttpStatus = {
   SHARE_VERSION_NOT_EFFECTIVE: 422,
   /** The closed period's profit is zero or negative: nothing to distribute (PRD §3.37). */
   NOTHING_TO_DISTRIBUTE: 422,
+  /** An outlet profit entity cannot pay while the period has expense not allocated to any outlet (bead 1210). */
+  UNALLOCATED_ENTITY_EXPENSE: 422,
   /** An approved or paid distribution is frozen; corrections are adjustment runs with a reversing journal (SH-04). */
   DISTRIBUTION_IMMUTABLE: 409,
   /** A regular distribution already exists for this profit entity and closed period. */
@@ -186,6 +188,8 @@ const defaultMessages: Record<AccountingErrorCode, string> = {
     "Belum ada versi porsi yang berlaku pada tanggal tersebut.",
   NOTHING_TO_DISTRIBUTE:
     "Tidak ada laba yang dapat dibagikan pada periode ini.",
+  UNALLOCATED_ENTITY_EXPENSE:
+    "Gaji dan beban pusat periode ini belum dialokasikan ke outlet, jadi bagi hasil outlet belum bisa diproses.",
   DISTRIBUTION_IMMUTABLE:
     "Distribusi yang sudah disetujui tidak dapat diubah. Buat distribusi penyesuaian.",
   DISTRIBUTION_ALREADY_EXISTS:

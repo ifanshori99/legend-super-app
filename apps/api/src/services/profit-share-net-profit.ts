@@ -16,13 +16,13 @@
 import { and, eq, gte, isNull, lte, or, sql } from "drizzle-orm";
 import {
   accountSchema,
+  AccountingError,
   buildProfitAndLoss,
   periodBounds,
   type LedgerLine,
 } from "@starter/shared/accounting";
 import type { Idr, OutletId } from "@starter/shared/core";
 import { chartOfAccounts, journalEntries, journalLines } from "../db/schema";
-import { HttpError } from "../lib/http-error";
 import type { TenantTransaction } from "./accounting-shared";
 
 export type ClosedPeriodNetProfitInput = {
@@ -33,6 +33,63 @@ export type ClosedPeriodNetProfitInput = {
   readonly period: string;
 };
 
+/**
+ * Fail closed for an outlet profit entity (bead 1210): refuses while the
+ * period has a ledger line in the legal entity with no outlet tag that
+ * reduces profit, that is an expense or HPP line, or a debit on a revenue
+ * account (sales discount, disposal loss). Its cost reaches no outlet, so the
+ * outlet profit would be overstated. Call it before any payout step.
+ */
+export async function assertNoUnallocatedEntityExpense(
+  tx: TenantTransaction,
+  tenantId: string,
+  input: { legalEntityId: string; outletId: string | null; period: string },
+): Promise<void> {
+  if (input.outletId === null) return;
+  const bounds = periodBounds(input.period);
+  const [unallocated] = await tx
+    .select({ lines: sql<number>`count(*)::int` })
+    .from(journalLines)
+    .innerJoin(
+      journalEntries,
+      and(
+        eq(journalEntries.tenantId, journalLines.tenantId),
+        eq(journalEntries.id, journalLines.entryId),
+      ),
+    )
+    .innerJoin(
+      chartOfAccounts,
+      and(
+        eq(chartOfAccounts.tenantId, journalLines.tenantId),
+        eq(chartOfAccounts.id, journalLines.accountId),
+      ),
+    )
+    .where(
+      and(
+        eq(journalLines.tenantId, tenantId),
+        eq(journalEntries.legalEntityId, input.legalEntityId),
+        gte(journalEntries.entryDate, bounds.start),
+        lte(journalEntries.entryDate, bounds.end),
+        isNull(journalLines.outletId),
+        or(
+          and(
+            eq(chartOfAccounts.type, "expense"),
+            or(
+              sql`${journalLines.debitIdr} <> 0`,
+              sql`${journalLines.creditIdr} <> 0`,
+            ),
+          ),
+          and(
+            eq(chartOfAccounts.type, "revenue"),
+            sql`${journalLines.debitIdr} > 0`,
+          ),
+        ),
+      ),
+    );
+  if ((unallocated?.lines ?? 0) > 0)
+    throw new AccountingError("UNALLOCATED_ENTITY_EXPENSE");
+}
+
 /** Net profit (Rp, may be zero or negative) of the period's posted ledger. */
 export async function loadClosedPeriodNetProfit(
   tx: TenantTransaction,
@@ -40,45 +97,12 @@ export async function loadClosedPeriodNetProfit(
   input: ClosedPeriodNetProfitInput,
 ): Promise<Idr> {
   const bounds = periodBounds(input.period);
-  if (input.outletId !== null) {
-    const [unallocated] = await tx
-      .select({ lines: sql<number>`count(*)::int` })
-      .from(journalLines)
-      .innerJoin(
-        journalEntries,
-        and(
-          eq(journalEntries.tenantId, journalLines.tenantId),
-          eq(journalEntries.id, journalLines.entryId),
-        ),
-      )
-      .innerJoin(
-        chartOfAccounts,
-        and(
-          eq(chartOfAccounts.tenantId, journalLines.tenantId),
-          eq(chartOfAccounts.id, journalLines.accountId),
-        ),
-      )
-      .where(
-        and(
-          eq(journalLines.tenantId, tenantId),
-          eq(journalEntries.legalEntityId, input.legalEntityId),
-          gte(journalEntries.entryDate, bounds.start),
-          lte(journalEntries.entryDate, bounds.end),
-          isNull(journalLines.outletId),
-          eq(chartOfAccounts.type, "expense"),
-          or(
-            sql`${journalLines.debitIdr} <> 0`,
-            sql`${journalLines.creditIdr} <> 0`,
-          ),
-        ),
-      );
-    if ((unallocated?.lines ?? 0) > 0)
-      throw new HttpError(
-        422,
-        "UNALLOCATED_ENTITY_EXPENSE",
-        "Gaji dan beban pusat periode ini belum dialokasikan ke outlet, jadi bagi hasil outlet belum bisa dihitung. Alokasikan bebannya ke outlet atau hubungi pemilik sistem.",
-      );
-  }
+  if (input.outletId !== null)
+    await assertNoUnallocatedEntityExpense(tx, tenantId, {
+      legalEntityId: input.legalEntityId,
+      outletId: input.outletId,
+      period: input.period,
+    });
   const accountRows = await tx
     .select()
     .from(chartOfAccounts)

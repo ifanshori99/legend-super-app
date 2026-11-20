@@ -2905,9 +2905,22 @@ describe("Q83 carry: the unabsorbed rest is kept per shareholder and cut from th
 
 // ---- 1210: an outlet entity fails closed on unallocated entity-level expense ---
 
-describe("1210 an outlet profit entity refuses a period with unallocated entity-level expense", () => {
-  async function outletWorld(): Promise<{ world: World; outletId: string }> {
+describe("1210 an outlet profit entity refuses unallocated entity-level expense", () => {
+  type Extra = { cogs: string; contraRevenue: string };
+
+  async function outletWorld(): Promise<{
+    world: World;
+    outletId: string;
+    extra: Extra;
+  }> {
     const { legalEntityId, accounts } = await makeLegalEntity();
+    const extra: Extra = { cogs: randomUUID(), contraRevenue: randomUUID() };
+    await owner.query(
+      `INSERT INTO chart_of_accounts (id, tenant_id, legal_entity_id, code, name, type, report_group)
+       VALUES ($1, $3, $4, '5101', 'HPP', 'expense', 'cogs'),
+              ($2, $3, $4, '4103', 'Diskon penjualan', 'revenue', 'revenue')`,
+      [extra.cogs, extra.contraRevenue, tenantA, legalEntityId],
+    );
     const brand = await owner.query<{ id: string }>(
       "SELECT id FROM brands WHERE tenant_id = $1 ORDER BY id LIMIT 1",
       [tenantA],
@@ -2941,14 +2954,17 @@ describe("1210 an outlet profit entity refuses a period with unallocated entity-
     return {
       world: { legalEntityId, accounts, profitEntityId, nextPeriod: 0 },
       outletId,
+      extra,
     };
   }
 
-  /** Closed period: outlet-tagged sales 10jt and expense 4jt; optional payroll. */
+  type Untagged = { debit: string; credit: string; amount: number };
+
+  /** Closed period: outlet-tagged sales 10jt and expense 4jt, plus optional untagged lines. */
   async function closedOutletPeriod(
     world: World,
     outletId: string,
-    entityLevelExpense: number,
+    untagged: Untagged | null,
   ) {
     const period = periodKey(world.nextPeriod++);
     const { rows } = await owner.query<{ id: string }>(
@@ -2993,11 +3009,11 @@ describe("1210 an outlet profit entity refuses a period with unallocated entity-
       ],
       outletId,
     );
-    if (entityLevelExpense > 0)
+    if (untagged)
       await entry(
         [
-          journalLine(world.accounts.expense, entityLevelExpense, 0),
-          journalLine(world.accounts.cash, 0, entityLevelExpense),
+          journalLine(untagged.debit, untagged.amount, 0),
+          journalLine(untagged.credit, 0, untagged.amount),
         ],
         null,
       );
@@ -3007,16 +3023,60 @@ describe("1210 an outlet profit entity refuses a period with unallocated entity-
       { expectedVersion: 1, idempotencyKey: `close-${randomUUID()}` },
       userIdSchema.parse(closer),
     );
-    return rows[0]!.id;
+    return { id: rows[0]!.id, period };
   }
+
+  /**
+   * Untagged expense that lands in an already closed period (a late fact the
+   * period guards would refuse), inserted raw with triggers off.
+   */
+  async function lateUntaggedExpense(
+    world: World,
+    period: { id: string; period: string },
+  ) {
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SET LOCAL session_replication_role = replica");
+      const entryId = randomUUID();
+      await client.query(
+        `INSERT INTO journal_entries (id, tenant_id, legal_entity_id, outlet_id, entry_date, fiscal_period_id, source_type, source_id, description, idempotency_key, request_fingerprint)
+         VALUES ($1, $2, $3, NULL, $4, $5, 'sale', $6, 'Gaji terlambat', $7, $8)`,
+        [
+          entryId,
+          tenantA,
+          world.legalEntityId,
+          `${period.period}-20`,
+          period.id,
+          randomUUID(),
+          `late-${randomUUID()}`,
+          "0".repeat(64),
+        ],
+      );
+      await client.query(
+        `INSERT INTO journal_lines (tenant_id, entry_id, account_id, line_no, debit_idr, credit_idr)
+         VALUES ($1, $2, $3, 1, 3000000, 0), ($1, $2, $4, 2, 0, 3000000)`,
+        [tenantA, entryId, world.accounts.expense, world.accounts.cash],
+      );
+      await client.query("COMMIT");
+    } finally {
+      client.release();
+    }
+  }
+
+  const unallocatedMessage = "belum dialokasikan";
 
   it("refuses with UNALLOCATED_ENTITY_EXPENSE when payroll sits at entity level", async () => {
     const { world, outletId } = await outletWorld();
-    const periodId = await closedOutletPeriod(world, outletId, 3_000_000);
-    const response = await createRun(manager, world, periodId);
+    const period = await closedOutletPeriod(world, outletId, {
+      debit: world.accounts.expense,
+      credit: world.accounts.cash,
+      amount: 3_000_000,
+    });
+    const response = await createRun(manager, world, period.id);
     expect(response.status, JSON.stringify(response.body)).toBe(422);
     expect(errorCode(response)).toBe("UNALLOCATED_ENTITY_EXPENSE");
-    expect(JSON.stringify(response.body)).toContain("belum dialokasikan");
+    expect(JSON.stringify(response.body)).toContain(unallocatedMessage);
     const runs = await owner.query(
       "SELECT 1 FROM distribution_runs WHERE tenant_id = $1 AND profit_entity_id = $2",
       [tenantA, world.profitEntityId],
@@ -3024,11 +3084,104 @@ describe("1210 an outlet profit entity refuses a period with unallocated entity-
     expect(runs.rowCount).toBe(0);
   });
 
+  it("refuses an untagged COGS line", async () => {
+    const { world, outletId, extra } = await outletWorld();
+    const period = await closedOutletPeriod(world, outletId, {
+      debit: extra.cogs,
+      credit: world.accounts.cash,
+      amount: 2_000_000,
+    });
+    const response = await createRun(manager, world, period.id);
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(errorCode(response)).toBe("UNALLOCATED_ENTITY_EXPENSE");
+  });
+
+  it("refuses an untagged debit on a revenue account (sales discount)", async () => {
+    const { world, outletId, extra } = await outletWorld();
+    const period = await closedOutletPeriod(world, outletId, {
+      debit: extra.contraRevenue,
+      credit: world.accounts.cash,
+      amount: 1_000_000,
+    });
+    const response = await createRun(manager, world, period.id);
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(errorCode(response)).toBe("UNALLOCATED_ENTITY_EXPENSE");
+  });
+
   it("calculates as before when no entity-level expense exists (control)", async () => {
     const { world, outletId } = await outletWorld();
-    const periodId = await closedOutletPeriod(world, outletId, 0);
-    const response = await createRun(manager, world, periodId);
+    const period = await closedOutletPeriod(world, outletId, null);
+    const response = await createRun(manager, world, period.id);
     expect(response.status, JSON.stringify(response.body)).toBe(201);
     expect(parseRun(response.body).periodNetProfitIdr).toBe(6_000_000);
+  });
+
+  it("ignores another legal entity's untagged expense in the same month", async () => {
+    const { world, outletId } = await outletWorld();
+    const other = await makeLegalEntity();
+    await openPeriod({ ...other }, periodKey(0), 1_000_000);
+    const period = await closedOutletPeriod(world, outletId, null);
+    const response = await createRun(manager, world, period.id);
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+  });
+
+  it("a legal-entity profit entity still calculates with untagged expense", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const period = await closedPeriod(world, NET_PROFIT);
+    const response = await createRun(manager, world, period.id);
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+  });
+
+  it("refuses a top-up adjustment when expense appeared after the run", async () => {
+    const { world, outletId } = await outletWorld();
+    const period = await closedOutletPeriod(world, outletId, null);
+    const created = await createRun(manager, world, period.id);
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const run = parseRun(created.body);
+    expect((await submitRun(manager, run.id)).status).toBe(200);
+    expect((await decideRun(approver, run.id)).status).toBe(200);
+    await lateUntaggedExpense(world, period);
+    const response = await adjust(manager, run.id, {
+      fiscalPeriodId: period.id,
+      adjustmentIdr: 1_000_000,
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(errorCode(response)).toBe("UNALLOCATED_ENTITY_EXPENSE");
+  });
+
+  it("does not approve a pending run when expense appeared after it was calculated", async () => {
+    const { world, outletId } = await outletWorld();
+    const period = await closedOutletPeriod(world, outletId, null);
+    const run = parseRun((await createRun(manager, world, period.id)).body);
+    expect((await submitRun(manager, run.id)).status).toBe(200);
+    await lateUntaggedExpense(world, period);
+    const response = await decideRun(approver, run.id);
+    const status = await owner.query<{ status: string }>(
+      "SELECT status FROM distribution_runs WHERE tenant_id = $1 AND id = $2",
+      [tenantA, run.id],
+    );
+    expect(status.rows[0]!.status, JSON.stringify(response.body)).not.toBe(
+      "approved",
+    );
+    expect(status.rows[0]!.status).not.toBe("paid");
+  });
+
+  it("refuses a payment when expense appeared after approval", async () => {
+    const { world, outletId } = await outletWorld();
+    const period = await closedOutletPeriod(world, outletId, null);
+    const run = parseRun((await createRun(manager, world, period.id)).body);
+    expect((await submitRun(manager, run.id)).status).toBe(200);
+    const approved = parseRun((await decideRun(approver, run.id)).body);
+    await lateUntaggedExpense(world, period);
+    const response = await payLine(manager, run.id, approved.lines[0]!.id);
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(errorCode(response)).toBe("UNALLOCATED_ENTITY_EXPENSE");
+    const lines = await owner.query<{ payment_status: string }>(
+      "SELECT payment_status FROM distribution_lines WHERE tenant_id = $1 AND distribution_run_id = $2",
+      [tenantA, run.id],
+    );
+    expect(lines.rows.every((row) => row.payment_status === "pending")).toBe(
+      true,
+    );
   });
 });
