@@ -398,16 +398,33 @@ beforeAll(async () => {
   }
   for (let i = 0; i < 2; i++) {
     const key = `apology-${randomUUID()}`;
-    const body = {
+    const first = {
       valueIdr: 20_000 + i * 1_000,
       reason: "Roti habis, mohon maaf atas ketidaknyamanan",
     };
-    const res = await apology.client
-      .post("/api/apology-vouchers")
-      .set("Host", tenantA.hostname)
-      .set(ring2.helpers.originHeader)
-      .set("Idempotency-Key", key)
-      .send(body);
+    const post = (payload: Record<string, unknown>) =>
+      apology.client
+        .post("/api/apology-vouchers")
+        .set("Host", tenantA.hostname)
+        .set(ring2.helpers.originHeader)
+        .set("Idempotency-Key", key)
+        .send(payload);
+    // legend-1222: a voucher with no failed-item report always needs approval.
+    const asked = await post(first);
+    expect(asked.status, JSON.stringify(asked.body)).toBe(409);
+    const requestId = await asTenant(tenantA.id, async (client) => {
+      const { rows } = await client.query(
+        `UPDATE approval_requests
+            SET status = 'approved', decided_by = $2, decided_at = now(), reason = 'Disetujui'
+          WHERE tenant_id = $1 AND status = 'pending' AND action_type = 'apology_voucher'
+            AND requested_by = $3 AND amount_idr = $4
+          RETURNING id`,
+        [tenantA.id, promoStaff.userId, apologyStaff.userId, first.valueIdr],
+      );
+      return rows[0].id as string;
+    });
+    const body = { ...first, approvalRequestId: requestId };
+    const res = await post(body);
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     issued.push({
       kind: "apology",

@@ -248,8 +248,22 @@ describe("apology voucher on a shared tablet (brief 1120, CTO addendum)", () => 
   it("a personal device is unchanged: standalone voucher is issued", async () => {
     const before = await voucherRows();
 
+    // legend-1222: a standalone voucher always takes the approval chain.
+    const body = { valueIdr: VALUE_IDR, reason: REASON };
+    const asked = await issueVoucher(body, { who: cashier });
+    expect(asked.status, JSON.stringify(asked.body)).toBe(409);
+    const found =
+      JSON.stringify((asked.body as { error?: unknown }).error).match(
+        /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g,
+      ) ?? [];
+    const { rows } = await owner.query<{ id: string }>(
+      "SELECT id FROM approval_requests WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+      [w.tenant.tenantId, found],
+    );
+    await w.approveExisting(rows[0]!.id);
+
     const response = await issueVoucher(
-      { valueIdr: VALUE_IDR, reason: REASON },
+      { ...body, approvalRequestId: rows[0]!.id },
       { who: cashier },
     );
 
