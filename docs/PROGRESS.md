@@ -2311,3 +2311,10 @@ Langkah berikut CTO baru:
 - 07:45 CTO: 1203 test tambahan 9eee8b85d (51 test, 48 merah). Keputusan: void bill campuran tunai+poin tetap ditolak (SO-R-09), refund bill poin tetap ditolak; token mengikat saldo, perubahan apa pun -> tolak. Implementer Opus jalan.
 - 07:45 CTO: checklist kredensial production docs/release/production-credentials-checklist.md (draf). legend-94xqo P2: satukan env storage STORAGE_S3_* vs OBJECT_STORAGE_*.
 - 08:20 CTO: batch99 int/batch99 66f2a101f (1191 cherry-pick 2186f232c, 1192 c1ccc02c8 mig 0509-0511 snapshot 3-arah, 1201 via reapply 1172 1c3e14aee + merge a6459335b). Hunk konflik approval: reviewer bersih. Belum: fix batch98 (reseal, snapshot) dan fix jam edge 1201, 1199 ronde 3, full run sesudah batch98 mendarat.
+
+## 20 Nov siang (CTO, Claude Code saja)
+- int/batch99 tip ea2aec38b (push): 1191, 1192 (mig 0509-0511), 1201+1172 reapply, fix jam edge legend-7zwmv (faf6f7394, b9e1a6856), batch98 fixes (b9990c6fa, 0940e5351), 1199 ronde 3 + legend-bg5wy (architect bersih), 1205a refund echo legend-3tyl1 (architect bersih), 1205b storage env satu set legend-94xqo (reviewer, 3 temuan diperbaiki). Gate: db:generate kosong, lint/typecheck hijau, contract 885, terarah 483. Belum: full run batch99 (sesudah batch98 mendarat).
+- Batch98 full run masih jalan (../legend-int-batch98/.batch98-fullrun.log).
+- ws/1203 tukar poin: P3 1/3/7 di 059d155fa (55/55). Mendarat bersama ws/1165 di batch100; migrasi 0733 wajib renumber. Sisa P3 di bead terpisah.
+- Checklist kredensial: storage cukup STORAGE_S3_* sesudah 1205b mendarat. Keputusan refund P3-a/P3-b dicatat di docs/qa/second-opinion-refund-hold-1200.md.
+- Berikut: SO edge catalog (jalan), full run batch99, batch100 (1165+1203), SO area lain sebelum gerbang rilis.
