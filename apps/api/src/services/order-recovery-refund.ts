@@ -76,7 +76,7 @@ import { openRefundChainSafely } from "./payment-refund.service.ts";
 import { appendPaymentEvent } from "./payment-support.ts";
 import type { Tx } from "./permission-resolver.ts";
 import { qrTenderMethod } from "./qr-order-paid.ts";
-import { appendPosEvent } from "./pos-order-support.ts";
+import { appendPosEvent, liveDiscountsOf } from "./pos-order-support.ts";
 
 const RECOVERY_REQUESTER: SystemRefundActor = "system:recovery";
 const REFUND_REASON = "Refund item gagal (ORD-09)";
@@ -594,6 +594,12 @@ export async function deliverOrderRecoveryRefundEvent(
             lineTotalIdr: idr(unitPriceIdr * item.quantity),
           };
         });
+      // legend-xhl5j (1243): the manual discount stacked on the sale, read
+      // from the order's own rows (never from the caller). It decides whether
+      // a voucher may come back; the kept goods carry their share of it.
+      const manualDiscountIdr = (await liveDiscountsOf(tx, context, order.id))
+        .filter((row) => row.source === "manual")
+        .reduce((sum, row) => sum + Number(row.amountIdr), 0);
       let recomputed: Awaited<
         ReturnType<
           typeof orderPromoPartialRefundPort.recomputeAfterPartialRefund
@@ -611,6 +617,7 @@ export async function deliverOrderRecoveryRefundEvent(
               actorUserId,
               at,
               deferPayout: true,
+              manualDiscountIdr,
             },
           );
       } catch (error) {

@@ -1002,6 +1002,35 @@ describe("legend-q1e0 refund of a promo order that also carries a manual discoun
     expect(await spentOf(sale.promotionId)).toBe(10_000);
   });
 
+  it("legend-xhl5j: the refund sends the sale's manual discount (Rp10.000, read from the order) to the promo recompute", async () => {
+    const sale = await promoSale({ manual: true });
+    const seen: (number | undefined)[] = [];
+    setPosPromoRefundPort({
+      ...orderPromoPartialRefundPort,
+      recomputeAfterPartialRefund: (tx, context, input) => {
+        seen.push(input.manualDiscountIdr);
+        return orderPromoPartialRefundPort.recomputeAfterPartialRefund(
+          tx,
+          context,
+          input,
+        );
+      },
+    });
+    try {
+      const refunded = await pos().refund(
+        sale.orderId,
+        await refundBody(sale.orderId, {
+          amountIdr: 35_000,
+          items: [{ itemId: sale.itemA, quantity: 1 }],
+        }),
+      );
+      expect(refunded.status, JSON.stringify(refunded.body)).toBeLessThan(300);
+    } finally {
+      setPosPromoRefundPort(null);
+    }
+    expect(seen).toEqual([10_000]);
+  });
+
   it("manual 10% stacked with a min-spend Rp100.000 promo, paid Rp70.000: promo withdrawn -> refund pays Rp25.000", async () => {
     const sale = await promoSale({ manual: true, minSpendIdr: 100_000 });
     const refunded = await pos().refund(

@@ -447,6 +447,51 @@ describe("legend-h1dyy dua item gagal diselesaikan sebelum event mana pun berjal
   });
 });
 
+describe("legend-xhl5j (1243) refund item gagal: diskon manual ikut keputusan uncovered", () => {
+  /** uses_total and spent_idr of the free-roti promotion. */
+  async function promotionCounters() {
+    const { rows } = await owner.query<{ uses: number; spent: number }>(
+      `SELECT uses_total::int AS uses, spent_idr::int AS spent
+         FROM promotions WHERE tenant_id = $1 AND id = $2`,
+      [w.tenant.tenantId, freeRotiPromotion],
+    );
+    return rows[0]!;
+  }
+
+  it("kopi gagal pada pesanan dengan diskon manual 20.000 (dibaca dari data order): promo ditarik tetapi kuota tidak dikembalikan dan spent turun hanya 15.909", async () => {
+    const paid = await paidPromoOrder();
+    // The manual discount sits on the order's own rows (read by the server).
+    await asOwnerTenant(w.tenant.tenantId, async (client) => {
+      await client.query("SET LOCAL session_replication_role = replica");
+      await client.query(
+        `INSERT INTO pos_order_discounts (id, tenant_id, outlet_id, order_id, source, kind, amount_idr,
+                                          reason, reason_note, applied_by)
+         VALUES ($1, $2, $3, $4, 'manual', 'amount', 20000, 'loyal', 'pelanggan setia', 'kasir-a')`,
+        [
+          randomUUID(),
+          w.tenant.tenantId,
+          w.tenant.outletId,
+          toUuid(paid.order.id),
+        ],
+      );
+    });
+    const before = await promotionCounters();
+    const kopi = await approvedRefund(paid.kopi.id, 25_000);
+
+    await deliver(kopi.event);
+
+    // Promo withdrawn (18.000 on the line). Kept teh + roti = 30.000 carry
+    // 10.909 of the 20.000 manual discount and the guest paid 37.000 - 20.000:
+    // 2.091 of the withdrawn discount stays with the guest.
+    const after = await promotionCounters();
+    expect(after.uses - before.uses, "quota not handed back").toBe(0);
+    expect(after.spent - before.spent).toBe(-15_909);
+    expect(await redemptionDiscounts(paid.order.id)).toEqual([
+      expect.objectContaining({ status: "released" }),
+    ]);
+  });
+});
+
 describe("legend-h1dyy H4 baris swap: kept lines dari baris checkout", () => {
   beforeAll(async () => {
     // Only this promotion is live here: 5.000 off from a 50.000 bill.
