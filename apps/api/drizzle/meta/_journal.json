@@ -3550,6 +3550,13 @@
       "when": 1795158500000,
       "tag": "0520_ptkp_history_correction",
       "breakpoints": true
+    },
+    {
+      "idx": 522,
+      "version": "7",
+      "when": 1795170190617,
+      "tag": "0522_inventory_gl_postings_source_key",
+      "breakpoints": true
     }
   ]
 }

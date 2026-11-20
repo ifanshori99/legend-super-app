@@ -65,7 +65,7 @@ function context(): ScopedTenantContext {
   );
 }
 
-type Role = "cogs" | "inventory";
+type Role = "cogs" | "inventory" | "inventory_adjustment";
 type World = {
   entity: string;
   outletId: string;
@@ -88,6 +88,7 @@ async function makeWorld(): Promise<World> {
   const chart: [Role, string, string, string, string][] = [
     ["inventory", "1301", "Persediaan Bahan Baku", "asset", "current_asset"],
     ["cogs", "5101", "HPP Makanan dan Minuman", "expense", "cogs"],
+    ["inventory_adjustment", "5103", "Selisih Stok Opname", "expense", "cogs"],
   ];
   const accounts = {} as Record<Role, string>;
   for (const [role, code, name, type, group] of chart) {
@@ -420,6 +421,259 @@ describe("1214 receipt onto a negative balance revalues the units sold short", (
     );
     expect((await deliverRow(receipt.ledgerId)).status).toBe("posted");
     const [journal] = await journalsOf(world, receipt.receiptId);
+    expect(journal!.entry_date).toBe("2026-11-01");
+    expect(journal!.late_adjustment_from).toBe("2026-10-15");
+    expect(await netDebit(world, "cogs")).toBe(500);
+  });
+});
+
+// Bead legend-slssv (card 1232): every inflow resets the moving average like a
+// receipt does (applyStockMovement), so every inflow onto a negative balance is
+// revalued: transfer_in, production_in, a restocked order return and a
+// positive count adjustment, not only a goods receipt.
+describe("1232 every inflow onto a negative balance is revalued", () => {
+  type Inflow = {
+    locationId?: string;
+    movementType:
+      | "receipt"
+      | "transfer_in"
+      | "transfer_out"
+      | "production_in"
+      | "return"
+      | "adjustment";
+    sourceType:
+      | "goods_receipt"
+      | "stock_transfer"
+      | "production_order"
+      | "order"
+      | "stock_count";
+    sourceId: string;
+    quantity: string;
+    unitCost?: string;
+    occurredAt: string;
+    idempotencyKey?: string;
+  };
+  async function move(world: World, itemId: string, input: Inflow) {
+    const entry = await recordStockMovement(context(), {
+      outletId: world.outletId,
+      locationId: input.locationId ?? world.locationId,
+      inventoryItemId: itemId,
+      movementType: input.movementType,
+      quantity: decimal4(input.quantity),
+      ...(input.unitCost === undefined
+        ? {}
+        : { unitCostIdr: decimal4(input.unitCost) }),
+      sourceType: input.sourceType,
+      sourceId: input.sourceId,
+      occurredAt: at(input.occurredAt),
+      ...(input.idempotencyKey === undefined
+        ? {}
+        : { idempotencyKey: input.idempotencyKey }),
+      actor: { type: "system" },
+    });
+    return entry.id;
+  }
+  async function secondLocation(world: World): Promise<string> {
+    const { rows } = await owner.query<{ id: string }>(
+      "INSERT INTO stock_locations (tenant_id, outlet_id, name, type) VALUES ($1, $2, $3, 'warehouse') RETURNING id",
+      [tenantId, world.outletId, `Gudang Asal ${short()}`],
+    );
+    return rows[0]!.id;
+  }
+  async function revaluationsOf(sourceId: string) {
+    const { rows } = await owner.query<{ value_idr: string }>(
+      `SELECT value_idr::text FROM stock_negative_revaluations
+        WHERE tenant_id = $1 AND source_id = $2 ORDER BY created_at, ledger_entry_id`,
+      [tenantId, sourceId],
+    );
+    return rows.map((row) => Number(row.value_idr));
+  }
+
+  it("REVAL-10 transfer_in onto a negative balance: HPP +500 and GL inventory = both cards", async () => {
+    const world = await makeWorld();
+    const item = await insertItem("Susu");
+    const from = await secondLocation(world);
+    const receiptId = randomUUID();
+    await move(world, item, {
+      locationId: from,
+      movementType: "receipt",
+      sourceType: "goods_receipt",
+      sourceId: receiptId,
+      quantity: "10",
+      unitCost: "100",
+      occurredAt: BEFORE,
+    });
+    const sale = await sell(world, item, "5", BEFORE);
+    const transferId = randomUUID();
+    await move(world, item, {
+      locationId: from,
+      movementType: "transfer_out",
+      sourceType: "stock_transfer",
+      sourceId: transferId,
+      quantity: "-10",
+      occurredAt: DAY,
+    });
+    const transferIn = await move(world, item, {
+      movementType: "transfer_in",
+      sourceType: "stock_transfer",
+      sourceId: transferId,
+      quantity: "10",
+      unitCost: "100",
+      occurredAt: DAY,
+    });
+    expect((await deliverRow(sale)).status).toBe("zero_value");
+    expect((await deliverRow(transferIn)).status).toBe("posted");
+    expect((await deliverRow(transferIn)).status).toBe("already_posted");
+    expect(await revaluationsOf(transferId)).toEqual([-500]);
+    const journals = await journalsOf(world, transferId);
+    expect(journals).toHaveLength(1);
+    expect(await balanceOf(journals[0]!.id)).toEqual({
+      debit: 500,
+      credit: 500,
+    });
+    expect(await netDebit(world, "cogs")).toBe(500);
+    // The receipt journal (1000) + the bridge journals; transfers have none.
+    expect(1000 + (await netDebit(world, "inventory"))).toBe(
+      await cardValue(world, item),
+    );
+    expect(await cardValue(world, item)).toBe(500);
+  });
+
+  it("REVAL-11 production_in onto a negative balance: HPP +400", async () => {
+    const world = await makeWorld();
+    const item = await insertItem("Saus");
+    await sell(world, item, "5", BEFORE);
+    const productionId = randomUUID();
+    const output = await move(world, item, {
+      movementType: "production_in",
+      sourceType: "production_order",
+      sourceId: productionId,
+      quantity: "10",
+      unitCost: "80",
+      occurredAt: DAY,
+    });
+    expect((await deliverRow(output)).status).toBe("posted");
+    expect(await revaluationsOf(productionId)).toEqual([-400]);
+    expect(await netDebit(world, "cogs")).toBe(400);
+    expect(await netDebit(world, "inventory")).toBe(-400);
+  });
+
+  it("REVAL-12 an order return smaller than the deficit revalues the whole deficit; GL inventory = card", async () => {
+    const world = await makeWorld();
+    const item = await insertItem("Mentega");
+    await move(world, item, {
+      movementType: "receipt",
+      sourceType: "goods_receipt",
+      sourceId: randomUUID(),
+      quantity: "10",
+      unitCost: "100",
+      occurredAt: BEFORE,
+    });
+    const orderId = randomUUID();
+    const sale = await recordStockMovement(context(), {
+      outletId: world.outletId,
+      locationId: world.locationId,
+      inventoryItemId: item,
+      movementType: "sale",
+      quantity: decimal4("-15"),
+      sourceType: "order",
+      sourceId: orderId,
+      occurredAt: at(BEFORE),
+      actor: { type: "system" },
+    });
+    expect((await deliverRow(sale.id)).status).toBe("posted");
+    // -5 on hand at avg 100; 2 come back at 120: -3 at 120 on the card.
+    const back = await move(world, item, {
+      movementType: "return",
+      sourceType: "order",
+      sourceId: orderId,
+      quantity: "2",
+      unitCost: "120",
+      occurredAt: DAY,
+    });
+    expect((await deliverRow(back)).status).toBe("posted");
+    expect(await revaluationsOf(orderId)).toEqual([-100]);
+    // Sale 1500 - return 240 + revaluation 100.
+    expect(await netDebit(world, "cogs")).toBe(1500 - 240 + 100);
+    expect(await cardValue(world, item)).toBe(-360);
+    expect(1000 + (await netDebit(world, "inventory"))).toBe(-360);
+    expect((await deliverRow(back)).status).toBe("already_posted");
+    expect(await netDebit(world, "cogs")).toBe(1360);
+  });
+
+  it("REVAL-13 a positive count onto a negative balance: count journal + revaluation, GL inventory = card", async () => {
+    const world = await makeWorld();
+    const item = await insertItem("Keju");
+    await move(world, item, {
+      movementType: "receipt",
+      sourceType: "goods_receipt",
+      sourceId: randomUUID(),
+      quantity: "10",
+      unitCost: "100",
+      occurredAt: BEFORE,
+    });
+    const sale = await sell(world, item, "15", BEFORE);
+    expect((await deliverRow(sale)).status).toBe("posted");
+    const countId = randomUUID();
+    const found = await move(world, item, {
+      movementType: "adjustment",
+      sourceType: "stock_count",
+      sourceId: countId,
+      quantity: "8",
+      unitCost: "110",
+      occurredAt: DAY,
+    });
+    expect((await deliverRow(found)).status).toBe("posted");
+    expect(await revaluationsOf(countId)).toEqual([-50]);
+    expect(await netDebit(world, "cogs")).toBe(1500 + 50);
+    expect(await netDebit(world, "inventory_adjustment")).toBe(-880);
+    expect(await cardValue(world, item)).toBe(330);
+    expect(1000 + (await netDebit(world, "inventory"))).toBe(330);
+  });
+
+  it("REVAL-14 two receipt lines of one item, both smaller than the deficit: each revalues its own prior balance", async () => {
+    const world = await makeWorld();
+    const item = await insertItem("Tepung");
+    await sell(world, item, "5", BEFORE);
+    const receiptId = randomUUID();
+    const first = await receive(world, item, "2", "100", DAY, {
+      receiptId,
+      idempotencyKey: `line1-${randomUUID()}`,
+    });
+    await receive(world, item, "4", "130", DAY, {
+      receiptId,
+      idempotencyKey: `line2-${randomUUID()}`,
+    });
+    // -5 at avg 0 -> -3 at 100 (-500), then -3 at 100 -> 1 at 130 (-90).
+    expect(await revaluationsOf(receiptId)).toEqual([-500, -90]);
+    expect((await deliverRow(first.ledgerId)).status).toBe("posted");
+    expect(await journalsOf(world, receiptId)).toHaveLength(1);
+    expect(await netDebit(world, "cogs")).toBe(590);
+    expect(await cardValue(world, item)).toBe(130);
+    expect(200 + 520 + (await netDebit(world, "inventory"))).toBe(130);
+  });
+
+  it("REVAL-15 a transfer_in in a closed period lands late in the open period", async () => {
+    const world = await makeWorld();
+    const item = await insertItem("Coklat");
+    await sell(world, item, "5", BEFORE);
+    const transferId = randomUUID();
+    const transferIn = await move(world, item, {
+      movementType: "transfer_in",
+      sourceType: "stock_transfer",
+      sourceId: transferId,
+      quantity: "10",
+      unitCost: "100",
+      occurredAt: DAY,
+    });
+    await owner.query(
+      `UPDATE fiscal_periods SET status = 'closed', closed_by = $3, closed_at = now(), version = version + 1
+        WHERE tenant_id = $1 AND legal_entity_id = $2 AND period = '2026-10'`,
+      [tenantId, world.entity, randomUUID()],
+    );
+    expect((await deliverRow(transferIn)).status).toBe("posted");
+    const [journal, ...rest] = await journalsOf(world, transferId);
+    expect(rest).toEqual([]);
     expect(journal!.entry_date).toBe("2026-11-01");
     expect(journal!.late_adjustment_from).toBe("2026-10-15");
     expect(await netDebit(world, "cogs")).toBe(500);

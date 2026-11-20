@@ -59,8 +59,11 @@ export const inventoryGlPostings = pgTable(
       .notNull(),
   },
   (table) => [
-    unique("inventory_gl_postings_tenant_ledger_entry_key").on(
+    // Bead legend-slssv (1232): one ledger row can feed two GL sources (an
+    // order return or a count gain and its negative-balance revaluation).
+    unique("inventory_gl_postings_tenant_source_ledger_entry_key").on(
       table.tenantId,
+      table.sourceType,
       table.ledgerEntryId,
     ),
     index("inventory_gl_postings_source_idx").on(

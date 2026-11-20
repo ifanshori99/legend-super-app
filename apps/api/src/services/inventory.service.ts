@@ -1198,14 +1198,20 @@ async function lockStockBalance(
  * inventory would stay `priorQty x (cost - oldAvg)` above the stock card and
  * HPP short by the same amount. Record that difference (under the balance
  * lock, so the prior balance is exact) for the GL bridge to post. A replayed
- * receipt never reaches here; the unique key makes a repeat a no-op anyway.
+ * movement never reaches here; the unique key makes a repeat a no-op anyway.
+ *
+ * Bead legend-slssv (1232): every inflow resets the average the same way, so
+ * every inflow onto a negative balance is revalued, not only a receipt:
+ * transfer_in, production_in, a restocked order return, a positive count
+ * adjustment. The difference is the full prior quantity even when the inflow
+ * is smaller than the deficit (the whole negative balance is repriced).
  */
 async function recordNegativeRevaluation(
   tx: Tx,
   balance: BalanceRow,
   entry: StockLedgerEntry,
 ): Promise<void> {
-  if (entry.movementType !== "receipt") return;
+  if (parseDecimal4(entry.quantity) <= 0n) return;
   const priorQuantity = parseDecimal4(balance.quantity);
   if (priorQuantity >= 0n) return;
   // Both factors are decimal4 (scale 10^4 each): the product is at 10^8.
