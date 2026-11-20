@@ -77,6 +77,7 @@ import {
 } from "@starter/shared/events";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
+import { assertDepositReturnNotReversed } from "../services/payment-refund-deposit-return.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import { lockIntentsForFact } from "../services/payment-refund-fact-time.ts";
@@ -7055,6 +7056,70 @@ describe("legend-77r0 Q81 DP return accounting never funds a payout twice", () =
     await expectBalanced(world, reversal.id);
     expect(await journalCount(world)).toBe(4);
     expect(await balanceOf(world, "customer_deposit")).toBe(0);
+  });
+
+  // Card 1218 r5: a payer refund still in flight (pending, approved,
+  // sending) holds the DP-only return just like a completed one.
+  for (const status of ["pending", "approved"] as const) {
+    it(`[1218-R5-OPEN-REFUND] a ${status} payer refund of the DP keeps a DP-only return from a manual reversal: 409 AUTO_JOURNAL_LOCKED`, async () => {
+      const { world, dp, journalId } = await returnedDeposit({ dpOnly: true });
+      await owner.query(
+        `INSERT INTO payment_refunds
+           (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status,
+            requested_by, approved_by, decided_at)
+         VALUES ($1, $2, $3, $4, 25000, 'Pengembalian dana', $5, 'requester', $6, $7)`,
+        [
+          randomUUID(),
+          world.tenant.id,
+          world.outletId,
+          dp.intentId,
+          status,
+          status === "approved" ? "approver" : null,
+          status === "approved" ? REFUND_DAY : null,
+        ],
+      );
+      await expect(
+        reverseJournal(
+          contextOf(world.tenant),
+          journalId!,
+          {
+            entryDate: "2026-10-15",
+            reason: "Koreksi DP retur murni saat refund berjalan",
+            idempotencyKey: randomUUID(),
+          },
+          userIdSchema.parse(await seedUser()),
+        ),
+      ).rejects.toMatchObject({ status: 409, code: "AUTO_JOURNAL_LOCKED" });
+      expect(await journalCount(world)).toBe(3);
+    });
+  }
+
+  it("[1218-R5-REVERSED-DP] once the DP-only return is reversed, refund request and approve (their shared guard after the intent lock) answer 409 DEPOSIT_RETURN_REVERSED", async () => {
+    const { world, dp, journalId } = await returnedDeposit({ dpOnly: true });
+    const guard = () =>
+      withTenant(db, contextOf(world.tenant), async (tx) => {
+        await tx.execute(
+          sql`SELECT 1 FROM payment_intents WHERE tenant_id = ${world.tenant.id}::uuid AND id = ${dp.intentId}::uuid FOR UPDATE`,
+        );
+        await assertDepositReturnNotReversed(tx, world.tenant.id, dp.intentId);
+      });
+    await expect(guard(), "control: before the reversal").resolves.toBe(
+      undefined,
+    );
+    await reverseJournal(
+      contextOf(world.tenant),
+      journalId!,
+      {
+        entryDate: "2026-10-15",
+        reason: "Koreksi DP retur murni",
+        idempotencyKey: randomUUID(),
+      },
+      userIdSchema.parse(await seedUser()),
+    );
+    await expect(guard()).rejects.toMatchObject({
+      status: 409,
+      code: "DEPOSIT_RETURN_REVERSED",
+    });
   });
 
   it("AJ-Q81-06: after a DP-only return was reversed by hand, the original payer payout parks non-retryable POSTING_AMOUNTS_MISMATCH and customer_deposit never goes negative", async () => {

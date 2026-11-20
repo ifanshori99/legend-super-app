@@ -1422,7 +1422,7 @@ async function assertReturnBackingNotPaidOut(
            EXISTS (
              SELECT 1 FROM payment_refunds p
               WHERE p.tenant_id = ${tenantId}::uuid
-                AND p.status = 'completed'
+                AND p.status NOT IN ('failed', 'rejected')
                 AND 'i:' || p.payment_intent_id::text IN (SELECT node FROM connected)
            ) AS completed_refund
   `)
@@ -1436,8 +1436,11 @@ async function assertReturnBackingNotPaidOut(
   // Applied and passed (opens a profit-raising reversal) only when the refund
   // went back to the DP and no money left (1218 r4): (a) the refund released
   // DP; (b) every credit line is on customer_deposit, in total no more than
-  // the released DP, so no cash or bank credit hides in it; (c) no completed
-  // payment refund in the DP component, booked or not.
+  // the released DP, so no cash or bank credit hides in it; (c) no payment
+  // refund in the DP component that is not failed or rejected: completed,
+  // booked or not, and pending/approved/sending (1218 r5; an unknown status
+  // also holds the journal). Refund request and approve take this journal
+  // FOR SHARE (assertDepositReturnNotReversed), so they queue with us.
   if (verdict === undefined || BigInt(verdict.release_count) === 0n)
     return false;
   if (verdict.completed_refund) return false;

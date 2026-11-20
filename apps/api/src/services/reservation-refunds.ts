@@ -55,6 +55,7 @@ import { openRefundChainSafely } from "./payment-refund.service.ts";
 import { appendPaymentEvent } from "./payment-support.ts";
 import { RESERVATION_SYSTEM_ACTOR } from "./reservation-deposit-payment.ts";
 import { auditReservation, type Tx } from "./reservation-core.ts";
+import { assertDepositReturnNotReversed } from "./payment-refund-deposit-return.ts";
 
 /** Attempts before the retry sweep stops and leaves the refund to a human. */
 export const REFUND_MAX_ATTEMPTS = 8;
@@ -115,6 +116,12 @@ async function createSystemRefundRequest(
         !["paid", "partially_refunded"].includes(intent.status)
       )
         throw refundFailure("Payment is not refundable.");
+      // 1218 r5: after the intent lock, before the refund row exists.
+      await assertDepositReturnNotReversed(
+        tx,
+        context.tenant.tenantId,
+        intent.id,
+      );
       const { cap, reserved } = await refundableBalance(tx, intent);
       if (reserved + BigInt(input.amountIdr) > cap)
         throw refundFailure("Refund exceeds available paid amount.");
