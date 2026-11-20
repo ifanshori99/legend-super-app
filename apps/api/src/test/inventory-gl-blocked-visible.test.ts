@@ -65,7 +65,7 @@ type World = {
   accounts: Record<Role, string>;
 };
 
-async function makeWorld(): Promise<World> {
+async function makeWorld(cutoff = "04:00"): Promise<World> {
   const entity = randomUUID();
   const outletId = randomUUID();
   await owner.query(
@@ -74,8 +74,15 @@ async function makeWorld(): Promise<World> {
   );
   await owner.query(
     `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, business_day_cutoff, opening_hours, status)
-     VALUES ($1, $2, $3, $4, $5, 'Outlet Reval', 'Jl. Reval', 'Asia/Jakarta', '04:00', '{}', 'active')`,
-    [outletId, tenantId, brandId, entity, `RV-${short()}`.toUpperCase()],
+     VALUES ($1, $2, $3, $4, $5, 'Outlet Reval', 'Jl. Reval', 'Asia/Jakarta', $6, '{}', 'active')`,
+    [
+      outletId,
+      tenantId,
+      brandId,
+      entity,
+      `RV-${short()}`.toUpperCase(),
+      cutoff,
+    ],
   );
   const chart: [Role, string, string, string, string][] = [
     ["inventory", "1301", "Persediaan Bahan Baku", "asset", "current_asset"],
@@ -368,5 +375,35 @@ describe("card 1260: parked inventory GL sources are visible", () => {
     expect(await blockedCountOf(productionId)).toBe(0);
     const closed = await close(october.id, october.version);
     expect(closed.status).toBe("closed");
+  });
+
+  it("[1260-CUTOFF] 07:30 WIB on 1 Oct with cutoff 08:00 is still September: it blocks the September close", async () => {
+    const world = await makeWorld("08:00");
+    const raw = await insertItem("Gula");
+    await receive(world, raw, "1000", "100", "2026-09-20T05:00:00.000Z");
+    const productionId = randomUUID();
+    // 00:30 UTC on 1 Oct = 07:30 WIB = business date 30 Sep.
+    const draw = await drawMaterial(
+      world,
+      raw,
+      "600",
+      productionId,
+      "2026-10-01T00:30:00.000Z",
+    );
+    expect((await deliverRow(draw)).status).toBe("blocked");
+    const september = await periodOfWorld(world, "2026-09");
+    await expect(close(september.id)).rejects.toMatchObject({
+      code: "PERIOD_INVENTORY_GL_BLOCKED",
+      details: {
+        count: 1,
+        sources: [
+          {
+            sourceType: "production_order",
+            sourceId: productionId,
+            errorCode: "PRODUCTION_INCOMPLETE",
+          },
+        ],
+      },
+    });
   });
 });

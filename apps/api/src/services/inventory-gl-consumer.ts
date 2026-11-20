@@ -432,24 +432,34 @@ async function settleStockSource(
   return result;
 }
 
+/** A parked source as shown to the person closing a period (card 1260). */
+export type BlockedInventoryGlSource = {
+  sourceType: InventoryGlSourceType;
+  sourceId: string;
+  errorCode: string;
+};
+
 /**
- * Card 1260: how many sources of the legal entity sit parked in
- * `inventory_gl_blocked` with stock rows before `periodEnd` (exclusive, UTC
- * start of the next month). Closing a period over them would freeze books
- * that still miss their COGS, waste, count or production journal. UTC is
- * conservative for the outlets' east-of-UTC business days: a source on the
- * edge can count for the earlier period, never be missed.
+ * Card 1260: the sources of the legal entity parked in `inventory_gl_blocked`
+ * whose first stock row falls in `period` or earlier on the outlet's business
+ * day (time zone + cutoff, the same clock the posting uses). Closing the
+ * period over them would freeze books that still miss their COGS, waste,
+ * count or production journal. A source without a dating stock row is listed
+ * (fail closed).
  */
-export async function countBlockedInventoryGlBefore(
+export async function listBlockedInventoryGlUpTo(
   tx: Tx,
   tenantId: ScopedTenantContext["tenant"]["tenantId"],
   legalEntityId: string,
-  periodEnd: Date,
-): Promise<number> {
+  period: string,
+): Promise<BlockedInventoryGlSource[]> {
   const blocked = await tx
     .select({
       sourceType: inventoryGlBlocked.sourceType,
       sourceId: inventoryGlBlocked.sourceId,
+      errorCode: inventoryGlBlocked.errorCode,
+      timezone: outlets.timezone,
+      businessDayCutoff: outlets.businessDayCutoff,
     })
     .from(inventoryGlBlocked)
     .innerJoin(
@@ -464,8 +474,12 @@ export async function countBlockedInventoryGlBefore(
         eq(inventoryGlBlocked.tenantId, tenantId),
         eq(outlets.legalEntityId, legalEntityId),
       ),
+    )
+    .orderBy(
+      asc(inventoryGlBlocked.firstFailedAt),
+      asc(inventoryGlBlocked.sourceId),
     );
-  let count = 0;
+  const listed: BlockedInventoryGlSource[] = [];
   for (const source of blocked) {
     const dbId = sourceIdToDb(source.sourceId);
     const [first] =
@@ -489,10 +503,25 @@ export async function countBlockedInventoryGlBefore(
                 eq(stockLedger.sourceId, dbId),
               ),
             );
-    // No stock row to date it: count it (fail closed).
-    if (!first?.at || first.at < periodEnd) count += 1;
+    const sourcePeriod = first?.at
+      ? periodOf(
+          businessDateOf(
+            first.at,
+            outletBusinessDayClock({
+              timezone: source.timezone,
+              businessDayCutoff: source.businessDayCutoff,
+            }),
+          ),
+        )
+      : null;
+    if (sourcePeriod === null || sourcePeriod <= period)
+      listed.push({
+        sourceType: source.sourceType,
+        sourceId: source.sourceId,
+        errorCode: source.errorCode,
+      });
   }
-  return count;
+  return listed;
 }
 
 async function clearBlocked(
