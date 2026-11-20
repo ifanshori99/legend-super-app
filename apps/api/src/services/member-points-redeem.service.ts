@@ -246,7 +246,7 @@ async function readProfile(tx: Tx, scope: MemberScope) {
   return row;
 }
 
-/** POS bills of the session's member (tenant and profile filtered in SQL). */
+/** POS bills of the session's member (tenant and profile filtered in SQL; training bills excluded). */
 async function loadBills(
   tx: Tx,
   scope: MemberScope,
@@ -309,6 +309,8 @@ async function loadBills(
       and(
         eq(orders.tenantId, tenantId),
         eq(orders.customerProfileId, profileOf(scope)),
+        // Training bills are practice, not sales: never listed, never minted.
+        eq(posOrders.isTraining, false),
         "orderId" in filter
           ? eq(orders.id, filter.orderId)
           : and(
@@ -542,6 +544,23 @@ export async function mintMemberRedeemToken(
 ): Promise<{ token: string; expiresAt: string }> {
   const tenantId = tenantOf(scope);
   const profileId = profileOf(scope);
+  // Lock order as the till (order row, then member): the mint insert below
+  // takes a key share on the order row anyway (its foreign key), so take it
+  // first. Taking the member first and the order after deadlocks with a till
+  // that holds the order FOR UPDATE and waits for the member (a 500).
+  const lockedOrderId = parseMemberOrderRef(input.orderId);
+  if (lockedOrderId)
+    await tx
+      .select({ id: orders.id })
+      .from(orders)
+      .where(
+        and(
+          eq(orders.tenantId, tenantId),
+          eq(orders.id, lockedOrderId),
+          eq(orders.customerProfileId, profileId),
+        ),
+      )
+      .for("key share");
   // The profile lock serializes this member's mints (one bill has one
   // member), so two mints of one bill cannot both see "no live token".
   await withProfileLock(tx, tenantId, profileId);

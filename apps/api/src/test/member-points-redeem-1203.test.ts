@@ -1853,3 +1853,105 @@ describe("1203 money invariant: points never pay more than the bill, the balance
     }
   });
 });
+
+// ================================================================================
+// Architect review fixes (card legend-1203): lock order, training bills, QR version
+// ================================================================================
+
+async function mintRows(order: CreatedOrder) {
+  const { rows } = await asTenant(world.tenant.tenantId, (client) =>
+    client.query<{ id: string }>(
+      `SELECT id FROM member_qr_redeem_mints
+        WHERE tenant_id = $1 AND order_id = $2`,
+      [world.tenant.tenantId, ulidToUuid(order.id)],
+    ),
+  );
+  return rows;
+}
+
+describe("1203 review fixes", () => {
+  it("1203-90 a till holding the bill's order row while it waits for the member never deadlocks a mint of that bill: no 500", async () => {
+    const member = await newMember(2_000);
+    const order = await newOrder(member, "pwa_session");
+    // The till's lock order: the order row FOR UPDATE, then the member.
+    const till = await owner.connect();
+    try {
+      await till.query("BEGIN");
+      await till.query(
+        "SELECT 1 FROM orders WHERE tenant_id = $1 AND id = $2 FOR UPDATE",
+        [world.tenant.tenantId, ulidToUuid(order.id)],
+      );
+      const minting = postMint(member.client, order.id, 100).then(
+        (response) => response,
+      );
+      // Let the mint reach its first lock and wait on the till.
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      await till.query(
+        "SELECT 1 FROM customer_profiles WHERE tenant_id = $1 AND id = $2 FOR NO KEY UPDATE",
+        [world.tenant.tenantId, member.profile.id],
+      );
+      await till.query("COMMIT");
+      const minted = await minting;
+      expect(minted.status, JSON.stringify(minted.body)).toBe(200);
+    } finally {
+      await till.query("ROLLBACK").catch(() => undefined);
+      till.release();
+    }
+    expect(await balanceNow(member)).toBe(2_000);
+    expect(await mintRows(order)).toHaveLength(1);
+  });
+
+  it("1203-91 a training bill is not listed and cannot be minted; the same bill as a real one is (control)", async () => {
+    const member = await newMember(1_000);
+    const order = await newOrder(member);
+    const setTraining = (value: boolean) =>
+      asTenant(world.tenant.tenantId, (client) =>
+        client.query(
+          "UPDATE pos_orders SET is_training = $3 WHERE tenant_id = $1 AND order_id = $2",
+          [world.tenant.tenantId, ulidToUuid(order.id), value],
+        ),
+      );
+    expect((await listedBills(member)).map((bill) => bill.orderId)).toContain(
+      order.id,
+    );
+    await setTraining(true);
+    expect(
+      (await listedBills(member)).map((bill) => bill.orderId),
+    ).not.toContain(order.id);
+    expectRefused(await postMint(member.client, order.id, 100));
+    expect(await mintRows(order)).toHaveLength(0);
+    await setTraining(false);
+    await mintOk(member, order.id, 100);
+  });
+
+  it("1203-92 the till refuses a QR token without the ledger version (v): nothing is spent; a minted token works (control)", async () => {
+    const member = await newMember(1_000);
+    const order = await newOrder(member);
+    // Validly signed for this member and bill, but minted without `v`.
+    const bare = localToken(member, order.id, 100);
+    const refused = await cashierRedeem(order, 100, { token: bare });
+    expectRefused(refused);
+    expect(await balanceNow(member)).toBe(1_000);
+    expect(await pointsTenders(order)).toHaveLength(0);
+    const token = await mintOk(member, order.id, 100);
+    const done = await cashierRedeem(order, 100, { token });
+    expect(redeemed(done.status), JSON.stringify(done.body)).toBe(true);
+    expect(await balanceNow(member)).toBe(900);
+  });
+
+  it("1203-93 two mints for one bill at the same moment leave exactly one live token", async () => {
+    const member = await newMember(1_000);
+    const order = await newOrder(member);
+    const results = await Promise.all([
+      postMint(member.client, order.id, 100),
+      postMint(member.client, order.id, 100),
+    ]);
+    for (const result of results)
+      expect(result.status, JSON.stringify(result.body)).toBeLessThan(500);
+    const won = results.filter((result) => result.status === 200);
+    expect(won, JSON.stringify(results.map((r) => r.body))).toHaveLength(1);
+    expectRefused(results.find((result) => result.status !== 200)!);
+    expect(await mintRows(order)).toHaveLength(1);
+    expect(await balanceNow(member)).toBe(1_000);
+  });
+});
