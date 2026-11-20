@@ -1097,6 +1097,8 @@ describe("[leaver-1220] employee who leaves under a cutoff before month end", ()
     expect(refused, "the March lock must be refused").not.toBeNull();
     expect(refused!.status).toBe(409);
     expect(refused!.code).toBe("PAYROLL_PPH21_LATER_PERIOD_LOCKED");
+    expect((refused as { message?: string }).message).toContain(leaver.id);
+    expect((refused as { message?: string }).message).toContain("reversal");
     expect(await payslipCount(march)).toBe(0);
   }, 600_000);
 

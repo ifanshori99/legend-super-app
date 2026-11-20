@@ -424,10 +424,13 @@ export async function loadTaxYearPriors(
   // any slip of an employee whose last tax period this is (its income would
   // be missing from the annual tax; legend-1220).
   for (const row of await readSlips(laterFilter)) {
-    if (
-      lastPeriod.get(row.employeeId) === true ||
-      readCalculation(row).tax.method === "annual_recalculation"
-    )
+    if (lastPeriod.get(row.employeeId) === true)
+      throw new HttpError(
+        409,
+        "PAYROLL_PPH21_LATER_PERIOD_LOCKED",
+        `Karyawan ${row.employeeId} punya THR bulan berikutnya yang sudah dikunci. Lakukan reversal THR itu dulu sebelum run masa pajak terakhir ini dikunci.`,
+      );
+    if (readCalculation(row).tax.method === "annual_recalculation")
       throw new HttpError(
         409,
         "PAYROLL_PPH21_LATER_PERIOD_LOCKED",

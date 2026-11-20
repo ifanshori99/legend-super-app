@@ -182,7 +182,7 @@ export const payrollRunMessages = {
     title: "Karyawan keluar dikeluarkan dari run",
     count: "{count} karyawan",
     description:
-      "Karyawan ini sudah keluar di tahun sebelum tanggal bayar, jadi tidak dihitung di run ini dan tidak masuk angka di atas. Gaji terakhir mereka perlu dibayar di luar run; HR memutuskan caranya.",
+      "Karyawan ini sudah keluar dan tidak bisa dihitung di run ini. Proses gaji akhirnya terpisah.",
     restrictedNote:
       "Nama dan alasan tiap karyawan hanya terlihat oleh yang berhak melihat data gaji.",
   },
