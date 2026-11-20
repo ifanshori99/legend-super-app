@@ -59,6 +59,10 @@ const NOT_A_WRITER: Record<string, string> = {
     "release-only backfill (legend-i848k) of the employee PPh 21 receivable open item for receivables that predate the 972 open item: one transaction per tenant, --dry-run available, idempotent (ON CONFLICT DO NOTHING on a deterministic id), inserts only the missing gap to the employee's own payslip balance (never more), holds doubtful cases and reports them; derives everything from the tenant's own payslips and employees, imports no external data",
   "apps/api/src/services/payroll-pph21-receivable-backfill.service.ts":
     "the per-tenant backfill the script above runs (legend-i848k): reads the tenant's own payslips and open items, inserts only the missing accounting_open_items receivable up to the payslip balance, never updates or deletes a row and never exceeds the balance; imports no external data",
+  "apps/api/src/db/backfill-ptkp-history.ts":
+    "one-shot release backfill (bead 1223 r2) of employee_ptkp_history from the tenant's own payslips and employees: one transaction per tenant, idempotent upsert on employee plus day, refused where HR already corrected a PTKP unless --force; prints counts only; imports no external data",
+  "apps/api/src/services/payroll-ptkp-backfill.ts":
+    "the per-tenant backfill the script above runs (bead 1223 r2): reads the tenant's own locked or paid payslips and employees and upserts employee_ptkp_history rows (status of the first slip of the tax year, and today's status from the next year); never touches a payslip or an amount; imports no external data",
 };
 
 // Files under apps/api/src/db referenced from scripts/*.mjs that are not
@@ -332,6 +336,10 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
   "0473_payout_1005_recon_flag_kind.sql":
     "function body only, no row edited by the migration: app.payout_recon_flag (payout role) also accepts the return_withdraw kind and inserts a reconciliation exception and a sighting when called; no backfill, no amount touched",
   // legend-1089 (second opinion, round 5)
+  "0519_ptkp_tax_year_history.sql":
+    "bead 1223: creates employee_ptkp_history and seeds it once from the tenant's own employees (join date plus current PTKP status, NOT NULL only); the employees trigger is the only later writer; FORCE RLS on employees lifted for that one read and restored; no import, no payroll amount touched",
+  "0520_ptkp_history_correction.sql":
+    "bead 1223: replaces the PTKP history trigger function (an INSERT ... ON CONFLICT DO UPDATE inside the function body, run only on a later employees change) and revokes INSERT/UPDATE/DELETE/TRUNCATE on employee_ptkp_history from the app role; no existing row is written by the migration; no import",
   "0501_payout_waive_trusted.sql":
     "function bodies and grants only, no row edited by the migration: app.payout_waive_skipped (payout role) flips kind settle_skipped -> settle_waived on a cash posting when its correcting waive journal is valid, when called; the guard and the commit-check functions are redefined; no backfill, no amount or journal touched",
   // legend-628t9 (954)
@@ -379,6 +387,8 @@ const POOL_OPENERS_NOT_IMPORTERS: Record<string, string> = {
     "one-off repair of employees.manager_id on existing rows from an HR-reviewed manifest (dry-run by default), imports nothing (legend-qhqf8)",
   "apps/api/src/db/repair-supplier-invoice-npwp.ts":
     "explicit one-invoice repair of a legacy supplier_invoices.npwp_snapshot (one tenant, entity, invoice, actor and audited reason on the command line; the audit row shares the transaction), imports nothing (547b)",
+  "apps/api/src/db/backfill-ptkp-history.ts":
+    "one-shot release backfill of employee_ptkp_history from the tenant's own payslips (bead 1223 r2), idempotent, imports nothing",
   "apps/api/src/worker-main.ts":
     "job runner: delivery state of its own tenant's work, no imports",
   "apps/api/src/db/role.ts": "runtime role helper, no data writes",
