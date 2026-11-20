@@ -124,8 +124,6 @@ function PtkpForm({
   // One key per distinct input: it changes only when the input changes, so a
   // retry of the same input after a failure is deduplicated by the API.
   const idempotencyKey = React.useRef(newIdempotencyKey());
-  // Correcting to the status already in force changes nothing.
-  const sameAsInForce = day === "anchor" && status === employee.ptkpStatus;
 
   function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -144,7 +142,6 @@ function PtkpForm({
       formRef.current?.querySelector<HTMLElement>("#ptkp-status")?.focus();
       return;
     }
-    if (sameAsInForce) return;
     if (reasonBad) {
       reasonRef.current?.focus();
       return;
@@ -278,11 +275,6 @@ function PtkpForm({
               }}
             />
           </FormField>
-          {sameAsInForce && (
-            <p className="text-sm leading-5 text-muted-foreground">
-              {t("employeeMaster.profile.ptkp.sameAsInForce")}
-            </p>
-          )}
           {formError && (
             <p
               className="text-sm leading-5 font-medium text-danger"
@@ -300,11 +292,7 @@ function PtkpForm({
             >
               {t("employeeMaster.profile.ptkp.cancel")}
             </Button>
-            <Button
-              type="submit"
-              loading={correct.isPending}
-              disabled={sameAsInForce}
-            >
+            <Button type="submit" loading={correct.isPending}>
               {t("employeeMaster.profile.ptkp.save")}
             </Button>
           </DialogFooter>

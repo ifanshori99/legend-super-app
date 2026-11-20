@@ -126,8 +126,6 @@ export const employeeMasterMessages = {
       effectiveAnchor: "Awal tahun pajak ({date})",
       effectiveAnchorJoin: "Tanggal masuk ({date})",
       effectiveNextYear: "Mulai tahun pajak berikutnya ({date})",
-      sameAsInForce:
-        "Status ini sama dengan yang berlaku. Pilih status lain atau tanggal berlaku berikutnya.",
       reasonLabel: "Alasan",
       reasonHint: "Wajib, 5 sampai 500 karakter.",
       reasonError: "Tulis alasan koreksi, 5 sampai 500 karakter.",
