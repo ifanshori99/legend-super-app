@@ -532,6 +532,67 @@ describe("legend-7zwmv the Owner gate uses the trusted edge clock", () => {
     ]);
   });
 
+  it("still allows an Owner row the DB already treats as expired while the trusted clock is earlier", async () => {
+    const staff = await staffWithRole(app, {
+      template: "owner",
+      label: "Owner Kedaluwarsa DB Jam Edge",
+      validUntilSql: "now() + interval '1 hour'",
+    });
+    // The DB clock now judges this row expired (valid_until 1 h ago), yet the
+    // row must still be loaded: the trusted clock (3 h back) lies inside it.
+    await pool.query(
+      `UPDATE role_assignments
+          SET valid_from = now() - interval '5 hours',
+              valid_until = now() - interval '1 hour'
+        WHERE user_id = $1`,
+      [staff.userId],
+    );
+    try {
+      const dbJudged = await pool.query(
+        `SELECT 1 FROM role_assignments
+          WHERE user_id = $1 AND valid_until < statement_timestamp()`,
+        [staff.userId],
+      );
+      expect(dbJudged.rowCount).toBe(1);
+      setCatalogOverrideClock(() => new Date(Date.now() - 3 * 3_600_000));
+      const read = await staff.client.get(PATH).set(headers).set(originHeader);
+      expect(read.status, JSON.stringify(read.body)).toBe(200);
+    } finally {
+      setCatalogOverrideClock(() => new Date());
+      await pool.query("DELETE FROM role_assignments WHERE user_id = $1", [
+        staff.userId,
+      ]);
+    }
+  });
+
+  it("answers the session status read from the DB clock while the trusted clock is not ready", async () => {
+    setCatalogOverrideClock(null);
+    try {
+      const res = await ownerStaff.client
+        .get("/api/edge/status")
+        .set(headers)
+        .set(originHeader);
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+    } finally {
+      setCatalogOverrideClock(() => new Date());
+    }
+  });
+
+  it("refuses a grant with 503 EDGE_CLOCK_NOT_READY and writes no row while the trusted clock is not ready", async () => {
+    const rowsBefore = (await rowsOf(ownerStaff.userId)).length;
+    const auditBefore = await auditCount(ownerStaff.userId);
+    setCatalogOverrideClock(null);
+    try {
+      const res = await post(ownerStaff, { minutes: 60, reason: REASON });
+      expect(res.status, JSON.stringify(res.body)).toBe(503);
+      expect(errorCode(res.body)).toBe("EDGE_CLOCK_NOT_READY");
+      expect(await rowsOf(ownerStaff.userId)).toHaveLength(rowsBefore);
+      expect(await auditCount(ownerStaff.userId)).toBe(auditBefore);
+    } finally {
+      setCatalogOverrideClock(() => new Date());
+    }
+  });
+
   it("fails closed for even a valid Owner while the trusted clock is not ready", async () => {
     setCatalogOverrideClock(null);
     try {
