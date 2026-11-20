@@ -1,5 +1,12 @@
 # PROGRESS — Legend Super App
 
+## JEDA KUOTA 21 Nov (kuota Claude mingguan 2%, reset Selasa 24 Nov 18:00)
+Semua agent diminta commit + push lalu berhenti. Lanjut sesudah reset dari sini:
+1. Merge train int/batch106: baca `docs/briefs/1254-status.md` di int/batch106. Antrean belum masuk (semua LOLOS review): 1260 b2f0dc9c0, 1256 1841d4828, 1255 3d8138a1c, 1261 f942adbc2, 1259 527677a29. Rencana: gabung kelimanya berturut-turut, install sekali, SATU gate gabungan (lint, typecheck, kontrak, affected-tests --max 120 + test wajib: inventory-gl-blocked-visible, inventory-gl-production, period close, sentry, error-handler, password-reset-email, member-signin, better-auth-admin-lockdown, auth-shared-device-guard, ws05-manual-settle, text-contract, web-mock-build-guard, test-deploy.sh, API build).
+2. 1263 tutup buku dengan alasan tertulis (founder no.19 "boleh dengan alasan tertulis"): WIP di `ws/1263-period-close-override`, status di `docs/briefs/1263-status.md` cabang itu. Brief di `docs/briefs/1255-1258-keputusan-founder.md`. Sesudah selesai: review architect xhigh, lalu merge.
+3. Sesudah semua masuk: full `heavy pnpm test` sekali, ff milestone/m1, push.
+Hemat kuota sesudah reset: maks 3 agent sekaligus, Sonnet kecuali 1263.
+
 ## CTO 21 Nov ±06:10 (serah terima, sesi compact 8x)
 Basis: `milestone/m1` 6f418df53. Merge train int/batch106 (worktree `../legend-int-batch106`, agent 1254). Brief: `docs/briefs/1254-merge-train-batch106.md`, `docs/briefs/1255-1258-keputusan-founder.md`. Founder: "setuju semua" atas `docs/founder/keputusan-2026-11-21.md`; pertanyaan 19 (tutup buku saat batch produksi tertahan) belum dijawab.
 Status kartu:
