@@ -50,8 +50,10 @@
 // transient refusal on its ledger row, a merge refusal is a plain Error: the
 // batch aborts, nothing is recorded, the edge keeps the run queued and retries
 // the SAME event; once the sweep heals the order the retry merges. A refusal
-// the sweep turns final ends the hold (the run is then refused as before). No
-// money moves on this path.
+// the sweep turns final ends the hold (the run is then refused as before), and
+// so does a hold older than RECEIPT_RUN_INGEST_HOLD_MS (conflict + manager
+// alert), so a refusal that never heals cannot stall the node's sync forever.
+// No money moves on this path.
 import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   CoreError,
@@ -129,25 +131,74 @@ const RETRIED_INGEST_REASONS: readonly string[] = [
   ...TRANSIENT_REFUSAL_REASONS.map((reason) => `void_refused:${reason}`),
 ];
 
-/** True when an order of the run waits on a transient ingest refusal. */
+/**
+ * Longest a transient ingest refusal holds a run (legend-gdjpu bound): counted
+ * from when the cloud parked the refused event (cloud clock). The redrive sweep
+ * retries on every relay tick, so this is many attempts. Past it the refusal is
+ * treated like a permanent one: the run is refused, the link records a conflict
+ * and alerts the managers (db-link-store.ts), and the node's sync moves on.
+ */
+export const RECEIPT_RUN_INGEST_HOLD_MS = 30 * 60_000;
+
+/**
+ * True when an order of the run waits on a transient ingest refusal whose
+ * refused event (`order.paid`, or `order.voided` for `void_refused:*`) was
+ * parked less than RECEIPT_RUN_INGEST_HOLD_MS ago.
+ */
 async function hasRetriedIngest(
   tx: EdgeTx,
   tenantId: string,
   orderIds: string[],
 ): Promise<boolean> {
   if (orderIds.length === 0) return false;
+  const tenant = tenantIdSchema.parse(tenantId);
   const rows = await tx
-    .select({ orderId: edgeOrderIngests.orderId })
+    .select({
+      orderId: edgeOrderIngests.orderId,
+      paidEventId: edgeOrderIngests.paidEventId,
+      reason: edgeOrderIngests.reason,
+    })
     .from(edgeOrderIngests)
     .where(
       and(
-        eq(edgeOrderIngests.tenantId, tenantIdSchema.parse(tenantId)),
+        eq(edgeOrderIngests.tenantId, tenant),
         inArray(edgeOrderIngests.orderId, orderIds),
         inArray(edgeOrderIngests.reason, [...RETRIED_INGEST_REASONS]),
       ),
-    )
-    .limit(1);
-  return rows.length > 0;
+    );
+  if (rows.length === 0) return false;
+  const paidEvents = rows
+    .filter((row) => !row.reason?.startsWith("void_refused:"))
+    .map((row) => sql`${ulidToUuid(row.paidEventId)}::uuid`);
+  const voidForms = rows
+    .filter((row) => row.reason?.startsWith("void_refused:"))
+    .flatMap((row) => {
+      const uuid = sourceIdToDb(row.orderId);
+      return [row.orderId, uuid, uuidToUlid(uuid)].map(
+        (form) => sql`${form.toLowerCase()}`,
+      );
+    });
+  const refused = [
+    ...(paidEvents.length > 0
+      ? [
+          sql`(event_name = 'order.paid' AND event_id IN (${sql.join(paidEvents, sql`, `)}))`,
+        ]
+      : []),
+    ...(voidForms.length > 0
+      ? [
+          sql`(event_name = 'order.voided' AND aggregate_type = ${ORDER_AGGREGATE}
+               AND lower(aggregate_id) IN (${sql.join(voidForms, sql`, `)}))`,
+        ]
+      : []),
+  ];
+  const fresh = await tx.execute(
+    sql`SELECT 1 FROM edge_deferred_events
+        WHERE tenant_id = ${tenant}::uuid
+          AND received_at > now() - make_interval(secs => ${RECEIPT_RUN_INGEST_HOLD_MS / 1000}::double precision)
+          AND (${sql.join(refused, sql` OR `)})
+        LIMIT 1`,
+  );
+  return fresh.rows.length > 0;
 }
 
 /** order id -> permanent refusal reason, for the given orders of this tenant. */
