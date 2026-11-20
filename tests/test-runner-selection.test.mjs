@@ -81,6 +81,17 @@ async function dispatch(
     normalizeTestFiles,
     findMissingTestFiles: (files, root) =>
       findMissingTestFiles(files, root, () => true),
+    // legend-1239: the unit run raises the fixture tenant seat limit in the
+    // disposable database. Record the statement; no database is reached.
+    pg: {
+      Client: class {
+        async connect() {}
+        async query(text) {
+          calls.push({ command: "pg", args: [text] });
+        }
+        async end() {}
+      },
+    },
   };
   await new AsyncFunction(...Object.keys(dependencies), source)(
     ...Object.values(dependencies),
