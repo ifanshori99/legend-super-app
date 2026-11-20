@@ -53,6 +53,8 @@ Cara menjawab: cukup tulis nomor dan "setuju usulan" atau pilihan lain.
 
 ## D. Pertanyaan baru (21 Nov, sesudah "setuju semua")
 
-19. **Tutup buku bulanan saat ada batch produksi yang tertahan.**
-    Bila catatan bahan sebuah batch produksi hilang di jalan, batch itu ditahan dan tidak dibukukan. Selama ada batch tertahan, tutup buku bulan itu ditolak, supaya laporan tidak salah.
-    Usulan: tetap ditolak, sambil tim membuat tombol "kirim ulang" untuk catatan yang hilang. Pilihan lain: pemilik atau finance manager boleh tetap menutup buku dengan alasan tertulis, lalu selisihnya dibukukan di bulan berikutnya.
+19. **Tutup buku bulanan saat ada batch produksi yang tertahan** (diperbarui 21 Nov siang).
+    Batch produksi ditahan bila catatan bahan yang dipakai tidak pernah sampai dari server outlet ke pusat. Selama ada batch tertahan, tutup buku bulan itu ditolak, supaya laporan tidak salah.
+    Temuan tim: tombol "kirim ulang" dari pusat tidak bisa menolong, karena catatan yang hilang tertahan di server outlet. Jalur pemulihan dari outlet butuh desain sendiri dan baru siap sesudah rilis 1. Kalau tetap ditolak tanpa jalan keluar, tutup buku bulan itu bisa tertahan terus.
+    Usulan baru: pemilik atau finance manager boleh menutup buku dengan alasan tertulis. Sistem menyimpan siapa yang menutup, alasannya, dan daftar batch yang tertahan. Batch itu dibukukan di bulan berikutnya begitu datanya lengkap. Tidak ada uang yang dibayarkan, jadi tidak ada risiko bayar lebih.
+    Pilihan lain: tetap ditolak sampai jalur pemulihan outlet siap (sesudah rilis 1).
