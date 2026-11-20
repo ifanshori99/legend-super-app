@@ -2,8 +2,9 @@
 // legend-w1vo). Wired in worker-main.ts next to the order-payment consumer, on
 // the cloud only (an edge node never posts the GL): a `stock.moved` event
 // posts the journal of the stock source (stock count, waste log, POS sale /
-// sales return, production batch) inside the outbox consumption transaction. Only tenants with
-// the accounting module on are bridged; others are `ignored`.
+// sales return, production batch) inside the outbox consumption transaction.
+// Only tenants with the accounting module on are bridged; others are
+// `ignored`.
 //
 // Money rules (INV-01, INV-03):
 // - The value is what the ledger row itself recorded (`quantity` x
@@ -15,13 +16,15 @@
 //   the business dates of the log by largest remainder (`allocateRoundedIdr`),
 //   so a log straddling the business-day cutoff never loses a rupiah. Sales
 //   round per row.
-// - A production batch (bead legend-29vw, card 1252) moves the cost of the
-//   materials it drew from inventory (1301) to semi-finished inventory (1302):
-//   one journal per batch, Dr 1302 / Cr 1301 for the `production_out` rows
-//   rounded once over the whole batch (equals `production_orders.cost_idr`).
-//   Both sides carry the same amount, so it is balanced by construction. It is
-//   neither HPP nor waste: a yield shortfall raises the unit cost of the output
-//   on the stock card, so nothing leaves the books (waste has its own log).
+// - A production batch (bead legend-29vw, card 1252 r2) moves no value
+//   between accounts: every stock item (raw and semi-finished) stays on
+//   inventory (1301), so the draw and the put-away net to zero there. The only
+//   journal is the rounding difference between the output card value (actual
+//   qty x unit cost, rounded once) and the material cost (the `production_out`
+//   rows rounded once, equals `production_orders.cost_idr`): Dr 1301 / Cr
+//   inventory_price_variance (flipped when negative), one per batch, none when
+//   it is zero. Splitting semi-finished goods into 1302 is a later bead: every
+//   outflow rule credits 1301 today.
 // - Negative amounts are never written as negative journal lines: the posting
 //   rule flips debit and credit for a negative amount.
 // - The untracked rows of a source are grouped by outlet business date and each
@@ -133,7 +136,7 @@ type GlMapping = {
   readonly eventName:
     "stock.adjusted" | "stock.deducted" | "production.completed";
   readonly variant: "count" | "waste" | "negative_revaluation" | null;
-  readonly amountKey: "differenceIdr" | "costIdr" | "outputValueIdr";
+  readonly amountKey: "differenceIdr" | "costIdr" | "roundingVarianceIdr";
 };
 
 /** Sources the bridge posts; every other (movementType, sourceType) is ignored. */
@@ -159,14 +162,13 @@ const MAPPINGS: readonly GlMapping[] = [
     variant: null,
     amountKey: "costIdr",
   },
-  // Card 1252: a production batch. `outputValueIdr` is the amount the journal
-  // is built from; `inputValueIdr` takes the same value (see the header).
+  // Card 1252 r2: a production batch books only its rounding difference.
   {
     sourceType: "production_order",
     movementTypes: ["production_out", "production_in"],
     eventName: "production.completed",
     variant: null,
-    amountKey: "outputValueIdr",
+    amountKey: "roundingVarianceIdr",
   },
   // Bead 1214: a goods receipt row that landed on a negative balance. Its
   // `stock_negative_revaluations` row (not the ledger row: the receipt journal
@@ -767,17 +769,24 @@ export async function postStockSourceToGl(
       // shared over its business dates by largest remainder.
       amount = wasteAmounts.get(naturalDate)!;
     } else if (isProduction) {
-      // The cost of the materials drawn, rounded once over the batch.
-      amount = scaledCostToIdr(
-        group.reduce(
-          (sum, row) =>
-            parseDecimal4(row.quantity) < 0n
-              ? sum -
-                parseDecimal4(row.quantity) * parseDecimal4(row.unitCostIdr)
-              : sum,
-          0n,
-        ),
-      );
+      // Output card value minus material cost, each rounded once over the
+      // batch: what the put-away adds to 1301 beyond what the draw took. A
+      // put-away without any draw is not a rounding difference: it books
+      // nothing here (restrictive: never a gain on 5106 from nothing drawn).
+      let outputScaled = 0n;
+      let materialScaled = 0n;
+      let drew = false;
+      for (const row of group) {
+        const quantity = parseDecimal4(row.quantity);
+        const scaled = quantity * parseDecimal4(row.unitCostIdr);
+        if (quantity < 0n) {
+          drew = true;
+          materialScaled -= scaled;
+        } else outputScaled += scaled;
+      }
+      amount = drew
+        ? scaledCostToIdr(outputScaled) - scaledCostToIdr(materialScaled)
+        : 0;
     } else if (mapping.variant === "count") {
       amount = rowSum;
     } else {
@@ -805,9 +814,7 @@ export async function postStockSourceToGl(
         {
           eventName: mapping.eventName,
           variant: mapping.variant,
-          amounts: isProduction
-            ? { inputValueIdr: amount, outputValueIdr: amount }
-            : { [mapping.amountKey]: amount },
+          amounts: { [mapping.amountKey]: amount },
           legalEntityId: outlet.legalEntityId,
           outletId: first.outletId,
           entryDate: entryDate as BusinessDate,
