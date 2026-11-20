@@ -4,6 +4,7 @@
 // the same transaction as the reversal or lock, so the mark commits with it.
 
 import { and, eq, isNull, or, sql } from "drizzle-orm";
+import { maskAuditChanges } from "@starter/shared/audit";
 import {
   createUlid,
   type ScopedTenantContext,
@@ -14,6 +15,14 @@ import { payrollTaxExports } from "../db/schema/payroll.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 import type { Tx } from "./permission-resolver.ts";
+
+const AUDIT_FIELDS = [
+  "payrollRunId",
+  "legalEntityId",
+  "kind",
+  "taxPeriod",
+  "supersededReason",
+];
 
 export type TaxExportSupersedeReason = "run_reversed" | "run_locked";
 
@@ -123,26 +132,23 @@ export async function supersedeTaxExportsInTransaction(
         reason: taxExportSupersededMessage(row.kind, row.taxPeriod),
         maskedChanges: {
           before: null,
-          after: {
-            payrollRunId: input.payrollRunId,
-            legalEntityId: input.legalEntityId,
-            kind: row.kind,
-            taxPeriod: row.taxPeriod,
-            supersededReason: input.reason,
-          },
+          after: maskAuditChanges(
+            {
+              payrollRunId: input.payrollRunId,
+              legalEntityId: input.legalEntityId,
+              kind: row.kind,
+              taxPeriod: row.taxPeriod,
+              supersededReason: input.reason,
+            },
+            AUDIT_FIELDS,
+          ),
         },
         ipHash: null,
         sensitiveAccess: false,
         retentionClass: "audit_2y",
         createdAt: now.toISOString(),
       },
-      [
-        "payrollRunId",
-        "legalEntityId",
-        "kind",
-        "taxPeriod",
-        "supersededReason",
-      ],
+      AUDIT_FIELDS,
     );
   return marked.map((row) => ({
     id: row.id,
