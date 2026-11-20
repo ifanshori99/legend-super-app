@@ -517,6 +517,9 @@ const schema = z
     SMTP_USER: z.string().min(1).optional(),
     SMTP_PASS: z.string().min(1).optional(),
     EMAIL_FROM: z.email().optional(),
+    // Error monitoring (legend-17az7). Unset or blank: Sentry is not
+    // initialised and nothing leaves the process. Never logged.
+    SENTRY_DSN: blankToUndefined(z.url().optional()),
     // Lifetime of an MCP access token (seconds).
     MCP_TOKEN_TTL_SECONDS: z.coerce
       .number()

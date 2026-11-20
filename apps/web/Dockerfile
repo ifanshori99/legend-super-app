@@ -27,8 +27,11 @@ COPY --from=pruner /app/out/full/ .
 COPY tsconfig.base.json starter.config.json ./
 ARG VITE_API_URL
 RUN test -n "$VITE_API_URL" || { echo "Pass --build-arg VITE_API_URL=<the API's public origin>"; exit 1; }
+# Optional (legend-17az7): browser error monitoring. Empty = off.
+ARG VITE_SENTRY_DSN=""
 ENV NODE_ENV=production \
-    VITE_API_URL=$VITE_API_URL
+    VITE_API_URL=$VITE_API_URL \
+    VITE_SENTRY_DSN=$VITE_SENTRY_DSN
 RUN pnpm --filter @starter/web run build
 
 # --- Runner: Nitro's node-server output is self-contained -------------------

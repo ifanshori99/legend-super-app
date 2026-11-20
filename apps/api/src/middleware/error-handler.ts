@@ -27,6 +27,7 @@ import { TaxError } from "@starter/shared/tax";
 import { HttpError } from "../lib/http-error";
 import { AuditUnavailableError } from "../services/audit-writer";
 import { toLoggableError } from "../lib/safe-error";
+import { captureServerError } from "../lib/sentry";
 
 export const notFound: RequestHandler = () => {
   throw new HttpError(404, "NOT_FOUND", "Route not found.");
@@ -195,5 +196,6 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
   res.err = toLoggableError(
     error instanceof Error ? error : new Error(String(error)),
   ) as Error;
+  captureServerError(error);
   return send(500, "INTERNAL_ERROR", "Something went wrong. Try again.");
 };
