@@ -2,8 +2,9 @@
 // legend-w1vo). Wired in worker-main.ts next to the order-payment consumer, on
 // the cloud only (an edge node never posts the GL): a `stock.moved` event
 // posts the journal of the stock source (stock count, waste log, POS sale /
-// sales return) inside the outbox consumption transaction. Only tenants with
-// the accounting module on are bridged; others are `ignored`.
+// sales return, production batch) inside the outbox consumption transaction.
+// Only tenants with the accounting module on are bridged; others are
+// `ignored`.
 //
 // Money rules (INV-01, INV-03):
 // - The value is what the ledger row itself recorded (`quantity` x
@@ -15,6 +16,15 @@
 //   the business dates of the log by largest remainder (`allocateRoundedIdr`),
 //   so a log straddling the business-day cutoff never loses a rupiah. Sales
 //   round per row.
+// - A production batch (bead legend-29vw, card 1252 r2) moves no value
+//   between accounts: every stock item (raw and semi-finished) stays on
+//   inventory (1301), so the draw and the put-away net to zero there. The only
+//   journal is the rounding difference between the output card value (actual
+//   qty x unit cost, rounded once) and the material cost (the `production_out`
+//   rows rounded once, equals `production_orders.cost_idr`): Dr 1301 / Cr
+//   inventory_price_variance (flipped when negative), one per batch, none when
+//   it is zero. Splitting semi-finished goods into 1302 is a later bead: every
+//   outflow rule credits 1301 today.
 // - Negative amounts are never written as negative journal lines: the posting
 //   rule flips debit and credit for a negative amount.
 // - The untracked rows of a source are grouped by outlet business date and each
@@ -41,7 +51,17 @@
 // advisory lock serializes concurrent consumers and the sweep of one document.
 
 import { createHash } from "node:crypto";
-import { and, asc, eq, inArray, lte, max, ne, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  inArray,
+  isNotNull,
+  lte,
+  max,
+  ne,
+  sql,
+} from "drizzle-orm";
 import {
   AccountingError,
   defaultPostingRules,
@@ -68,9 +88,11 @@ import {
 import { isModuleEnabled } from "@starter/shared/platform";
 import { db } from "../db/index.ts";
 import {
+  accountMappings,
   fiscalPeriods,
   inventoryGlBlocked,
   inventoryGlPostings,
+  journalLines,
   outlets,
   stockLedger,
   stockNegativeRevaluations,
@@ -110,10 +132,20 @@ const BLOCKING_CODES = [
   "ACCOUNT_INACTIVE",
   "ACCOUNT_NOT_POSTABLE",
   "ACCOUNT_ENTITY_MISMATCH",
+  // Card 1252: a production batch whose output and material cost differ by
+  // more than rounding (a draw still in transit or dead-lettered on an edge
+  // push). Retried by the sweep; booked once the draws are complete.
+  "PRODUCTION_INCOMPLETE",
 ] as const;
 type BlockingCode = (typeof BLOCKING_CODES)[number];
 
+/** Thrown inside the savepoint: nothing of the batch is booked or tracked. */
+class ProductionIncompleteError extends Error {
+  readonly code = "PRODUCTION_INCOMPLETE";
+}
+
 function blockingCodeOf(error: unknown): BlockingCode | null {
+  if (error instanceof ProductionIncompleteError) return error.code;
   if (!(error instanceof AccountingError)) return null;
   return (BLOCKING_CODES as readonly string[]).includes(error.code)
     ? (error.code as BlockingCode)
@@ -123,9 +155,10 @@ function blockingCodeOf(error: unknown): BlockingCode | null {
 type GlMapping = {
   readonly sourceType: InventoryGlSourceType;
   readonly movementTypes: readonly StockMovementType[];
-  readonly eventName: "stock.adjusted" | "stock.deducted";
+  readonly eventName:
+    "stock.adjusted" | "stock.deducted" | "production.completed";
   readonly variant: "count" | "waste" | "negative_revaluation" | null;
-  readonly amountKey: "differenceIdr" | "costIdr";
+  readonly amountKey: "differenceIdr" | "costIdr" | "roundingVarianceIdr";
 };
 
 /** Sources the bridge posts; every other (movementType, sourceType) is ignored. */
@@ -150,6 +183,14 @@ const MAPPINGS: readonly GlMapping[] = [
     eventName: "stock.deducted",
     variant: null,
     amountKey: "costIdr",
+  },
+  // Card 1252 r2: a production batch books only its rounding difference.
+  {
+    sourceType: "production_order",
+    movementTypes: ["production_out", "production_in"],
+    eventName: "production.completed",
+    variant: null,
+    amountKey: "roundingVarianceIdr",
   },
   // Bead 1214: a goods receipt row that landed on a negative balance. Its
   // `stock_negative_revaluations` row (not the ledger row: the receipt journal
@@ -302,7 +343,8 @@ export async function deliverInventoryGlEvent(
   if (sourceTypes.length === 0) return { status: "ignored" };
   if (!(await accountingEnabled(tx, context))) return { status: "ignored" };
   // The movement's own source first; its result is reported unless it was
-  // ignored (a revaluation-only inflow reports the revaluation).
+  // ignored or booked nothing (a revaluation-only inflow reports the
+  // revaluation).
   let result: InventoryGlResult = { status: "ignored" };
   for (const sourceType of sourceTypes) {
     const settled = await settleStockSource(
@@ -311,7 +353,14 @@ export async function deliverInventoryGlEvent(
       { sourceType, sourceId: payload.sourceId },
       now,
     );
-    if (result.status === "ignored") result = settled;
+    // A source with nothing to book (a valueless put-away row, no draw) does
+    // not hide the posted revaluation of the same row. A put-away with value
+    // and no draw is parked as PRODUCTION_INCOMPLETE instead.
+    if (
+      result.status === "ignored" ||
+      (result.status === "zero_value" && settled.status === "posted")
+    )
+      result = settled;
   }
   return result;
 }
@@ -541,6 +590,51 @@ function idempotencyKeyOf(
   return `stock-gl:${createHash("sha256").update(key).digest("hex")}`;
 }
 
+/**
+ * Net rounding already booked for a production batch (positive = Dr 1301 /
+ * Cr 5106): credit minus debit on inventory_price_variance over the journals
+ * of the batch's tracked rows.
+ */
+async function bookedProductionVarianceIdr(
+  tx: Tx,
+  tenantId: ScopedTenantContext["tenant"]["tenantId"],
+  legalEntityId: string,
+  sourceId: string,
+): Promise<number> {
+  const journals = tx
+    .selectDistinct({ id: inventoryGlPostings.journalEntryId })
+    .from(inventoryGlPostings)
+    .where(
+      and(
+        eq(inventoryGlPostings.tenantId, tenantId),
+        eq(inventoryGlPostings.sourceType, "production_order"),
+        eq(inventoryGlPostings.sourceId, sourceId),
+        isNotNull(inventoryGlPostings.journalEntryId),
+      ),
+    );
+  const [booked] = await tx
+    .select({
+      net: sql<string>`COALESCE(sum(${journalLines.creditIdr} - ${journalLines.debitIdr}), 0)::text`,
+    })
+    .from(journalLines)
+    .innerJoin(
+      accountMappings,
+      and(
+        eq(accountMappings.tenantId, journalLines.tenantId),
+        eq(accountMappings.accountId, journalLines.accountId),
+        eq(accountMappings.legalEntityId, legalEntityId),
+        eq(accountMappings.role, "inventory_price_variance"),
+      ),
+    )
+    .where(
+      and(
+        eq(journalLines.tenantId, tenantId),
+        inArray(journalLines.entryId, journals),
+      ),
+    );
+  return Number(booked?.net ?? 0);
+}
+
 export async function postStockSourceToGl(
   tx: Tx,
   context: ScopedTenantContext,
@@ -672,6 +766,27 @@ export async function postStockSourceToGl(
   if (!first) return { status: "already_posted" };
   if (allRows.some((row) => row.outletId !== first.outletId))
     throw new Error("Stock source spans more than one outlet");
+  // A put-away without any draw and without value has nothing to book or
+  // track. A put-away without any draw but WITH value is an incomplete batch
+  // (a draw still in transit or dead-lettered on an edge push): it is parked
+  // as PRODUCTION_INCOMPLETE, strictly, with no rounding allowance, and booked
+  // once the draws arrive.
+  const isProduction = mapping.eventName === "production.completed";
+  if (
+    isProduction &&
+    !allRows.some((row) => parseDecimal4(row.quantity) < 0n)
+  ) {
+    const outputScaled = allRows.reduce(
+      (sum, row) =>
+        sum + parseDecimal4(row.quantity) * parseDecimal4(row.unitCostIdr),
+      0n,
+    );
+    if (scaledCostToIdr(outputScaled) !== 0)
+      throw new ProductionIncompleteError(
+        "Production batch has output but no material draw",
+      );
+    return { status: "zero_value", ledgerEntryIds: [] };
+  }
 
   const [outlet] = await tx
     .select({
@@ -685,9 +800,15 @@ export async function postStockSourceToGl(
   const clock = outletBusinessDayClock(outlet);
 
   // One group per outlet business date, oldest first (rows are time ordered).
+  // A production batch is one journal on the date of its first row: its draw
+  // and put-away rows are written together, and splitting them over a cutoff
+  // would leave each journal with a one-sided amount.
   const groups = new Map<BusinessDate, typeof rows>();
   for (const row of rows) {
-    const date = businessDateOf(row.occurredAt, clock);
+    const date = businessDateOf(
+      isProduction ? first.occurredAt : row.occurredAt,
+      clock,
+    );
     groups.set(date, [...(groups.get(date) ?? []), row]);
   }
 
@@ -735,6 +856,40 @@ export async function postStockSourceToGl(
       // Waste rounds once over the whole log (equals waste_logs.value_idr),
       // shared over its business dates by largest remainder.
       amount = wasteAmounts.get(naturalDate)!;
+    } else if (isProduction) {
+      // Output card value minus material cost over every row of the batch,
+      // each rounded once, less the rounding already booked on 5106 for it
+      // (a draw that arrives after the batch was booked).
+      let outputScaled = 0n;
+      let materialScaled = 0n;
+      let outputQty = 0n;
+      for (const row of allRows) {
+        const quantity = parseDecimal4(row.quantity);
+        const scaled = quantity * parseDecimal4(row.unitCostIdr);
+        if (quantity > 0n) {
+          outputQty += quantity;
+          outputScaled += scaled;
+        } else materialScaled -= scaled;
+      }
+      const variance =
+        scaledCostToIdr(outputScaled) - scaledCostToIdr(materialScaled);
+      // The unit cost is rounded to 4 decimals, so a complete batch differs
+      // by at most ceil(actualQty x 0.00005) + 1 rupiah. Beyond that a draw
+      // (or the output) is missing: park it, never a 5106 gain or loss.
+      const bound =
+        Number((outputQty * 5n + 999_999_999n) / 1_000_000_000n) + 1;
+      if (Math.abs(variance) > bound)
+        throw new ProductionIncompleteError(
+          "Production batch rows are incomplete",
+        );
+      amount =
+        variance -
+        (await bookedProductionVarianceIdr(
+          tx,
+          tenantId,
+          outlet.legalEntityId,
+          target.domainId,
+        ));
     } else if (mapping.variant === "count") {
       amount = rowSum;
     } else {

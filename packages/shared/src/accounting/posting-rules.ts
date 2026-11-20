@@ -464,14 +464,18 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
       ["petty_cash", "credit", "amountIdr"],
     ],
   ),
+  // Card 1252 r2: production keeps every item on inventory (1301), so the
+  // batch books only the rounding difference between the output card value
+  // and the material cost. roundingVarianceIdr is signed: a negative amount
+  // flips the sides. Semi-finished goods on 1302 are a later bead.
   rule(
     { event: "production.completed" },
     "production",
-    "Produksi barang setengah jadi",
-    `${AUTO} (produksi)`,
+    "Selisih pembulatan biaya produksi",
+    `${AUTO} (produksi); INV-01 kartu stok = GL persediaan`,
     [
-      ["inventory_semi_finished", "debit", "outputValueIdr"],
-      ["inventory", "credit", "inputValueIdr"],
+      ["inventory", "debit", "roundingVarianceIdr"],
+      ["inventory_price_variance", "credit", "roundingVarianceIdr"],
     ],
   ),
   rule(
