@@ -70,6 +70,7 @@ import { withTenant } from "../db/tenant.ts";
 import { snapshotPayeeBankForLock } from "../services/payroll-bank-snapshot.service.ts";
 import { createBankTransferFile } from "../services/payroll-export.service.ts";
 import { NoopMalwareScanner } from "../services/core-image.ts";
+import { openPayslipCalculation } from "../services/hris-payslip.service.ts";
 import type { StorageRuntime } from "../services/core-storage-runtime.ts";
 import { createLogger } from "../lib/logger.ts";
 import {
@@ -844,6 +845,32 @@ describe("bank transfer file export: generic_csv content", () => {
     expect(createHash("sha256").update(text, "utf8").digest("hex")).toBe(
       file.checksumSha256,
     );
+  });
+
+  it("[bank-export-net-1253] file total equals the sum of net pay of the run's own bank_transfer payslips, read back from the sealed payslips", async () => {
+    const { file, data } = await exportOk(lockedRun);
+    const slips = await asTenant(tenant.id, (db) =>
+      db.query(
+        `SELECT id, tenant_id, payment_method, calculation_encrypted, pii_key_version
+           FROM payslips WHERE payroll_run_id = $1`,
+        [lockedRun],
+      ),
+    );
+    const netOf = (row: Record<string, unknown>) =>
+      openPayslipCalculation({
+        id: row.id as never,
+        tenantId: row.tenant_id as never,
+        calculationEncrypted: row.calculation_encrypted as Buffer,
+        piiKeyVersion: row.pii_key_version as number,
+      }).netIdr;
+    const bankNet = slips.rows
+      .filter((row) => row.payment_method === "bank_transfer")
+      .map(netOf)
+      .filter((net) => net > 0);
+    expect(bankNet.length).toBeGreaterThan(0);
+    expect(file.totalIdr).toBe(bankNet.reduce((sum, net) => sum + net, 0));
+    expect(file.rowCount).toBe(bankNet.length);
+    expect(data).toHaveLength(bankNet.length);
   });
 
   it("[bank-export-mismatch] payslips that disagree with the run bank total are refused with 409 PAYROLL_BANK_FILE_MISMATCH and no file", async () => {
