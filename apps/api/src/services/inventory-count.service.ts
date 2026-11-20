@@ -1550,6 +1550,54 @@ async function settle(
       "STOCK_COUNT_VERSION_MISMATCH",
       "The counted lines changed after the approval request was opened.",
     );
+  // The system quantity is the ledger balance at each line's counted_at
+  // (refreshSystemQty). A late inflow can make the variance bigger than what
+  // the approver saw: then a fresh approval is asked, the lines stay counted.
+  await lockLocations(tx, row.tenantId, [row.locationId]);
+  const refreshed: LineRow[] = [];
+  for (const line of lines)
+    refreshed.push(await refreshSystemQty(tx, row, line));
+  const variance = sumVariance(refreshed.map((line) => line.varianceIdr ?? 0));
+  if (
+    variance.total !== row.totalVarianceIdr ||
+    variance.gross !== row.grossVarianceIdr
+  ) {
+    const [current] = await tx
+      .update(stockCounts)
+      .set({
+        totalVarianceIdr: variance.total,
+        grossVarianceIdr: variance.gross,
+        linesHash: countLinesHash(refreshed),
+        updatedAt: now,
+      })
+      .where(eq(stockCounts.id, row.id))
+      .returning();
+    if (variance.gross > (row.grossVarianceIdr ?? 0)) {
+      const reopened = await reopenApproval(
+        tx,
+        context,
+        actorUserId,
+        current!,
+        levels[levels.length - 1]!.requestedBy,
+        now,
+      );
+      if (reopened === null)
+        return revertToCounting(
+          tx,
+          context,
+          actorUserId,
+          current!,
+          now,
+          "approver_is_counter",
+        );
+      deferred.error = countError(
+        "STOCK_COUNT_VERSION_MISMATCH",
+        "The system quantity changed after approval and the variance grew; a fresh approval was requested.",
+      );
+      return reopened;
+    }
+    row = current!;
+  }
   const [approved] = await tx
     .update(stockCounts)
     .set({
@@ -1595,12 +1643,14 @@ async function postLines(
   const lines = await loadLines(tx, row.id);
   await lockLocations(tx, row.tenantId, [row.locationId]);
   const moved: { locationId: string; inventoryItemId: string }[] = [];
+  const varianceIdrs: number[] = [];
   for (const line of [...lines].sort((left, right) =>
     left.inventoryItemId < right.inventoryItemId ? -1 : 1,
   )) {
     if (line.countedQty === null)
       throw new Error("An approved stock count has an uncounted line");
     const atCount = await refreshSystemQty(tx, row, line);
+    varianceIdrs.push(atCount.varianceIdr ?? 0);
     const delta = lineDelta(atCount);
     if (delta === 0n) continue;
     await postLine(tx, context, postedBy, row, atCount, delta);
@@ -1615,7 +1665,13 @@ async function postLines(
     });
   const [posted] = await tx
     .update(stockCounts)
-    .set({ status: "posted", postedAt: now, updatedAt: now })
+    .set({
+      status: "posted",
+      postedAt: now,
+      totalVarianceIdr: sumVariance(varianceIdrs).total,
+      grossVarianceIdr: sumVariance(varianceIdrs).gross,
+      updatedAt: now,
+    })
     .where(and(eq(stockCounts.id, row.id), eq(stockCounts.status, "approved")))
     .returning();
   if (!posted) throw new Error("Stock count changed under its row lock");

@@ -1071,14 +1071,13 @@ export async function recordStockMovementInTransaction(
   }
   await applyMovementToLockedBalance(tx, balance, entry);
   await appendStockMovedEvent(tx, context, entry, input.actor);
-  if (entry.sourceType !== "stock_count")
-    await absorbIntoPostedCount(tx, context, entry, input.actor);
+  await absorbIntoPostedCount(tx, context, entry, input.actor);
   return entry;
 }
 
 /**
  * SO 1208 P1: a posted stock count is the physical truth at each line's
- * `counted_at`. A movement posted after that count with `occurred_at <=
+ * `counted_at`. A POS sale or sales return posted after that count with `occurred_at <=
  * counted_at` (close_of_day deduction, lagging outbox, late edge order,
  * repost) is already inside the counted quantity, so it would count twice.
  * The first such count absorbs it: an opposite `adjustment` on that count
@@ -1094,6 +1093,14 @@ async function absorbIntoPostedCount(
   entry: StockLedgerEntry,
   actor: StockMovementInput["actor"],
 ): Promise<void> {
+  // Only POS sales and sales returns arrive late with their own date (CTO,
+  // 1211 review). A receipt, transfer or manual movement dated before a count
+  // is a correction someone made on purpose: never cancelled silently.
+  if (
+    entry.sourceType !== "order" ||
+    (entry.movementType !== "sale" && entry.movementType !== "return")
+  )
+    return;
   const [anchor] = await tx
     .select({
       countId: stockCounts.id,
@@ -1515,6 +1522,11 @@ export async function recordReplicatedStockMovementInTransaction(
     direction: null,
     peerId: null,
   });
+  // An edge sale that lands after a count posted on the cloud. Edge counts
+  // never reach the cloud's stock_counts (only their ledger rows replicate),
+  // so the only counts found here are cloud counts: no double offset with the
+  // edge's own absorption.
+  await absorbIntoPostedCount(tx, context, entry, { type: "system" });
   return true;
 }
 

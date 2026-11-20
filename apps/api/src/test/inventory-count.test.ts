@@ -40,11 +40,19 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
-import { createWasteLogInputSchema } from "@starter/shared/inventory";
+import {
+  createWasteLogInputSchema,
+  inventoryEvents,
+  stockMovedEventPayloadSchema,
+} from "@starter/shared/inventory";
+import type { EventEnvelope } from "@starter/shared/events";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
+import { db } from "../db/index.ts";
+import { withTenant } from "../db/tenant.ts";
 import {
   createStockBatch,
+  recordReplicatedStockMovementInTransaction,
   recordStockMovement,
 } from "../services/inventory.service.ts";
 import {
@@ -2785,5 +2793,116 @@ describe("late movements dated before the count (SO 1208 P1)", () => {
       [tenantA, countId],
     );
     expect(rows[0]!.system_qty).toBe("8.0000");
+  });
+
+  /** An edge `stock.moved` sale as the cloud applier receives it. */
+  async function edgeSaleAt(
+    locationId: string,
+    itemId: string,
+    quantity: string,
+    occurredAt: Date,
+  ) {
+    const ledgerEntryId = createUlid(occurredAt.getTime());
+    const event = inventoryEvents["stock.moved"].envelopeSchema.parse({
+      id: createUlid(),
+      tenantId: tenantA,
+      outletId: outletA,
+      name: "stock.moved",
+      version: 1,
+      aggregateType: "stock",
+      aggregateId: ledgerEntryId,
+      sequence: 1,
+      occurredAt: occurredAt.toISOString(),
+      actor: { type: "system" },
+      deviceId: null,
+      idempotencyKey: `stock.moved:${ledgerEntryId}`,
+      payloadSchemaRef: "stock.moved.v1",
+      payload: {
+        ledgerEntryId,
+        inventoryItemId: itemId,
+        locationId,
+        movementType: "sale",
+        quantity,
+        unitCostIdr: "1500.0000",
+        batchId: null,
+        sourceType: "order",
+        sourceId: randomUUID(),
+        occurredAt: occurredAt.toISOString(),
+      },
+    }) as EventEnvelope;
+    const context = tenantContext(tenantA, [outletA]);
+    await withTenant(db, context, (tx) =>
+      recordReplicatedStockMovementInTransaction(
+        tx,
+        context,
+        event,
+        stockMovedEventPayloadSchema.parse(event.payload),
+      ),
+    );
+  }
+
+  it("edge: a sale made offline before a cloud count lands after the count posted -> stock stays at the counted 8", async () => {
+    const { locationId, item, countId, soldAt } =
+      await postedAfterSale("8.0000");
+    await ok(await transition(counter, countId, "submit"));
+    await ok(await transition(approver, countId, "approve"));
+    expect(await balanceOf(locationId, item)).toBe("8.0000");
+
+    await edgeSaleAt(locationId, item, "-2.0000", soldAt);
+    expect(await balanceOf(locationId, item)).toBe("8.0000");
+  });
+
+  it("a receipt dated before the count and posted after it is not absorbed", async () => {
+    const { locationId, item, countId, soldAt } =
+      await postedAfterSale("8.0000");
+    await ok(await transition(counter, countId, "submit"));
+    await ok(await transition(approver, countId, "approve"));
+    await recordStockMovement(tenantContext(), {
+      outletId: outletA,
+      locationId,
+      inventoryItemId: item,
+      movementType: "receipt",
+      quantity: decimal4("5.0000"),
+      unitCostIdr: decimal4("1500.0000"),
+      batchId: null,
+      sourceType: "goods_receipt",
+      sourceId: randomUUID(),
+      occurredAt: soldAt.toISOString() as never,
+      actor: { type: "system" },
+    });
+    expect(await balanceOf(locationId, item)).toBe("13.0000");
+    expect(await countLedger(countId)).toHaveLength(1);
+  });
+
+  it("a late return dated before the count that grows the variance asks for a fresh approval (409), nothing posts", async () => {
+    const { locationId, item, countId, soldAt } =
+      await postedAfterSale("10.0000"); // counted = system: no variance
+    await ok(await transition(counter, countId, "submit"));
+    await recordStockMovement(tenantContext(), {
+      outletId: outletA,
+      locationId,
+      inventoryItemId: item,
+      movementType: "return",
+      quantity: decimal4("2.0000"),
+      unitCostIdr: decimal4("1500.0000"),
+      batchId: null,
+      sourceType: "order",
+      sourceId: randomUUID(),
+      occurredAt: soldAt.toISOString() as never,
+      actor: { type: "system" },
+    });
+    expectError(
+      await transition(approver, countId, "approve"),
+      409,
+      "STOCK_COUNT_VERSION_MISMATCH",
+    );
+    expect(await countLedger(countId)).toHaveLength(0);
+    const { rows } = await owner.query<{ status: string; gross: string }>(
+      "SELECT status, gross_variance_idr::text AS gross FROM stock_counts WHERE tenant_id = $1 AND id = $2",
+      [tenantA, countId],
+    );
+    expect(rows[0]!.status).toBe("pending_approval");
+    expect(Number(rows[0]!.gross)).toBe(3000);
+    expect(await balanceOf(locationId, item)).toBe("12.0000");
   });
 });
