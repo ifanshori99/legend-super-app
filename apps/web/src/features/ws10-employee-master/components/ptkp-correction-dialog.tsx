@@ -52,16 +52,28 @@ export function PtkpCorrectionDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const t = useT();
+  const correct = useCorrectEmployeePtkp();
+  // Saving is in flight: closing now would hide the outcome of a tax change.
+  const pending = correct.isPending;
   const close = React.useCallback(() => onOpenChange(false), [onOpenChange]);
   return (
     <Dialog
       open={open}
       onOpenChange={(next) => {
         if (next) onOpenChange(true);
-        else close();
+        else if (!pending) close();
       }}
     >
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent
+        className="sm:max-w-lg"
+        hideClose={pending}
+        onEscapeKeyDown={(event) => {
+          if (pending) event.preventDefault();
+        }}
+        onInteractOutside={(event) => {
+          if (pending) event.preventDefault();
+        }}
+      >
         <DialogHeader>
           <DialogTitle>
             {t("employeeMaster.profile.ptkp.title", {
@@ -74,7 +86,9 @@ export function PtkpCorrectionDialog({
         </DialogHeader>
         {/* Mounted only while open: each attempt starts clean with a fresh
             idempotency key. */}
-        {open ? <PtkpForm employee={employee} onDone={close} /> : null}
+        {open ? (
+          <PtkpForm employee={employee} correct={correct} onDone={close} />
+        ) : null}
       </DialogContent>
     </Dialog>
   );
@@ -82,14 +96,16 @@ export function PtkpCorrectionDialog({
 
 function PtkpForm({
   employee,
+  correct,
   onDone,
 }: {
   employee: Employee;
+  correct: ReturnType<typeof useCorrectEmployeePtkp>;
   onDone: () => void;
 }) {
   const t = useT();
-  const correct = useCorrectEmployeePtkp();
   const today = businessDateToday();
+  const nextYearStart = `${Number(today.slice(0, 4)) + 1}-01-01`;
   const yearStart = `${today.slice(0, 4)}-01-01`;
   const joinedThisYear = employee.joinDate > yearStart;
   const anchor = joinedThisYear ? employee.joinDate : yearStart;
@@ -103,10 +119,13 @@ function PtkpForm({
   const [reasonError, setReasonError] = React.useState<string>();
   const [formError, setFormError] = React.useState<string>();
   const [result, setResult] = React.useState<EmployeePtkpChange>();
+  const formRef = React.useRef<HTMLFormElement>(null);
   const reasonRef = React.useRef<HTMLTextAreaElement>(null);
+  // One key per distinct input: it changes only when the input changes, so a
+  // retry of the same input after a failure is deduplicated by the API.
   const idempotencyKey = React.useRef(newIdempotencyKey());
-
-  if (result) return <PtkpResult result={result} onDone={onDone} />;
+  // Correcting to the status already in force changes nothing.
+  const sameAsInForce = day === "anchor" && status === employee.ptkpStatus;
 
   function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -121,7 +140,11 @@ function PtkpForm({
     setReasonError(
       reasonBad ? t("employeeMaster.profile.ptkp.reasonError") : undefined,
     );
-    if (!parsed.success) return;
+    if (!parsed.success) {
+      formRef.current?.querySelector<HTMLElement>("#ptkp-status")?.focus();
+      return;
+    }
+    if (sameAsInForce) return;
     if (reasonBad) {
       reasonRef.current?.focus();
       return;
@@ -139,8 +162,6 @@ function PtkpForm({
       {
         onSuccess: (response) => setResult(response.data),
         onError: (error) => {
-          // A failed attempt may be retried with other input: new key.
-          idempotencyKey.current = newIdempotencyKey();
           setFormError(
             t(
               (error instanceof ApiError && ERROR_BY_CODE[error.code]) ||
@@ -160,109 +181,136 @@ function PtkpForm({
   );
 
   return (
-    <form className="grid gap-4" onSubmit={submit} noValidate>
-      <FormField
-        label={t("employeeMaster.profile.ptkp.statusLabel")}
-        id="ptkp-status"
-        error={statusError}
-        required
-      >
-        <Select
-          value={status}
-          onValueChange={(next) => {
-            setStatus(next as PtkpStatus);
-            idempotencyKey.current = newIdempotencyKey();
-          }}
-        >
-          <SelectTrigger>
-            <SelectValue
-              placeholder={t("employeeMaster.profile.ptkp.statusPlaceholder")}
+    <>
+      {/* Present before the result so assistive tech announces the change. */}
+      <p className="sr-only" role="status" aria-live="polite">
+        {result ? t("employeeMaster.profile.ptkp.resultTitle") : ""}
+      </p>
+      {result ? (
+        <PtkpResult result={result} onDone={onDone} />
+      ) : (
+        <form ref={formRef} className="grid gap-4" onSubmit={submit} noValidate>
+          <FormField
+            label={t("employeeMaster.profile.ptkp.statusLabel")}
+            id="ptkp-status"
+            error={statusError}
+            required
+          >
+            <Select
+              value={status}
+              disabled={correct.isPending}
+              onValueChange={(next) => {
+                setStatus(next as PtkpStatus);
+                idempotencyKey.current = newIdempotencyKey();
+              }}
+            >
+              <SelectTrigger>
+                <SelectValue
+                  placeholder={t(
+                    "employeeMaster.profile.ptkp.statusPlaceholder",
+                  )}
+                />
+              </SelectTrigger>
+              <SelectContent>
+                {ptkpStatusSchema.options.map((option) => (
+                  <SelectItem key={option} value={option}>
+                    {option}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </FormField>
+          <FormField
+            label={t("employeeMaster.profile.ptkp.effectiveLabel")}
+            id="ptkp-effective"
+            hint={t("employeeMaster.profile.ptkp.effectiveHint")}
+            required
+          >
+            <Select
+              value={day}
+              disabled={correct.isPending}
+              onValueChange={(next) => {
+                setDay(next as DayChoice);
+                idempotencyKey.current = newIdempotencyKey();
+              }}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="anchor">{anchorLabel}</SelectItem>
+                {anchor !== today && (
+                  <SelectItem value="today">
+                    {t("employeeMaster.profile.ptkp.effectiveNextYear", {
+                      date: formatBusinessDate(nextYearStart),
+                    })}
+                  </SelectItem>
+                )}
+              </SelectContent>
+            </Select>
+          </FormField>
+          <FormField
+            label={t("employeeMaster.profile.ptkp.reasonLabel")}
+            id="ptkp-reason"
+            hint={
+              <span className="flex flex-wrap justify-between gap-x-3">
+                <span>{t("employeeMaster.profile.ptkp.reasonHint")}</span>
+                <span className="tabular">
+                  {reason.length}/{REASON_MAX}
+                </span>
+              </span>
+            }
+            error={reasonError}
+            required
+          >
+            <Textarea
+              ref={reasonRef}
+              id="ptkp-reason"
+              name="reason"
+              rows={3}
+              maxLength={REASON_MAX}
+              autoComplete="off"
+              readOnly={correct.isPending}
+              value={reason}
+              onChange={(event) => {
+                setReason(event.target.value);
+                idempotencyKey.current = newIdempotencyKey();
+              }}
             />
-          </SelectTrigger>
-          <SelectContent>
-            {ptkpStatusSchema.options.map((option) => (
-              <SelectItem key={option} value={option}>
-                {option}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </FormField>
-      <FormField
-        label={t("employeeMaster.profile.ptkp.effectiveLabel")}
-        id="ptkp-effective"
-        hint={t("employeeMaster.profile.ptkp.effectiveHint")}
-        required
-      >
-        <Select
-          value={day}
-          onValueChange={(next) => {
-            setDay(next as DayChoice);
-            idempotencyKey.current = newIdempotencyKey();
-          }}
-        >
-          <SelectTrigger>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="anchor">{anchorLabel}</SelectItem>
-            {anchor !== today && (
-              <SelectItem value="today">
-                {t("employeeMaster.profile.ptkp.effectiveToday", {
-                  date: formatBusinessDate(today),
-                })}
-              </SelectItem>
-            )}
-          </SelectContent>
-        </Select>
-      </FormField>
-      <FormField
-        label={t("employeeMaster.profile.ptkp.reasonLabel")}
-        id="ptkp-reason"
-        hint={
-          <span className="flex flex-wrap justify-between gap-x-3">
-            <span>{t("employeeMaster.profile.ptkp.reasonHint")}</span>
-            <span className="tabular">
-              {reason.length}/{REASON_MAX}
-            </span>
-          </span>
-        }
-        error={reasonError}
-        required
-      >
-        <Textarea
-          ref={reasonRef}
-          id="ptkp-reason"
-          name="reason"
-          rows={3}
-          maxLength={REASON_MAX}
-          autoComplete="off"
-          value={reason}
-          onChange={(event) => {
-            setReason(event.target.value);
-            idempotencyKey.current = newIdempotencyKey();
-          }}
-        />
-      </FormField>
-      {formError && (
-        <p className="text-sm leading-5 font-medium text-danger" role="alert">
-          {formError}
-        </p>
+          </FormField>
+          {sameAsInForce && (
+            <p className="text-sm leading-5 text-muted-foreground">
+              {t("employeeMaster.profile.ptkp.sameAsInForce")}
+            </p>
+          )}
+          {formError && (
+            <p
+              className="text-sm leading-5 font-medium text-danger"
+              role="alert"
+            >
+              {formError}
+            </p>
+          )}
+          <DialogFooter className="sticky bottom-0 -mx-card border-t-(length:--border-w) bg-card px-card pt-3 sm:static sm:mx-0 sm:border-t-0 sm:px-0 sm:pt-0">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={correct.isPending}
+              onClick={onDone}
+            >
+              {t("employeeMaster.profile.ptkp.cancel")}
+            </Button>
+            <Button
+              type="submit"
+              loading={correct.isPending}
+              disabled={sameAsInForce}
+            >
+              {t("employeeMaster.profile.ptkp.save")}
+            </Button>
+          </DialogFooter>
+        </form>
       )}
-      <DialogFooter>
-        <Button
-          type="button"
-          variant="outline"
-          disabled={correct.isPending}
-          onClick={onDone}
-        >
-          {t("employeeMaster.profile.ptkp.cancel")}
-        </Button>
-        <Button type="submit" loading={correct.isPending}>
-          {t("employeeMaster.profile.ptkp.save")}
-        </Button>
-      </DialogFooter>
-    </form>
+    </>
   );
 }
 
@@ -274,8 +322,13 @@ function PtkpResult({
   onDone: () => void;
 }) {
   const t = useT();
+  const closeRef = React.useRef<HTMLButtonElement>(null);
+  // The form that held focus is gone: move focus to the one action left.
+  React.useEffect(() => {
+    closeRef.current?.focus();
+  }, []);
   return (
-    <div className="grid gap-4" role="status">
+    <div className="grid gap-4">
       <p className="text-sm leading-5 font-semibold">
         {t("employeeMaster.profile.ptkp.resultTitle")}
       </p>
@@ -308,7 +361,7 @@ function PtkpResult({
         {t("employeeMaster.profile.ptkp.resultPayslipNote")}
       </p>
       <DialogFooter>
-        <Button type="button" onClick={onDone}>
+        <Button ref={closeRef} type="button" onClick={onDone}>
           {t("employeeMaster.profile.ptkp.close")}
         </Button>
       </DialogFooter>

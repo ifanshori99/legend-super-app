@@ -61,6 +61,9 @@ export const SHARE_TOTAL_BP = 10_000;
 /** One page of distribution runs; the list is short (one per closed period). */
 export const DISTRIBUTION_PAGE_LIMIT = 50;
 
+/** Shortest reason accepted when withdrawing an approved distribution. */
+export const CANCEL_APPROVED_REASON_MIN = 10;
+
 // ---- Formatting -----------------------------------------------------------
 
 /**

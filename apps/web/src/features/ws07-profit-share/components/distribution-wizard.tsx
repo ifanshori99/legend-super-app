@@ -40,6 +40,7 @@ import {
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { FormField } from "@/components/ui/form-field";
 import { Input } from "@/components/ui/input";
+import { formatRupiah } from "@starter/shared/i18n";
 import { Money } from "@/components/ui/money";
 import {
   Select,
@@ -77,6 +78,7 @@ import {
   basisKey,
   canCancelApprovedRun,
   canRecordPayments,
+  CANCEL_APPROVED_REASON_MIN,
   distributionProgress,
   distributionWizardStep,
   distributionWizardStepIndex,
@@ -931,7 +933,7 @@ function cancelApprovedError(error: unknown, t: ReturnType<typeof useT>) {
     if (error.code === "DISTRIBUTION_PARTIALLY_PAID")
       return t("accounting.share.wizard.cancelApproved.partiallyPaid");
   }
-  return errorMessage(error);
+  return t("accounting.share.wizard.cancelApproved.failed");
 }
 
 function PaymentStep({
@@ -1003,16 +1005,23 @@ function PaymentStep({
       <ReasonDialog
         open={cancelOpen}
         onOpenChange={setCancelOpen}
-        title={t("accounting.share.wizard.cancelApproved.title")}
+        title={t("accounting.share.wizard.cancelApproved.title", {
+          period: formatSharePeriod(run.period),
+        })}
         label={t("accounting.share.wizard.cancelApproved.label")}
-        hint={t("accounting.share.wizard.cancelApproved.hint")}
+        hint={t("accounting.share.wizard.cancelApproved.hint", {
+          amount: formatRupiah(run.distributableIdr),
+          min: CANCEL_APPROVED_REASON_MIN,
+        })}
         submitLabel={t("accounting.share.wizard.cancelApproved.action")}
-        minLength={10}
+        cancelLabel={t("accounting.share.wizard.cancelApproved.back")}
+        minLength={CANCEL_APPROVED_REASON_MIN}
         minLengthError={t(
           "accounting.share.wizard.cancelApproved.reasonTooShort",
+          { min: CANCEL_APPROVED_REASON_MIN },
         )}
         pending={cancelApproved.isPending}
-        error={cancelError}
+        formError={cancelError}
         onSubmit={(reason) => {
           setCancelError(undefined);
           cancelApproved

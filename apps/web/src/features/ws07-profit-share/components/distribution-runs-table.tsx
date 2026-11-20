@@ -111,9 +111,11 @@ export function DistributionRunsTable({
                     {run.needsCorrection ? (
                       <button
                         type="button"
-                        className="rounded-full focus-visible:outline-2 focus-visible:outline-offset-2"
+                        className="inline-flex items-center justify-center rounded-full focus-visible:outline-2 focus-visible:outline-offset-2 pointer-coarse:min-h-11 pointer-coarse:min-w-11"
                         aria-label={t(
-                          "accounting.share.runs.needsCorrectionAria",
+                          canApprove && canCancelApprovedSummary(run)
+                            ? "accounting.share.runs.needsCorrectionAria"
+                            : "accounting.share.runs.needsCorrectionOpenAria",
                           { period: formatSharePeriod(run.period) },
                         )}
                         onClick={() =>
