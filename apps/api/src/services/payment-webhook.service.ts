@@ -1596,6 +1596,61 @@ async function transactionClosedByOwnRefunds(
   return ownIdr >= transactionIdr && reportedIdr <= ownIdr;
 }
 
+/** 1205 (legend-3tyl1): the echo skip of 1191 compares with what the provider
+ * really charged, never with the bill alone: the transaction is the largest of
+ * the bill, the recorded evidence of this intent for the reference and the
+ * payment object's own amount. No evidence of this intent for the reference
+ * (gone, or recorded for another intent) means the size is unknown: no skip,
+ * the echo is held (restrictive: more holds, never a silent skip). */
+async function echoClosedByOwnRefunds(
+  context: ScopedTenantContext,
+  intent: PaymentIntentRow,
+  providerPaymentRef: string,
+  fullIdr: number,
+  echoedIdr: number,
+  payment: { id: string; amount: number } | undefined,
+): Promise<boolean> {
+  const evidenceIdr = await transactionEvidenceIdr(
+    context,
+    intent,
+    providerPaymentRef,
+  );
+  if (evidenceIdr === null || !Number.isFinite(evidenceIdr)) return false;
+  const paymentIdr =
+    payment && payment.id === providerPaymentRef && payment.amount > 0
+      ? payment.amount
+      : 0;
+  return transactionClosedByOwnRefunds(
+    context,
+    intent,
+    providerPaymentRef,
+    Math.max(fullIdr, evidenceIdr, paymentIdr),
+    echoedIdr,
+  );
+}
+
+/** 1205 (legend-3tyl1): the size of the provider transaction `providerPaymentRef`
+ * of this intent as recorded evidence says (largest amount), or null when no
+ * evidence of this intent names that reference. The bill amount of the intent
+ * is not the size of what the provider charged (an overpayment is larger). */
+async function transactionEvidenceIdr(
+  context: ScopedTenantContext,
+  intent: PaymentIntentRow,
+  providerPaymentRef: string,
+): Promise<number | null> {
+  return withTenant(db, context, async (tx) => {
+    const { rows } = await tx.execute(sql`SELECT
+        max(e.amount_idr)::text AS amount
+      FROM payment_evidence e
+      WHERE e.tenant_id = ${context.tenant.tenantId}::uuid
+        AND e.payment_intent_id = ${intent.id}::uuid
+        AND e.provider = ${PROVIDER}
+        AND e.provider_ref = ${providerPaymentRef}`);
+    const amount = rows[0]?.amount;
+    return amount === null || amount === undefined ? null : Number(amount);
+  });
+}
+
 /** 1126: a signed refund success that matches no refund of Legend must not end
  * without a hold (a refund made in the provider's dashboard otherwise leaves
  * the refund room untouched and a manual refund pays twice). The payment the
@@ -1803,12 +1858,13 @@ async function holdUnmatchedRefundSuccess(
     (!facts.payment || facts.payment.reference.toLowerCase() === intentId) &&
     !refundProviderSwitchedOff(PROVIDER) &&
     !(await openHoldOfEvent(context, owner.intent, row)) &&
-    (await transactionClosedByOwnRefunds(
+    (await echoClosedByOwnRefunds(
       context,
       owner.intent,
       heldPaymentRef,
       full,
       echoedIdr,
+      facts.payment,
     ))
   )
     return "skipped";
