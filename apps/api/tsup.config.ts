@@ -12,6 +12,7 @@ export default defineConfig({
     "provision-roles": "src/provision-roles.ts",
     "predeploy-check": "src/predeploy-check.ts",
     "reset-preswitch-refunds": "src/reset-preswitch-refunds.ts",
+    "set-gateway": "src/set-gateway.ts",
     worker: "src/worker-main.ts",
     // Loaded by services/pdf-safety.ts as `new Worker(dist/pdf-safety.worker.js)`;
     // it must sit beside the server chunks in dist/ (legend-851ef).
