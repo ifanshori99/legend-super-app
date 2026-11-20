@@ -654,14 +654,28 @@ async function readResolutions(
       sessionId: String(row.session_id),
       operationId: String(row.operation_id),
     });
+  // The standing proposal is the one the approve step accepted (0422,
+  // payout_resolve_approve): by the person on the item, over the item's proof
+  // key, under a grant of the item's outcome. attested_at only breaks ties: it
+  // is clock_timestamp(), which a clock step (the dev VM is stepped back about
+  // 130 ms every 10 s) can move behind a withdrawn earlier proposal (r8nas).
   for (const row of rowsOf(
     await tx.execute(sql`
       SELECT DISTINCT ON (x) x::text AS item_id, a.operation_id::text AS operation_id
-        FROM payroll_payout_attestations a, unnest(a.item_ids) AS x
+        FROM payroll_payout_attestations a
+       CROSS JOIN unnest(a.item_ids) AS x
+        LEFT JOIN payroll_disbursement_items i
+          ON i.tenant_id = a.tenant_id AND i.id = x
+        LEFT JOIN payroll_payout_grants gr
+          ON gr.tenant_id = a.tenant_id AND gr.id = a.grant_id
        WHERE a.tenant_id = ${tenantId}::uuid
          AND a.kind = 'resolve' AND a.step = 'propose'
          AND x IN (${uuidList(ids)})
-       ORDER BY x, a.attested_at DESC, a.operation_id DESC`),
+       ORDER BY x,
+                COALESCE(a.actor = i.resolved_by
+                           AND a.evidence_key = i.resolution_evidence_key
+                           AND gr.detail = i.resolution_outcome, false) DESC,
+                a.attested_at DESC, a.operation_id DESC`),
   )) {
     const facts = resolutions.get(String(row.item_id));
     if (facts) facts.lastProposeOperationId = String(row.operation_id);
