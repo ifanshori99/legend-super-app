@@ -14,6 +14,10 @@ import { db } from "../db/index.ts";
 
 const DEPLOYMENT_DOC = resolve(__dirname, "../../../../docs/deployment.md");
 
+// Edge-only copies: the cloud never exports them, so there is nothing to
+// restamp on the cloud (the edge replaces them from the vouchers stream).
+const EDGE_ONLY_TABLES = ["edge_voucher_catalog"];
+
 function documentedRestampTables(): string[] {
   const line = readFileSync(DEPLOYMENT_DOC, "utf8")
     .split("\n")
@@ -30,7 +34,9 @@ describe("restamp list covers every catalog table with sync_txid", () => {
       SELECT table_name FROM information_schema.columns
       WHERE table_schema = 'public' AND column_name = 'sync_txid'
       ORDER BY table_name`);
-    const actual = result.rows.map((r) => r.table_name);
+    const actual = result.rows
+      .map((r) => r.table_name)
+      .filter((t) => !EDGE_ONLY_TABLES.includes(t));
     expect(actual.length).toBeGreaterThan(0);
     const documented = documentedRestampTables();
     expect(documented.filter((t) => !actual.includes(t))).toEqual([]);
