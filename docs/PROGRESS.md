@@ -1,5 +1,19 @@
 # PROGRESS — Legend Super App
 
+## CTO 21 Nov ±06:10 (serah terima, sesi compact 8x)
+Basis: `milestone/m1` 6f418df53. Merge train int/batch106 (worktree `../legend-int-batch106`, agent 1254). Brief: `docs/briefs/1254-merge-train-batch106.md`, `docs/briefs/1255-1258-keputusan-founder.md`. Founder: "setuju semua" atas `docs/founder/keputusan-2026-11-21.md`; pertanyaan 19 (tutup buku saat batch produksi tertahan) belum dijawab.
+Status kartu:
+- Sudah di batch106: gelombang A (1251, 1243, 1245, 1250, 1249) + 1252 (5942e7519) + 1257 (ac986b6af, tes area berjalan).
+- LOLOS antre merge: 1244 `ws/1244-edge-refund-exception` e4fd59cd1 (sesudah 1257).
+- 1255 email reset: fix 0e10e6bca, re-review architect berjalan.
+- 1256 Sentry: fix scrub berjalan (base 8398aa7aa), lalu re-review architect. Merge 1256 sebelum 1261.
+- 1259 tombol refund manual: screenshot berjalan; review TIDAK LOLOS (PROVIDER_REFUNDED belum dipetakan, runbook A eskalasi refund macet ber-referensi) -> fix dikirim.
+- 1260 GL terparkir: fix cutoff jam bisnis outlet + daftar sumber berjalan, lalu re-review.
+- 1261 template deploy: 83f666e51, review TIDAK LOLOS (deploy.sh tidak menyalakan clamav) -> fix dikirim.
+- 1262 redrive stock.moved (legend-fp3eu, Opus): berjalan, base int/batch106.
+Langkah berikut: tiap LOLOS -> pesan merge train (1256 lalu 1261, 1255, 1259, 1260, 1262). Semua masuk -> satu full `heavy pnpm test` CTO di int/batch106 -> ff milestone/m1, push, `docs/merge-queue.md`. Hapus worktree legend-1242..1262 yang bersih. Tutup bead: tomda, xhl5j, gdjpu, k0i8, x73li, 0orff, 905j, j7018, 29vw, ecr16, 07eg, ff393, 17az7, mtbq9, ait0n (cek kriteria). Rilis: build, e2e, checklist keamanan operator, restore drill, Caddyfile; sisa legend-5c0a, wxvt9. Founder: jawaban no.19, lihat bagian B (layar) + screenshot 1259 `docs/review/img/refund-manual-*.png`.
+RAM: mode merah (swap ~4.1 GB); Ghostex/Codex sudah dimatikan. Restart Mac sesudah gelombang.
+
 > 20 Nov 2026: keadaan terbaru di `docs/HANDOFF-2026-11-20.md` (batch98-101, kartu 1207-1214, keputusan founder yang ditunggu).
 
 Diperbarui 2026-11-08 ±19:50 oleh CTO (sesi G4tde "CTO baru"), serah terima ke CTO berikutnya.
