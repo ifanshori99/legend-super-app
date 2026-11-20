@@ -2,7 +2,7 @@
 // legend-w1vo). Wired in worker-main.ts next to the order-payment consumer, on
 // the cloud only (an edge node never posts the GL): a `stock.moved` event
 // posts the journal of the stock source (stock count, waste log, POS sale /
-// sales return) inside the outbox consumption transaction. Only tenants with
+// sales return, production batch) inside the outbox consumption transaction. Only tenants with
 // the accounting module on are bridged; others are `ignored`.
 //
 // Money rules (INV-01, INV-03):
@@ -15,6 +15,13 @@
 //   the business dates of the log by largest remainder (`allocateRoundedIdr`),
 //   so a log straddling the business-day cutoff never loses a rupiah. Sales
 //   round per row.
+// - A production batch (bead legend-29vw, card 1252) moves the cost of the
+//   materials it drew from inventory (1301) to semi-finished inventory (1302):
+//   one journal per batch, Dr 1302 / Cr 1301 for the `production_out` rows
+//   rounded once over the whole batch (equals `production_orders.cost_idr`).
+//   Both sides carry the same amount, so it is balanced by construction. It is
+//   neither HPP nor waste: a yield shortfall raises the unit cost of the output
+//   on the stock card, so nothing leaves the books (waste has its own log).
 // - Negative amounts are never written as negative journal lines: the posting
 //   rule flips debit and credit for a negative amount.
 // - The untracked rows of a source are grouped by outlet business date and each
@@ -123,9 +130,10 @@ function blockingCodeOf(error: unknown): BlockingCode | null {
 type GlMapping = {
   readonly sourceType: InventoryGlSourceType;
   readonly movementTypes: readonly StockMovementType[];
-  readonly eventName: "stock.adjusted" | "stock.deducted";
+  readonly eventName:
+    "stock.adjusted" | "stock.deducted" | "production.completed";
   readonly variant: "count" | "waste" | "negative_revaluation" | null;
-  readonly amountKey: "differenceIdr" | "costIdr";
+  readonly amountKey: "differenceIdr" | "costIdr" | "outputValueIdr";
 };
 
 /** Sources the bridge posts; every other (movementType, sourceType) is ignored. */
@@ -150,6 +158,15 @@ const MAPPINGS: readonly GlMapping[] = [
     eventName: "stock.deducted",
     variant: null,
     amountKey: "costIdr",
+  },
+  // Card 1252: a production batch. `outputValueIdr` is the amount the journal
+  // is built from; `inputValueIdr` takes the same value (see the header).
+  {
+    sourceType: "production_order",
+    movementTypes: ["production_out", "production_in"],
+    eventName: "production.completed",
+    variant: null,
+    amountKey: "outputValueIdr",
   },
   // Bead 1214: a goods receipt row that landed on a negative balance. Its
   // `stock_negative_revaluations` row (not the ledger row: the receipt journal
@@ -302,7 +319,8 @@ export async function deliverInventoryGlEvent(
   if (sourceTypes.length === 0) return { status: "ignored" };
   if (!(await accountingEnabled(tx, context))) return { status: "ignored" };
   // The movement's own source first; its result is reported unless it was
-  // ignored (a revaluation-only inflow reports the revaluation).
+  // ignored or booked nothing (a revaluation-only inflow reports the
+  // revaluation).
   let result: InventoryGlResult = { status: "ignored" };
   for (const sourceType of sourceTypes) {
     const settled = await settleStockSource(
@@ -311,7 +329,13 @@ export async function deliverInventoryGlEvent(
       { sourceType, sourceId: payload.sourceId },
       now,
     );
-    if (result.status === "ignored") result = settled;
+    // A source with nothing to book (a lone put-away row, no draw) does not
+    // hide the posted revaluation of the same row.
+    if (
+      result.status === "ignored" ||
+      (result.status === "zero_value" && settled.status === "posted")
+    )
+      result = settled;
   }
   return result;
 }
@@ -685,9 +709,16 @@ export async function postStockSourceToGl(
   const clock = outletBusinessDayClock(outlet);
 
   // One group per outlet business date, oldest first (rows are time ordered).
+  // A production batch is one journal on the date of its first row: its draw
+  // and put-away rows are written together, and splitting them over a cutoff
+  // would leave each journal with a one-sided amount.
+  const isProduction = mapping.eventName === "production.completed";
   const groups = new Map<BusinessDate, typeof rows>();
   for (const row of rows) {
-    const date = businessDateOf(row.occurredAt, clock);
+    const date = businessDateOf(
+      isProduction ? first.occurredAt : row.occurredAt,
+      clock,
+    );
     groups.set(date, [...(groups.get(date) ?? []), row]);
   }
 
@@ -735,6 +766,18 @@ export async function postStockSourceToGl(
       // Waste rounds once over the whole log (equals waste_logs.value_idr),
       // shared over its business dates by largest remainder.
       amount = wasteAmounts.get(naturalDate)!;
+    } else if (isProduction) {
+      // The cost of the materials drawn, rounded once over the batch.
+      amount = scaledCostToIdr(
+        group.reduce(
+          (sum, row) =>
+            parseDecimal4(row.quantity) < 0n
+              ? sum -
+                parseDecimal4(row.quantity) * parseDecimal4(row.unitCostIdr)
+              : sum,
+          0n,
+        ),
+      );
     } else if (mapping.variant === "count") {
       amount = rowSum;
     } else {
@@ -762,7 +805,9 @@ export async function postStockSourceToGl(
         {
           eventName: mapping.eventName,
           variant: mapping.variant,
-          amounts: { [mapping.amountKey]: amount },
+          amounts: isProduction
+            ? { inputValueIdr: amount, outputValueIdr: amount }
+            : { [mapping.amountKey]: amount },
           legalEntityId: outlet.legalEntityId,
           outletId: first.outletId,
           entryDate: entryDate as BusinessDate,
