@@ -640,7 +640,10 @@ export async function postStockSourceToGl(
                 eq(inventoryGlPostings.tenantId, stockLedger.tenantId),
                 eq(inventoryGlPostings.ledgerEntryId, stockLedger.id),
                 // The same row's revaluation posting is a separate source.
-                ne(inventoryGlPostings.sourceType, "negative_stock_revaluation"),
+                ne(
+                  inventoryGlPostings.sourceType,
+                  "negative_stock_revaluation",
+                ),
               ),
             )
             .where(
