@@ -14,6 +14,7 @@ import { and, desc, eq, gt, sql } from "drizzle-orm";
 import type { ScopedTenantContext } from "@starter/shared/core";
 import {
   correctEmployeePtkpInputSchema,
+  type EmployeeId,
   type EmployeePtkpChange,
 } from "@starter/shared/hris";
 import { db } from "../db/index.ts";
@@ -156,7 +157,7 @@ export async function correctEmployeePtkp(
           .where(
             and(
               eq(employeePtkpHistory.tenantId, tenantId),
-              eq(employeePtkpHistory.employeeId, row.id),
+              eq(employeePtkpHistory.employeeId, row.id as EmployeeId),
               gt(employeePtkpHistory.effectiveFrom, input.effectiveFrom),
             ),
           )
@@ -195,7 +196,7 @@ export async function correctEmployeePtkp(
           .where(
             and(
               eq(employeePtkpHistory.tenantId, tenantId),
-              eq(employeePtkpHistory.employeeId, row.id),
+              eq(employeePtkpHistory.employeeId, row.id as EmployeeId),
               gt(employeePtkpHistory.effectiveFrom, anchor),
             ),
           )
