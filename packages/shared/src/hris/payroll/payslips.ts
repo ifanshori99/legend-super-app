@@ -693,6 +693,21 @@ export const payrollTaxExportKindSchema = z.enum([
   "annual_statement",
 ]);
 
+/**
+ * A Coretax export that a lock or reversal left stale (legend 1229). `message`
+ * tells the payroll admin to export again and file a pembetulan SPT.
+ */
+export const payrollTaxExportSupersededSchema = z.strictObject({
+  id: payrollTaxExportIdSchema,
+  kind: payrollTaxExportKindSchema,
+  taxPeriod: z.string().regex(/^\d{4}(-(0[1-9]|1[0-2]))?$/),
+  supersededAt: isoDateTimeSchema,
+  message: z.string().min(1).max(300),
+});
+export type PayrollTaxExportSuperseded = z.infer<
+  typeof payrollTaxExportSupersededSchema
+>;
+
 export const payrollTaxExportSchema = z.strictObject({
   id: payrollTaxExportIdSchema,
   tenantId: tenantIdSchema,
@@ -705,6 +720,12 @@ export const payrollTaxExportSchema = z.strictObject({
   fileUrl: z.url().nullable(),
   createdBy: userIdSchema,
   createdAt: isoDateTimeSchema,
+  /**
+   * Set when a run of this month (or year) was reversed or a new run was
+   * locked after the export: the file no longer matches the payslips. A new
+   * export is needed, and an SPT already filed needs a pembetulan.
+   */
+  supersededAt: isoDateTimeSchema.nullable(),
   /**
    * What the export holds and what it left out (counts only, no personal
    * data). Present on the response of the export call, absent when only the

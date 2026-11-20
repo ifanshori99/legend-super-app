@@ -819,6 +819,12 @@ export const payrollTaxExports = pgTable(
     status: varchar("status", { length: 10 }).notNull().default("pending"),
     /** Storage key when ready; the API signs a short-lived URL on read. */
     objectKey: varchar("object_key", { length: 500 }),
+    /**
+     * legend 1229: set (with the reason) when a run of this month or year was
+     * reversed or newly locked after the export. The file is kept as archive.
+     */
+    supersededAt: timestamp("superseded_at", { withTimezone: true }),
+    supersededReason: text("superseded_reason"),
     createdBy: actor("created_by").notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),

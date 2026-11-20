@@ -115,6 +115,7 @@ import type { StorageRuntime } from "./core-storage-runtime.ts";
 import { cursorPair, notFound } from "./hris-access.ts";
 import { idempotentHrisWrite } from "./hris-employee.service.ts";
 import { assertPayrollTenantCan } from "./payroll-access.ts";
+import { taxExportSupersededError } from "./payroll-tax-export-supersede.ts";
 import type { Tx } from "./permission-resolver.ts";
 
 const READ_CODE: PermissionCode = "payroll.view";
@@ -852,16 +853,6 @@ function taxFileName(kind: string, taxPeriod: string): string {
     : `coretax-pph21-bpmp-${taxPeriod}.xml`;
 }
 
-/** Pay-date window `[from, until)` of a tax period: one month, or the whole year. */
-function taxPeriodWindow(
-  kind: string,
-  taxPeriod: string,
-): { from: string; until: string } {
-  return kind === "annual_statement"
-    ? { from: `${taxPeriod}-01-01`, until: `${Number(taxPeriod) + 1}-01-01` }
-    : { from: `${taxPeriod}-01`, until: nextMonthStart(taxPeriod) };
-}
-
 type TaxExportRecord = typeof payrollTaxExports.$inferSelect;
 
 function toTaxExport(
@@ -879,6 +870,7 @@ function toTaxExport(
     fileUrl,
     createdBy: row.createdBy,
     createdAt: row.createdAt.toISOString(),
+    supersededAt: row.supersededAt?.toISOString() ?? null,
     ...(summary ? { summary } : {}),
   });
 }
@@ -1346,22 +1338,10 @@ export async function createPayrollTaxExport(
       .limit(1);
     if (!row?.objectKey) throw new Error("Payroll tax export was not stored");
     if (!fresh) {
-      // A replay: no link while a run of that month (or year) was reversed since.
-      const window = taxPeriodWindow(row.kind, row.taxPeriod);
-      const [reversed] = await tx
-        .select({ id: payrollRuns.id })
-        .from(payrollRuns)
-        .where(
-          and(
-            eq(payrollRuns.tenantId, tenantId),
-            eq(payrollRuns.legalEntityId, row.legalEntityId),
-            eq(payrollRuns.status, "reversed"),
-            gte(payrollRuns.payDate, window.from),
-            lt(payrollRuns.payDate, window.until),
-          ),
-        )
-        .limit(1);
-      if (reversed) assertExportable({ status: "reversed" });
+      // A replay: no link once a reversal or a later lock left the file stale
+      // (legend 1229). An export made after the reversal replays normally.
+      if (row.supersededAt)
+        throw taxExportSupersededError(row.kind, row.taxPeriod);
     }
     const url = await signedUrl(
       context,

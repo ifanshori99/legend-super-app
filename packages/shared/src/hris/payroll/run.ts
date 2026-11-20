@@ -45,7 +45,10 @@ import {
   statutoryTableVersionIdSchema,
   thrScheduleIdSchema,
 } from "./ids.ts";
-import { payrollRunTotalsSchema } from "./payslips.ts";
+import {
+  payrollRunTotalsSchema,
+  payrollTaxExportSupersededSchema,
+} from "./payslips.ts";
 import type { PayrollRunTotals } from "./payslips.ts";
 import { payDateAdjustmentSchema, payrollCycleSchema } from "./policies.ts";
 import {
@@ -493,6 +496,13 @@ export const payrollRunSchema = z
     /** On simulate, approve and lock responses, when someone was left out. */
     excludedFormerEmployees: z
       .array(payrollExcludedFormerEmployeeSchema)
+      .optional(),
+    /**
+     * On lock and reversal responses: Coretax exports of the run's month (or
+     * year) that no longer match the payslips (legend 1229).
+     */
+    taxExportsSuperseded: z
+      .array(payrollTaxExportSupersededSchema)
       .optional(),
     createdBy: userIdSchema,
     createdAt: isoDateTimeSchema,
