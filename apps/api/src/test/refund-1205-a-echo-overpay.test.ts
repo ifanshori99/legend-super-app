@@ -103,4 +103,38 @@ describe("legend-3tyl1 echo skip compares with what the provider charged", () =>
 
     expect(await h.openOf(code.id)).toEqual([]);
   });
+
+  it("1205-a-06 overpaid transaction fully refunded by Legend (Rp100.000 on the intent + Rp20.000 surplus fund refunded): the dashboard echo is skipped, no hold", async () => {
+    const code = await h.newCode(BILL_IDR);
+    expect((await h.paid(code, BILL_IDR + SURPLUS_IDR)).status).toBe(200);
+    await h.ownCompletedRefund(code, BILL_IDR);
+    const funds = await h.owner.query<{ id: string }>(
+      `SELECT id FROM payment_unallocated_funds
+        WHERE tenant_id = $1 AND payment_intent_id = $2`,
+      [h.tenantId, code.id],
+    );
+    expect(funds.rows.length, "premise: the surplus is parked").toBe(1);
+    const resolved = await h.resolveFund(funds.rows[0]!.id, "refund");
+    expect(resolved.status, JSON.stringify(resolved.body)).toBe(200);
+    const surplusRefund = await h.owner.query<{ id: string }>(
+      `SELECT id FROM payment_refunds
+        WHERE tenant_id = $1 AND unallocated_fund_id = $2`,
+      [h.tenantId, funds.rows[0]!.id],
+    );
+    const approved = await h.approveRefund(surplusRefund.rows[0]!.id);
+    expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+    expect(
+      (await h.refundRow(surplusRefund.rows[0]!.id)).status,
+      "premise: the surplus refund completed",
+    ).toBe("completed");
+
+    const echo = dashboardRefund(code.providerRef, BILL_IDR + SURPLUS_IDR);
+    expect([401, 403]).not.toContain((await h.deliver(echo)).status);
+    await h.runWorker();
+
+    expect(
+      await h.openOf(code.id),
+      "the echo of refunds of ours that closed the whole transaction files no hold",
+    ).toEqual([]);
+  });
 });
