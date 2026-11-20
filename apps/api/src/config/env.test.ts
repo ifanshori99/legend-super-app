@@ -173,6 +173,16 @@ test("one canonical storage set, legacy names as fallback (legend-94xqo)", () =>
   assert.match(String(conflict.stderr), /OBJECT_STORAGE_PRIVATE_BUCKET/);
   assert.match(String(conflict.stderr), /STORAGE_S3_PRIVATE_BUCKET/);
   assert.doesNotMatch(String(conflict.stderr), /other-private-bucket/);
+  // Only the path-style flag set: storage counts as configured, so the
+  // missing required keys are named (same as the runtime).
+  const flagOnly = run({ STORAGE_S3_FORCE_PATH_STYLE: "true" });
+  assert.equal(flagOnly.status, 1);
+  assert.match(String(flagOnly.stderr), /STORAGE_S3_ACCESS_KEY_ID/);
+  // Endpoint must be a URL.
+  assert.equal(
+    run({ ...canonical, STORAGE_S3_ENDPOINT: "not a url" }).status,
+    1,
+  );
   // Partial canonical, same buckets, non-https URL: refused.
   const { STORAGE_S3_SECRET_ACCESS_KEY: _secret, ...partial } = canonical;
   void _secret;

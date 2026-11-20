@@ -667,7 +667,8 @@ const schema = z
     ] as const;
     const anySet =
       required.some((key) => storage[key] !== undefined) ||
-      storage.STORAGE_S3_ENDPOINT !== undefined;
+      storage.STORAGE_S3_ENDPOINT !== undefined ||
+      storage.STORAGE_S3_FORCE_PATH_STYLE !== undefined;
     if (!anySet) return;
     for (const key of required)
       if (storage[key] === undefined)

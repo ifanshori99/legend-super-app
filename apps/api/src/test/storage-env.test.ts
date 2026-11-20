@@ -114,6 +114,16 @@ describe("storage env, one canonical set", () => {
     ).toBeInstanceOf(S3ObjectStorage);
   });
 
+  it("only the path-style flag set counts as configured and names the missing keys", () => {
+    for (const make of [
+      createObjectStorageFromEnv,
+      createStatementObjectStorage,
+    ])
+      expect(() => make({ STORAGE_S3_FORCE_PATH_STYLE: "true" })).toThrow(
+        /STORAGE_S3_ACCESS_KEY_ID/,
+      );
+  });
+
   it("a partial legacy set still stops, now naming the canonical keys", () => {
     expect(() =>
       createStatementObjectStorage({

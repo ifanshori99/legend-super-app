@@ -128,9 +128,11 @@ await check("Object storage settings", () => {
     throw new Error(
       `${conflicts.join("; ")}. Remove the deprecated OBJECT_STORAGE_* keys or make the values equal.`,
     );
-  const anySet = [...required, "STORAGE_S3_ENDPOINT"].some(
-    (name) => get(name) !== undefined,
-  );
+  const anySet = [
+    ...required,
+    "STORAGE_S3_ENDPOINT",
+    "STORAGE_S3_FORCE_PATH_STYLE",
+  ].some((name) => get(name) !== undefined);
   if (!anySet) return;
   const missing = required.filter((name) => get(name) === undefined);
   if (missing.length)
@@ -139,8 +141,20 @@ await check("Object storage settings", () => {
     );
   if (get("STORAGE_S3_PRIVATE_BUCKET") === get("STORAGE_S3_PUBLIC_BUCKET"))
     throw new Error("The public and private buckets must differ.");
-  if (!get("STORAGE_PUBLIC_BASE_URL").startsWith("https://"))
+  const isUrl = (text) => {
+    try {
+      new URL(text);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const baseUrl = get("STORAGE_PUBLIC_BASE_URL");
+  if (!baseUrl.startsWith("https://") || !isUrl(baseUrl))
     throw new Error("STORAGE_PUBLIC_BASE_URL must be an https:// URL.");
+  const endpoint = get("STORAGE_S3_ENDPOINT");
+  if (endpoint !== undefined && !isUrl(endpoint))
+    throw new Error("STORAGE_S3_ENDPOINT must be a full URL.");
   if (deprecated.length)
     console.warn(
       `! Deprecated storage settings in use: ${deprecated.join(", ")}. Rename them to the STORAGE_S3_* set.`,
