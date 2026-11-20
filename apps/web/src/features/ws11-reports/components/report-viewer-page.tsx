@@ -16,10 +16,11 @@ import {
 } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { ApiError } from "@/lib/api/errors";
+import { API_MOCK } from "@/lib/api/mock-flag";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CardShell, CardShellBody } from "@/components/ui/card";
-import { ErrorState } from "@/components/ui/feedback-state";
+import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StatStrip, StatTile } from "@/components/ui/stat-tile";
 import type { AreaAccess } from "@/lib/areas/access";
@@ -47,6 +48,8 @@ import {
   clockBusinessDate,
   isChartable,
   isResultEmpty,
+  reportExportOffered,
+  reportFamilyHasData,
   resolvePeriod,
   resolveSplit,
   resultFinality,
@@ -193,9 +196,14 @@ export function ReportViewerPage({ reportCode }: { reportCode: string }) {
     : null;
   const split = definition ? resolveSplit(definition, search) : null;
   const outletIds = search.outletId ?? [];
-  const selection: ReportQuerySelection | null = period
-    ? { period: period.range, outletIds, groupBy: split }
-    : null;
+  // A family without server data yet is never run (legend-x73li).
+  const comingSoon =
+    definition !== undefined &&
+    !reportFamilyHasData(definition.family, { mock: API_MOCK });
+  const selection: ReportQuerySelection | null =
+    period && !comingSoon
+      ? { period: period.range, outletIds, groupBy: split }
+      : null;
 
   const run = useReportRun(
     selection ? buildRunInput(reportCode, selection) : null,
@@ -214,6 +222,20 @@ export function ReportViewerPage({ reportCode }: { reportCode: string }) {
       />
     );
   if (!definition) return <PageSkeleton />;
+  if (comingSoon)
+    return (
+      <div className="grid gap-4">
+        <BackLink />
+        <CardShell>
+          <CardShellBody>
+            <EmptyState
+              title={`${definition.name} · ${t("reportViewer.catalog.soon")}`}
+              description={definition.description}
+            />
+          </CardShellBody>
+        </CardShell>
+      </div>
+    );
 
   const personal = selectionIsPersonal(definition, split);
   const result = run.data ?? null;
@@ -228,6 +250,7 @@ export function ReportViewerPage({ reportCode }: { reportCode: string }) {
           : REPORT_EXPORT_PERMISSION,
       ])
     : false;
+  const exportOffered = reportExportOffered({ mock: API_MOCK });
   const refreshing = run.isFetching || totals.isFetching;
   const refresh = () => {
     void run.refetch();
@@ -280,16 +303,18 @@ export function ReportViewerPage({ reportCode }: { reportCode: string }) {
               <RotateCw aria-hidden="true" />
               {t("reportViewer.refresh")}
             </Button>
-            <Button
-              type="button"
-              size="sm"
-              disabled={!canExport || !selection || empty}
-              title={canExport ? undefined : t("reportViewer.exportDenied")}
-              onClick={() => setExportOpen(true)}
-            >
-              <Download aria-hidden="true" />
-              {t("reportViewer.export.open")}
-            </Button>
+            {exportOffered && (
+              <Button
+                type="button"
+                size="sm"
+                disabled={!canExport || !selection || empty}
+                title={canExport ? undefined : t("reportViewer.exportDenied")}
+                onClick={() => setExportOpen(true)}
+              >
+                <Download aria-hidden="true" />
+                {t("reportViewer.export.open")}
+              </Button>
+            )}
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -384,7 +409,7 @@ export function ReportViewerPage({ reportCode }: { reportCode: string }) {
         </>
       )}
 
-      {selection && (
+      {selection && exportOffered && (
         <ExportDialog
           // A new selection starts a new export attempt.
           key={`${selection.period.startDate}|${selection.period.endDate}|${selection.groupBy ?? ""}`}
