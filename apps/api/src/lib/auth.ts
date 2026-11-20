@@ -46,6 +46,7 @@ import { sharedDeviceIdsFromToken } from "../services/shared-device.service";
 import { logger } from "./logger";
 import { sealSecret } from "./secrets";
 import {
+  isCustomerPasswordAccount,
   PASSWORD_RESET_TOKEN_SECONDS,
   passwordResetAvailable,
   sendPasswordResetEmail,
@@ -372,6 +373,23 @@ export const auth = betterAuth({
           code: "EMAIL_NOT_CONFIGURED",
           message: "Password reset by email is not available.",
         });
+      // legend-1255: the owner of a reset token is checked again when the
+      // token is used. A token asked for while the account was a customer
+      // must not reset the password after it became staff. Refused with the
+      // same answer as an unknown token. No row = Better Auth answers itself.
+      if (ctx.path === "/reset-password") {
+        const token = ctx.body?.token || ctx.query?.token;
+        if (typeof token !== "string" || token === "") return;
+        const pending = await ctx.context.internalAdapter.findVerificationValue(
+          `reset-password:${token}`,
+        );
+        if (pending && !(await isCustomerPasswordAccount(pending.value)))
+          throw new APIError("BAD_REQUEST", {
+            code: "INVALID_TOKEN",
+            message: "Invalid token",
+          });
+        return;
+      }
       if (!ctx.path.startsWith("/admin/")) return;
       if (ctx.path === "/admin/stop-impersonating") return;
       if (ctx.path === "/admin/has-permission" && !ctx.request) return;
