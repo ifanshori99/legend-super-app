@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { readdirSync } from "node:fs";
 import { resolve } from "node:path";
+import pg from "pg";
 import { pnpmCommand, root } from "./lib.mjs";
 import { provisionRoles } from "./provision-app-role.mjs";
 import { findMissingTestFiles, normalizeTestFiles } from "./lib-test-files.mjs";
@@ -196,6 +197,21 @@ try {
     testEnv,
   );
   if (mode === "unit") {
+    // legend-1239: dozens of HRIS/payroll files create employees in the shared
+    // fixture tenant and the file order changes per run, so the plan's seat
+    // limit (30) runs out at random (QUOTA_EXCEEDED). Raise it in this
+    // disposable database only; fixtures.ts (also used by seed-dev-tenant.ts)
+    // stays untouched, and the quota tests use their own tenants with their
+    // own limits (hris-db.test.ts "HR-04").
+    const seatDb = new pg.Client({ connectionString: url });
+    await seatDb.connect();
+    try {
+      await seatDb.query(
+        `UPDATE tenants SET limits = jsonb_set(limits, '{maxActiveEmployees}', '100000'::jsonb)`,
+      );
+    } finally {
+      await seatDb.end();
+    }
     const rootFiles = selected?.filter((file) => file.endsWith(".test.mjs"));
     const webFiles = selected?.filter((file) =>
       file.startsWith("apps/web/test/"),
