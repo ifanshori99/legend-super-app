@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AnyEndpoint, EndpointInput } from "@starter/shared/api";
 import {
   changeEmployeeManagerEndpoint,
+  correctEmployeePtkpEndpoint,
   getEmployee,
   getEmployeePii,
   listEmployees,
@@ -116,6 +117,30 @@ export function useChangeEmployeeManager() {
   return useMutation({
     mutationFn: ({ params, body }: ManagerWrite) =>
       api.saveEmployeeManager(params, body),
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: [getEmployee.id] }),
+        queryClient.invalidateQueries({ queryKey: [listEmployees.id] }),
+        queryClient.invalidateQueries({ queryKey: employeeMasterKeys.all }),
+      ]),
+  });
+}
+
+type PtkpWrite = {
+  params: ParamsOf<typeof correctEmployeePtkpEndpoint>;
+  body: BodyOf<typeof correctEmployeePtkpEndpoint>;
+};
+
+/**
+ * Koreksi status PTKP (bead 1223): the profile shows the latest status, so
+ * the detail and the lists refresh. The dialog reads the tax-year status and
+ * the next status from the mutation result.
+ */
+export function useCorrectEmployeePtkp() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ params, body }: PtkpWrite) =>
+      api.saveEmployeePtkp(params, body),
     onSuccess: () =>
       Promise.all([
         queryClient.invalidateQueries({ queryKey: [getEmployee.id] }),
