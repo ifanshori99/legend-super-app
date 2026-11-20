@@ -11,8 +11,8 @@ CREATE TABLE "stock_negative_revaluations" (
 	"value_idr" bigint NOT NULL,
 	"occurred_at" timestamp with time zone NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "stock_negative_revaluations_tenant_ledger_entry_key" UNIQUE("tenant_id","ledger_entry_id")
+	CONSTRAINT "stock_negative_revaluations_tenant_ledger_entry_key" UNIQUE("tenant_id","ledger_entry_id"),
+	CONSTRAINT "stock_negative_revaluations_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
-ALTER TABLE "stock_negative_revaluations" ADD CONSTRAINT "stock_negative_revaluations_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "stock_negative_revaluations_source_idx" ON "stock_negative_revaluations" USING btree ("tenant_id","source_id");

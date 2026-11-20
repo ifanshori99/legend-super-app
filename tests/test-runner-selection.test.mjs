@@ -3,6 +3,10 @@ import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
+import {
+  findMissingTestFiles,
+  normalizeTestFiles,
+} from "../scripts/lib-test-files.mjs";
 
 const source = readFileSync(
   new URL("../scripts/test.mjs", import.meta.url),
@@ -72,6 +76,11 @@ async function dispatch(
     ownerLabelValue: () => "test-owner",
     removeProject: () => true,
     sweepStaleTestResources: () => ({ removed: [] }),
+    // 1207 helpers (imports are stripped above). The fake project has no files
+    // on disk, so every selected path counts as present.
+    normalizeTestFiles,
+    findMissingTestFiles: (files, root) =>
+      findMissingTestFiles(files, root, () => true),
   };
   await new AsyncFunction(...Object.keys(dependencies), source)(
     ...Object.values(dependencies),
