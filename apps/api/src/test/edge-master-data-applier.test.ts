@@ -35,6 +35,7 @@ import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { resetEdgeApplierRegistryForTests } from "../edge/applier-registry.ts";
 import { createDbLinkStore } from "../edge/db-link-store.ts";
+import { CATALOG_CURSOR_REJECTED_MARKER } from "../edge/catalog-cursor-marker.ts";
 import { EdgeCloudHttpError } from "../edge/cloud-http.ts";
 import { pullCatalog } from "../edge/catalog-puller.ts";
 import {
@@ -709,7 +710,7 @@ describe("legend-3x9l full-state master-data down-sync", () => {
   });
 
   it.each(["initial", "rejected-cursor", "existing-current-cursor"] as const)(
-    "preserves event version 9 through a stale version 5 %s HTTP pull and event replay",
+    "event version 9 against a version 5 %s HTTP pull and event replay (rejected cursor: cloud wins, R1)",
     async (mode) => {
       const latest = station({ name: "Newest event state", syncTxid: "9" });
       const event = catalogEvent(latest);
@@ -748,8 +749,14 @@ describe("legend-3x9l full-state master-data down-sync", () => {
         streams: ["stations"],
         fetchPage: async (stream, since) => {
           fetchedCursors.push(since);
+          // legend-75kly: the cloud marks a refused cursor (X-Edge-Error, as
+          // edge-catalog-sync.routes.ts sets it). A 400 without the marker
+          // never rewinds (edge-catalog-cursor-marker.test.ts).
           if (mode === "rejected-cursor" && since === storedCursor)
-            throw new EdgeCloudHttpError("HTTP_400");
+            throw new EdgeCloudHttpError(
+              "HTTP_400",
+              CATALOG_CURSOR_REJECTED_MARKER,
+            );
           return {
             protocolVersion: CATALOG_PROTOCOL_VERSION,
             stream,
@@ -767,13 +774,17 @@ describe("legend-3x9l full-state master-data down-sync", () => {
             ? [storedCursor, null]
             : [storedCursor],
       );
-      // A repeated event is already acknowledged. The pull must preserve the
-      // version itself; replay cannot repair a regression after deduplication.
+      // A repeated event is already acknowledged. Without a rewind the pull
+      // must preserve the version itself; replay cannot repair a regression
+      // after deduplication. R1 (legend-7r7q6, legend-75kly): after a refused
+      // cursor the cloud is the source of truth (fail closed), so the receipt
+      // of event version 9 no longer holds and the cloud row wins.
       await deliver(event);
-      expect(await storedStation(latest.id)).toMatchObject({
-        name: "Newest event state",
-        sync_txid: "9",
-      });
+      expect(await storedStation(latest.id)).toMatchObject(
+        mode === "rejected-cursor"
+          ? { name: "Stale HTTP state", sync_txid: "5" }
+          : { name: "Newest event state", sync_txid: "9" },
+      );
       expect(await receipts()).toMatchObject([
         { aggregate_sequence: 9, outcome: "applied" },
       ]);
@@ -786,7 +797,7 @@ describe("legend-3x9l full-state master-data down-sync", () => {
     },
   );
 
-  it("preserves a later HTTP version 12 for an event-backed record during a rewind to version 5", async () => {
+  it("a rewind to version 5 replaces the later HTTP version 12 of an event-backed record with the cloud row (R1)", async () => {
     const record = station({ name: "Event version 9", syncTxid: "9" });
     const event = catalogEvent(record);
     await deliver(event);
@@ -817,7 +828,12 @@ describe("legend-3x9l full-state master-data down-sync", () => {
       streams: ["stations"],
       fetchPage: async (stream, since) => {
         fetchedCursors.push(since);
-        if (since === cursor12) throw new EdgeCloudHttpError("HTTP_400");
+        // legend-75kly: the refused cursor carries the cloud's marker.
+        if (since === cursor12)
+          throw new EdgeCloudHttpError(
+            "HTTP_400",
+            CATALOG_CURSOR_REJECTED_MARKER,
+          );
         return {
           protocolVersion: CATALOG_PROTOCOL_VERSION,
           stream,
@@ -829,10 +845,13 @@ describe("legend-3x9l full-state master-data down-sync", () => {
     });
     expect(rewound.streams.stations?.error).toBeUndefined();
     expect(fetchedCursors).toEqual([cursor12, null]);
+    // R1 (legend-7r7q6): after the rewind the cloud is the source of truth
+    // (fail closed). Neither HTTP version 12 nor the replayed event version 9
+    // holds the row against the cloud's version 5.
     await deliver(event);
     expect(await storedStation(record.id)).toMatchObject({
-      name: "HTTP version 12",
-      sync_txid: "12",
+      name: "Stale HTTP version 5",
+      sync_txid: "5",
     });
   });
 
