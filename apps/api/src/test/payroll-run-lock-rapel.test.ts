@@ -1473,3 +1473,53 @@ describe("legend 1229 a Coretax export goes stale after a later lock or a revers
     expect(replayC.body.data.supersededAt).toBeNull();
   });
 });
+
+describe("legend 1229 a Coretax export waits for a lock or reversal of its year", () => {
+  it("[tax-export-year-lock] an export started while the run lock (or reversal) holds the year lock waits for it, then succeeds", async () => {
+    const s = await seedScenario("year-lock");
+    await simulatedAndApproved(s);
+    const locked = await lockRun(s.runId);
+    expect(locked.status, JSON.stringify(locked.body)).toBe(200);
+
+    // The same advisory year lock `lockPayrollRunMonth` takes for a lock,
+    // a reversal or a rapel finalize, held open by another transaction.
+    const holder = await owner.connect();
+    let settled = false;
+    try {
+      await holder.query("BEGIN");
+      await holder.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+        [`payroll-pph21-year:${tenant.id}:${s.entityId}:2026`],
+      );
+      const pending = post(exporter, TAX_EXPORT_PATH, {
+        legalEntityId: s.entityId,
+        kind: "monthly_withholding",
+        taxPeriod: "2026-07",
+        idempotencyKey: key(),
+      }).then((response) => {
+        settled = true;
+        return response;
+      });
+      // Deterministic: the export backend is seen waiting on the advisory lock.
+      let waiting = false;
+      for (let attempt = 0; attempt < 100 && !waiting; attempt++) {
+        const activity = await owner.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM pg_stat_activity
+            WHERE wait_event_type = 'Lock' AND wait_event = 'advisory'
+              AND query ILIKE '%pg_advisory_xact_lock%'
+              AND pid <> pg_backend_pid()`,
+        );
+        waiting = activity.rows[0]!.n > 0;
+        if (!waiting) await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      expect(waiting).toBe(true);
+      expect(settled).toBe(false);
+      await holder.query("COMMIT");
+      const exported = await pending;
+      expect(exported.status, JSON.stringify(exported.body)).toBe(201);
+    } finally {
+      await holder.query("ROLLBACK").catch(() => undefined);
+      holder.release();
+    }
+  });
+});

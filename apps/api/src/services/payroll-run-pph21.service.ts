@@ -490,6 +490,23 @@ async function loadStoredRun(
 }
 
 /**
+ * The advisory year lock of a legal entity: lock, reversal and rapel finalize
+ * take it (through `lockPayrollRunMonth`), and so does a Coretax export, so an
+ * export never interleaves with a lock or reversal of its year (legend 1229).
+ * Always taken before any month lock.
+ */
+export async function lockPayrollTaxYear(
+  tx: Tx,
+  tenantId: TenantId,
+  legalEntityId: string,
+  year: string,
+): Promise<void> {
+  await tx.execute(
+    sql`select pg_advisory_xact_lock(hashtextextended(${`payroll-pph21-year:${tenantId}:${legalEntityId}:${year}`}, 0))`,
+  );
+}
+
+/**
  * Takes the advisory year lock, then the month lock, of the stored run and re-reads the run under
  * it, so a legal entity or pay date edited while waiting for the lock is
  * refused (409 PAYROLL_PPH21_RUN_MISMATCH) instead of locking the wrong month.
@@ -505,8 +522,11 @@ export async function lockPayrollRunMonth(
   // Year lock first (always before the month lock, so locks never invert):
   // runs of different months of one year serialize, so a December lock sees
   // the earlier months' payslips of the year.
-  await tx.execute(
-    sql`select pg_advisory_xact_lock(hashtextextended(${`payroll-pph21-year:${tenantId}:${first.legalEntityId}:${month.slice(0, 4)}`}, 0))`,
+  await lockPayrollTaxYear(
+    tx,
+    tenantId,
+    first.legalEntityId,
+    month.slice(0, 4),
   );
   await lockPayrollTaxMonth(tx, tenantId, first.legalEntityId, month);
   const stored = await loadStoredRun(tx, tenantId, runId);

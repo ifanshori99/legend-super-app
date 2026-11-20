@@ -115,6 +115,7 @@ import type { StorageRuntime } from "./core-storage-runtime.ts";
 import { cursorPair, notFound } from "./hris-access.ts";
 import { idempotentHrisWrite } from "./hris-employee.service.ts";
 import { assertPayrollTenantCan } from "./payroll-access.ts";
+import { lockPayrollTaxYear } from "./payroll-run-pph21.service.ts";
 import { taxExportSupersededError } from "./payroll-tax-export-supersede.ts";
 import type { Tx } from "./permission-resolver.ts";
 
@@ -968,6 +969,15 @@ export async function createPayrollTaxExport(
       context,
       actorUserId,
       LOCK_CODE,
+    );
+    // legend 1229: the year lock a run lock, reversal or rapel finalize holds.
+    // An export waits for one in progress and sees its slips; one that starts
+    // later marks this export stale.
+    await lockPayrollTaxYear(
+      tx,
+      tenantId,
+      input.legalEntityId,
+      input.taxPeriod.slice(0, 4),
     );
     let fresh = false;
     const created = await idempotentHrisWrite(
