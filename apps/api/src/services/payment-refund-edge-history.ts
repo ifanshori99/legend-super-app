@@ -420,7 +420,8 @@ export async function hasParkedEdgeRefund(
  * so a full gateway refund would pay the guest a second time once the edge
  * refund is parked later. The admin refund cap is reduced by that value;
  * `null` means a fact is unreadable or conflicting: the caller must hold the
- * whole cap. Facts that already have a native row of the same id are not
+ * whole cap. Only orders the edge ingested (edge_order_ingests) are checked, so
+ * central orders never scan the parked events. Facts that already have a native row of the same id are not
  * counted (the sale accounting holds them). Read-only.
  */
 export async function parkedEdgeRefundHoldOfIntent(
@@ -431,13 +432,18 @@ export async function parkedEdgeRefundHoldOfIntent(
     order_id: string;
     outlet_id: string;
   }>(sql`
-    SELECT DISTINCT order_id::text AS order_id, outlet_id::text AS outlet_id
-      FROM pos_order_tenders
-     WHERE tenant_id = ${input.tenantId} AND payment_intent_id = ${input.intentId}::uuid
+    SELECT DISTINCT t.order_id::text AS order_id, t.outlet_id::text AS outlet_id
+      FROM pos_order_tenders t
+     WHERE t.tenant_id = ${input.tenantId}
+       AND t.payment_intent_id = ${input.intentId}::uuid
+       AND EXISTS (SELECT 1 FROM edge_order_ingests g
+                    WHERE g.tenant_id = t.tenant_id AND g.order_id = t.order_id)
     UNION
-    SELECT id::text, outlet_id::text FROM orders
-     WHERE tenant_id = ${input.tenantId}
-       AND id = ${input.orderId}::uuid
+    SELECT o.id::text, o.outlet_id::text FROM orders o
+     WHERE o.tenant_id = ${input.tenantId}
+       AND o.id = ${input.orderId}::uuid
+       AND EXISTS (SELECT 1 FROM edge_order_ingests g
+                    WHERE g.tenant_id = o.tenant_id AND g.order_id = o.id)
   `);
   let hold = 0n;
   for (const order of orders) {
@@ -461,8 +467,15 @@ export async function parkedEdgeRefundHoldOfIntent(
       const done = new Set(native.map((row) => row.id.toLowerCase()));
       for (const fact of facts)
         if (!done.has(fact.refundId)) hold += BigInt(fact.amountIdr);
-    } catch {
-      return null;
+    } catch (error) {
+      // Only an unverifiable history holds the cap; a database or code error
+      // must surface, not silently freeze or free money.
+      if (
+        error instanceof HttpError &&
+        error.code === "REFUND_HISTORY_UNVERIFIED"
+      )
+        return null;
+      throw error;
     }
   }
   return hold;

@@ -11,6 +11,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   createUlid,
+  idr,
   outletIdSchema,
   tenantIdSchema,
   ulidToUuid,
@@ -32,7 +33,10 @@ import { db } from "../db/index.ts";
 import { paymentIntents as paymentIntentsTable } from "../db/schema/payment.ts";
 import { withTenant } from "../db/tenant.ts";
 import { applyEdgeDeferredEvent } from "../edge/deferred-event-applier.ts";
-import { refundableBalance } from "../services/payment-admin.service.ts";
+import {
+  createRefund,
+  refundableBalance,
+} from "../services/payment-admin.service.ts";
 import { listFinanceExceptions } from "../services/accounting-finance-exceptions.service.ts";
 import {
   createIsolatedTenant,
@@ -58,6 +62,7 @@ const users: string[] = [];
 const edgeNodeId = randomUUID();
 let cashier: Staff;
 let supervisor: Staff;
+let ownerStaff: Staff;
 let other: IsolatedTenant;
 
 const tenantScope = (tenantId = seededTenantId) =>
@@ -269,7 +274,7 @@ async function seedDeadLetter() {
 }
 
 /** A paid QRIS intent of the order with its evidence (nothing else holds it). */
-async function paidIntent(orderUuid: string, amountIdr: number) {
+async function paidIntent(orderUuid: string | null, amountIdr: number) {
   const linkId = randomUUID();
   const intentId = randomUUID();
   paymentLinks.push(linkId);
@@ -315,6 +320,17 @@ async function paidIntent(orderUuid: string, amountIdr: number) {
   return intentId;
 }
 
+/** The order came from the edge: the ingest ledger knows it. */
+async function markIngested(orderUuid: string) {
+  await asOwner((client) =>
+    client.query(
+      `INSERT INTO edge_order_ingests (tenant_id, order_id, outlet_id, paid_event_id, state)
+       VALUES ($1, $2, $3, $4, 'ingested')`,
+      [seededTenantId, orderUuid, seededOutletA, randomUUID()],
+    ),
+  );
+}
+
 async function capOf(intentId: string) {
   return withTenant(db, wide, async (tx) => {
     const [intent] = await tx
@@ -335,7 +351,11 @@ beforeAll(async () => {
     template: "supervisor",
     label: "Exc Edge Refund Supervisor",
   });
-  users.push(cashier.userId, supervisor.userId);
+  ownerStaff = await staffWithRole(app, {
+    template: "owner",
+    label: "Exc Edge Refund Owner",
+  });
+  users.push(cashier.userId, supervisor.userId, ownerStaff.userId);
   other = await createIsolatedTenant("e1244");
   await asOwner((client) =>
     client.query(
@@ -583,13 +603,20 @@ describe("finance exception edge_refund_unreconciled (1244 r2)", () => {
     const clean = await sale(150_000);
     const cleanIntent = await paidIntent(clean.orderUuid, 150_000);
     expect((await capOf(cleanIntent)).cap).toBe(150_000n);
+    // A central order (never ingested from an edge) is not scanned at all.
+    const central = await sale(150_000);
+    const centralIntent = await paidIntent(central.orderUuid, 150_000);
+    await edgeRefund(central.orderId, 50_000);
+    expect((await capOf(centralIntent)).cap).toBe(150_000n);
 
     const parked = await sale(150_000);
+    await markIngested(parked.orderUuid);
     const parkedIntent = await paidIntent(parked.orderUuid, 150_000);
     await edgeRefund(parked.orderId, 50_000);
     expect((await capOf(parkedIntent)).cap).toBe(100_000n);
 
     const blind = await sale(150_000);
+    await markIngested(blind.orderUuid);
     const blindIntent = await paidIntent(blind.orderUuid, 150_000);
     await asOwner((client) =>
       client.query(
@@ -608,5 +635,59 @@ describe("finance exception edge_refund_unreconciled (1244 r2)", () => {
       ),
     );
     expect((await capOf(blindIntent)).cap).toBe(0n);
+  });
+
+  it("e2e: createRefund of the full Rp150k is refused for an order with a recorded edge void and a parked edge refund of Rp50k", async () => {
+    const s = await sale(150_000);
+    await markIngested(s.orderUuid);
+    // An admin-refundable intent has no sales document: the POS tender names it.
+    const intentId = await paidIntent(null, 150_000);
+    await asOwner(
+      (client) =>
+        client.query(
+          `UPDATE pos_order_tenders
+              SET method = 'qris', provider = 'doit', payment_intent_id = $1
+            WHERE order_id = $2`,
+          [intentId, s.orderUuid],
+        ),
+      true,
+    );
+    await asOwner((client) =>
+      client.query(
+        `INSERT INTO pos_order_voids
+           (id, tenant_id, outlet_id, order_id, receipt_number, amount_idr, reason,
+            reason_note, requested_by, approved_by, approval_request_id, voided_at)
+         VALUES ($1, $2, $3, $4, $5, 150000, 'wrong_order', 'Pesanan salah',
+                 'requester', 'approver', $6, now())`,
+        [
+          randomUUID(),
+          seededTenantId,
+          seededOutletA,
+          s.orderUuid,
+          `V1244-${randomUUID().slice(0, 8)}`,
+          randomUUID(),
+        ],
+      ),
+    );
+    await edgeRefund(s.orderId, 50_000);
+    const key = randomUUID();
+    await expect(
+      createRefund(
+        wide,
+        ownerStaff.userId,
+        {
+          idempotencyKey: key,
+          paymentIntentId: intentId,
+          amountIdr: idr(150_000),
+          reason: "1244 r2 refund penuh setelah void edge",
+        },
+        key,
+      ),
+    ).rejects.toThrow(/exceeds available paid/);
+    const { rows } = await owner.query(
+      "SELECT count(*)::int AS n FROM payment_refunds WHERE payment_intent_id = $1",
+      [intentId],
+    );
+    expect(rows[0]!.n).toBe(0);
   });
 });
