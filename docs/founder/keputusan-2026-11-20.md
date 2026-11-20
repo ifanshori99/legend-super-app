@@ -8,6 +8,8 @@ Sampai founder memutuskan, sistem memakai aturan yang paling aman (tidak membaya
    Usulan tim: gaji karyawan dibebankan ke outlet tempat dia terdaftar. Gaji staf pusat atau staf bersama dibagi ke outlet sesuai porsi penjualan.
    Selama belum diputuskan, bagi hasil per outlet ditahan. Ini supaya laba outlet tidak terlihat lebih besar dan bagi hasil tidak terbayar lebih.
 3. **Gaji terakhir karyawan yang keluar.**
+   Gaji bulan terakhir, BPJS, dan PPh21 sudah dibayar lewat run gaji bulanan biasa. Yang belum punya aturan: **uang ganti cuti** (cuti mana yang diuangkan, upah harian dibagi berapa) dan **THR karyawan yang keluar** (berlaku untuk kontrak tetap saja atau juga kontrak, dan syarat keluar paling lambat 30 hari sebelum hari raya). Sampai diputuskan, HR menghitung dua hal ini manual dan sistem tidak membayarnya otomatis.
+
    Sementara, gaji terakhirnya dikeluarkan dari run gaji bulanan dan muncul di laporan untuk diproses manual oleh HR. Sistem tidak membayarnya otomatis.
    Pilihannya: tetap begini, atau dibuat alur pembayaran gaji akhir khusus.
 4. **Voucher permintaan maaf.**
