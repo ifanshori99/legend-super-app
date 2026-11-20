@@ -970,24 +970,91 @@ describe("Alur J jurnal otomatis: selisih opname masuk GL seimbang (INV-03, ACC-
     expect(debit).toBe(credit);
   });
 
-  it("ACC-01 jurnal final tidak dihapus: koreksi lewat jurnal pembalik, sekali saja", async () => {
-    const [journal] = await journalsOfCount();
+  it("ACC-01 jurnal final tidak dihapus; selisih kurang (rugi) tidak bisa dibalik manual karena menaikkan laba (1218)", async () => {
+    // This count is a net loss (Dr beban selisih opname, Cr persediaan): a manual
+    // reversal would raise profit and hide the shortage, so 1218 refuses it and
+    // sends the correction through the source flow (fix the stock movement).
+    const before = await journalsOfCount();
+    expect(before).toHaveLength(1);
+    const journal = before[0]!;
     const reverse = () =>
       finance.client
-        .post(`/api/accounting/journals/${journal!.id}/reversal`)
+        .post(`/api/accounting/journals/${journal.id}/reversal`)
         .set(originHeader)
         .send({
           entryDate: today,
           reason: "Hitungan ulang menunjukkan selisih salah catat",
           idempotencyKey: key("rev"),
         });
+    const attempt = await reverse();
+    expect(attempt.status, JSON.stringify(attempt.body)).toBe(409);
+    expect(attempt.body.error.code).toBe("AUTO_JOURNAL_LOCKED");
+
+    // The final journal is untouched: still there, balanced, never reversed.
+    expect(await journalsOfCount()).toEqual(before);
+    const { rows } = await owner.query(
+      "SELECT 1 FROM journal_entries WHERE tenant_id = $1 AND reversal_of = $2",
+      [tenantId, journal.id],
+    );
+    expect(rows).toHaveLength(0);
+  });
+
+  it("ACC-01 selisih lebih (laba) dikoreksi lewat jurnal pembalik, sekali saja; jurnal asal tetap ada", async () => {
+    // A net gain (Dr persediaan, Cr selisih opname): reversing it lowers
+    // profit, so 1218 lets the manual reversal through. This keeps the ACC-01
+    // path (correct a final journal by reversing it, never by deleting it).
+    const gainSpecs: Item[] = [
+      {
+        name: "Gula lebih",
+        onHand: "10.0000",
+        cost: "1500.0000",
+        counted: "11.0000",
+        varianceIdr: 1500,
+      },
+    ];
+    const gainShelf = await seedShelf(world.outletId, gramId, gainSpecs);
+    const count = await submitCount(glCrew.gudang, gainShelf, gainSpecs);
+    await ok(await transition(glCrew.manajer, count.id, "approve"));
+    for (const row of await countLedger(count.id)) {
+      const result = await deliverToGl(row.id);
+      expect(["posted", "already_posted"]).toContain(result.status);
+    }
+    const { rows: original } = await owner.query<{ id: string }>(
+      `SELECT id FROM journal_entries
+        WHERE tenant_id = $1 AND legal_entity_id = $2 AND source_id = $3`,
+      [tenantId, world.entity, count.id],
+    );
+    expect(original).toHaveLength(1);
+    const journalId = original[0]!.id;
+
+    const reverse = () =>
+      finance.client
+        .post(`/api/accounting/journals/${journalId}/reversal`)
+        .set(originHeader)
+        .send({
+          entryDate: today,
+          reason: "Hitungan ulang menunjukkan selisih lebih salah catat",
+          idempotencyKey: key("rev-gain"),
+        });
     const first = await reverse();
     expect(first.status, JSON.stringify(first.body)).toBe(201);
-    expect(first.body.data.reversalOf).toBe(journal!.id);
+    expect(first.body.data.reversalOf).toBe(journalId);
 
     const second = await reverse();
     expect(second.status).toBe(409);
     expect(second.body.error.code).toBe("JOURNAL_ALREADY_REVERSED");
+
+    // The original stays; exactly one reversal points at it.
+    const { rows: after } = await owner.query(
+      `SELECT 1 FROM journal_entries WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, journalId],
+    );
+    expect(after).toHaveLength(1);
+    const { rows: reversals } = await owner.query(
+      "SELECT 1 FROM journal_entries WHERE tenant_id = $1 AND reversal_of = $2",
+      [tenantId, journalId],
+    );
+    expect(reversals).toHaveLength(1);
   });
 
   it("INV-03 hitungan ditolak tidak menghasilkan jurnal", async () => {

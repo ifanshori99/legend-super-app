@@ -70,7 +70,7 @@ import {
 } from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
-import { seedTenantRoleTemplates } from "./access.service.ts";
+import { readDbClock, seedTenantRoleTemplates } from "./access.service.ts";
 import { recordAudit } from "./audit-writer.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { appendControlPlaneEvent } from "./control-plane-events.ts";
@@ -371,11 +371,15 @@ export async function createTenant(
       actor.success ? actor.data : null,
       null,
     );
+    // The assignment's valid_from is judged against the database clock by
+    // every role path (readDbClock, legend-hzdy5), so stamp it with that clock:
+    // the API clock can lead it, and a stamp "in the future" made the admin
+    // look inactive to an Owner appointment right after creation (1230).
     const admin = await provisionFirstTenantAdmin(
       tx,
       context,
       input.firstAdmin,
-      { actorUserId, now },
+      { actorUserId, now: await readDbClock(tx) },
     );
 
     const definition = platformEvents["tenant.created"];
