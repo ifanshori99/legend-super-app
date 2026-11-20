@@ -757,11 +757,13 @@ const schema = z
         });
     }
     // 1209: public origins must be https in production. Loopback hosts stay
-    // allowed because the e2e suite runs production builds on localhost.
+    // allowed because the e2e suite runs production builds on localhost. An
+    // edge node serves its own LAN origins and may run plain http there.
     for (const key of ["BETTER_AUTH_URL", "WEB_URL"] as const) {
       const url = new URL(values[key]);
       if (
         values.NODE_ENV === "production" &&
+        !values.EDGE_MODE &&
         url.protocol === "http:" &&
         !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)
       )

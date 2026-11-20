@@ -198,6 +198,13 @@ describe("API environment", () => {
       expect(result.status).toBe(0);
     });
 
+    it("lets an edge node keep a plain-http LAN origin in production", () => {
+      const result = loadEnv(
+        production({ EDGE_MODE: "true", WEB_URL: "http://192.168.1.10:3000" }),
+      );
+      expect(result.stderr).not.toContain("Use an https URL in production");
+    });
+
     it("keeps http allowed outside production", () => {
       const result = loadEnv({ WEB_URL: "http://app.example.com" });
       expect(result.status).toBe(0);
