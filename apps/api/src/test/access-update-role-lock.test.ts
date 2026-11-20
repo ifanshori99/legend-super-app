@@ -165,7 +165,7 @@ type Outcome = { ok: true } | { ok: false; reason: unknown };
 
 /**
  * Hold the role row lock, start the edit (not awaited), end the editor with
- * Node time while the edit waits, then release the lock.
+ * database time while the edit waits, then release the lock.
  */
 async function editWhileEditorIsEnded(input: {
   tenantId: string;
@@ -201,9 +201,10 @@ async function editWhileEditorIsEnded(input: {
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     // The editor is ended meanwhile (simulated), then the lock is released.
+    // Database clock, the one the edit reads after the lock (readDbClock).
     await holder.query(
-      "UPDATE role_assignments SET valid_until = $2 WHERE id = $1",
-      [input.editorAssignmentId, new Date()],
+      "UPDATE role_assignments SET valid_until = clock_timestamp() WHERE id = $1",
+      [input.editorAssignmentId],
     );
     await holder.query("COMMIT");
   } catch (error) {
