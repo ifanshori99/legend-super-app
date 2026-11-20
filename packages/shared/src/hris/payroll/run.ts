@@ -447,6 +447,20 @@ export type PayrollHeldOvertimeCorrection = z.infer<
   typeof payrollHeldOvertimeCorrectionSchema
 >;
 
+/**
+ * An employee left out of a simulated run because they ended in an earlier
+ * year than the pay date: their PPh 21 as a former employee is not supported,
+ * so their last pay has to be paid outside the run (legend-1220). The message
+ * names the employee for HR.
+ */
+export const payrollExcludedFormerEmployeeSchema = z.strictObject({
+  employeeId: employeeIdSchema,
+  message: z.string().min(1),
+});
+export type PayrollExcludedFormerEmployee = z.infer<
+  typeof payrollExcludedFormerEmployeeSchema
+>;
+
 export const payrollRunSchema = z
   .strictObject({
     id: payrollRunIdSchema,
@@ -475,6 +489,10 @@ export const payrollRunSchema = z
     /** Only present on a simulate response; never part of the pay values. */
     heldOvertimeCorrections: z
       .array(payrollHeldOvertimeCorrectionSchema)
+      .optional(),
+    /** On simulate, approve and lock responses, when someone was left out. */
+    excludedFormerEmployees: z
+      .array(payrollExcludedFormerEmployeeSchema)
       .optional(),
     createdBy: userIdSchema,
     createdAt: isoDateTimeSchema,

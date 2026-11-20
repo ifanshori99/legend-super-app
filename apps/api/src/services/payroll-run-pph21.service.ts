@@ -277,6 +277,12 @@ export type TaxYearPriors = {
   periods: Pph21PriorPeriod[];
   /** Annual payslips of the run's own tax month, for `lastPeriodEarlier`. */
   lastPeriodEarlier: Pph21PriorPeriod[];
+  /**
+   * An annual payslip of an EARLIER month of the year exists (the employee's
+   * last tax period already passed). Never skipped silently: the caller
+   * leaves the employee out of the run or refuses (legend-1220).
+   */
+  annualEarlier: boolean;
   /** Every payslip read (sorted): lets the lock detect a changed set. */
   payslipIds: string[];
   /** The runs those payslips belong to (sorted, unique). */
@@ -291,7 +297,7 @@ export type TaxYearPriors = {
  * taken from the caller. TER payslips go to `periods`, annual-recalculation
  * payslips of the run's own month to `lastPeriodEarlier`. An annual payslip of
  * an earlier month is 422 PAYROLL_PPH21_MONTH_PRIOR_INVALID for an employee in
- * the last tax period (and skipped for the others); one that cannot be read
+ * the last tax period (and flagged `annualEarlier` for the others); one that cannot be read
  * is the same 422 (fail closed). A locked/paid run of a LATER month of the tax
  * year that holds an annual-recalculation payslip of any of the employees is
  * 409 PAYROLL_PPH21_LATER_PERIOD_LOCKED: its annual tax already counts income
@@ -312,7 +318,13 @@ export async function loadTaxYearPriors(
   const priors = new Map<string, TaxYearPriors>(
     employees.map((e) => [
       e.employeeId,
-      { periods: [], lastPeriodEarlier: [], payslipIds: [], runIds: [] },
+      {
+        periods: [],
+        lastPeriodEarlier: [],
+        annualEarlier: false,
+        payslipIds: [],
+        runIds: [],
+      },
     ]),
   );
   if (employees.length === 0) return priors;
@@ -405,8 +417,19 @@ export async function loadTaxYearPriors(
       throw monthPriorInvalid();
     }
   };
-  // Out of order: a later month of the year already holds an annual slip.
+  const lastPeriod = new Map(
+    employees.map((e) => [e.employeeId, e.lastTaxPeriod]),
+  );
+  // Out of order: a later month of the year already holds an annual slip, or
+  // any slip of an employee whose last tax period this is (its income would
+  // be missing from the annual tax; legend-1220).
   for (const row of await readSlips(laterFilter)) {
+    if (lastPeriod.get(row.employeeId) === true)
+      throw new HttpError(
+        409,
+        "PAYROLL_PPH21_LATER_PERIOD_LOCKED",
+        `Karyawan ${row.employeeId} punya THR bulan berikutnya yang sudah dikunci. Lakukan reversal THR itu dulu sebelum run masa pajak terakhir ini dikunci.`,
+      );
     if (readCalculation(row).tax.method === "annual_recalculation")
       throw new HttpError(
         409,
@@ -416,9 +439,6 @@ export async function loadTaxYearPriors(
   }
   const joinMonthStart = new Map(
     employees.map((e) => [e.employeeId, `${e.joinDate.slice(0, 7)}-01`]),
-  );
-  const lastPeriod = new Map(
-    employees.map((e) => [e.employeeId, e.lastTaxPeriod]),
   );
   for (const row of await readSlips(earlierFilter)) {
     const entry = priors.get(row.employeeId);
@@ -435,7 +455,10 @@ export async function loadTaxYearPriors(
     else if (row.runPayDate.slice(0, 7) === month)
       entry.lastPeriodEarlier.push(period);
     else if (lastPeriod.get(row.employeeId) === true) throw monthPriorInvalid();
-    else continue;
+    else {
+      entry.annualEarlier = true;
+      continue;
+    }
     entry.payslipIds.push(row.id);
     if (!entry.runIds.includes(row.runId)) entry.runIds.push(row.runId);
   }

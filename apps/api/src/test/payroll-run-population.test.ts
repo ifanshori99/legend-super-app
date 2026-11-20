@@ -637,3 +637,76 @@ describe("[O8] partialYearTaxSubject is false for every employee", () => {
     expect(stored.calculation.pph21Idr).toBe(right);
   }, 120_000);
 });
+
+// ---- G last tax period of a leaver (legend-1220) ------------------------------------
+
+describe("[G] last tax period of an employee who leaves", () => {
+  async function storedTaxMethod(runId: string, empId: string) {
+    return asTenant(async (conn) => {
+      const row = (
+        await conn.query(
+          `SELECT payslip_id, result_encrypted, pii_key_version FROM payroll_run_results
+            WHERE tenant_id = $1 AND payroll_run_id = $2 AND employee_id = $3`,
+          [tenant.id, runId, empId],
+        )
+      ).rows[0];
+      return (
+        JSON.parse(
+          openPayrollValue(
+            row.result_encrypted,
+            {
+              tenantId: tenant.id,
+              table: "payroll_run_results",
+              rowId: row.payslip_id,
+              field: "result",
+            } as never,
+            row.pii_key_version,
+          ),
+        ) as { calculation: { tax: { method: string } } }
+      ).calculation.tax.method;
+    });
+  }
+
+  it("cutoff 25: leaving 30 Nov is not the last period of the run ending 25 Nov, but is of the run ending 25 Dec", async () => {
+    const world = await makeWorld();
+    const empId = await makeEmployee(world.entityId, {
+      entityId: world.entityId,
+      joinDate: "2026-01-01",
+      endDate: "2026-11-30",
+    });
+    const novRun = await draftRun(world, {
+      periodStart: "2026-10-26",
+      periodEnd: "2026-11-25",
+      payDate: "2026-11-28",
+    });
+    await simulateRun(novRun);
+    expect(await storedTaxMethod(novRun, empId)).not.toBe(
+      "annual_recalculation",
+    );
+    const decRun = await draftRun(world, {
+      periodStart: "2026-11-26",
+      periodEnd: "2026-12-25",
+      payDate: "2026-12-28",
+    });
+    await simulateRun(decRun);
+    expect(await storedTaxMethod(decRun, empId)).toBe("annual_recalculation");
+  }, 120_000);
+
+  it("the only employee left in December with the pay date in January: the run is empty (422), nobody is paid", async () => {
+    const world = await makeWorld();
+    await makeEmployee(world.entityId, {
+      entityId: world.entityId,
+      joinDate: "2026-01-01",
+      endDate: "2026-12-20",
+    });
+    const runId = await draftRun(world, {
+      periodStart: "2026-12-01",
+      periodEnd: "2026-12-31",
+      payDate: "2027-01-05",
+    });
+    await expect(simulateRun(runId)).rejects.toMatchObject({
+      status: 422,
+      code: "PAYROLL_RUN_EMPTY",
+    });
+  }, 120_000);
+});

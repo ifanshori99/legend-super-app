@@ -541,6 +541,10 @@ export async function lockPayrollRunInTransaction(
     const fresh = [...priorOf(entry).payslipIds].sort();
     const simulated = [...entry.stored.priorPayslipIds].sort();
     if (!isDeepStrictEqual(fresh, simulated)) throw monthStale();
+    // An annual slip of an earlier month locked after this run was simulated
+    // (TER on top would under-withhold the year): simulate again, which
+    // leaves the leaver out and reports them (legend-1220).
+    if (priorOf(entry).annualEarlier) throw monthStale();
   }
 
   // The receivable collected on each stored payslip must be the one the

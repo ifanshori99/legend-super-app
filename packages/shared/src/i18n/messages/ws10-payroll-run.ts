@@ -178,6 +178,14 @@ export const payrollRunMessages = {
     budgetNet: "Ringkasan run: {total}",
     noBudget: "Ringkasan run belum tersedia.",
   },
+  excluded: {
+    title: "Karyawan keluar dikeluarkan dari run",
+    count: "{count} karyawan",
+    description:
+      "Karyawan ini sudah keluar dan tidak bisa dihitung di run ini. Proses gaji akhirnya terpisah.",
+    restrictedNote:
+      "Nama dan alasan tiap karyawan hanya terlihat oleh yang berhak melihat data gaji.",
+  },
   held: {
     title: "Koreksi lembur ditahan",
     count: "{count} koreksi",

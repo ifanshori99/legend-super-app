@@ -83,6 +83,7 @@ import {
   type PayslipLine,
   type PayslipPaymentMethod,
   type Pph21Tables,
+  type PayrollExcludedFormerEmployee,
   type StatutoryTableType,
   type StatutoryTableVersion,
   type TaxScheme,
@@ -277,6 +278,163 @@ const taxSchemeMismatch = (employeeIds: readonly string[]) =>
 // ---- Helpers ----------------------------------------------------------------
 
 const PPH21_TABLE_TYPES = ["ptkp", "pph21_ter", "pph21_annual"] as const;
+
+/** Population filter of a run (decided O7): the legal entity, employment types and period. */
+const runMemberFilter = (
+  tenantId: TenantId,
+  run: PayrollRun,
+  employmentTypes: readonly (typeof employees.$inferSelect)["employmentType"][],
+) =>
+  and(
+    eq(employees.tenantId, tenantId),
+    sql`COALESCE(${employees.legalEntityId}, ${outlets.legalEntityId}) = ${run.legalEntityId}`,
+    inArray(employees.employmentType, [...employmentTypes]),
+    lte(employees.joinDate, run.periodEnd),
+    or(isNull(employees.endDate), gte(employees.endDate, run.periodStart)),
+  );
+
+type LeaverCandidate = {
+  id: string;
+  employeeNo: string;
+  fullName: string;
+  joinDate: string;
+  endDate: string | null;
+};
+
+/**
+ * Who of the run's listed members is left out of it, each with a message that
+ * names them for HR (legend-1220; paying them is a founder decision, so the
+ * run only reports): someone who ended in an earlier year than the pay date
+ * (the tax of a former employee is not supported), and, in any THR run
+ * (December included), a leaver whose last tax period already passed (an annual slip of
+ * an earlier month: TER on top would under-withhold the year). Also returns
+ * who holds an annual slip of the pay month itself (their THR is the last
+ * period). Takes the prior runs FOR SHARE (`loadTaxYearPriors`).
+ */
+async function excludedLeaversOf(
+  tx: Tx,
+  tenantId: TenantId,
+  run: PayrollRun,
+  members: readonly LeaverCandidate[],
+): Promise<{
+  excluded: PayrollExcludedFormerEmployee[];
+  annualInPayMonth: Set<string>;
+}> {
+  const formerYear = (m: LeaverCandidate) =>
+    m.endDate !== null && m.endDate.slice(0, 4) < run.payDate.slice(0, 4);
+  const excluded: PayrollExcludedFormerEmployee[] = members
+    .filter(formerYear)
+    .map((m) => ({
+      employeeId: employeeIdSchema.parse(m.id),
+      message: `Karyawan ${m.fullName} (${m.employeeNo}) berhenti pada ${m.endDate}, di tahun sebelum tanggal bayar ${run.payDate}. Dia tidak ikut run ini: sisa gajinya harus dibayar di luar run, dan PPh 21-nya belum didukung.`,
+    }));
+  const annualInPayMonth = new Set<string>();
+  // Every THR run, December included: there the THR is the last period and
+  // an annual slip of an earlier month would refuse the whole run.
+  if (run.runType === "thr") {
+    // Only a leaver has an earlier annual slip. Read with nobody in
+    // their last period: nothing throws on an earlier-month annual slip.
+    const leavers = members.filter((m) => m.endDate !== null && !formerYear(m));
+    const probe = await loadTaxYearPriors(
+      tx,
+      tenantId,
+      run.id,
+      leavers.map((m) => ({
+        employeeId: m.id,
+        joinDate: m.joinDate as BusinessDate,
+        lastTaxPeriod: false,
+      })),
+    );
+    for (const m of leavers) {
+      const prior = probe.get(m.id);
+      if (prior?.annualEarlier)
+        excluded.push({
+          employeeId: employeeIdSchema.parse(m.id),
+          message: `Karyawan ${m.fullName} (${m.employeeNo}) berhenti pada ${m.endDate} dan PPh 21 masa terakhirnya sudah dihitung tahunan di payroll bulan sebelumnya. THR-nya tidak ikut run ini: bayar di luar run, PPh 21-nya belum didukung.`,
+        });
+      else if (prior && prior.lastPeriodEarlier.length > 0)
+        annualInPayMonth.add(m.id);
+    }
+  }
+  return { excluded, annualInPayMonth };
+}
+
+/**
+ * The employees a run leaves out, recomputed from the current data (approve
+ * and lock responses carry it, so the list never vanishes; legend-1220).
+ */
+export async function loadExcludedFormerEmployees(
+  tx: Tx,
+  tenantId: TenantId,
+  run: PayrollRun,
+): Promise<PayrollExcludedFormerEmployee[]> {
+  if (run.runType === "off_cycle") return [];
+  const [policy] = await tx
+    .select({ employeeGroup: payrollPolicies.employeeGroup })
+    .from(payrollPolicies)
+    .where(
+      and(
+        eq(payrollPolicies.tenantId, tenantId),
+        eq(payrollPolicies.id, run.payrollPolicyId),
+      ),
+    )
+    .limit(1);
+  if (!policy) return [];
+  const { employmentTypes } = employeeGroupSchema.parse(policy.employeeGroup);
+  let listed: ReadonlySet<string> | null = null;
+  if (run.runType === "thr") {
+    if (run.thrScheduleId === null) return [];
+    const [schedule] = await tx
+      .select({ employeeIds: thrSchedules.employeeIds })
+      .from(thrSchedules)
+      .where(
+        and(
+          eq(thrSchedules.tenantId, tenantId),
+          eq(thrSchedules.id, run.thrScheduleId),
+        ),
+      )
+      .limit(1);
+    if (!schedule) return [];
+    listed =
+      schedule.employeeIds === null ? null : new Set(schedule.employeeIds);
+  }
+  const rows = await tx
+    .select({
+      id: employees.id,
+      employeeNo: employees.employeeNo,
+      fullName: employees.fullName,
+      joinDate: employees.joinDate,
+      endDate: employees.endDate,
+    })
+    .from(employees)
+    .innerJoin(
+      outlets,
+      and(
+        eq(outlets.tenantId, employees.tenantId),
+        eq(outlets.id, employees.homeOutletId),
+      ),
+    )
+    .where(runMemberFilter(tenantId, run, employmentTypes))
+    .orderBy(asc(employees.id));
+  const members = listed === null ? rows : rows.filter((m) => listed.has(m.id));
+  return (await excludedLeaversOf(tx, tenantId, run, members)).excluded;
+}
+
+/** The run with `excludedFormerEmployees` recomputed (omitted when nobody is left out). */
+export async function withExcludedFormerEmployees(
+  tx: Tx,
+  tenantId: TenantId,
+  run: PayrollRun,
+): Promise<PayrollRun> {
+  const excludedFormerEmployees = await loadExcludedFormerEmployees(
+    tx,
+    tenantId,
+    run,
+  );
+  return excludedFormerEmployees.length > 0
+    ? { ...run, excludedFormerEmployees }
+    : run;
+}
 
 /** Maps a stored `payroll_runs` row to the contract run (dates as ISO strings). */
 function toRun(row: typeof payrollRuns.$inferSelect): PayrollRun {
@@ -574,19 +732,19 @@ export async function simulatePayrollRunInTransaction(
         eq(positions.id, employees.positionId),
       ),
     )
-    .where(
-      and(
-        eq(employees.tenantId, tenantId),
-        sql`COALESCE(${employees.legalEntityId}, ${outlets.legalEntityId}) = ${run.legalEntityId}`,
-        inArray(employees.employmentType, [...employmentTypes]),
-        lte(employees.joinDate, run.periodEnd),
-        or(isNull(employees.endDate), gte(employees.endDate, run.periodStart)),
-      ),
-    )
+    .where(runMemberFilter(tenantId, run, employmentTypes))
     .orderBy(asc(employees.id));
   const listed = thrEmployeeIds;
-  const candidates =
+  const listedMembers =
     listed === null ? memberRows : memberRows.filter((m) => listed.has(m.id));
+  // Leavers this run cannot tax are left out and reported by name; the others
+  // are still paid (legend-1220, see `excludedLeaversOf`).
+  const { excluded: excludedFormerEmployees, annualInPayMonth } =
+    await excludedLeaversOf(tx, tenantId, run, listedMembers);
+  const excludedIds = new Set<string>(
+    excludedFormerEmployees.map((e) => e.employeeId),
+  );
+  const candidates = listedMembers.filter((m) => !excludedIds.has(m.id));
   // Nobody is paid twice for the same days (bead legend-1213).
   await assertNoOverlappingRegularPayslips(
     tx,
@@ -596,6 +754,14 @@ export async function simulatePayrollRunInTransaction(
   );
 
   const allocations = await loadRunRapelAllocations(tx, context, runId);
+  // A rapel allocated to someone left out would stay unpaid: name them.
+  for (const excluded of excludedFormerEmployees)
+    if (allocations.has(excluded.employeeId))
+      throw new HttpError(
+        409,
+        "PAYROLL_RAPEL_EMPLOYEE_EXCLUDED",
+        `Run ini memuat rapel untuk karyawan yang tidak ikut run. ${excluded.message} Batalkan alokasi rapelnya, lalu simulasikan ulang.`,
+      );
 
   // Gross per employee (RAPEL lines included), then BPJS / THR in one call.
   const grossById = new Map<
@@ -680,7 +846,14 @@ export async function simulatePayrollRunInTransaction(
   const inPopulation = new Set(population.map((m) => m.id));
   for (const employeeId of allocations.keys())
     if (!inPopulation.has(employeeId)) throw simulateUnsupported();
-  if (population.length === 0) throw runEmpty();
+  if (population.length === 0)
+    throw excludedFormerEmployees.length > 0
+      ? new HttpError(
+          422,
+          "PAYROLL_RUN_EMPTY",
+          `Tidak ada karyawan yang masuk payroll ini. ${excludedFormerEmployees.map((e) => e.message).join(" ")}`,
+        )
+      : runEmpty();
 
   const missing = population
     .filter((m) => m.ptkpStatus === null)
@@ -753,9 +926,20 @@ export async function simulatePayrollRunInTransaction(
   );
   const openReceivableById = receivableBalances.open;
 
-  const lastTaxPeriodOf = (endDate: string | null) =>
+  // The last tax period of a leaver is the run whose period holds the end
+  // date (not the month of the pay date: with a cutoff before month end the
+  // run of the leaving month would otherwise be taken as last, and the next run
+  // would then fail on a prior annual slip; legend-1220). A THR run is the last
+  // only in December or when the employee already holds an annual slip of the
+  // same pay month (so a THR run never makes an annual slip of its own and
+  // blocks the next regular run; `annualInPayMonth` from `excludedLeaversOf`).
+  const lastTaxPeriodOf = (member: { id: string; endDate: string | null }) =>
     run.payDate.slice(5, 7) === "12" ||
-    (endDate !== null && endDate.slice(0, 7) <= run.payDate.slice(0, 7));
+    (isThr
+      ? annualInPayMonth.has(member.id)
+      : member.endDate !== null &&
+        run.periodStart <= member.endDate &&
+        member.endDate <= run.periodEnd);
   const priors = await loadTaxYearPriors(
     tx,
     tenantId,
@@ -763,9 +947,18 @@ export async function simulatePayrollRunInTransaction(
     population.map((m) => ({
       employeeId: m.id,
       joinDate: m.joinDate as BusinessDate,
-      lastTaxPeriod: lastTaxPeriodOf(m.endDate),
+      lastTaxPeriod: lastTaxPeriodOf(m),
     })),
   );
+  // Fail closed: nobody is taxed under TER after their annual slip (it would
+  // under-withhold the year's PPh 21; legend-1220).
+  const pastLast = population.filter((m) => priors.get(m.id)?.annualEarlier);
+  if (pastLast.length > 0)
+    throw new HttpError(
+      422,
+      "PAYROLL_PPH21_LAST_PERIOD_PASSED",
+      `PPh 21 masa terakhir karyawan ini sudah dihitung tahunan di payroll bulan sebelumnya, jadi payroll ini tidak bisa memotong PPh 21-nya lagi: ${pastLast.map((m) => `${m.fullName} (${m.employeeNo})`).join(", ")}. Bayar di luar run lewat koreksi admin.`,
+    );
 
   // Kasbon (legend-8tfvr): only regular runs deduct loans. Loans lock after
   // the priors (design §2); no policy row means bp 0, so nothing is deducted.
@@ -879,7 +1072,7 @@ export async function simulatePayrollRunInTransaction(
     const taxInput = storedTaxInputSchema.parse({
       ptkpStatus: member.ptkpStatus,
       hasTaxId: member.npwpHmac !== null || member.nikHmac !== null,
-      lastTaxPeriod: lastTaxPeriodOf(member.endDate),
+      lastTaxPeriod: lastTaxPeriodOf(member),
       monthsWorked: monthsWorkedIn(member.joinDate, run.payDate),
       // Decided O8: always false (see header).
       partialYearTaxSubject: false,
@@ -1135,6 +1328,39 @@ export async function simulatePayrollRunInTransaction(
       ["simulationCount", "heldCount", "heldItems"],
     );
 
+  // Leavers left out are reported, never silent (legend-1220): employee ids
+  // only, never a name or an amount.
+  if (excludedFormerEmployees.length > 0)
+    await recordAudit(
+      tx,
+      context,
+      {
+        id: createUlid(now.getTime()),
+        tenantId,
+        outletId: null,
+        actorType: "user",
+        actorId: actor,
+        deviceId: null,
+        action: "payroll.run.former_employee_excluded",
+        objectType: "payroll_run",
+        objectId: runId,
+        reason: null,
+        maskedChanges: {
+          before: null,
+          after: {
+            simulationCount: next.simulationCount,
+            excludedCount: excludedFormerEmployees.length,
+            employeeIds: excludedFormerEmployees.map((e) => e.employeeId),
+          },
+        },
+        ipHash: null,
+        sensitiveAccess: false,
+        retentionClass: "audit_2y",
+        createdAt: now.toISOString(),
+      },
+      ["simulationCount", "excludedCount", "employeeIds"],
+    );
+
   // Same held list as the audit row, surfaced to the caller (legend-oayhe).
   // Omitted when nothing is held; never part of the pay values.
   const heldOvertimeCorrections = results.flatMap(({ entry }) =>
@@ -1146,7 +1372,9 @@ export async function simulatePayrollRunInTransaction(
     })),
   );
   const simulated = toRun(updated);
-  return heldOvertimeCorrections.length > 0
-    ? { ...simulated, heldOvertimeCorrections }
-    : simulated;
+  return {
+    ...simulated,
+    ...(heldOvertimeCorrections.length > 0 ? { heldOvertimeCorrections } : {}),
+    ...(excludedFormerEmployees.length > 0 ? { excludedFormerEmployees } : {}),
+  };
 }
