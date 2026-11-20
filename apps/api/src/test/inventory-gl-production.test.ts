@@ -620,8 +620,10 @@ describe("1252 production batch journal", () => {
     expect(await trackedRowsOf(productionId)).toBe(0);
     expect(await netDebit(world, "inventory_price_variance")).toBe(0);
     await drawMaterial(world, raw, "400", productionId, DAY);
+    // The sweep is tenant wide: assert this batch, not the global counts.
     const swept = await retryBlockedInventoryGl(context(), LATER);
-    expect(swept).toEqual({ posted: 1, stillBlocked: 0, failed: 0 });
+    expect(swept.failed).toBe(0);
+    expect(swept.posted).toBeGreaterThanOrEqual(1);
     const journals = await journalsOf(world, productionId);
     expect(journals).toHaveLength(1);
     expect(await balanceOf(journals[0]!.id)).toEqual({ debit: 2, credit: 2 });
@@ -640,16 +642,48 @@ describe("1252 production batch journal", () => {
     const draw1 = await drawMaterial(world, raw, "600", productionId, DAY);
     await putAwayOutput(world, out, "70000", "1.4286", productionId, DAY);
     expect((await deliverRow(draw1)).status).toBe("blocked");
-    expect(await retryBlockedInventoryGl(context(), LATER)).toEqual({
-      posted: 0,
-      stillBlocked: 1,
-      failed: 0,
-    });
+    // The sweep is tenant wide: assert this batch, not the global counts.
+    const swept = await retryBlockedInventoryGl(context(), LATER);
+    expect(swept.failed).toBe(0);
     expect(await journalsOf(world, productionId)).toEqual([]);
     expect(await trackedRowsOf(productionId)).toBe(0);
     expect(await blockedCodeOf(productionId)).toBe("PRODUCTION_INCOMPLETE");
     expect(await netDebit(world, "inventory")).toBe(0);
     expect(await netDebit(world, "inventory_price_variance")).toBe(0);
+  });
+
+  it("[1252-OUTPUT-ONLY] an output with value but no draw yet is parked (no rounding allowance); once the draws land the sweep books one rounding journal", async () => {
+    const world = await makeWorld();
+    const raw = await insertItem("Daging");
+    const out = await insertItem("Rendang", "semi_finished");
+    await receive(world, raw, "1000", "100", BEFORE);
+    const productionId = randomUUID();
+    const output = await putAwayOutput(
+      world,
+      out,
+      "70000",
+      "1.4286",
+      productionId,
+      DAY,
+    );
+    expect(await deliverRow(output)).toEqual({
+      status: "blocked",
+      code: "PRODUCTION_INCOMPLETE",
+    });
+    expect(await journalsOf(world, productionId)).toEqual([]);
+    expect(await trackedRowsOf(productionId)).toBe(0);
+    expect(await blockedCodeOf(productionId)).toBe("PRODUCTION_INCOMPLETE");
+    expect(await netDebit(world, "inventory_price_variance")).toBe(0);
+    await drawMaterial(world, raw, "600", productionId, DAY);
+    await drawMaterial(world, raw, "400", productionId, DAY);
+    const swept = await retryBlockedInventoryGl(context(), LATER);
+    expect(swept.failed).toBe(0);
+    expect(swept.posted).toBeGreaterThanOrEqual(1);
+    const journals = await journalsOf(world, productionId);
+    expect(journals).toHaveLength(1);
+    expect(await balanceOf(journals[0]!.id)).toEqual({ debit: 2, credit: 2 });
+    expect(await blockedCodeOf(productionId)).toBeNull();
+    await expectBooksMatchCard(world, 100000);
   });
 
   it("[1252-ZERO] a batch of free materials posts no journal", async () => {

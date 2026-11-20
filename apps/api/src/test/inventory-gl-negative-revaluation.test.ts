@@ -439,6 +439,7 @@ describe("1232 every inflow onto a negative balance is revalued", () => {
       | "transfer_in"
       | "transfer_out"
       | "production_in"
+      | "production_out"
       | "return"
       | "adjustment";
     sourceType:
@@ -542,8 +543,19 @@ describe("1232 every inflow onto a negative balance is revalued", () => {
   it("REVAL-11 production_in onto a negative balance: HPP +400", async () => {
     const world = await makeWorld();
     const item = await insertItem("Saus");
+    const raw = await insertItem("Tomat");
+    await receive(world, raw, "8", "100", BEFORE);
     await sell(world, item, "5", BEFORE);
     const productionId = randomUUID();
+    // A complete batch: 8 x 100 of material makes 10 x 80 of output, so the
+    // production itself books nothing (no rounding difference).
+    await move(world, raw, {
+      movementType: "production_out",
+      sourceType: "production_order",
+      sourceId: productionId,
+      quantity: "-8",
+      occurredAt: DAY,
+    });
     const output = await move(world, item, {
       movementType: "production_in",
       sourceType: "production_order",
@@ -554,6 +566,8 @@ describe("1232 every inflow onto a negative balance is revalued", () => {
     });
     expect((await deliverRow(output)).status).toBe("posted");
     expect(await revaluationsOf(productionId)).toEqual([-400]);
+    // Only the revaluation journal: the batch has no production journal.
+    expect(await journalsOf(world, productionId)).toHaveLength(1);
     expect(await netDebit(world, "cogs")).toBe(400);
     expect(await netDebit(world, "inventory")).toBe(-400);
   });

@@ -353,8 +353,9 @@ export async function deliverInventoryGlEvent(
       { sourceType, sourceId: payload.sourceId },
       now,
     );
-    // A source with nothing to book (a lone put-away row, no draw) does not
-    // hide the posted revaluation of the same row.
+    // A source with nothing to book (a valueless put-away row, no draw) does
+    // not hide the posted revaluation of the same row. A put-away with value
+    // and no draw is parked as PRODUCTION_INCOMPLETE instead.
     if (
       result.status === "ignored" ||
       (result.status === "zero_value" && settled.status === "posted")
@@ -765,13 +766,27 @@ export async function postStockSourceToGl(
   if (!first) return { status: "already_posted" };
   if (allRows.some((row) => row.outletId !== first.outletId))
     throw new Error("Stock source spans more than one outlet");
-  // A put-away without any draw is never a rounding difference (it is only a
-  // revaluation source): nothing is booked or tracked. A batch synced from an
-  // edge can arrive split or lose a draw to the dead letter; the rounding
-  // bound below parks such a batch instead of booking it.
+  // A put-away without any draw and without value has nothing to book or
+  // track. A put-away without any draw but WITH value is an incomplete batch
+  // (a draw still in transit or dead-lettered on an edge push): it is parked
+  // as PRODUCTION_INCOMPLETE, strictly, with no rounding allowance, and booked
+  // once the draws arrive.
   const isProduction = mapping.eventName === "production.completed";
-  if (isProduction && !allRows.some((row) => parseDecimal4(row.quantity) < 0n))
+  if (
+    isProduction &&
+    !allRows.some((row) => parseDecimal4(row.quantity) < 0n)
+  ) {
+    const outputScaled = allRows.reduce(
+      (sum, row) =>
+        sum + parseDecimal4(row.quantity) * parseDecimal4(row.unitCostIdr),
+      0n,
+    );
+    if (scaledCostToIdr(outputScaled) !== 0)
+      throw new ProductionIncompleteError(
+        "Production batch has output but no material draw",
+      );
     return { status: "zero_value", ledgerEntryIds: [] };
+  }
 
   const [outlet] = await tx
     .select({
