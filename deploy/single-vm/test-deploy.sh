@@ -33,7 +33,7 @@ export PATH
 [ "$(grep -c 'config --quiet' "$TEST_LOG")" -eq 2 ]
 : > "$TEST_LOG"
 "$root/deploy.sh" --env-file "$tmp/compose.env" >/dev/null
-[ "$(wc -l < "$TEST_LOG" | tr -d ' ')" -eq 9 ]
+[ "$(wc -l < "$TEST_LOG" | tr -d ' ')" -eq 10 ]
 sed -n '2p' "$TEST_LOG" | grep -F 'up -d --wait postgres' >/dev/null
 # legend-jtnd, legend-k1np: the pre-deploy check runs before migrate.
 sed -n '3p' "$TEST_LOG" | grep -F -- '--profile migration run --rm migrate node dist/predeploy-check.js' >/dev/null
@@ -46,7 +46,9 @@ fi
 sed -n '6,7p' "$TEST_LOG" | grep -F 'config --format json' >/dev/null
 sed -n '6,7p' "$TEST_LOG" | grep -E -- '^run --rm -i --network none .* /tmp/check-compose-env\.mjs$' >/dev/null
 sed -n '8p' "$TEST_LOG" | grep -F -- '--profile provisioning run --rm provision-roles node dist/provision-roles.js --audit' >/dev/null
-sed -n '9p' "$TEST_LOG" | grep -F 'up -d --wait api web worker caddy' >/dev/null
+# The scanner starts before the services, without --wait (its signature download is slow).
+sed -n '9p' "$TEST_LOG" | grep -E -- 'up -d clamav$' >/dev/null
+sed -n '10p' "$TEST_LOG" | grep -F 'up -d --wait api web worker caddy' >/dev/null
 if grep -F "$password" "$TEST_LOG" >/dev/null; then
   echo 'legend-zoqc: a password reached the docker command line' >&2
   exit 1

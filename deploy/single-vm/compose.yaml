@@ -83,8 +83,11 @@ services:
       # Malware scanner (legend-w9hwh): internal network only, never published.
       CLAMD_HOST: clamav
       CLAMD_PORT: "3310"
+    # service_started, not service_healthy: clamd needs minutes to load its
+    # signatures and the API runs without it meanwhile.
     depends_on:
       postgres: { condition: service_healthy }
+      clamav: { condition: service_started }
     mem_limit: 512m
   # Malware scanner for uploads (docs/deployment.md, ClamAV). Pinned version, not
   # latest. Needs outbound access to database.clamav.net for signatures and a
