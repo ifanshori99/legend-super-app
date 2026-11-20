@@ -14,9 +14,16 @@
 // any are found, unless a `-- redefine-drops: <reason>` comment sits in the new
 // definition's block (its leading comments or its body).
 //
-// Object identity: functions by name and argument count, triggers and
-// policies by name and table, views by name. `--files` replaces the git diff
-// with an explicit list (used by tests). Uses only node: built-ins.
+// Object identity: functions and procedures by name and argument count,
+// triggers and policies by name and table, views by name. Names are compared
+// unquoted and lowercase; an unqualified name equals `public.<name>`, other
+// schemas stay distinct (`app.x` is not `x`). Lines are compared as a multiset,
+// so a line the old definition had twice and the new one has once is LOST.
+// New files come from `git diff --no-renames`, so a renumbered migration is
+// checked like any added one. Not covered: objects defined outside
+// apps/api/drizzle/*.sql (seed scripts, application code, manual DDL).
+// `--files` replaces the git diff with an explicit list (used by tests). Uses
+// only node: built-ins.
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
@@ -101,6 +108,8 @@ export function splitStatements(sql) {
 }
 
 const unquote = (s) => s.replace(/"/g, "").toLowerCase();
+// Unqualified names live in `public`; `public.x` and `x` are one object.
+const ident = (s) => unquote(s).replace(/^public\./, "");
 const norm = (s) => s.replace(/\s+/g, " ").trim();
 
 function argCount(text, openIdx) {
@@ -127,31 +136,38 @@ export function objectOf(stmt) {
     .map((l) => l.text)
     .join("\n")
     .trim();
-  let m = /^create\s+(?:or\s+replace\s+)?function\s+([\w."]+)\s*\(/i.exec(text);
+  let m =
+    /^create\s+(?:or\s+replace\s+)?(function|procedure)\s+([\w."]+)\s*\(/i.exec(
+      text,
+    );
   if (m) {
     const n = argCount(text, text.indexOf("(", m[0].length - 1));
-    return { kind: "FUNCTION", key: `function ${unquote(m[1])}/${n}` };
+    const kind = m[1].toLowerCase();
+    return {
+      kind: kind.toUpperCase(),
+      key: `${kind} ${ident(m[2])}/${n}`,
+    };
   }
   m =
     /^create\s+(?:or\s+replace\s+)?(?:(?:materialized|recursive|temp|temporary)\s+)*view\s+([\w."]+)/i.exec(
       text,
     );
-  if (m) return { kind: "VIEW", key: `view ${unquote(m[1])}` };
+  if (m) return { kind: "VIEW", key: `view ${ident(m[1])}` };
   m =
-    /^create\s+(?:constraint\s+)?trigger\s+("[^"]+"|\w+)[\s\S]*?\bon\s+([\w."]+)/i.exec(
+    /^create\s+(?:or\s+replace\s+)?(?:constraint\s+)?trigger\s+("[^"]+"|\w+)[\s\S]*?\bon\s+([\w."]+)/i.exec(
       text,
     );
   if (m) {
     return {
       kind: "TRIGGER",
-      key: `trigger ${unquote(m[1])} on ${unquote(m[2])}`,
+      key: `trigger ${unquote(m[1])} on ${ident(m[2])}`,
     };
   }
   m = /^create\s+policy\s+("[^"]+"|\w+)\s+on\s+([\w."]+)/i.exec(text);
   if (m) {
     return {
       kind: "POLICY",
-      key: `policy ${unquote(m[1])} on ${unquote(m[2])}`,
+      key: `policy ${unquote(m[1])} on ${ident(m[2])}`,
     };
   }
   return null;
@@ -168,7 +184,12 @@ export function definitionsOf(sql) {
       .filter((l) => l.text !== "")
       .map((l, i) =>
         i === 0
-          ? { ...l, text: l.text.replace(/^create or replace /i, "create ") }
+          ? {
+              ...l,
+              text: l.text
+                .replace(/^create or replace /i, "create ")
+                .toLowerCase(),
+            }
           : l,
       );
     defs.set(obj.key, {
@@ -214,9 +235,14 @@ export function findLost({ dir, newFiles }) {
         }
       }
       if (!old) continue;
-      const have = new Set(def.lines.map((l) => l.text));
+      const have = new Map();
+      for (const l of def.lines) have.set(l.text, (have.get(l.text) ?? 0) + 1);
       for (const l of old.lines) {
-        if (have.has(l.text)) continue;
+        const left = have.get(l.text) ?? 0;
+        if (left > 0) {
+          have.set(l.text, left - 1);
+          continue;
+        }
         lost.push({
           file,
           line: def.startLine,
@@ -254,6 +280,7 @@ function main() {
           "diff",
           "--name-only",
           "--diff-filter=A",
+          "--no-renames",
           "--relative",
           `${opts.base}...HEAD`,
           "--",
