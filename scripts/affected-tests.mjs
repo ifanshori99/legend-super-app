@@ -8,14 +8,33 @@ import { fileURLToPath } from "node:url";
 //   node scripts/affected-tests.mjs --base <ref> [--max N]
 // Order (also the order kept when --max cuts the list):
 //   1. tests changed in the diff
-//   2. API tests importing a changed service/route/lib, and root tests that
-//      mention a changed non-API file
+//   2. API and web tests importing a changed source file (relative imports
+//      followed up to 3 hops, `@/` for web, deleted and renamed-away paths
+//      count), tests importing `@starter/shared/<subpath>` whose source
+//      changed, and root tests that mention a changed non-API file
 //   4. always: src/test/*single-path*, src/test/*registry*
 //   3. tests that mention a function/table from a changed migration
-// API tests print as src/test/..., root tests as tests/....
+// API tests print as src/test/..., root tests as tests/..., web tests as
+// apps/web/test/.... Changes are the diff against the merge base (`<base>...HEAD`),
+// uncommitted edits and untracked files; renames count as delete plus add.
 
 const API_TEST_DIR = "apps/api/src/test";
 const API_SRC_DIR = "apps/api/src";
+const WEB_TEST_DIR = "apps/web/test";
+const WEB_SRC_DIR = "apps/web/src";
+const SHARED_DIR = "packages/shared";
+const SHARED_SRC_DIR = `${SHARED_DIR}/src`;
+const MAX_IMPORT_DEPTH = 3;
+const SOURCE_EXTENSIONS = [
+  ".ts",
+  ".tsx",
+  ".mts",
+  ".cts",
+  ".js",
+  ".jsx",
+  ".mjs",
+  ".cjs",
+];
 const ROOT_TEST_DIR = "tests";
 const MIN_NAME_LENGTH = 5;
 const TEST_FILE = /\.test\.[cm]?[jt]sx?$/;
@@ -69,6 +88,31 @@ function importSpecifiers(source) {
 
 const stem = (path) => path.replace(/\.[cm]?[jt]sx?$/, "");
 
+// Does a changed @starter/shared source (stem, repo-relative) belong to the
+// package entry `@starter/shared/<sub>`? An entry file covers itself; an
+// `index` entry covers its directory. Unknown subpaths fall back to a prefix.
+function sharedCovers(root, sub, changedStem) {
+  let exportsMap = {};
+  try {
+    exportsMap =
+      JSON.parse(readFileSync(join(root, SHARED_DIR, "package.json"), "utf8"))
+        .exports ?? {};
+  } catch {
+    // no package.json in a fixture: prefix rule below
+  }
+  let entry = exportsMap[`./${sub}`];
+  if (entry && typeof entry === "object")
+    entry = entry.default ?? entry.import ?? entry.types;
+  if (typeof entry !== "string")
+    return changedStem.startsWith(`${SHARED_SRC_DIR}/${sub}`);
+  const target = stem(posix.join(SHARED_DIR, entry));
+  return (
+    changedStem === target ||
+    (target.endsWith("/index") &&
+      changedStem.startsWith(`${posix.dirname(target)}/`))
+  );
+}
+
 // Pure and filesystem-only so a tmp-dir fixture can exercise it.
 export function affectedTests({ root, changed, max = 120 }) {
   const exists = (path) => existsSync(join(root, path));
@@ -77,6 +121,9 @@ export function affectedTests({ root, changed, max = 120 }) {
     relative(root, path).split("\\").join("/"),
   );
   const rootTests = walk(join(root, ROOT_TEST_DIR)).map((path) =>
+    relative(root, path).split("\\").join("/"),
+  );
+  const webTests = walk(join(root, WEB_TEST_DIR)).map((path) =>
     relative(root, path).split("\\").join("/"),
   );
   const display = (path) =>
@@ -88,6 +135,59 @@ export function affectedTests({ root, changed, max = 120 }) {
     return source.get(path);
   };
 
+  // Import targets (stems, resolved when the file exists) and shared subpaths
+  // a file reaches, following relative imports of non-test sources.
+  const importCache = new Map();
+  const importsOf = (path) => {
+    if (!importCache.has(path)) {
+      const found = { files: [], shared: [] };
+      for (const spec of importSpecifiers(read(path))) {
+        const sharedMatch = /^@starter\/shared\/(.+)$/.exec(spec);
+        if (sharedMatch) found.shared.push(sharedMatch[1]);
+        else if (spec.startsWith("."))
+          found.files.push(
+            stem(posix.normalize(posix.join(posix.dirname(path), spec))),
+          );
+        else if (spec.startsWith("@/") && path.startsWith("apps/web/"))
+          found.files.push(stem(posix.join(WEB_SRC_DIR, spec.slice(2))));
+      }
+      importCache.set(path, found);
+    }
+    return importCache.get(path);
+  };
+  const resolveSource = (target) => {
+    for (const base of [target, `${target}/index`])
+      for (const extension of SOURCE_EXTENSIONS)
+        if (exists(`${base}${extension}`)) return `${base}${extension}`;
+    return null;
+  };
+  const reach = (test) => {
+    const files = new Set();
+    const shared = new Set();
+    let frontier = [test];
+    for (let depth = 0; depth < MAX_IMPORT_DEPTH; depth++) {
+      const next = [];
+      for (const path of frontier) {
+        const found = importsOf(path);
+        found.shared.forEach((sub) => shared.add(sub));
+        for (const target of found.files) {
+          if (files.has(target)) continue;
+          files.add(target);
+          const resolved = resolveSource(target);
+          if (
+            resolved &&
+            (resolved.startsWith(`${API_SRC_DIR}/`) ||
+              resolved.startsWith(`${WEB_SRC_DIR}/`)) &&
+            !TEST_FILE.test(resolved)
+          )
+            next.push(resolved);
+        }
+      }
+      frontier = next;
+    }
+    return { files, shared };
+  };
+
   const ordered = new Set();
   const add = (paths) => paths.forEach((path) => ordered.add(display(path)));
 
@@ -96,35 +196,40 @@ export function affectedTests({ root, changed, max = 120 }) {
     present.filter(
       (path) =>
         TEST_FILE.test(path) &&
-        (apiTests.includes(path) || rootTests.includes(path)),
+        (apiTests.includes(path) ||
+          rootTests.includes(path) ||
+          webTests.includes(path)),
     ),
   );
 
-  // 2. API tests importing a changed API source file; root tests naming a
-  // changed file outside the API.
-  const changedSrc = new Set(
-    present
-      .filter(
-        (path) =>
-          path.startsWith(`${API_SRC_DIR}/`) &&
-          !path.startsWith(`${API_TEST_DIR}/`) &&
-          /\.[cm]?[jt]sx?$/.test(path),
-      )
-      .map(stem),
-  );
-  if (changedSrc.size) {
-    for (const test of apiTests) {
-      const hit = importSpecifiers(read(test)).some((spec) => {
-        if (!spec.startsWith(".")) return false;
-        const target = stem(
-          posix.normalize(posix.join(posix.dirname(test), spec)),
+  // 2. API and web tests reaching a changed source file (transitively, up to
+  // MAX_IMPORT_DEPTH hops) or a changed @starter/shared source. Deleted files
+  // count: `changed` is used, not `present`.
+  const isCode = (path) => /\.[cm]?[jt]sx?$/.test(path);
+  const inSrc = (path) =>
+    (path.startsWith(`${API_SRC_DIR}/`) ||
+      path.startsWith(`${WEB_SRC_DIR}/`)) &&
+    !path.startsWith(`${API_TEST_DIR}/`) &&
+    isCode(path);
+  const changedSrc = new Set(changed.filter(inSrc).map(stem));
+  const changedShared = changed
+    .filter((path) => path.startsWith(`${SHARED_SRC_DIR}/`) && isCode(path))
+    .map(stem);
+  if (changedSrc.size || changedShared.length) {
+    for (const test of [...apiTests, ...webTests]) {
+      const { files, shared } = reach(test);
+      const hit =
+        [...files].some(
+          (target) =>
+            changedSrc.has(target) || changedSrc.has(`${target}/index`),
+        ) ||
+        [...shared].some((sub) =>
+          changedShared.some((path) => sharedCovers(root, sub, path)),
         );
-        return changedSrc.has(target) || changedSrc.has(`${target}/index`);
-      });
       if (hit) add([test]);
     }
   }
-  const changedOther = present.filter(
+  const changedOther = changed.filter(
     (path) =>
       !path.startsWith(`${API_SRC_DIR}/`) &&
       !path.endsWith(".sql") &&
@@ -171,7 +276,14 @@ function git(root, args) {
 export function changedFiles(root, base) {
   return [
     ...new Set([
-      ...git(root, ["diff", "--name-only", base, "--"]),
+      ...git(root, [
+        "diff",
+        "--name-only",
+        "--no-renames",
+        `${base}...HEAD`,
+        "--",
+      ]),
+      ...git(root, ["diff", "--name-only", "--no-renames", "HEAD", "--"]),
       ...git(root, ["ls-files", "--others", "--exclude-standard"]),
     ]),
   ];
