@@ -40,7 +40,7 @@ import { edgeNodes } from "../db/schema/edge-node.ts";
 import { floorZones, tables, tableSessions } from "../db/schema/floor.ts";
 import { outlets } from "../db/schema/platform-org.ts";
 import { posOrders, posOrderTenders } from "../db/schema/pos-order.ts";
-import { orders } from "../db/schema/qr-order.ts";
+import { orders, type OrderStatus } from "../db/schema/qr-order.ts";
 import { getEdgeRuntimeState } from "../edge/runtime.ts";
 import { HttpError } from "../lib/http-error.ts";
 import {
@@ -64,7 +64,8 @@ const isProofVia = (via: string | null): via is ProofVia =>
   via === "member_qr" || via === "pwa_session";
 
 /** Statuses the POS takes a tender on (`canSettlePosOrder`). */
-const SETTLEABLE = new Set(["awaiting_payment", "sent"]);
+const SETTLEABLE_STATUSES: OrderStatus[] = ["awaiting_payment", "sent"];
+const SETTLEABLE = new Set<string>(SETTLEABLE_STATUSES);
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -311,7 +312,7 @@ async function loadBills(
         "orderId" in filter
           ? eq(orders.id, filter.orderId)
           : and(
-              inArray(orders.status, [...SETTLEABLE]),
+              inArray(orders.status, SETTLEABLE_STATUSES),
               inArray(orders.customerAttachedVia, [...MEMBER_PROOF_VIA]),
             ),
       ),
