@@ -984,11 +984,17 @@ async function edgeRefundUnreconciled(
       ),
     ),
   ];
-  const materialized = new Set<string>();
+  // A native row only closes a parked fact when it is the same refund: same
+  // id, same order and same amount. An id alone could hide a different payout.
+  const materialized = new Map<
+    string,
+    { orderId: string; amountIdr: number }
+  >();
   if (readableIds.length > 0)
     for (const row of rowsOf(
       await tx.execute(
-        sql`SELECT id::text AS id FROM pos_order_refunds
+        sql`SELECT id::text AS id, order_id::text AS order_id, amount_idr
+              FROM pos_order_refunds
              WHERE tenant_id = ${scope.tenantId}::uuid
                AND id IN (${sql.join(
                  readableIds.map((id) => sql`${id}::uuid`),
@@ -996,7 +1002,10 @@ async function edgeRefundUnreconciled(
                )})`,
       ),
     ))
-      materialized.add(String(row.id).toLowerCase());
+      materialized.set(String(row.id).toLowerCase(), {
+        orderId: String(row.order_id).toLowerCase(),
+        amountIdr: num(row.amount_idr),
+      });
 
   type Group = {
     refId: string;
@@ -1029,7 +1038,13 @@ async function edgeRefundUnreconciled(
   };
   for (const fact of facts) {
     if (fact.readable) {
-      if (materialized.has(fact.refundId)) continue;
+      const native = materialized.get(fact.refundId);
+      if (
+        native &&
+        native.orderId === fact.orderId &&
+        native.amountIdr === fact.amountIdr
+      )
+        continue;
       touch(fact, fact.orderId, fact.amountIdr, false);
     } else {
       touch(fact, fact.aggregateId.toLowerCase(), 0, true);
@@ -1043,6 +1058,7 @@ async function edgeRefundUnreconciled(
   const shown = ordered.slice(0, MAX_ITEMS + 1);
 
   const items: FinanceExceptionItemDto[] = [];
+  const blind = new Set<string>();
   for (const group of shown) {
     let detail = "unreadable";
     if (!group.unreadable) {
@@ -1051,7 +1067,9 @@ async function edgeRefundUnreconciled(
           sql`SELECT count(*)::int AS n, coalesce(sum(amount_idr), 0)::bigint AS paid
                 FROM pos_order_tenders
                WHERE tenant_id = ${scope.tenantId}::uuid
-                 AND order_id = ${group.refId}::uuid AND status = 'captured'`,
+                 AND order_id = ${group.refId}::uuid
+                 AND outlet_id = ${group.outletId}::uuid
+                 AND status = 'captured'`,
         ),
       );
       if (num(tender?.n) === 0) detail = "order_unknown";
@@ -1086,11 +1104,15 @@ async function edgeRefundUnreconciled(
       occurredAt: group.receivedAt.toISOString(),
       refType: "order",
       refId: group.refId,
-      amountIdr: group.unreadable ? null : group.amountIdr,
+      // An unreadable history has no trustworthy figure: show none.
+      amountIdr: detail === "unreadable" ? null : group.amountIdr,
       detail,
     });
+    if (detail === "unreadable") blind.add(group.refId);
   }
-  const known = ordered.filter((group) => !group.unreadable);
+  const known = ordered.filter(
+    (group) => !group.unreadable && !blind.has(group.refId),
+  );
   return {
     kind: "edge_refund_unreconciled",
     count: ordered.length,

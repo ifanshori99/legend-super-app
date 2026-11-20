@@ -38,6 +38,7 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
+import { orderRefundedPayloadSchema } from "@starter/shared/pos";
 import { createApp } from "../app.ts";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
@@ -433,5 +434,78 @@ describe("legend-aja6g edge void racing the ORD-09 writer: exactly one lane wins
       expect(await site.kit.voidRows(order.ulid)).toBe(0);
       expect(await liveOrd09(order)).toBe(1);
     }
+  });
+});
+
+// Brief 1244 r2 (money): a legacy edge `order.refunded` parked for the order
+// already paid the guest back from the drawer. A later edge void would be
+// ingested as a void row and a full admin QRIS refund could pay a second time.
+// The void ingest refuses (`refund_parked`), the event stays parked.
+describe("1244 r2 edge void with a parked edge refund", () => {
+  async function parkRefund(order: Order, sequence = 2) {
+    const now = new Date().toISOString();
+    const amountIdr = 10_000;
+    await site.kit.deliver([
+      {
+        id: createUlid(),
+        tenantId: site.tenant.tenantId,
+        outletId: site.tenant.outletId,
+        name: "order.refunded",
+        version: 1,
+        aggregateType: "order",
+        aggregateId: order.ulid,
+        sequence,
+        occurredAt: now,
+        actor: { type: "system" },
+        deviceId: null,
+        idempotencyKey: `order.refunded:${order.ulid}:${sequence}`,
+        payloadSchemaRef: "order.refunded.v1",
+        payload: orderRefundedPayloadSchema.parse({
+          orderId: order.ulid,
+          outletId: site.tenant.outletId,
+          businessDate: "2034-01-02",
+          refundId: randomUUID(),
+          amountIdr,
+          reason: "quality_complaint",
+          reasonNote: "Legacy edge refund already returned to the guest",
+          approvedBy: randomUUID(),
+          overrideId: null,
+          approvalRequestId: null,
+          grossSalesIdr: amountIdr,
+          discountIdr: 0,
+          serviceChargeIdr: 0,
+          pbjtIdr: 0,
+          refundCashIdr: amountIdr,
+          refundGatewayIdr: 0,
+          refundEdcIdr: 0,
+          refundPointsIdr: 0,
+          lines: [{ method: "cash", amountIdr }],
+          refundedAt: now,
+        }),
+      } as never,
+    ]);
+  }
+
+  it("an edge void of an order with a parked edge refund is refused (refund_parked), writes no void row and stays parked", async () => {
+    const order = await edgeSale();
+    await parkRefund(order);
+    await site.kit
+      .deliver([site.kit.voidEvent(order.ulid, 3)])
+      .catch(() => undefined);
+    expect(await site.kit.voidRows(order.ulid)).toBe(0);
+    expect(await site.kit.ingestOf(order.ulid)).toMatchObject({
+      state: "ingested",
+      reason: expect.stringMatching(/(^|:)refund_parked$/),
+    });
+    expect(await site.kit.parkedVoids(order.ulid)).toBe(1);
+  });
+
+  it("isolation: a parked edge refund of order X does not block the edge void of order Y", async () => {
+    const x = await edgeSale();
+    const y = await edgeSale();
+    await parkRefund(x);
+    await site.kit.deliver([site.kit.voidEvent(y.ulid)]);
+    expect(await site.kit.voidRows(y.ulid)).toBe(1);
+    expect(await site.kit.ingestOf(y.ulid)).toMatchObject({ state: "voided" });
   });
 });

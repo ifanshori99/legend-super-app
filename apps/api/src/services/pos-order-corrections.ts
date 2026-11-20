@@ -284,7 +284,7 @@ export async function voidPosOrderCorrection(
     throw new HttpError(
       409,
       "REFUND_HISTORY_UNVERIFIED",
-      "Refund tidak bisa dilakukan di kasir edge karena riwayat refund tidak bisa diverifikasi. Refund penjualan kasir offline belum didukung di rilis 1; hubungi finance.",
+      "Void tunai atau refund tidak bisa dilakukan di kasir edge karena riwayat refund tidak bisa diverifikasi. Refund penjualan kasir offline belum didukung di rilis 1; hubungi finance.",
     );
   const { idempotencyKey, ...request } = input;
   return correct(

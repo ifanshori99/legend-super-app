@@ -20,7 +20,10 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 import { eventEnvelopeSchema } from "@starter/shared/events";
-import { orderRefundedPayloadSchema } from "@starter/shared/pos";
+import {
+  orderRefundedPayloadSchema,
+  orderVoidedPayloadSchema,
+} from "@starter/shared/pos";
 import type { FinanceExceptionKind } from "@starter/shared/validators/finance-exceptions";
 import { createApp } from "../app.ts";
 import { pinOverrideFixtureFingerprint } from "./pos-override-fixture.ts";
@@ -410,5 +413,76 @@ describe("finance exception edge_refund_unreconciled (1244 r2)", () => {
     expect(itemOf(await list(foreign), s.orderUuid)).toEqual([]);
     const summary = (await list()).summary.find((row) => row.kind === KIND);
     expect(summary?.count).toBeGreaterThanOrEqual(1);
+  });
+
+  it("T7: a final void parked for an order with an edge refund makes the history unverifiable: unreadable, no amount, other kinds still listed", async () => {
+    const s = await sale(150_000);
+    await edgeRefund(s.orderId, 50_000);
+    const at = new Date(Date.now() - 500).toISOString();
+    const voided = eventEnvelopeSchema.parse({
+      id: createUlid(),
+      tenantId: seededTenantId,
+      outletId: seededOutletA,
+      name: "order.voided",
+      version: 1,
+      aggregateType: "order",
+      aggregateId: s.orderId,
+      sequence: 2,
+      occurredAt: at,
+      actor: { type: "user", id: cashier.userId },
+      deviceId: null,
+      idempotencyKey: randomUUID(),
+      payloadSchemaRef: "order.voided.v1",
+      payload: orderVoidedPayloadSchema.parse({
+        orderId: s.orderId,
+        outletId: seededOutletA,
+        businessDate: "2031-03-18",
+        amountIdr: 150_000,
+        reason: "customer_cancelled",
+        reasonNote: "Pelanggan batal",
+        requestedBy: cashier.userId,
+        approvedBy: supervisor.userId,
+        overrideId: createUlid(),
+        approvalRequestId: null,
+        voidedFinalOrder: true,
+        voidId: randomUUID(),
+        receiptNumber: `POS1-${randomUUID().slice(0, 6)}`,
+        voidedAt: at,
+      }),
+    });
+    await withTenant(db, wide, (tx) =>
+      applyEdgeDeferredEvent(tx, voided, {
+        context: wide,
+        edgeNodeId,
+        direction: "edge_to_cloud",
+        kind: "transaction_event",
+      }),
+    );
+    const result = await listFinanceExceptions(wide, {
+      ...WINDOW,
+      outletId: seededOutletA,
+    });
+    const items = itemOf(result, s.orderUuid);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      kind: KIND,
+      amountIdr: null,
+      detail: "unreadable",
+    });
+    expect(
+      result.items.some((item) => item.kind === "edge_link_dead_letter"),
+    ).toBe(true);
+  });
+
+  it("native row with the same id but another order or amount does not hide the parked fact", async () => {
+    const s = await sale(150_000);
+    const other = await sale(150_000);
+    const id = await edgeRefund(s.orderId, 70_000);
+    await nativeRefund(other.orderUuid, 70_000, id);
+    expect(itemOf(await list(), s.orderUuid)).toHaveLength(1);
+    const t = await sale(150_000);
+    const id2 = await edgeRefund(t.orderId, 70_000);
+    await nativeRefund(t.orderUuid, 60_000, id2);
+    expect(itemOf(await list(), t.orderUuid)).toHaveLength(1);
   });
 });

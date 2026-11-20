@@ -384,3 +384,32 @@ export async function listParkedEdgeRefundFacts(
   }
   return [...byRefund.values(), ...unreadable];
 }
+
+/**
+ * True when any `order.refunded` is parked for the order, readable or not (an
+ * unreadable fact may still be a payout). Used by the edge void ingest: the
+ * guest was already paid back from the drawer, so a void row (and a full
+ * gateway refund it would allow) could pay the same money twice. Read-only.
+ */
+export async function hasParkedEdgeRefund(
+  tx: Tx,
+  input: { tenantId: string; orderId: string },
+): Promise<boolean> {
+  const uuid = canonicalOrderId(input.orderId);
+  const ids = sql.join(
+    [uuid, uuidToUlid(uuid).toLowerCase()].map((id) => sql`${id}`),
+    sql`, `,
+  );
+  const { rows } = await tx.execute<{ found: number }>(sql`
+    SELECT 1 AS found FROM edge_deferred_events
+     WHERE tenant_id = ${input.tenantId}
+       AND (event_name = 'order.refunded' OR envelope->>'name' = 'order.refunded')
+       AND (
+         lower(aggregate_id) IN (${ids})
+         OR lower(envelope->>'aggregateId') IN (${ids})
+         OR lower(envelope->'payload'->>'orderId') IN (${ids})
+       )
+     LIMIT 1
+  `);
+  return rows.length > 0;
+}
