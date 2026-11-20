@@ -1101,38 +1101,62 @@ async function assertNotDepreciationJournal(
 }
 
 /**
- * Automatic expense accruals whose source owns the correction (SO 1216 F-P1b):
- * reversing one by hand removes the expense, raises the profit and so the
- * profit share. The payroll run-lock accrual is undone by cancelling the run
- * (payroll.reversed); the inventory GL journals (HPP and waste/count) by a
- * stock movement. Depreciation has its own guard above. Sales, receipts,
- * payouts and fees stay reversible here (CTO decision, deny list). Petty cash
- * purchases and cash-out expenses are held by assertAutoCashOutSourceNotPaid.
+ * A manual reversal of an automatic journal may not raise net profit (SO 1216
+ * F-P1b): mirroring a payroll accrual, HPP, waste, a cashier cash-out (Dr
+ * expense / Cr 1101), a supplier bill, a refund or a points deferral removes
+ * an expense or restores income, so the profit share would be overpaid. The
+ * rule reads the account type from the COA: the original's income and
+ * expense lines summing credit - debit below zero mean the mirror raises
+ * profit, and it is refused. The correction goes through the source flow
+ * (cancel the payroll run, fix the stock movement) or a manual journal
+ * (fees, MDR). A sale, a receipt, a DP or a payout (no profit raised) stays
+ * reversible. Journals finance writes by hand (manual, recurring) and the
+ * system reversals (payroll cancel, sale void) are not judged here.
+ * Depreciation has its own guard.
  */
-const INVENTORY_GL_SOURCES: ReadonlySet<string> = new Set([
-  "cogs",
-  "stock_adjustment",
+const PROFIT_JUDGED_EXEMPT_SOURCES: ReadonlySet<string> = new Set([
+  "manual",
+  "recurring",
 ]);
 
-function assertNotSourceOwnedAccrual(row: {
-  sourceType: string;
-  idempotencyKey: string | null;
-}): void {
-  const payrollAccrual =
-    row.sourceType === "payroll" &&
-    // payrollGlKeys.locked in payroll-gl-consumer (it imports this module).
-    row.idempotencyKey?.startsWith("payroll-gl:locked:") === true;
-  if (payrollAccrual)
-    throw new HttpError(
-      409,
-      "AUTO_JOURNAL_LOCKED",
-      "Jurnal akrual payroll ini dibuat otomatis dan tidak bisa dibalik manual; batalkan payroll run-nya.",
+async function assertReversalDoesNotRaiseProfit(
+  tx: TenantTransaction,
+  tenantId: TenantId,
+  row: { sourceType: string },
+  lines: readonly LineRow[],
+): Promise<void> {
+  if (PROFIT_JUDGED_EXEMPT_SOURCES.has(row.sourceType)) return;
+  const accountIds = [...new Set(lines.map((line) => line.accountId))];
+  if (accountIds.length === 0) return;
+  const accounts = await tx
+    .select({ id: chartOfAccounts.id, type: chartOfAccounts.type })
+    .from(chartOfAccounts)
+    .where(
+      and(
+        eq(chartOfAccounts.tenantId, tenantId),
+        inArray(chartOfAccounts.id, accountIds),
+      ),
     );
-  if (INVENTORY_GL_SOURCES.has(row.sourceType))
+  const typeOf = new Map(accounts.map((account) => [account.id, account.type]));
+  let originalProfit = 0n;
+  for (const line of lines) {
+    const type = typeOf.get(line.accountId);
+    // An account missing from the COA cannot be judged: fail closed.
+    if (type === undefined)
+      throw new HttpError(
+        409,
+        "AUTO_JOURNAL_LOCKED",
+        "Akun jurnal ini tidak ditemukan di bagan akun; pembalikan manual ditolak.",
+      );
+    if (type !== "revenue" && type !== "expense") continue;
+    originalProfit +=
+      BigInt(String(line.creditIdr)) - BigInt(String(line.debitIdr));
+  }
+  if (originalProfit < 0n)
     throw new HttpError(
       409,
       "AUTO_JOURNAL_LOCKED",
-      "Jurnal HPP atau penyesuaian stok ini dibuat otomatis dan tidak bisa dibalik manual; perbaiki lewat pergerakan stoknya.",
+      "Jurnal otomatis ini tidak bisa dibalik manual karena pembalikannya menaikkan laba; koreksi lewat alur sumbernya (batalkan payroll run, perbaiki pergerakan stok) atau dengan jurnal manual.",
     );
 }
 
@@ -1456,7 +1480,13 @@ export async function reverseJournalInTransaction(
       lines.map(toLine),
     );
   assertReversible(row, reversal?.id ?? null);
-  if (input.manualReversal === true) assertNotSourceOwnedAccrual(row);
+  if (input.manualReversal === true)
+    await assertReversalDoesNotRaiseProfit(
+      tx,
+      context.tenant.tenantId,
+      row,
+      lines,
+    );
   await assertReturnBackingNotPaidOut(tx, context.tenant.tenantId, row);
   const reversalLines = buildReversalLines(
     {
