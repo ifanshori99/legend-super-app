@@ -760,6 +760,11 @@ describe("role grants (§3.7 Pemberian Role)", () => {
       "REAUTH_REQUIRED",
     );
     assert.equal(access.REAUTH_CLOCK_SKEW_TOLERANCE_MS <= 2_000, true);
+    // A missing stamp (undefined from a caller) is REAUTH_REQUIRED, not a crash.
+    throwsCode(
+      () => grant({ grantorReauthenticatedAt: undefined }),
+      "REAUTH_REQUIRED",
+    );
   });
 
   test("custom roles: catalog only, sensitive permissions force MFA", () => {
@@ -819,6 +824,20 @@ describe("role grants (§3.7 Pemberian Role)", () => {
         edit("tenantAdmin", ["payroll.view"], {
           grantorMfaVerified: false,
           grantorReauthenticatedAt: fx.now,
+        }),
+      "SELF_ELEVATION_FORBIDDEN",
+    );
+    // 1230: a stamp 40 ms ahead of the DB clock is "just now"; 10 s ahead is
+    // not fresh, so the top-authority shortcut is closed.
+    assert.doesNotThrow(() =>
+      edit("tenantAdmin", ["payroll.view"], {
+        grantorReauthenticatedAt: new Date(fx.now.getTime() + 40),
+      }),
+    );
+    throwsCode(
+      () =>
+        edit("tenantAdmin", ["payroll.view"], {
+          grantorReauthenticatedAt: new Date(fx.now.getTime() + 10_000),
         }),
       "SELF_ELEVATION_FORBIDDEN",
     );

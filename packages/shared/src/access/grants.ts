@@ -47,7 +47,7 @@ export function isReauthFresh(
   reauthenticatedAt: Date | null,
   now: Date,
 ): boolean {
-  if (reauthenticatedAt === null) return false;
+  if (reauthenticatedAt == null) return false;
   const age = now.getTime() - reauthenticatedAt.getTime();
   return (
     age >= -REAUTH_CLOCK_SKEW_TOLERANCE_MS &&
