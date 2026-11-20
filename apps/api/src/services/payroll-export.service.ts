@@ -970,15 +970,6 @@ export async function createPayrollTaxExport(
       actorUserId,
       LOCK_CODE,
     );
-    // legend 1229: the year lock a run lock, reversal or rapel finalize holds.
-    // An export waits for one in progress and sees its slips; one that starts
-    // later marks this export stale.
-    await lockPayrollTaxYear(
-      tx,
-      tenantId,
-      input.legalEntityId,
-      input.taxPeriod.slice(0, 4),
-    );
     let fresh = false;
     const created = await idempotentHrisWrite(
       tx,
@@ -993,6 +984,16 @@ export async function createPayrollTaxExport(
       },
       async () => {
         fresh = true;
+        // legend 1229: the year lock a run lock, reversal or rapel finalize
+        // holds, taken after the idempotency key (as the run lock route). An
+        // export waits for one in progress and sees its slips; one that
+        // starts later marks this export stale.
+        await lockPayrollTaxYear(
+          tx,
+          tenantId,
+          input.legalEntityId,
+          input.taxPeriod.slice(0, 4),
+        );
         // Withholder (legal entity) NPWP: 16 digits, the 15-digit legacy form is refused.
         const [entity] = await tx
           .select({ id: legalEntities.id, npwp: legalEntities.npwpEncrypted })

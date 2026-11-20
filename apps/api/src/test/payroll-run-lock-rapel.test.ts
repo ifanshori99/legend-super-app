@@ -1487,10 +1487,14 @@ describe("legend 1229 a Coretax export waits for a lock or reversal of its year"
     let settled = false;
     try {
       await holder.query("BEGIN");
+      const yearLockKey = `payroll-pph21-year:${tenant.id}:${s.entityId}:2026`;
       await holder.query(
         "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-        [`payroll-pph21-year:${tenant.id}:${s.entityId}:2026`],
+        [yearLockKey],
       );
+      const holderPid = (
+        await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")
+      ).rows[0]!.pid;
       const pending = post(exporter, TAX_EXPORT_PATH, {
         legalEntityId: s.entityId,
         kind: "monthly_withholding",
@@ -1503,11 +1507,17 @@ describe("legend 1229 a Coretax export waits for a lock or reversal of its year"
       // Deterministic: the export backend is seen waiting on the advisory lock.
       let waiting = false;
       for (let attempt = 0; attempt < 100 && !waiting; attempt++) {
+        // Only a backend waiting (granted = false) on this very year lock:
+        // a bigint advisory key is classid (high 32 bits), objid (low 32
+        // bits), objsubid 1.
         const activity = await owner.query<{ n: number }>(
-          `SELECT count(*)::int AS n FROM pg_stat_activity
-            WHERE wait_event_type = 'Lock' AND wait_event = 'advisory'
-              AND query ILIKE '%pg_advisory_xact_lock%'
-              AND pid <> pg_backend_pid()`,
+          `WITH k AS (SELECT hashtextextended($1, 0) AS key)
+           SELECT count(*)::int AS n FROM pg_locks, k
+            WHERE locktype = 'advisory' AND NOT granted AND objsubid = 1
+              AND classid = ((key >> 32) & 4294967295)::oid
+              AND objid = (key & 4294967295)::oid
+              AND pid <> $2`,
+          [yearLockKey, holderPid],
         );
         waiting = activity.rows[0]!.n > 0;
         if (!waiting) await new Promise((resolve) => setTimeout(resolve, 50));
