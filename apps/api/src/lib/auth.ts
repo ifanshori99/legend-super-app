@@ -104,12 +104,14 @@ function refuse(error: unknown): never {
  * deleteUserSessions (internal-adapter.mjs:503-521): the session delete hook
  * also removes the user's orphan push subscriptions on these paths. The
  * /admin/* ones are refused by hooks.before (only impersonation is enabled);
- * listed so enabling one later cannot skip the sweep. /reset-password is not
- * here: revokeSessionsOnPasswordReset is off, so it never reaches
- * deleteUserSessions; emailAndPassword.onPasswordReset sweeps instead.
+ * listed so enabling one later cannot skip the sweep. /reset-password is
+ * here too (legend-1255): revokeSessionsOnPasswordReset is on, so a reset ends
+ * every session of the user through deleteUserSessions; the orphan sweep in
+ * emailAndPassword.onPasswordReset stays for subscriptions with no session.
  */
 const USER_WIDE_SESSION_REVOKE_PATHS = new Set([
   "/revoke-sessions",
+  "/reset-password",
   "/change-password",
   "/delete-user",
   "/delete-user/callback",
@@ -133,6 +135,7 @@ const EXPLICIT_SESSION_END_PATHS = new Set([
   "/revoke-session",
   "/revoke-sessions",
   "/revoke-other-sessions",
+  "/reset-password",
   "/change-password",
   "/delete-user",
   "/delete-user/callback",
@@ -743,6 +746,9 @@ export const auth = betterAuth({
     // the answer is the same for a known and an unknown address (Better Auth
     // answers both alike; sendPasswordResetEmail does not wait for the mail).
     resetPasswordTokenExpiresIn: PASSWORD_RESET_TOKEN_SECONDS,
+    // A reset ends every session of the account (a stolen session must not
+    // survive the password change).
+    revokeSessionsOnPasswordReset: true,
     sendResetPassword: async ({ user, token }, request) =>
       sendPasswordResetEmail({ user, token }, request),
     // legend-ofq4f (second opinion P1-1): a password reset by token has no

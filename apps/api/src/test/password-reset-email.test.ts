@@ -21,7 +21,7 @@ import {
   vi,
 } from "vitest";
 import { setEmailSenderForTests, type EmailMessage } from "../lib/email-sender";
-import { agent, originHeader, signUp } from "./helpers";
+import { agent, originHeader, setRole, signUp } from "./helpers";
 
 const PASSWORD = "Test-password-123!";
 const NEW_PASSWORD = "Another-password-456!";
@@ -100,6 +100,33 @@ describe("password reset by email", () => {
     expect((await signIn(agent(), email, NEW_PASSWORD)).status).toBe(200);
   });
 
+  it("stores a one-hour expiry and ends every old session on reset", async () => {
+    const owner = agent();
+    const email = await signUp(owner);
+    expect((await owner.get("/api/auth/get-session")).body).toMatchObject({
+      user: { email },
+    });
+
+    await requestReset(agent(), email);
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    const token = tokenOf(sent[0]!);
+    const row = await pool.query(
+      "SELECT extract(epoch FROM (expires_at - now())) AS seconds FROM verification WHERE identifier = $1",
+      [`reset-password:${token}`],
+    );
+    const seconds = Number(row.rows[0].seconds);
+    expect(seconds).toBeGreaterThan(3500);
+    expect(seconds).toBeLessThanOrEqual(3600);
+
+    const reset = await agent()
+      .post("/api/auth/reset-password")
+      .set(originHeader)
+      .send({ token, newPassword: NEW_PASSWORD });
+    expect(reset.status).toBe(200);
+    // The session opened before the reset is gone.
+    expect((await owner.get("/api/auth/get-session")).body).toBeNull();
+  });
+
   it("refuses an expired token", async () => {
     const client = agent();
     const email = await signUp(client);
@@ -131,6 +158,68 @@ describe("password reset by email", () => {
     expect(unknownAnswer.body).toEqual(knownAnswer.body);
     await vi.waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]!.to).toBe(known);
+  });
+
+  describe("customers only: other accounts get the same answer and no mail", () => {
+    async function expectSilent(email: string) {
+      const known = await signUp(agent());
+      const baseline = await requestReset(agent(), known);
+      await vi.waitFor(() => expect(sent).toHaveLength(1));
+      sent = [];
+      const answer = await requestReset(agent(), email);
+      expect(answer.status).toBe(baseline.status);
+      expect(answer.body).toEqual(baseline.body);
+      // Give the background send time to (wrongly) happen.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(sent).toHaveLength(0);
+    }
+
+    it("does not mail an account with a staff or admin role", async () => {
+      const email = await signUp(agent());
+      await setRole(email, "admin");
+      await expectSilent(email);
+    });
+
+    it("does not mail an account with an active role assignment", async () => {
+      const client = agent();
+      const email = await signUp(client);
+      const tenant = await pool.query("SELECT id FROM tenants LIMIT 1");
+      const userRow = await pool.query(
+        'SELECT id FROM "user" WHERE email = $1',
+        [email],
+      );
+      const userId = userRow.rows[0].id as string;
+      const conn = await pool.connect();
+      try {
+        await conn.query("BEGIN");
+        await conn.query("SELECT set_config('app.tenant_id', $1, true)", [
+          tenant.rows[0].id,
+        ]);
+        const role = await conn.query(
+          "SELECT id FROM roles WHERE tenant_id = $1 LIMIT 1",
+          [tenant.rows[0].id],
+        );
+        await conn.query(
+          `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, assigned_by)
+           VALUES ($1, $2, $3, 'tenant', $2)`,
+          [tenant.rows[0].id, userId, role.rows[0].id],
+        );
+        await conn.query("COMMIT");
+      } finally {
+        conn.release();
+      }
+      await expectSilent(email);
+    });
+
+    it("does not mail an account without a password credential (Google only)", async () => {
+      const email = await signUp(agent());
+      await pool.query(
+        `UPDATE account SET provider_id = 'google', password = NULL
+         WHERE user_id = (SELECT id FROM "user" WHERE email = $1)`,
+        [email],
+      );
+      await expectSilent(email);
+    });
   });
 
   it("does not mail a WhatsApp-only placeholder address", async () => {
