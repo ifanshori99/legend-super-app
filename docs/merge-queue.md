@@ -312,3 +312,4 @@ Induk lebih dulu. Migrasi dinomori ulang dari ujung m1 saat batch disusun.
 - 15:10 20 Nov DARAT m1: int/batch98 899ecfdb6, int/batch99 2989b7e04, int/batch100 3323adc17, int/batch101 7d84e37c5 (fast-forward berurutan). Full run batch101 hijau: vitest api 27050 lulus/49 skip, web 492, root node 3684, 0 gagal. Isi: 1191, 1198, 1192, 1201, 1199, 1207, 1209-1214 + fix test full run batch100. Butuh env RESEAL_DATABASE_URL saat deploy.
 
 - 00:56 21 Nov DARAT m1: int/batch102 d404a5032, int/batch103 d8d0551da, int/batch104 027112a75 (full run batch104 ke-5 hijau: root 3685, web 492, api 27113). Isi: 1217-1220, 1222, 1223 (+mig 0515-0521), 1228, 1229, 1230, 1235, 1239.
+- 04:46 21 Nov DARAT m1: int/batch105 6f418df53 (full run hijau: root 3685, web 492, api 27129). Isi: 1232 (mig 0522), 1234, 1237 (recon payout txid).
