@@ -50,3 +50,9 @@ Cara menjawab: cukup tulis nomor dan "setuju usulan" atau pilihan lain.
 - DOIT dan Duitku: founder sudah siap. Diisi di akhir ke `deploy/single-vm/runtime.env`. Tim hanya memeriksa nama kuncinya lengkap.
 - Kunci sandbox DOIT dan Duitku untuk uji coba sebelum rilis, bila ada. Mempercepat uji pembayaran nyata.
 - Akun email pengirim atau WhatsApp (sesuai jawaban no. 10), dan akun pemantau error (no. 13).
+
+## D. Pertanyaan baru (21 Nov, sesudah "setuju semua")
+
+19. **Tutup buku bulanan saat ada batch produksi yang tertahan.**
+    Bila catatan bahan sebuah batch produksi hilang di jalan, batch itu ditahan dan tidak dibukukan. Selama ada batch tertahan, tutup buku bulan itu ditolak, supaya laporan tidak salah.
+    Usulan: tetap ditolak, sambil tim membuat tombol "kirim ulang" untuk catatan yang hilang. Pilihan lain: pemilik atau finance manager boleh tetap menutup buku dengan alasan tertulis, lalu selisihnya dibukukan di bulan berikutnya.
