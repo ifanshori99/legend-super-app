@@ -11,8 +11,8 @@ const web = resolve(import.meta.dirname, "../apps/web");
 const { assertNoMockInDeployedBuild } =
   await import("../apps/web/vite-mock-guard.ts");
 
-test("a staging or production build with mock mode fails", () => {
-  for (const mode of ["staging", "production", "not-a-mode", ""]) {
+test("a mock build fails unless DEPLOYMENT_MODE=development is set explicitly", () => {
+  for (const mode of ["staging", "production", "not-a-mode", "", undefined]) {
     assert.throws(
       () =>
         assertNoMockInDeployedBuild({
@@ -32,13 +32,6 @@ test("mock mode stays allowed for a development build and for the dev server", (
       command: "build",
       mock: "true",
       deploymentMode: "development",
-    }),
-  );
-  assert.doesNotThrow(() =>
-    assertNoMockInDeployedBuild({
-      command: "build",
-      mock: "true",
-      deploymentMode: undefined,
     }),
   );
   assert.doesNotThrow(() =>

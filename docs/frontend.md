@@ -200,7 +200,7 @@ document.cookie = "legend-mock-role=cashier; path=/"; // then reload
 - **Offline banner slot**: `OfflineBannerSlot` (`components/layout/`) sits above every page's content; bead `legend-diq` fills it. Operations screens also show the connection badge in the shell header.
 - **Theme toggle** in every shell header (kitchen is always dark).
 - **noindex** on every area except `public` (PRD §5 "Diindeks: Tidak"). Every page response defaults to `Cache-Control: private, no-store` (`start.ts`), because SSR HTML embeds the visitor's session; a route that is safe to cache sets its own header.
-- **Mock mode is dev-only**: a web build with `VITE_API_MOCK=true` refuses to boot unless `DEPLOYMENT_MODE=development` (`lib/env.server.ts`), and `vite build` fails earlier for the same combination (`vite-mock-guard.ts`).
+- **Mock mode is dev-only**: a web build with `VITE_API_MOCK=true` refuses to boot unless `DEPLOYMENT_MODE=development` (`lib/env.server.ts`), and `vite build` fails earlier unless `DEPLOYMENT_MODE=development` is set explicitly (`vite-mock-guard.ts`; unset fails).
 - **PWA**: `public/manifest.webmanifest` is a stub linked from `/member/*` and `/karyawan/*`; the per-brand manifest comes from a worker later (PRD §5).
 - **Brand name** in headers is the catalog's `app.defaultBrand` until tenant config supplies the real one (D43); the outlet name and time zone in the operations header wait for the outlet-context bead.
 
