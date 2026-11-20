@@ -22,10 +22,14 @@ ALTER TABLE "payroll_payout_gl_postings" ADD CONSTRAINT "payroll_payout_gl_posti
 -- only). The guard below accepts exactly the transitions named here.
 GRANT UPDATE (payable_account_hold, fee_opening_balance_at, fee_opening_balance_by, fee_opening_balance_note, payable_hold_released_at, payable_hold_released_by, payable_hold_release_note) ON TABLE public.payroll_payout_gl_postings TO legend_app;
 --> statement-breakpoint
--- The 0412 guard, verbatim except: the fee_posted flip needs an unmarked
+-- The 0501 guard, verbatim except: the fee_posted flip needs an unmarked
 -- posting, and two new transitions (fee mark, hold release) before the refusal.
+-- (batch98) Written first on the 0412 guard; rebased on 0501 so the settle flip
+-- keeps the entity lock (SO 1105 round 6) and the waive branch (legend-1089).
 CREATE OR REPLACE FUNCTION app.payroll_payout_gl_postings_guard() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+DECLARE
+  v_settle_entity uuid;
 BEGIN
   IF current_setting('app.payroll_reseal', true) IS NOT DISTINCT FROM 'on'
     AND NEW.pii_key_version > OLD.pii_key_version
@@ -48,9 +52,42 @@ BEGIN
   -- (F3, 0400) the settle journal checks moved to app.payout_settle_journal_ok
   -- (re-checked at commit). The row read there is OLD, equal to NEW here except
   -- the kind, which the helper does not read.
+  -- (SO 1105 round 6, P1-2) takes the entity cash/bank advisory lock first (same
+  -- key and hash as the TS entityLock), held to commit: the 1102 guards read GL
+  -- and reserve under it, so a settle flip by legend_app (UPDATE(kind), 0381)
+  -- never interleaves with a spend that counted the old reserve. The TS settle
+  -- already holds it, so it re-enters. Caveat: the trigger runs after the row
+  -- lock, so a direct caller can deadlock with the TS order (entity, batch, row);
+  -- one side aborts, no loss. The TS settle flip (a plain UPDATE by the system,
+  -- no actor) is not converted to a trusted function: no actor is available.
   IF OLD.kind IN ('settle_pending', 'settle_skipped') AND NEW.kind = 'settle'
+    AND (to_jsonb(NEW) - 'kind') IS NOT DISTINCT FROM (to_jsonb(OLD) - 'kind') THEN
+    SELECT b.legal_entity_id INTO v_settle_entity
+      FROM public.payroll_disbursement_batches b
+     WHERE b.tenant_id = NEW.tenant_id AND b.id = NEW.batch_id;
+    IF v_settle_entity IS NOT NULL THEN
+      PERFORM pg_catalog.pg_advisory_xact_lock(
+        pg_catalog.hashtextextended(
+          'acc-cashbank:' || lower(NEW.tenant_id::text) || ':' || lower(v_settle_entity::text), 0));
+      IF app.payout_settle_journal_ok(NEW.tenant_id, NEW.id) THEN
+        RETURN NEW;
+      END IF;
+    END IF;
+  END IF;
+  -- (legend-1089, 0691) the pure flip settle_skipped -> settle_waived on a cash
+  -- batch, now only by the payout role (app.payout_waive_skipped) and only with
+  -- the correcting journal of the posting, checked on net and accounts by
+  -- app.payout_waive_journal_ok (re-checked at commit). legend_app is refused.
+  -- settle_waived is terminal: no branch accepts it as OLD.kind.
+  IF OLD.kind = 'settle_skipped' AND NEW.kind = 'settle_waived'
     AND (to_jsonb(NEW) - 'kind') IS NOT DISTINCT FROM (to_jsonb(OLD) - 'kind')
-    AND app.payout_settle_journal_ok(NEW.tenant_id, NEW.id) THEN
+    AND current_user = 'legend_payout'
+    AND EXISTS (
+      SELECT 1
+        FROM public.payroll_disbursement_batches b
+       WHERE b.tenant_id = NEW.tenant_id AND b.id = NEW.batch_id
+         AND b.channel = 'cash')
+    AND app.payout_waive_journal_ok(NEW.tenant_id, NEW.id) THEN
     RETURN NEW;
   END IF;
   -- (F4, 0400) on a non-cash batch with a frozen bank account the source is
