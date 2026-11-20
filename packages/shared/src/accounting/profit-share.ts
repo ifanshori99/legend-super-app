@@ -1484,6 +1484,8 @@ export const distributionRunSummarySchema = z
     totalNetIdr: idrSchema,
     lineCount: z.number().int().min(1),
     paidLineCount: z.number().int().min(0),
+    /** Lines with money out: paid, minus zero lines the carry settled. */
+    moneyPaidLineCount: z.number().int().min(0),
     requestedBy: userIdSchema,
     requestedAt: isoDateTimeSchema,
     approvedBy: userIdSchema.nullable(),
@@ -1502,6 +1504,12 @@ export const distributionRunSummarySchema = z
         code: "custom",
         path: ["paidLineCount"],
         message: "paidLineCount cannot exceed lineCount",
+      });
+    if (row.moneyPaidLineCount > row.paidLineCount)
+      ctx.addIssue({
+        code: "custom",
+        path: ["moneyPaidLineCount"],
+        message: "moneyPaidLineCount cannot exceed paidLineCount",
       });
   });
 export type DistributionRunSummary = z.infer<

@@ -28,6 +28,7 @@ import {
   cafeLegendAccountingFixtures,
   createAdjustmentDistribution,
   createDistributionRun,
+  isMoneyPaidLine,
   createProfitEntity,
   createShareAllocationVersion,
   createShareholder,
@@ -590,6 +591,8 @@ register(listDistributionRuns, ({ params, query, scenario }) => {
         totalNetIdr: run.totalNetIdr,
         lineCount: run.lines.length,
         paidLineCount: run.lines.filter((line) => line.paymentStatus === "paid")
+          .length,
+        moneyPaidLineCount: run.lines.filter((line) => isMoneyPaidLine(line))
           .length,
         requestedBy: run.requestedBy,
         requestedAt: run.requestedAt,

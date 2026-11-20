@@ -1704,6 +1704,22 @@ describe("SH-01 statements and my-profit-share show only the caller's rows", () 
     ).toBe(false);
   });
 
+  it("the list counts a carry-settled zero line as paid but not as money out", async () => {
+    const { world, approved } = await approvedRunWithAbsorbedHolders();
+    const list = listDistributionRuns.response.parse(
+      (
+        await get(
+          manager,
+          `/profit-entities/${world.profitEntityId}/distributions`,
+        )
+      ).body,
+    );
+    const row = list.data.find((entry) => entry.id === approved.id)!;
+    expect(row.status).toBe("approved");
+    expect(row.paidLineCount).toBeGreaterThan(0);
+    expect(row.moneyPaidLineCount).toBe(0);
+  });
+
   it("a shareholder cannot use the manager endpoints", async () => {
     const world = await makeWorld(roundingPolicy, roundingShares());
     const { run } = await approvedRun(world);

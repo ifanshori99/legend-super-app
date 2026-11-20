@@ -480,9 +480,9 @@ export function canCancelApprovedRun(
 
 /** Row version of [canCancelApprovedRun] from the list summary. */
 export function canCancelApprovedSummary(
-  run: Pick<DistributionRunSummary, "status" | "paidLineCount">,
+  run: Pick<DistributionRunSummary, "status" | "moneyPaidLineCount">,
 ): boolean {
-  return run.status === "approved" && run.paidLineCount === 0;
+  return run.status === "approved" && run.moneyPaidLineCount === 0;
 }
 
 /** Payment recording is the one write an approved run allows. */

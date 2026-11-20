@@ -1296,13 +1296,19 @@ export async function listDistributionRunsService(
       .orderBy(desc(distributionRuns.requestedAt), desc(distributionRuns.id))
       .limit(query.limit + 1);
     const page = rows.slice(0, query.limit);
-    const counts = new Map<string, { total: number; paid: number }>();
+    const counts = new Map<
+      string,
+      { total: number; paid: number; moneyPaid: number }
+    >();
     if (page.length > 0) {
       const countRows = await tx
         .select({
           runId: distributionLines.distributionRunId,
           total: sql<number>`count(*)::int`,
           paid: sql<number>`(count(*) FILTER (WHERE ${distributionLines.paymentStatus} = 'paid'))::int`,
+          // Money out: paid and not a zero line the carry settled on approval
+          // (the same rule as isMoneyPaidLine).
+          moneyPaid: sql<number>`(count(*) FILTER (WHERE ${distributionLines.paymentStatus} = 'paid' AND NOT (${distributionLines.grossIdr} = 0 AND ${distributionLines.paymentRef} = ${CARRY_ABSORBED_PAYMENT_REF})))::int`,
         })
         .from(distributionLines)
         .where(
@@ -1316,10 +1322,14 @@ export async function listDistributionRunsService(
         )
         .groupBy(distributionLines.distributionRunId);
       for (const row of countRows)
-        counts.set(row.runId, { total: row.total, paid: row.paid });
+        counts.set(row.runId, {
+          total: row.total,
+          paid: row.paid,
+          moneyPaid: row.moneyPaid,
+        });
     }
     const data = page.map(({ row, needsCorrection }) => {
-      const count = counts.get(row.id) ?? { total: 0, paid: 0 };
+      const count = counts.get(row.id) ?? { total: 0, paid: 0, moneyPaid: 0 };
       return distributionRunSummarySchema.parse({
         id: row.id,
         profitEntityId: row.profitEntityId,
@@ -1333,6 +1343,7 @@ export async function listDistributionRunsService(
         totalNetIdr: row.totalNetIdr,
         lineCount: count.total,
         paidLineCount: count.paid,
+        moneyPaidLineCount: count.moneyPaid,
         requestedBy: row.requestedBy,
         requestedAt: iso(row.requestedAt),
         approvedBy: row.approvedBy,
