@@ -55,6 +55,7 @@ import {
   createUlid,
   extendCostIdr,
   parseDecimal4,
+  ulidSchema,
   type BusinessDate,
   type ScopedTenantContext,
 } from "@starter/shared/core";
@@ -196,15 +197,6 @@ function glSourceTypesOf(payload: {
   return sources;
 }
 
-/** The ledger source type behind a GL source (its id form follows it). */
-function ledgerSourceTypeOf(
-  sourceType: InventoryGlSourceType,
-): StockSourceType {
-  return sourceType === "negative_stock_revaluation"
-    ? "goods_receipt"
-    : sourceType;
-}
-
 const LATE_AUDIT_FIELDS = [
   "journalId",
   "trigger",
@@ -239,11 +231,17 @@ function normalizeSource(source: {
   sourceId: string;
 }) {
   const dbId = sourceIdToDb(source.sourceId);
-  return {
-    sourceType: source.sourceType,
-    dbId,
-    domainId: sourceIdFromDb(ledgerSourceTypeOf(source.sourceType), dbId),
-  };
+  // A revaluation keeps the id form of the document behind it (bead 1232):
+  // an order's ULID stays a ULID (its uuid storage form is not a valid
+  // journal source id), a uuid document stays a uuid. The event payload and
+  // the blocked row both carry that domain form, so it is stable per source.
+  const domainId =
+    source.sourceType === "negative_stock_revaluation"
+      ? ulidSchema.safeParse(source.sourceId).success
+        ? source.sourceId
+        : dbId
+      : sourceIdFromDb(source.sourceType, dbId);
+  return { sourceType: source.sourceType, dbId, domainId };
 }
 
 /** Outlet of a source's first row (ledger or revaluation), or null. */
@@ -576,6 +574,8 @@ export async function postStockSourceToGl(
           eq(stockLedger.tenantId, tenantId),
           eq(stockLedger.sourceType, "order"),
           eq(stockLedger.sourceId, target.dbId),
+          // A revaluation posted on the same row is not an order posting.
+          eq(inventoryGlPostings.sourceType, "order"),
         ),
       )
       .limit(1);
@@ -585,7 +585,6 @@ export async function postStockSourceToGl(
     }
   }
   await lockSource(tx, tenantId, target);
-  const ledgerSourceType = ledgerSourceTypeOf(target.sourceType);
   let rows =
     target.sourceType === "negative_stock_revaluation"
       ? await tx
@@ -649,7 +648,7 @@ export async function postStockSourceToGl(
             .where(
               and(
                 eq(stockLedger.tenantId, tenantId),
-                eq(stockLedger.sourceType, ledgerSourceType),
+                eq(stockLedger.sourceType, target.sourceType),
                 eq(stockLedger.sourceId, target.dbId),
                 inArray(stockLedger.movementType, [...mapping.movementTypes]),
               ),

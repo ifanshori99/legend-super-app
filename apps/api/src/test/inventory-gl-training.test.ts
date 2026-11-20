@@ -712,3 +712,35 @@ describe("§3.19 training rule against rows that predate it (round 2)", () => {
     expect(await netByRole(world)).toEqual({ cogs: 3000, inventory: -3000 });
   });
 });
+
+// Card 1232 review P3-1: a training order's return onto a negative balance
+// posts its revaluation (a real card change) on the return's ledger row. That
+// posting is not an order posting, so a redelivered event still finds the
+// training order unposted and the sale and return stay out of the books.
+describe("1232 a training order's revaluation does not unlock its order rows", () => {
+  it("INV-GL-TRAINING-07 return onto a negative balance: only the revaluation posts, redelivery keeps the order out", async () => {
+    const world = await makeWorld();
+    const item = await insertItem("Gula aren");
+    await receive(world, item, "10.0000", "100.0000");
+    const training = await seedOrder(world, { training: true });
+    const sale = await moveOrder(world, {
+      movementType: "sale",
+      orderId: training,
+      itemId: item,
+      quantity: "-15.0000",
+    });
+    // -5 at avg 100; 2 back at 120 revalues the deficit by -5 x 20 = -100.
+    const back = await moveOrder(world, {
+      movementType: "return",
+      orderId: training,
+      itemId: item,
+      quantity: "2.0000",
+      unitCost: "120.0000",
+    });
+    expect(await deliverRow(sale)).toEqual({ status: "ignored" });
+    expect((await deliverRow(back)).status).toBe("posted");
+    expect((await deliverRow(back)).status).toBe("already_posted");
+    expect(await deliverRow(sale)).toEqual({ status: "ignored" });
+    expect(await netByRole(world)).toEqual({ cogs: 100, inventory: -100 });
+  });
+});
