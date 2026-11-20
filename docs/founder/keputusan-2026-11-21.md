@@ -58,3 +58,4 @@ Cara menjawab: cukup tulis nomor dan "setuju usulan" atau pilihan lain.
     Temuan tim: tombol "kirim ulang" dari pusat tidak bisa menolong, karena catatan yang hilang tertahan di server outlet. Jalur pemulihan dari outlet butuh desain sendiri dan baru siap sesudah rilis 1. Kalau tetap ditolak tanpa jalan keluar, tutup buku bulan itu bisa tertahan terus.
     Usulan baru: pemilik atau finance manager boleh menutup buku dengan alasan tertulis. Sistem menyimpan siapa yang menutup, alasannya, dan daftar batch yang tertahan. Batch itu dibukukan di bulan berikutnya begitu datanya lengkap. Tidak ada uang yang dibayarkan, jadi tidak ada risiko bayar lebih.
     Pilihan lain: tetap ditolak sampai jalur pemulihan outlet siap (sesudah rilis 1).
+    **Jawaban founder (21 Nov): "Boleh dengan alasan tertulis."** Dikerjakan di kartu 1263.
