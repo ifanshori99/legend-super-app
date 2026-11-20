@@ -12,6 +12,8 @@
 
 - Semua edge wajib di-upgrade sebelum fitur ini dirilis.
 - Void edge final yang diparkir memblokir void dan refund pesanan itu sampai direkonsiliasi (belum ada jalur otomatis; siapkan prosedur dukungan). Bila void pusat sudah tercatat lebih dulu daripada void edge yang baru diparkir, pusat tidak bisa mendeteksi pembayaran ganda itu; cek manual rekonsiliasi edge lama.
+- Edge produksi hanya boleh memakai build rilis 1 (menolak semua refund dan void tunai, Q63). Kueri pasca go-live: `SELECT count(*) FROM edge_deferred_events WHERE event_name='order.refunded'` harus 0. Bila tidak 0, itu insiden: pengecualian finance `edge_refund_unreconciled` mendaftarkan tiap pesanan terkait.
+- Prosedur finance untuk `edge_refund_unreconciled`: refund edge lama yang diparkir tidak dijurnal di pusat (pendapatan dan kas terlalu besar). Buat jurnal balik manual dan cek laci edge **sebelum tutup periode atau distribusi bagi hasil**. Refund pusat berikutnya untuk pesanan itu ditahan (`REFUND_HISTORY_UNVERIFIED`) tanpa batas waktu; belum ada tombol tutup (bead lanjutan).
 
 ## Cek data production sebelum rilis
 

@@ -177,7 +177,7 @@ async function assertNotEdgeIngested(
     throw new HttpError(
       409,
       "EDGE_ORDER_CORRECTION_BLOCKED",
-      "Pesanan ini dibayar di kasir edge dan sudah diterima server pusat. Void atau refund hanya bisa dilakukan di kasir edge tempat penjualan terjadi; hubungi kasir atau finance outlet tersebut.",
+      "Pesanan ini dibayar di kasir edge dan sudah diterima server pusat, jadi tidak bisa di-void atau di-refund dari pusat. Refund penjualan kasir offline belum didukung di rilis 1; hubungi finance.",
     );
 }
 
@@ -284,7 +284,7 @@ export async function voidPosOrderCorrection(
     throw new HttpError(
       409,
       "REFUND_HISTORY_UNVERIFIED",
-      "Refund harus dilakukan melalui server pusat agar riwayat refund terverifikasi.",
+      "Refund tidak bisa dilakukan di kasir edge karena riwayat refund tidak bisa diverifikasi. Refund penjualan kasir offline belum didukung di rilis 1; hubungi finance.",
     );
   const { idempotencyKey, ...request } = input;
   return correct(
@@ -496,7 +496,7 @@ export async function voidPosOrderCorrection(
           throw new HttpError(
             409,
             "REFUND_HISTORY_UNVERIFIED",
-            "Riwayat refund edge perlu direkonsiliasi sebelum refund berikutnya.",
+            "Ada refund dari kasir edge lama yang belum tercatat di pusat, jadi refund berikutnya ditahan. Hubungi finance untuk rekonsiliasi.",
           );
       }
       const shift =
@@ -980,7 +980,7 @@ export async function refundPosOrder(
     throw new HttpError(
       409,
       "REFUND_HISTORY_UNVERIFIED",
-      "Refund harus dilakukan melalui server pusat agar riwayat refund terverifikasi.",
+      "Refund tidak bisa dilakukan di kasir edge karena riwayat refund tidak bisa diverifikasi. Refund penjualan kasir offline belum didukung di rilis 1; hubungi finance.",
     );
   const { idempotencyKey, ...request } = input;
   return correct(
@@ -1435,7 +1435,7 @@ export async function refundPosOrder(
         throw new HttpError(
           409,
           "REFUND_HISTORY_UNVERIFIED",
-          "Riwayat refund edge perlu direkonsiliasi sebelum refund berikutnya.",
+          "Ada refund dari kasir edge lama yang belum tercatat di pusat, jadi refund berikutnya ditahan. Hubungi finance untuk rekonsiliasi.",
         );
       const lines: PosRefundLineRow[] = goodsReturnOnly
         ? []
