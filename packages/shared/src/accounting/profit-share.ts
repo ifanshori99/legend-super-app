@@ -1428,7 +1428,10 @@ export const distributionRunSchema = z
         message: "A cancelled run has no payments",
       });
     const approved = run.status === "approved" || run.status === "paid";
-    if (approved !== (run.approvedBy !== null && run.approvedAt !== null))
+    // A cancelled run keeps its approval when it was withdrawn after it
+    // (cancel_approved, SO 1216 F-P1a).
+    const approvalSet = run.approvedBy !== null && run.approvedAt !== null;
+    if (approved ? !approvalSet : approvalSet && run.status !== "cancelled")
       ctx.addIssue({
         code: "custom",
         path: ["approvedBy"],

@@ -3381,7 +3381,7 @@ describe("1217 an approved distribution and a reopen of its period", () => {
     );
     expect(noPermission.status, JSON.stringify(noPermission.body)).toBe(403);
     const shortReason = await cancelApproved(approver, run.id, "basi");
-    expect(shortReason.status, JSON.stringify(shortReason.body)).toBe(400);
+    expect(shortReason.status, JSON.stringify(shortReason.body)).toBe(422);
 
     const cancelled = await cancelApproved(
       approver,

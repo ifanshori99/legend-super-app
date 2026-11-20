@@ -1269,17 +1269,17 @@ export async function listDistributionRunsService(
         // SO 1216 F-P1a: the period moved on since the run was calculated and
         // no approved/paid adjustment of it exists at the current version.
         needsCorrection: sql<boolean>`(
-          ${distributionRuns.type} = 'regular'
-          AND ${distributionRuns.status} IN ('approved', 'paid')
+          "distribution_runs"."type" = 'regular'
+          AND "distribution_runs"."status" IN ('approved', 'paid')
           AND EXISTS (
             SELECT 1 FROM fiscal_periods fp
-            WHERE fp.tenant_id = ${distributionRuns.tenantId}
-              AND fp.id = ${distributionRuns.fiscalPeriodId}
-              AND fp.version <> ${distributionRuns.fiscalPeriodVersion}
+            WHERE fp.tenant_id = "distribution_runs"."tenant_id"
+              AND fp.id = "distribution_runs"."fiscal_period_id"
+              AND fp.version <> "distribution_runs"."fiscal_period_version"
               AND NOT EXISTS (
                 SELECT 1 FROM distribution_runs adj
                 WHERE adj.tenant_id = fp.tenant_id
-                  AND adj.adjusts_run_id = ${distributionRuns.id}
+                  AND adj.adjusts_run_id = "distribution_runs"."id"
                   AND adj.status IN ('approved', 'paid')
                   AND adj.fiscal_period_id = fp.id
                   AND adj.fiscal_period_version = fp.version
