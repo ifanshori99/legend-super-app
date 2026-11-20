@@ -253,7 +253,7 @@ describe("apology voucher on a shared tablet (brief 1120, CTO addendum)", () => 
     const asked = await issueVoucher(body, { who: cashier });
     expect(asked.status, JSON.stringify(asked.body)).toBe(409);
     const found =
-      JSON.stringify(asked.body.error).match(
+      JSON.stringify((asked.body as { error?: unknown }).error).match(
         /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g,
       ) ?? [];
     const { rows } = await owner.query<{ id: string }>(
