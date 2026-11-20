@@ -182,31 +182,31 @@ Ringkasan per berkas untuk `deploy/single-vm`. Nilai tidak pernah masuk repo ata
 
 ### 12.1 Wajib (tanpa ini API atau worker tidak start)
 
-| Kelompok | Kunci | Berkas |
-|---|---|---|
-| Mode | `NODE_ENV=production`, `DEPLOYMENT_MODE=production`, `DATA_CLASSIFICATION=real`, `EDGE_MODE=false` | api, web, worker |
-| Database | `DATABASE_URL`, `APP_DATABASE_URL`, `PAYOUT_GRANTOR_DATABASE_URL` | api |
-| Database | `DATABASE_URL`, `APP_DATABASE_URL`, `WORKER_DATABASE_URL`, `MAINTENANCE_DATABASE_URL` (opsional: `RESEAL_DATABASE_URL`) | worker |
-| Database | `MIGRATION_DATABASE_URL` | migrator |
-| Database | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` (hanya untuk langkah provision, bukan berkas layanan) | compose.env |
-| Rahasia aplikasi | `BETTER_AUTH_SECRET`, `DATA_ENCRYPTION_KEY`, `STAFF_PIN_PEPPER` (versi >= 2), `CONTACT_HASH_SECRET`, `KIRIM_WEBHOOK_SECRET` | api |
-| Alamat | `BETTER_AUTH_URL`, `WEB_URL`, `COOKIE_DOMAIN`, `TRUST_PROXY=2`, `PUBLIC_RATE_LIMIT_INTERNAL_IPS` | api |
-| TLS | `TLS_ASK_TOKEN`, `ACME_EMAIL` | compose.env |
-| Gambar | `POSTGRES_IMAGE`, `API_IMAGE`, `WEB_IMAGE`, `WORKER_IMAGE`, `MIGRATOR_IMAGE`, `PGBACKREST_CONFIG` | compose.env |
-| Notifikasi | `NOTIFICATION_EMAIL_PROVIDER`, `NOTIFICATION_PUSH_PROVIDER`, `NOTIFICATION_WHATSAPP_PROVIDER` (nilai `disabled` sah) | worker |
+| Kelompok         | Kunci                                                                                                                       | Berkas           |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------- | ---------------- |
+| Mode             | `NODE_ENV=production`, `DEPLOYMENT_MODE=production`, `DATA_CLASSIFICATION=real`, `EDGE_MODE=false`                          | api, web, worker |
+| Database         | `DATABASE_URL`, `APP_DATABASE_URL`, `PAYOUT_GRANTOR_DATABASE_URL`                                                           | api              |
+| Database         | `DATABASE_URL`, `APP_DATABASE_URL`, `WORKER_DATABASE_URL`, `MAINTENANCE_DATABASE_URL` (opsional: `RESEAL_DATABASE_URL`)     | worker           |
+| Database         | `MIGRATION_DATABASE_URL`                                                                                                    | migrator         |
+| Database         | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` (hanya untuk langkah provision, bukan berkas layanan)                   | compose.env      |
+| Rahasia aplikasi | `BETTER_AUTH_SECRET`, `DATA_ENCRYPTION_KEY`, `STAFF_PIN_PEPPER` (versi >= 2), `CONTACT_HASH_SECRET`, `KIRIM_WEBHOOK_SECRET` | api              |
+| Alamat           | `BETTER_AUTH_URL`, `WEB_URL`, `COOKIE_DOMAIN`, `TRUST_PROXY=2`, `PUBLIC_RATE_LIMIT_INTERNAL_IPS`                            | api              |
+| TLS              | `TLS_ASK_TOKEN`, `ACME_EMAIL`                                                                                               | compose.env      |
+| Gambar           | `POSTGRES_IMAGE`, `API_IMAGE`, `WEB_IMAGE`, `WORKER_IMAGE`, `MIGRATOR_IMAGE`, `PGBACKREST_CONFIG`                           | compose.env      |
+| Notifikasi       | `NOTIFICATION_EMAIL_PROVIDER`, `NOTIFICATION_PUSH_PROVIDER`, `NOTIFICATION_WHATSAPP_PROVIDER` (nilai `disabled` sah)        | worker           |
 
 ### 12.2 Fitur (diisi founder sesuai fitur yang dinyalakan)
 
-| Kelompok | Kunci | Berkas |
-|---|---|---|
-| Penyimpanan berkas | `STORAGE_S3_ACCESS_KEY_ID`, `STORAGE_S3_SECRET_ACCESS_KEY`, `STORAGE_S3_PRIVATE_BUCKET`, `STORAGE_S3_PUBLIC_BUCKET`, `STORAGE_PUBLIC_BASE_URL`, `STORAGE_S3_REGION` (opsional: `STORAGE_S3_ENDPOINT`, `STORAGE_S3_FORCE_PATH_STYLE`) | api |
-| Pembayaran Duitku | `DUITKU_CALLBACK_BASE_URL`, `DUITKU_RETURN_URL` (kode merchant dan API key diisi di aplikasi) | api |
-| Selfie absensi | `ATTENDANCE_SELFIE_SEAL_KEYS`, `ATTENDANCE_SELFIE_SEAL_ACTIVE_KID` | api |
-| AI | `AI_PROVIDER`, `ANTHROPIC_API_KEY` (tanpa kunci, AI mati) | api |
-| Email Brevo | `BREVO_API_KEY`, `NOTIFICATION_EMAIL_FROM`, `NOTIFICATION_EMAIL_FROM_NAME` (hanya bila provider `brevo`) | worker |
-| Email masuk | `SMTP_HOST`, `SMTP_USER`, `SMTP_PASS`, `EMAIL_FROM` (satu paket, atau tidak sama sekali); opsional `SMTP_PORT`, `SMTP_SECURE` | api |
-| Google | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` (berdua atau tidak sama sekali) | api |
-| Pantau galat | `SENTRY_DSN` (api); `VITE_SENTRY_DSN` (web, argumen build image, bukan berkas env) | api, build web |
+| Kelompok           | Kunci                                                                                                                                                                                                                                | Berkas         |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------- |
+| Penyimpanan berkas | `STORAGE_S3_ACCESS_KEY_ID`, `STORAGE_S3_SECRET_ACCESS_KEY`, `STORAGE_S3_PRIVATE_BUCKET`, `STORAGE_S3_PUBLIC_BUCKET`, `STORAGE_PUBLIC_BASE_URL`, `STORAGE_S3_REGION` (opsional: `STORAGE_S3_ENDPOINT`, `STORAGE_S3_FORCE_PATH_STYLE`) | api            |
+| Pembayaran Duitku  | `DUITKU_CALLBACK_BASE_URL`, `DUITKU_RETURN_URL` (kode merchant dan API key diisi di aplikasi)                                                                                                                                        | api            |
+| Selfie absensi     | `ATTENDANCE_SELFIE_SEAL_KEYS`, `ATTENDANCE_SELFIE_SEAL_ACTIVE_KID`                                                                                                                                                                   | api            |
+| AI                 | `AI_PROVIDER`, `ANTHROPIC_API_KEY` (tanpa kunci, AI mati)                                                                                                                                                                            | api            |
+| Email Brevo        | `BREVO_API_KEY`, `NOTIFICATION_EMAIL_FROM`, `NOTIFICATION_EMAIL_FROM_NAME` (hanya bila provider `brevo`)                                                                                                                             | worker         |
+| Email masuk        | `SMTP_HOST`, `SMTP_USER`, `SMTP_PASS`, `EMAIL_FROM` (satu paket, atau tidak sama sekali); opsional `SMTP_PORT`, `SMTP_SECURE`                                                                                                        | api            |
+| Google             | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` (berdua atau tidak sama sekali)                                                                                                                                                           | api            |
+| Pantau galat       | `SENTRY_DSN` (api); `VITE_SENTRY_DSN` (web, argumen build image, bukan berkas env)                                                                                                                                                   | api, build web |
 
 Saklar uang `DOIT_REFUNDS_ENABLED` dan `DOIT_RECURRING_ENABLED` tetap `false` di template. Hanya founder yang memutuskan menyalakannya, setelah alur DOIT terbukti hidup.
 
