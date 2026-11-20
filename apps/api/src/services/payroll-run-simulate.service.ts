@@ -585,8 +585,19 @@ export async function simulatePayrollRunInTransaction(
     )
     .orderBy(asc(employees.id));
   const listed = thrEmployeeIds;
-  const candidates =
+  const listedMembers =
     listed === null ? memberRows : memberRows.filter((m) => listed.has(m.id));
+  // Someone who ended in an earlier year than the pay date is left out of the
+  // run, never paid or taxed here (the tax of a former employee is not
+  // supported; fail closed) and reported by name so HR pays the rest outside
+  // the run. The other employees are still paid (legend-1220).
+  const isFormer = (m: { endDate: string | null }) =>
+    m.endDate !== null && m.endDate.slice(0, 4) < run.payDate.slice(0, 4);
+  const excludedFormerEmployees = listedMembers.filter(isFormer).map((m) => ({
+    employeeId: employeeIdSchema.parse(m.id),
+    message: `Karyawan ${m.fullName} (${m.employeeNo}) berhenti pada ${m.endDate}, di tahun sebelum tanggal bayar ${run.payDate}. Dia tidak ikut run ini: sisa gajinya harus dibayar di luar run, dan PPh 21-nya belum didukung.`,
+  }));
+  const candidates = listedMembers.filter((m) => !isFormer(m));
   // Nobody is paid twice for the same days (bead legend-1213).
   await assertNoOverlappingRegularPayslips(
     tx,
@@ -756,23 +767,34 @@ export async function simulatePayrollRunInTransaction(
   // The last tax period of a leaver is the run whose period holds the end
   // date (not the month of the pay date: with a cutoff before month end the
   // run of the leaving month would otherwise be taken as last, and the next run
-  // would then fail on a prior annual slip; legend-1220). A leaver who ended in
-  // an earlier year than the pay date is refused: that year is already closed
-  // and the tax of a former employee is not supported (fail closed).
-  const lastTaxPeriodOf = (endDate: string | null) => {
-    if (endDate !== null && endDate.slice(0, 4) < run.payDate.slice(0, 4))
-      throw new HttpError(
-        422,
-        "PAYROLL_PPH21_FORMER_EMPLOYEE_UNSUPPORTED",
-        "Karyawan yang berhenti di tahun sebelum tanggal bayar belum didukung perhitungan PPh 21-nya. Bayar sisa gajinya lewat koreksi admin.",
-      );
-    return (
-      run.payDate.slice(5, 7) === "12" ||
-      (endDate !== null &&
-        run.periodStart <= endDate &&
-        endDate <= run.periodEnd)
+  // would then fail on a prior annual slip; legend-1220). A THR run is the last
+  // only in December or when the employee already holds an annual slip of the
+  // same pay month (so a THR run never makes an annual slip of its own and
+  // blocks the next regular run).
+  const annualInPayMonth = new Set<string>();
+  if (isThr && run.payDate.slice(5, 7) !== "12") {
+    // Read with nobody in their last period: nothing throws on earlier-month
+    // annual slips, and `lastPeriodEarlier` is exactly the same-month ones.
+    const probe = await loadTaxYearPriors(
+      tx,
+      tenantId,
+      runId,
+      population.map((m) => ({
+        employeeId: m.id,
+        joinDate: m.joinDate as BusinessDate,
+        lastTaxPeriod: false,
+      })),
     );
-  };
+    for (const [employeeId, prior] of probe)
+      if (prior.lastPeriodEarlier.length > 0) annualInPayMonth.add(employeeId);
+  }
+  const lastTaxPeriodOf = (member: { id: string; endDate: string | null }) =>
+    run.payDate.slice(5, 7) === "12" ||
+    (isThr
+      ? annualInPayMonth.has(member.id)
+      : member.endDate !== null &&
+        run.periodStart <= member.endDate &&
+        member.endDate <= run.periodEnd);
   const priors = await loadTaxYearPriors(
     tx,
     tenantId,
@@ -780,7 +802,7 @@ export async function simulatePayrollRunInTransaction(
     population.map((m) => ({
       employeeId: m.id,
       joinDate: m.joinDate as BusinessDate,
-      lastTaxPeriod: lastTaxPeriodOf(m.endDate),
+      lastTaxPeriod: lastTaxPeriodOf(m),
     })),
   );
 
@@ -896,7 +918,7 @@ export async function simulatePayrollRunInTransaction(
     const taxInput = storedTaxInputSchema.parse({
       ptkpStatus: member.ptkpStatus,
       hasTaxId: member.npwpHmac !== null || member.nikHmac !== null,
-      lastTaxPeriod: lastTaxPeriodOf(member.endDate),
+      lastTaxPeriod: lastTaxPeriodOf(member),
       monthsWorked: monthsWorkedIn(member.joinDate, run.payDate),
       // Decided O8: always false (see header).
       partialYearTaxSubject: false,
@@ -1163,7 +1185,9 @@ export async function simulatePayrollRunInTransaction(
     })),
   );
   const simulated = toRun(updated);
-  return heldOvertimeCorrections.length > 0
-    ? { ...simulated, heldOvertimeCorrections }
-    : simulated;
+  return {
+    ...simulated,
+    ...(heldOvertimeCorrections.length > 0 ? { heldOvertimeCorrections } : {}),
+    ...(excludedFormerEmployees.length > 0 ? { excludedFormerEmployees } : {}),
+  };
 }

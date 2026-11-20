@@ -692,7 +692,7 @@ describe("[G] last tax period of an employee who leaves", () => {
     expect(await storedTaxMethod(decRun, empId)).toBe("annual_recalculation");
   }, 120_000);
 
-  it("leaving in December with the pay date in January is 422 (former employee tax not supported)", async () => {
+  it("the only employee left in December with the pay date in January: the run is empty (422), nobody is paid", async () => {
     const world = await makeWorld();
     await makeEmployee(world.entityId, {
       entityId: world.entityId,
@@ -706,7 +706,7 @@ describe("[G] last tax period of an employee who leaves", () => {
     });
     await expect(simulateRun(runId)).rejects.toMatchObject({
       status: 422,
-      code: "PAYROLL_PPH21_FORMER_EMPLOYEE_UNSUPPORTED",
+      code: "PAYROLL_RUN_EMPTY",
     });
   }, 120_000);
 });
