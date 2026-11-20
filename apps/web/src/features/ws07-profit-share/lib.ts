@@ -9,6 +9,7 @@
 
 import {
   effectiveShareAllocationVersion,
+  isMoneyPaidLine,
   shareAllocationTotalBp,
   type DistributionFrequency,
   type DistributionLine,
@@ -462,6 +463,26 @@ export function distributionWizardStepIndex(
 /** SH-04: an approved or paid run is frozen; only adjustments change it. */
 export function isDistributionLocked(status: DistributionRunStatus): boolean {
   return status === "approved" || status === "paid";
+}
+
+/**
+ * An approved run with no money out may be withdrawn (SO 1216 F-P1a). The API
+ * re-checks; a carry-absorbed zero line is no payment.
+ */
+export function canCancelApprovedRun(
+  run: Pick<DistributionRun, "status" | "lines">,
+): boolean {
+  return (
+    run.status === "approved" &&
+    !run.lines.some((line) => isMoneyPaidLine(line))
+  );
+}
+
+/** Row version of [canCancelApprovedRun] from the list summary. */
+export function canCancelApprovedSummary(
+  run: Pick<DistributionRunSummary, "status" | "paidLineCount">,
+): boolean {
+  return run.status === "approved" && run.paidLineCount === 0;
 }
 
 /** Payment recording is the one write an approved run allows. */

@@ -3,6 +3,7 @@
 // periode yang sudah ditutup ditolak kecuali periode dibuka ulang dengan
 // approval").
 import * as React from "react";
+import { Link } from "@tanstack/react-router";
 import type {
   FiscalPeriod,
   PeriodReopenRequest,
@@ -67,6 +68,8 @@ function reopenDecisionError(
       return t("accounting.report.periods.reopen.approverIsCloser");
     case "PERIOD_REOPEN_OUT_OF_ORDER":
       return t("accounting.report.periods.reopen.outOfOrder");
+    case "PERIOD_HAS_APPROVED_DISTRIBUTION":
+      return t("accounting.report.periods.reopen.hasApprovedDistribution");
     case "PERIOD_ALREADY_OPEN":
       return t("accounting.report.periods.reopen.alreadyOpen");
     case "INVALID_TRANSITION":
@@ -98,6 +101,9 @@ export function PeriodsPage({ legalEntityId }: { legalEntityId: string }) {
   );
   const [requestError, setRequestError] = React.useState<string | null>(null);
   const [rejectError, setRejectError] = React.useState<string | null>(null);
+  // A reopen the API refused because an approved distribution stands on the
+  // closed period: the notice links to where the run is withdrawn.
+  const [distributionBlock, setDistributionBlock] = React.useState(false);
 
   const periods = React.useMemo(
     () =>
@@ -207,6 +213,7 @@ export function PeriodsPage({ legalEntityId }: { legalEntityId: string }) {
 
   const confirmApprove = async () => {
     if (!approving) return;
+    setDistributionBlock(false);
     try {
       const result = await approveReopen.mutateAsync({
         requestId: approving.id,
@@ -220,6 +227,10 @@ export function PeriodsPage({ legalEntityId }: { legalEntityId: string }) {
       });
       setApproving(null);
     } catch (error) {
+      setDistributionBlock(
+        error instanceof ApiError &&
+          error.code === "PERIOD_HAS_APPROVED_DISTRIBUTION",
+      );
       toast({
         title: t("accounting.report.periods.reopen.failed"),
         description: reopenDecisionError(error, t),
@@ -249,6 +260,21 @@ export function PeriodsPage({ legalEntityId }: { legalEntityId: string }) {
 
   return (
     <div className="grid min-w-0 gap-5">
+      {distributionBlock && (
+        <div
+          role="alert"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-lg border-(length:--border-w) border-warning bg-warning-subtle p-3 text-sm text-foreground"
+        >
+          <p className="min-w-0 max-w-3xl leading-5">
+            {t("accounting.report.periods.reopen.hasApprovedDistribution")}
+          </p>
+          <Button asChild size="sm" variant="outline">
+            <Link to="/kelola/akuntansi/bagi-hasil/distribusi">
+              {t("accounting.report.periods.reopen.goToDistributions")}
+            </Link>
+          </Button>
+        </div>
+      )}
       <StatStrip
         label={t("accounting.report.periods.summaryLabel")}
         columns={3}

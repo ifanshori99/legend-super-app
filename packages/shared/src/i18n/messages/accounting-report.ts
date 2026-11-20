@@ -289,6 +289,9 @@ export const accountingReportMessages = {
       approverIsCloser:
         "Anda yang menutup periode ini, jadi tidak dapat menyetujui pembukaan ulangnya. Minta penyetuju lain.",
       outOfOrder: "Buka ulang periode setelahnya terlebih dahulu.",
+      hasApprovedDistribution:
+        "Periode ini punya distribusi bagi hasil yang sudah disetujui tetapi belum dibayar. Batalkan persetujuan distribusi itu dulu, lalu setujui lagi pembukaan ulang periode.",
+      goToDistributions: "Buka distribusi bagi hasil",
       alreadyOpen: "Periode ini sudah terbuka.",
       alreadyDecided: "Permintaan ini sudah diputuskan. Muat ulang daftar.",
       empty: "—",

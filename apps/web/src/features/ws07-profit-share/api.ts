@@ -9,6 +9,7 @@
 import type { AnyEndpoint, EndpointInput } from "@starter/shared/api";
 import { createUlid } from "@starter/shared/core";
 import {
+  cancelApprovedDistributionRun as cancelApprovedDistributionRunEndpoint,
   createAdjustmentDistribution as createAdjustmentDistributionEndpoint,
   createDistributionRun as createDistributionRunEndpoint,
   createProfitEntity as createProfitEntityEndpoint,
@@ -251,6 +252,19 @@ export async function decideDistributionRun(
       note: note?.trim() ? note.trim() : null,
       idempotencyKey: createUlid(),
     },
+  });
+  return response.data;
+}
+
+export async function cancelApprovedDistributionRun(
+  distributionRunId: string,
+  reason: string,
+) {
+  const response = await callEndpoint(cancelApprovedDistributionRunEndpoint, {
+    params: { distributionRunId } as Params<
+      typeof cancelApprovedDistributionRunEndpoint
+    >,
+    body: { reason: reason.trim(), idempotencyKey: createUlid() },
   });
   return response.data;
 }

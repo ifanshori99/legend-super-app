@@ -268,6 +268,9 @@ export const accountingShareMessages = {
     openAria: "Buka distribusi {period}",
     progress: "{paid} dari {total} baris",
     needsCorrection: "Perlu koreksi",
+    needsCorrectionAria:
+      "Distribusi {period} perlu koreksi. Buka untuk membatalkan persetujuannya.",
+    cancelApprovedAria: "Batalkan persetujuan distribusi {period}",
     /** Payment refused: the period moved since approval (SO 1216 F-P1a). */
     paymentPeriodChanged:
       "Periode buku berubah sejak distribusi ini disetujui. Batalkan persetujuannya, lalu hitung ulang distribusinya.",
@@ -411,6 +414,18 @@ export const accountingShareMessages = {
       title: "Distribusi terkunci",
       description:
         "Distribusi yang sudah disetujui tidak dapat diubah. Koreksi dilakukan melalui distribusi penyesuaian dengan jurnal pembalik (SH-04).",
+    },
+    cancelApproved: {
+      action: "Batalkan persetujuan",
+      title: "Batalkan persetujuan distribusi",
+      label: "Alasan pembatalan",
+      hint: "Minimal 10 karakter. Distribusi kembali tidak aktif dan perlu dihitung ulang; alasan tercatat di jejak audit. Hanya bisa selama belum ada uang yang keluar.",
+      reasonTooShort: "Alasan minimal 10 karakter.",
+      done: "Persetujuan distribusi dibatalkan. Hitung distribusi baru untuk periode ini.",
+      hasAdjustment:
+        "Distribusi ini punya penyesuaian yang belum dibatalkan. Batalkan atau tolak penyesuaiannya dulu, lalu coba lagi.",
+      partiallyPaid:
+        "Distribusi ini sudah dibayar sebagian dan tidak bisa dibatalkan. Catat koreksi lewat distribusi penyesuaian.",
     },
     adjust: "Distribusi penyesuaian",
     adjustTitle: "Distribusi penyesuaian",

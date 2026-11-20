@@ -15,6 +15,7 @@ import { Money, NumberDisplay } from "@/components/ui/money";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StatStrip, StatTile } from "@/components/ui/stat-tile";
 import { useCanPostJournals } from "@/features/ws07-accounting/guard";
+import { useCanApproveShareAllocation } from "../guard";
 import { useDistributionRuns, useProfitEntities } from "../hooks";
 import { distributedNetIdr, openRuns } from "../lib";
 import { AdjustmentDialog } from "./adjustment-dialog";
@@ -29,6 +30,7 @@ export function DistributionsPage({
 }) {
   const t = useT();
   const canWrite = useCanPostJournals();
+  const canApprove = useCanApproveShareAllocation();
   const entitiesQuery = useProfitEntities();
   const [selectedEntityId, setSelectedEntityId] = React.useState<string | null>(
     null,
@@ -36,6 +38,7 @@ export function DistributionsPage({
   const [entityDialogOpen, setEntityDialogOpen] = React.useState(false);
   const [wizardOpen, setWizardOpen] = React.useState(false);
   const [selectedRunId, setSelectedRunId] = React.useState<string | null>(null);
+  const [startCancel, setStartCancel] = React.useState(false);
   const [adjustTarget, setAdjustTarget] =
     React.useState<DistributionRun | null>(null);
 
@@ -61,10 +64,12 @@ export function DistributionsPage({
   const distributed = entity ? distributedNetIdr(runs, entity.id) : 0;
 
   const openNew = () => {
+    setStartCancel(false);
     setSelectedRunId(null);
     setWizardOpen(true);
   };
-  const openRun = (run: DistributionRunSummary) => {
+  const openRun = (run: DistributionRunSummary, cancel = false) => {
+    setStartCancel(cancel);
     setSelectedRunId(run.id);
     setWizardOpen(true);
   };
@@ -141,11 +146,13 @@ export function DistributionsPage({
             runs={runs}
             state={state}
             canWrite={canWrite}
+            canApprove={canApprove}
             onRetry={() => {
               void runsQuery.refetch();
             }}
             onCreate={openNew}
-            onOpen={openRun}
+            onOpen={(run) => openRun(run)}
+            onCancelApproved={(run) => openRun(run, true)}
           />
         </>
       )}
@@ -166,6 +173,7 @@ export function DistributionsPage({
           profitEntity={entity}
           runId={selectedRunId}
           onRunChange={setSelectedRunId}
+          startCancel={startCancel}
           onAdjust={(run) => setAdjustTarget(run)}
         />
       )}
