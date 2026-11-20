@@ -23,9 +23,17 @@ export function testFileLocation(file, root) {
   return resolve(root, "apps/api", file);
 }
 
-// Normalized paths that match no file. Flags (-t, --bail) are not paths.
+// Normalized paths that match no file. Only tokens that name a test file
+// (contain ".test.") are paths: flags (-t, --bail) and their values
+// ("-t payout") are vitest options. A value that still ends in a test file
+// extension after a flag is checked anyway, so a typo there cannot slip through.
+const TEST_FILE_END = /\.test\.[cm]?[jt]sx?$/;
+
 export function findMissingTestFiles(files, root, exists = existsSync) {
-  return files.filter(
-    (file) => !file.startsWith("-") && !exists(testFileLocation(file, root)),
-  );
+  return files.filter((file, index) => {
+    if (file.startsWith("-") || !file.includes(".test.")) return false;
+    if (files[index - 1]?.startsWith("-") && !TEST_FILE_END.test(file))
+      return false;
+    return !exists(testFileLocation(file, root));
+  });
 }

@@ -82,3 +82,22 @@ test("test.mjs exits 2 with the wrong paths before touching the database", () =>
   assert.match(result.stderr, /src\/test\/does-not-exist\.test\.ts/);
   assert.doesNotMatch(result.stdout, /Starting an isolated PostgreSQL/);
 });
+
+test("flag values and non-test tokens are not paths; missing test paths still are", () => {
+  const dir = mkdtempSync(join(tmpdir(), "test-files-"));
+  try {
+    assert.deepEqual(
+      findMissingTestFiles(["-t", "payout", "--bail", "extra-token"], dir),
+      [],
+    );
+    assert.deepEqual(
+      findMissingTestFiles(
+        ["-t", "payout", "src/test/nope.test.ts", "-t", "x.test.ts"],
+        dir,
+      ),
+      ["src/test/nope.test.ts", "x.test.ts"],
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
