@@ -1062,4 +1062,79 @@ describe("[leaver-1220] employee who leaves under a cutoff before month end", ()
     expect(audit).toHaveLength(1);
     expect(audit[0]).toContain(leaver.id);
   }, 600_000);
+
+  const THR_APRIL = {
+    periodStart: "2026-03-01",
+    periodEnd: "2026-03-31",
+    payDate: "2026-04-05",
+  };
+
+  it("[r4 P1] March approved, THR (5 April) simulated with TER, then March locks annual: locking the THR is 409 PAYROLL_PPH21_MONTH_STALE", async () => {
+    const world = await makeWorld();
+    const leaver = await makeEmployee(world, "gross");
+    await makeEmployee(world, "gross");
+    await setEndDate(leaver.id, "2026-03-28");
+
+    const march = await approvedRun(world, monthDates(3, 28));
+    const thr = await approvedRun(world, THR_APRIL, "thr");
+    await lockRun(march);
+    const refused = await failureOf(lockRun(thr));
+    expect(refused, "the THR lock must be refused").not.toBeNull();
+    expect(refused!.status).toBe(409);
+    expect(refused!.code).toBe("PAYROLL_PPH21_MONTH_STALE");
+    expect(await payslipCount(thr)).toBe(0);
+  }, 600_000);
+
+  it("[r4 P2] THR (5 April) locked with TER first: locking the leaver's annual March run is 409 PAYROLL_PPH21_LATER_PERIOD_LOCKED", async () => {
+    const world = await makeWorld();
+    const leaver = await makeEmployee(world, "gross");
+    await makeEmployee(world, "gross");
+    await setEndDate(leaver.id, "2026-03-28");
+
+    const march = await approvedRun(world, monthDates(3, 28));
+    await lockedRun(world, THR_APRIL, "thr");
+    const refused = await failureOf(lockRun(march));
+    expect(refused, "the March lock must be refused").not.toBeNull();
+    expect(refused!.status).toBe(409);
+    expect(refused!.code).toBe("PAYROLL_PPH21_LATER_PERIOD_LOCKED");
+    expect(await payslipCount(march)).toBe(0);
+  }, 600_000);
+
+  it("[r4 P3] December THR for a leaver with an annual November slip: the leaver is left out and reported, the others are paid", async () => {
+    const world = await makeWorld();
+    const leaver = await makeEmployee(world, "gross");
+    const stayer = await makeEmployee(world, "gross");
+    await setEndDate(leaver.id, "2026-11-28");
+
+    await lockedRun(world, monthDates(11, 28));
+    const thr = await draftRun(
+      world,
+      {
+        periodStart: "2026-11-01",
+        periodEnd: "2026-11-30",
+        payDate: "2026-12-05",
+      },
+      "thr",
+    );
+    const simulated = await simulateRun(thr);
+    expect(await resultEmployeeIds(thr)).toEqual([stayer.id]);
+    expect(simulated.excludedFormerEmployees?.map((e) => e.employeeId)).toEqual(
+      [leaver.id],
+    );
+  }, 600_000);
+
+  it("[r4 P4] a THR where everyone is left out is PAYROLL_RUN_EMPTY naming the leaver", async () => {
+    const world = await makeWorld();
+    const leaver = await makeEmployee(world, "gross");
+    await setEndDate(leaver.id, "2026-03-28");
+
+    await lockedRun(world, monthDates(3, 28));
+    const thr = await draftRun(world, THR_APRIL, "thr");
+    const refused = await failureOf(simulateRun(thr));
+    expect(refused).not.toBeNull();
+    expect(refused!.code).toBe("PAYROLL_RUN_EMPTY");
+    expect((refused as { message?: string }).message).toContain(
+      "sudah dihitung tahunan",
+    );
+  }, 600_000);
 });

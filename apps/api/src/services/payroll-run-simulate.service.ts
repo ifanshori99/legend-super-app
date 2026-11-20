@@ -305,8 +305,8 @@ type LeaverCandidate = {
  * Who of the run's listed members is left out of it, each with a message that
  * names them for HR (legend-1220; paying them is a founder decision, so the
  * run only reports): someone who ended in an earlier year than the pay date
- * (the tax of a former employee is not supported), and, in a THR run before
- * December, a leaver whose last tax period already passed (an annual slip of
+ * (the tax of a former employee is not supported), and, in any THR run
+ * (December included), a leaver whose last tax period already passed (an annual slip of
  * an earlier month: TER on top would under-withhold the year). Also returns
  * who holds an annual slip of the pay month itself (their THR is the last
  * period). Takes the prior runs FOR SHARE (`loadTaxYearPriors`).
@@ -329,8 +329,10 @@ async function excludedLeaversOf(
       message: `Karyawan ${m.fullName} (${m.employeeNo}) berhenti pada ${m.endDate}, di tahun sebelum tanggal bayar ${run.payDate}. Dia tidak ikut run ini: sisa gajinya harus dibayar di luar run, dan PPh 21-nya belum didukung.`,
     }));
   const annualInPayMonth = new Set<string>();
-  if (run.runType === "thr" && run.payDate.slice(5, 7) !== "12") {
-    // Only a leaver has an annual slip before December. Read with nobody in
+  // Every THR run, December included: there the THR is the last period and
+  // an annual slip of an earlier month would refuse the whole run.
+  if (run.runType === "thr") {
+    // Only a leaver has an earlier annual slip. Read with nobody in
     // their last period: nothing throws on an earlier-month annual slip.
     const leavers = members.filter((m) => m.endDate !== null && !formerYear(m));
     const probe = await loadTaxYearPriors(
@@ -844,7 +846,14 @@ export async function simulatePayrollRunInTransaction(
   const inPopulation = new Set(population.map((m) => m.id));
   for (const employeeId of allocations.keys())
     if (!inPopulation.has(employeeId)) throw simulateUnsupported();
-  if (population.length === 0) throw runEmpty();
+  if (population.length === 0)
+    throw excludedFormerEmployees.length > 0
+      ? new HttpError(
+          422,
+          "PAYROLL_RUN_EMPTY",
+          `Tidak ada karyawan yang masuk payroll ini. ${excludedFormerEmployees.map((e) => e.message).join(" ")}`,
+        )
+      : runEmpty();
 
   const missing = population
     .filter((m) => m.ptkpStatus === null)
