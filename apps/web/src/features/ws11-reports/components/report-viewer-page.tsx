@@ -20,7 +20,7 @@ import { API_MOCK } from "@/lib/api/mock-flag";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CardShell, CardShellBody } from "@/components/ui/card";
-import { ErrorState } from "@/components/ui/feedback-state";
+import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StatStrip, StatTile } from "@/components/ui/stat-tile";
 import type { AreaAccess } from "@/lib/areas/access";
@@ -49,6 +49,7 @@ import {
   isChartable,
   isResultEmpty,
   reportExportOffered,
+  reportFamilyHasData,
   resolvePeriod,
   resolveSplit,
   resultFinality,
@@ -195,9 +196,14 @@ export function ReportViewerPage({ reportCode }: { reportCode: string }) {
     : null;
   const split = definition ? resolveSplit(definition, search) : null;
   const outletIds = search.outletId ?? [];
-  const selection: ReportQuerySelection | null = period
-    ? { period: period.range, outletIds, groupBy: split }
-    : null;
+  // A family without server data yet is never run (legend-x73li).
+  const comingSoon =
+    definition !== undefined &&
+    !reportFamilyHasData(definition.family, { mock: API_MOCK });
+  const selection: ReportQuerySelection | null =
+    period && !comingSoon
+      ? { period: period.range, outletIds, groupBy: split }
+      : null;
 
   const run = useReportRun(
     selection ? buildRunInput(reportCode, selection) : null,
@@ -216,6 +222,20 @@ export function ReportViewerPage({ reportCode }: { reportCode: string }) {
       />
     );
   if (!definition) return <PageSkeleton />;
+  if (comingSoon)
+    return (
+      <div className="grid gap-4">
+        <BackLink />
+        <CardShell>
+          <CardShellBody>
+            <EmptyState
+              title={`${definition.name} · ${t("reportViewer.catalog.soon")}`}
+              description={definition.description}
+            />
+          </CardShellBody>
+        </CardShell>
+      </div>
+    );
 
   const personal = selectionIsPersonal(definition, split);
   const result = run.data ?? null;

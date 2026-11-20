@@ -32,3 +32,45 @@ test("finance and hr report families are listed as coming soon outside mock mode
     );
   }
 });
+
+test("a tile or deep link to a sourceless report family is coming soon, not a screen", () => {
+  const q = "?startDate=2026-11-01&endDate=2026-11-01";
+  for (const path of [
+    "/reports/finance/ebitda",
+    "/reports/attendance/daily",
+    "/reports/payroll/gross",
+    "/reports/performance/employee",
+  ]) {
+    assert.equal(lib.reportPathIsComingSoon(path, { mock: false }), true, path);
+    assert.equal(lib.reportPathIsComingSoon(path, { mock: true }), false, path);
+    // dashboard tiles pass the path with its query already stripped by callers
+    assert.equal(
+      lib.reportPathIsComingSoon(path + q.split("?")[0], { mock: false }),
+      true,
+    );
+  }
+  for (const path of [
+    "/reports/sales/per-hour",
+    "/reports/inventory/waste",
+    "/reports",
+    "/kelola",
+  ])
+    assert.equal(
+      lib.reportPathIsComingSoon(path, { mock: false }),
+      false,
+      path,
+    );
+});
+
+test("every catalog report of a sourceless family has a contract route that the guard covers", () => {
+  const sourceless = dashboard.reportCatalog.filter((r) =>
+    ["finance", "attendance", "payroll", "performance"].includes(r.family),
+  );
+  assert.ok(sourceless.length > 0);
+  for (const report of sourceless)
+    assert.equal(
+      lib.reportPathIsComingSoon(report.route, { mock: false }),
+      true,
+      report.code,
+    );
+});

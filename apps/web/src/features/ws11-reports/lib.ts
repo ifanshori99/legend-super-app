@@ -52,6 +52,20 @@ export function reportFamilyHasData(
   return options.mock || !FAMILIES_WITHOUT_SOURCE.includes(family);
 }
 
+/**
+ * Whether an app path points at a report whose family has no data yet, e.g.
+ * `/reports/payroll/gross?startDate=...`. Report routes are
+ * `/reports/<family>/<code>` and the first segment is the family. Dashboard
+ * tiles use it to show "Segera hadir" instead of a link to an empty screen.
+ */
+export function reportPathIsComingSoon(
+  path: string,
+  options: { mock: boolean },
+): boolean {
+  const match = /^\/reports\/([a-z]+)\//.exec(path);
+  return match !== null && !reportFamilyHasData(match[1] ?? "", options);
+}
+
 // ---- URL contract ------------------------------------------------------------
 //
 // Dashboard tiles link here with `startDate`, `endDate`, repeated `outletId`
