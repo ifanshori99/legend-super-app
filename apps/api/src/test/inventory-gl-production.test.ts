@@ -33,6 +33,7 @@ import { withTenant } from "../db/tenant.ts";
 import { recordStockMovement } from "../services/inventory.service.ts";
 import {
   deliverInventoryGlEvent,
+  retryBlockedInventoryGl,
   type InventoryGlResult,
 } from "../services/inventory-gl-consumer.ts";
 
@@ -44,6 +45,8 @@ const owner = new Pool({
 const short = () => randomUUID().slice(0, 6);
 const at = (iso: string) => isoDateTimeSchema.parse(iso);
 const NOW = new Date("2026-11-08T03:00:00Z");
+/** Past the retry backoff of every parked source. */
+const LATER = new Date("2026-11-09T03:00:00Z");
 const BEFORE = "2026-10-01T05:00:00.000Z";
 const DAY = "2026-10-15T05:00:00.000Z";
 
@@ -425,6 +428,16 @@ async function runRoundingBatch(
   return { productionId, rows, outputItem: out, receiptsIdr: 100000 };
 }
 
+/** Error code of the batch parked in `inventory_gl_blocked`, if any. */
+async function blockedCodeOf(productionId: string): Promise<string | null> {
+  const { rows } = await owner.query<{ error_code: string }>(
+    `SELECT error_code FROM inventory_gl_blocked
+      WHERE tenant_id = $1 AND source_type = 'production_order' AND source_id = $2`,
+    [tenantId, productionId],
+  );
+  return rows[0]?.error_code ?? null;
+}
+
 /** Tracking rows (`inventory_gl_postings`) of a batch. */
 async function trackedRowsOf(productionId: string): Promise<number> {
   const { rows } = await owner.query<{ n: string }>(
@@ -552,7 +565,7 @@ describe("1252 production batch journal", () => {
     expect(await netDebit(world, "inventory")).toBe(2);
   });
 
-  it("[1252-SPLIT] an edge batch arriving draws first, output later: nothing booked or tracked until complete, then one rounding journal", async () => {
+  it("[1252-SPLIT] an edge batch arriving draws first, output later: parked, nothing booked or tracked, then one rounding journal", async () => {
     const world = await makeWorld();
     const raw = await insertItem("Daging");
     const out = await insertItem("Rendang", "semi_finished");
@@ -560,12 +573,16 @@ describe("1252 production batch journal", () => {
     const productionId = randomUUID();
     // Delivery 1 carries only the first draw, delivery 2 the second draw.
     const draw1 = await drawMaterial(world, raw, "600", productionId, DAY);
-    expect((await deliverRow(draw1)).status).toBe("zero_value");
+    expect(await deliverRow(draw1)).toEqual({
+      status: "blocked",
+      code: "PRODUCTION_INCOMPLETE",
+    });
     expect(await journalsOf(world, productionId)).toEqual([]);
     expect(await trackedRowsOf(productionId)).toBe(0);
+    expect(await blockedCodeOf(productionId)).toBe("PRODUCTION_INCOMPLETE");
     expect(await netDebit(world, "inventory")).toBe(0);
     const draw2 = await drawMaterial(world, raw, "400", productionId, DAY);
-    expect((await deliverRow(draw2)).status).toBe("zero_value");
+    expect((await deliverRow(draw2)).status).toBe("blocked");
     expect(await trackedRowsOf(productionId)).toBe(0);
     expect(await netDebit(world, "inventory_price_variance")).toBe(0);
     // Delivery 3: the put-away completes the batch.
@@ -582,6 +599,7 @@ describe("1252 production batch journal", () => {
     expect(journals).toHaveLength(1);
     expect(await balanceOf(journals[0]!.id)).toEqual({ debit: 2, credit: 2 });
     expect(await trackedRowsOf(productionId)).toBe(3);
+    expect(await blockedCodeOf(productionId)).toBeNull();
     await expectBooksMatchCard(world, 100000);
     for (const row of [draw1, draw2, output])
       expect((await deliverRow(row)).status).toBe("already_posted");
@@ -589,7 +607,7 @@ describe("1252 production batch journal", () => {
     await expectBooksMatchCard(world, 100000);
   });
 
-  it("[1252-LATE-DRAW] a draw arriving after the batch was booked: the rounding already on 5106 is subtracted", async () => {
+  it("[1252-LATE-DRAW] output before its last draw: parked (5106 never holds the material cost), the sweep books one rounding journal once the draw lands", async () => {
     const world = await makeWorld();
     const raw = await insertItem("Daging");
     const out = await insertItem("Rendang", "semi_finished");
@@ -597,14 +615,41 @@ describe("1252 production batch journal", () => {
     const productionId = randomUUID();
     const draw1 = await drawMaterial(world, raw, "600", productionId, DAY);
     await putAwayOutput(world, out, "70000", "1.4286", productionId, DAY);
-    expect((await deliverRow(draw1)).status).toBe("posted");
-    await expectBooksMatchCard(world, 100000);
-    const draw2 = await drawMaterial(world, raw, "400", productionId, DAY);
-    expect((await deliverRow(draw2)).status).toBe("posted");
-    expect(await journalsOf(world, productionId)).toHaveLength(2);
+    expect((await deliverRow(draw1)).status).toBe("blocked");
+    expect(await journalsOf(world, productionId)).toEqual([]);
+    expect(await trackedRowsOf(productionId)).toBe(0);
+    expect(await netDebit(world, "inventory_price_variance")).toBe(0);
+    await drawMaterial(world, raw, "400", productionId, DAY);
+    const swept = await retryBlockedInventoryGl(context(), LATER);
+    expect(swept).toEqual({ posted: 1, stillBlocked: 0, failed: 0 });
+    const journals = await journalsOf(world, productionId);
+    expect(journals).toHaveLength(1);
+    expect(await balanceOf(journals[0]!.id)).toEqual({ debit: 2, credit: 2 });
     expect(await netDebit(world, "inventory")).toBe(2);
     expect(await netDebit(world, "inventory_price_variance")).toBe(-2);
+    expect(await blockedCodeOf(productionId)).toBeNull();
     await expectBooksMatchCard(world, 100000);
+  });
+
+  it("[1252-LOST-DRAW] a draw lost for good (dead letter): the batch stays parked, no journal, no 5106 gain", async () => {
+    const world = await makeWorld();
+    const raw = await insertItem("Daging");
+    const out = await insertItem("Rendang", "semi_finished");
+    await receive(world, raw, "1000", "100", BEFORE);
+    const productionId = randomUUID();
+    const draw1 = await drawMaterial(world, raw, "600", productionId, DAY);
+    await putAwayOutput(world, out, "70000", "1.4286", productionId, DAY);
+    expect((await deliverRow(draw1)).status).toBe("blocked");
+    expect(await retryBlockedInventoryGl(context(), LATER)).toEqual({
+      posted: 0,
+      stillBlocked: 1,
+      failed: 0,
+    });
+    expect(await journalsOf(world, productionId)).toEqual([]);
+    expect(await trackedRowsOf(productionId)).toBe(0);
+    expect(await blockedCodeOf(productionId)).toBe("PRODUCTION_INCOMPLETE");
+    expect(await netDebit(world, "inventory")).toBe(0);
+    expect(await netDebit(world, "inventory_price_variance")).toBe(0);
   });
 
   it("[1252-ZERO] a batch of free materials posts no journal", async () => {

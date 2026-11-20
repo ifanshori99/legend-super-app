@@ -132,10 +132,20 @@ const BLOCKING_CODES = [
   "ACCOUNT_INACTIVE",
   "ACCOUNT_NOT_POSTABLE",
   "ACCOUNT_ENTITY_MISMATCH",
+  // Card 1252: a production batch whose output and material cost differ by
+  // more than rounding (a draw still in transit or dead-lettered on an edge
+  // push). Retried by the sweep; booked once the draws are complete.
+  "PRODUCTION_INCOMPLETE",
 ] as const;
 type BlockingCode = (typeof BLOCKING_CODES)[number];
 
+/** Thrown inside the savepoint: nothing of the batch is booked or tracked. */
+class ProductionIncompleteError extends Error {
+  readonly code = "PRODUCTION_INCOMPLETE";
+}
+
 function blockingCodeOf(error: unknown): BlockingCode | null {
+  if (error instanceof ProductionIncompleteError) return error.code;
   if (!(error instanceof AccountingError)) return null;
   return (BLOCKING_CODES as readonly string[]).includes(error.code)
     ? (error.code as BlockingCode)
@@ -755,16 +765,13 @@ export async function postStockSourceToGl(
   if (!first) return { status: "already_posted" };
   if (allRows.some((row) => row.outletId !== first.outletId))
     throw new Error("Stock source spans more than one outlet");
-  // A production batch synced from an edge can arrive split (draws first, the
-  // put-away later). Until the batch has both a draw and a put-away nothing is
-  // booked and no row is marked posted, so the rows are settled together once
-  // the batch is complete (a put-away alone is never a rounding difference).
+  // A put-away without any draw is never a rounding difference (it is only a
+  // revaluation source): nothing is booked or tracked. A batch synced from an
+  // edge can arrive split or lose a draw to the dead letter; the rounding
+  // bound below parks such a batch instead of booking it.
   const isProduction = mapping.eventName === "production.completed";
-  if (isProduction) {
-    const drew = allRows.some((row) => parseDecimal4(row.quantity) < 0n);
-    const putAway = allRows.some((row) => parseDecimal4(row.quantity) > 0n);
-    if (!drew || !putAway) return { status: "zero_value", ledgerEntryIds: [] };
-  }
+  if (isProduction && !allRows.some((row) => parseDecimal4(row.quantity) < 0n))
+    return { status: "zero_value", ledgerEntryIds: [] };
 
   const [outlet] = await tx
     .select({
@@ -840,15 +847,28 @@ export async function postStockSourceToGl(
       // (a draw that arrives after the batch was booked).
       let outputScaled = 0n;
       let materialScaled = 0n;
+      let outputQty = 0n;
       for (const row of allRows) {
-        const scaled =
-          parseDecimal4(row.quantity) * parseDecimal4(row.unitCostIdr);
-        if (scaled > 0n) outputScaled += scaled;
-        else materialScaled -= scaled;
+        const quantity = parseDecimal4(row.quantity);
+        const scaled = quantity * parseDecimal4(row.unitCostIdr);
+        if (quantity > 0n) {
+          outputQty += quantity;
+          outputScaled += scaled;
+        } else materialScaled -= scaled;
       }
+      const variance =
+        scaledCostToIdr(outputScaled) - scaledCostToIdr(materialScaled);
+      // The unit cost is rounded to 4 decimals, so a complete batch differs
+      // by at most ceil(actualQty x 0.00005) + 1 rupiah. Beyond that a draw
+      // (or the output) is missing: park it, never a 5106 gain or loss.
+      const bound =
+        Number((outputQty * 5n + 999_999_999n) / 1_000_000_000n) + 1;
+      if (Math.abs(variance) > bound)
+        throw new ProductionIncompleteError(
+          "Production batch rows are incomplete",
+        );
       amount =
-        scaledCostToIdr(outputScaled) -
-        scaledCostToIdr(materialScaled) -
+        variance -
         (await bookedProductionVarianceIdr(
           tx,
           tenantId,
