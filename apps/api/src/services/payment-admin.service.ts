@@ -40,6 +40,7 @@ import {
   openRefundChainAtRequest,
 } from "./payment-refund.service.ts";
 import { failedRefundHoldsOrderSql } from "./payment-refund-failed-open.ts";
+import { parkedEdgeRefundHoldOfIntent } from "./payment-refund-edge-history.ts";
 import { netPosTendersOfIntentSql } from "./pos-intent-attribution.ts";
 import { depositInUseOfIntent } from "./reservation-deposit-credit.ts";
 import {
@@ -135,8 +136,20 @@ export async function refundableBalance(
   );
   const qrSaleInUse = await qrSaleInUseOfIntent(tx, intent.tenantId, intent.id);
   const chargeInUse = await chargeInUseOfIntent(tx, intent.tenantId, intent.id);
+  // Brief 1244 r2: a legacy edge refund parked for the order already paid the
+  // guest from the drawer. Unreadable history holds the whole cap.
+  const parkedEdge = await parkedEdgeRefundHoldOfIntent(tx, {
+    tenantId: intent.tenantId,
+    intentId: intent.id,
+    orderId: intent.orderId,
+  });
   const held =
-    depositInUse + forfeited + posSaleInUse + qrSaleInUse + chargeInUse;
+    depositInUse +
+    forfeited +
+    posSaleInUse +
+    qrSaleInUse +
+    chargeInUse +
+    (parkedEdge ?? paid);
   const cap = paid > held ? paid - held : 0n;
   return {
     cap,
@@ -148,6 +161,7 @@ export async function refundableBalance(
     qrSaleInUse,
     chargeInUse,
     providerRefunded,
+    parkedEdgeRefund: parkedEdge,
   };
 }
 

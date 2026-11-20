@@ -413,3 +413,57 @@ export async function hasParkedEdgeRefund(
   `);
   return rows.length > 0;
 }
+
+/**
+ * Money a parked legacy edge refund already paid out for the orders an intent
+ * paid (brief 1244 r2). An edge void ingested first holds nothing of the sale,
+ * so a full gateway refund would pay the guest a second time once the edge
+ * refund is parked later. The admin refund cap is reduced by that value;
+ * `null` means a fact is unreadable or conflicting: the caller must hold the
+ * whole cap. Facts that already have a native row of the same id are not
+ * counted (the sale accounting holds them). Read-only.
+ */
+export async function parkedEdgeRefundHoldOfIntent(
+  tx: Tx,
+  input: { tenantId: string; intentId: string; orderId: string | null },
+): Promise<bigint | null> {
+  const { rows: orders } = await tx.execute<{
+    order_id: string;
+    outlet_id: string;
+  }>(sql`
+    SELECT DISTINCT order_id::text AS order_id, outlet_id::text AS outlet_id
+      FROM pos_order_tenders
+     WHERE tenant_id = ${input.tenantId} AND payment_intent_id = ${input.intentId}::uuid
+    UNION
+    SELECT id::text, outlet_id::text FROM orders
+     WHERE tenant_id = ${input.tenantId}
+       AND id = ${input.orderId}::uuid
+  `);
+  let hold = 0n;
+  for (const order of orders) {
+    try {
+      if (
+        !(await hasParkedEdgeRefund(tx, {
+          tenantId: input.tenantId,
+          orderId: order.order_id,
+        }))
+      )
+        continue;
+      const facts = await loadDeferredRefundCommitments(tx, {
+        tenantId: input.tenantId,
+        outletId: order.outlet_id,
+        orderIds: [order.order_id],
+      });
+      const { rows: native } = await tx.execute<{ id: string }>(sql`
+        SELECT id::text AS id FROM pos_order_refunds
+         WHERE tenant_id = ${input.tenantId} AND order_id = ${order.order_id}::uuid
+      `);
+      const done = new Set(native.map((row) => row.id.toLowerCase()));
+      for (const fact of facts)
+        if (!done.has(fact.refundId)) hold += BigInt(fact.amountIdr);
+    } catch {
+      return null;
+    }
+  }
+  return hold;
+}

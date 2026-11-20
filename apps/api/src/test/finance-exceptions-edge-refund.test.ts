@@ -7,6 +7,7 @@
 // pos-refund-edge-authority.test.ts.
 import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
+import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   createUlid,
@@ -28,8 +29,10 @@ import type { FinanceExceptionKind } from "@starter/shared/validators/finance-ex
 import { createApp } from "../app.ts";
 import { pinOverrideFixtureFingerprint } from "./pos-override-fixture.ts";
 import { db } from "../db/index.ts";
+import { paymentIntents as paymentIntentsTable } from "../db/schema/payment.ts";
 import { withTenant } from "../db/tenant.ts";
 import { applyEdgeDeferredEvent } from "../edge/deferred-event-applier.ts";
+import { refundableBalance } from "../services/payment-admin.service.ts";
 import { listFinanceExceptions } from "../services/accounting-finance-exceptions.service.ts";
 import {
   createIsolatedTenant,
@@ -48,6 +51,8 @@ const WINDOW = { from: "2026-03-01", to: "2026-03-02" };
 
 const orders: string[] = [];
 const refundIds: string[] = [];
+const paymentLinks: string[] = [];
+const paymentIntents: string[] = [];
 const overrides: string[] = [];
 const users: string[] = [];
 const edgeNodeId = randomUUID();
@@ -248,6 +253,77 @@ async function list(
 
 const itemOf = (result: Awaited<ReturnType<typeof list>>, refId: string) =>
   result.items.filter((item) => item.refId === refId);
+
+/** Its own dead-letter row (append-only), so no test leans on another one. */
+async function seedDeadLetter() {
+  await asOwner((client) =>
+    client.query(
+      `INSERT INTO edge_link_dead_letters
+         (tenant_id, outlet_id, edge_node_id, direction, event_id, link_seq,
+          aggregate_type, aggregate_id, aggregate_sequence, bytes, reason, event, created_at)
+       VALUES ($1, $2, $3, 'edge_to_cloud', $4, 1, 'order', $5, 1, 2000000,
+         'frame_too_large', '{}'::jsonb, '2026-03-01T05:09:00Z'::timestamptz)`,
+      [seededTenantId, seededOutletA, edgeNodeId, randomUUID(), randomUUID()],
+    ),
+  );
+}
+
+/** A paid QRIS intent of the order with its evidence (nothing else holds it). */
+async function paidIntent(orderUuid: string, amountIdr: number) {
+  const linkId = randomUUID();
+  const intentId = randomUUID();
+  paymentLinks.push(linkId);
+  paymentIntents.push(intentId);
+  await asOwner(async (client) => {
+    await client.query(
+      `INSERT INTO payment_links (id, tenant_id, outlet_id, token_hash,
+         reference, subtotal_idr, total_idr, paid_idr, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $6, $6, $7)`,
+      [
+        linkId,
+        seededTenantId,
+        seededOutletA,
+        randomUUID().replaceAll("-", "").padEnd(64, "0"),
+        `bal-${linkId.slice(0, 30)}`,
+        amountIdr,
+        cashier.userId,
+      ],
+    );
+    await client.query(
+      `INSERT INTO payment_intents (id, tenant_id, outlet_id, payment_link_id,
+         order_id, method, provider, amount_idr, idempotency_key, status,
+         paid_at, instructions, expires_at)
+       VALUES ($1, $2, $3, $4, $5, 'qris', 'doit', $6, $7, 'paid', now(),
+         '{"method":"qris","qrPayload":"test","issuer":null}', now() + interval '1 hour')`,
+      [
+        intentId,
+        seededTenantId,
+        seededOutletA,
+        linkId,
+        orderUuid,
+        amountIdr,
+        randomUUID(),
+      ],
+    );
+    await client.query(
+      `INSERT INTO payment_evidence (tenant_id, outlet_id, payment_intent_id, provider,
+         provider_ref, method, source, amount_idr, received_at)
+       VALUES ($1, $2, $3, 'doit', $4, 'qris', 'verified_webhook', $5, now())`,
+      [seededTenantId, seededOutletA, intentId, `ev-${intentId}`, amountIdr],
+    );
+  });
+  return intentId;
+}
+
+async function capOf(intentId: string) {
+  return withTenant(db, wide, async (tx) => {
+    const [intent] = await tx
+      .select()
+      .from(paymentIntentsTable)
+      .where(eq(paymentIntentsTable.id, intentId));
+    return refundableBalance(tx, intent!);
+  });
+}
 
 beforeAll(async () => {
   const app = createApp();
@@ -458,6 +534,7 @@ describe("finance exception edge_refund_unreconciled (1244 r2)", () => {
         kind: "transaction_event",
       }),
     );
+    await seedDeadLetter();
     const result = await listFinanceExceptions(wide, {
       ...WINDOW,
       outletId: seededOutletA,
@@ -484,5 +561,52 @@ describe("finance exception edge_refund_unreconciled (1244 r2)", () => {
     const id2 = await edgeRefund(t.orderId, 70_000);
     await nativeRefund(t.orderUuid, 60_000, id2);
     expect(itemOf(await list(), t.orderUuid)).toHaveLength(1);
+  });
+
+  it("a tender of another outlet does not prove the order: order_unknown", async () => {
+    const s = await sale(150_000);
+    await asOwner(
+      (client) =>
+        client.query(
+          "UPDATE pos_order_tenders SET outlet_id = $1 WHERE order_id = $2",
+          [seededOutletB, s.orderUuid],
+        ),
+      true,
+    );
+    await edgeRefund(s.orderId, 50_000);
+    const items = itemOf(await list(), s.orderUuid);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ detail: "order_unknown" });
+  });
+
+  it("admin refund cap: a parked edge refund lowers it by its value; an unreadable one holds all; none changes nothing", async () => {
+    const clean = await sale(150_000);
+    const cleanIntent = await paidIntent(clean.orderUuid, 150_000);
+    expect((await capOf(cleanIntent)).cap).toBe(150_000n);
+
+    const parked = await sale(150_000);
+    const parkedIntent = await paidIntent(parked.orderUuid, 150_000);
+    await edgeRefund(parked.orderId, 50_000);
+    expect((await capOf(parkedIntent)).cap).toBe(100_000n);
+
+    const blind = await sale(150_000);
+    const blindIntent = await paidIntent(blind.orderUuid, 150_000);
+    await asOwner((client) =>
+      client.query(
+        `INSERT INTO edge_deferred_events (tenant_id, outlet_id, edge_node_id,
+           event_id, aggregate_type, aggregate_id, aggregate_sequence, event_name,
+           envelope, parked_reason)
+         VALUES ($1, $2, $3, $4, 'order', $5, 1, 'order.refunded',
+           '{"broken":true}'::jsonb, 'deferred')`,
+        [
+          seededTenantId,
+          seededOutletA,
+          edgeNodeId,
+          randomUUID(),
+          blind.orderId,
+        ],
+      ),
+    );
+    expect((await capOf(blindIntent)).cap).toBe(0n);
   });
 });
