@@ -47,7 +47,7 @@ Bila refund sudah terlanjur dikembalikan penyedia ke pembeli, jangan dicatat man
 
 ## B. Refund penjualan kasir yang dibuat saat offline
 
-Dua keadaan, jangan dicampur. Cek dulu ada tidaknya baris `edge_refund_unreconciled` untuk pesanan itu di daftar pengecualian keuangan. Sistem menahan refund pusat dan voucher untuk pesanan yang punya refund edge terparkir (409 untuk refund manual per item; voucher ditolak "tidak ada yang terutang"), supaya uang tidak keluar dua kali.
+Dua keadaan, jangan dicampur: B1 refund kasir offline yang sudah tercatat (ada baris `edge_refund_unreconciled`), B2 refund tunai manajer atas penjualan offline (tanpa baris). Sistem menahan refund pusat dan voucher untuk pesanan yang punya refund edge terparkir (409 untuk refund manual per item; voucher ditolak "tidak ada yang terutang"), supaya uang tidak keluar dua kali.
 
 ### B1. Ada baris pengecualian (refund edge terparkir)
 
@@ -68,13 +68,15 @@ Langkah:
 5. Cara menandai selesai: tidak ada tombol "tandai selesai". Baris hilang sendiri bila sudah ada catatan refund resmi (`pos_order_refunds`) dengan id refund, pesanan, dan jumlah yang sama. Id saja tidak cukup. [22]
 6. Finance membuat jurnal balik manual untuk refund itu (pendapatan dan kas di pusat terlalu besar selama catatan resmi belum ada), sebelum tutup buku atau distribusi bagi hasil periode itu.
 
-### B2. Edge rilis 1: tanpa baris pengecualian
+### B2. Penjualan offline yang direfund manajer secara tunai
 
-Kapan: refund kasir offline dari edge rilis 1 tidak menghasilkan baris `edge_refund_unreconciled`, sehingga tidak ada yang mengingatkan finance.
+Kapan: edge rilis 1 menolak refund dan void tunai (`apps/api/src/services/pos-order-corrections.ts:283`, `:979`), jadi refund tunai atas penjualan offline dibayar manajer di luar sistem. Tidak ada baris pengecualian yang mengingatkan finance. Satu pesanan, satu kali bayar. [26]
 
-1. Manajer outlet melaporkan tiap refund offline ke finance: pesanan, jumlah, tanggal, dan bukti struk atau catatan laci.
-2. Finance mencatat refund itu dan membuat jurnal manual (balik pendapatan dan kas) SEBELUM menutup buku periode itu atau menyetujui distribusi bagi hasil.
-3. Jangan bayar lagi ke pelanggan: tunai sudah keluar dari laci.
+1. Edge harus online dan sudah sinkron, dan pesanan sudah ada di pusat. Pesanan belum tersinkron: jangan bayar.
+2. Sebelum tunai keluar, finance mengecek pesanan itu: baris pengecualian, void, refund, voucher, dan log refund manual. Bila sudah ada salah satunya, jangan bayar. Bila bersih, finance mencatat nomor pesanan sebagai "akan dibayar tunai".
+3. Manajer membayar paling banyak sisa yang dibayar tamu (dibayar dikurangi refund, voucher, dan void yang sudah ada), dan menyimpan bukti bertanda tangan.
+4. Finance membuat jurnal untuk refund itu sebelum tutup buku periode itu.
+5. Sistem TIDAK menahan pembayaran kedua untuk pembayaran tunai ini. Pencegahnya hanya langkah 2 dan 3.
 
 ## C. Yang tidak boleh
 
@@ -88,7 +90,7 @@ Kapan: refund kasir offline dari edge rilis 1 tidak menghasilkan baris `edge_ref
 
 ## D. Sebelum menyetujui distribusi bagi hasil
 
-Cek audit `accounting.period.close_overridden` untuk periode yang akan dibagi. Ada entri berarti periode itu ditutup dengan pengecualian (ada sumber jurnal yang belum beres, tercatat di audit dengan alasan dan daftar sumbernya). Jangan setujui distribusi sebelum sumber-sumber itu dijurnal atau dijelaskan oleh finance. Tidak ada entri: lanjut. [25]
+Cek audit `accounting.period.close_overridden` untuk periode yang akan dibagi. Ada entri berarti periode itu ditutup dengan pengecualian (ada sumber jurnal yang belum beres, tercatat di audit dengan alasan dan daftar sumbernya). Tahan distribusi sampai finance menghitung dampaknya. Batch yang dijurnal kemudian masuk ke periode buka berikutnya; laba periode yang sudah tertutup tidak ikut berubah, jadi bagian yang sudah dibagi tidak otomatis dikoreksi. Tidak ada entri: lanjut. [25]
 
 ## Sumber
 
@@ -118,6 +120,7 @@ Kode yang dibaca (path relatif ke root repo; worktree `legend-int-batch106` untu
 - [22] `apps/api/src/services/accounting-finance-exceptions.service.ts:987-1008`, `:1039-1048` (cabang 1244)
 - [24] `apps/api/src/services/payment-provider-refunded-guard.ts:26`, `:143`
 - [25] `apps/api/src/services/accounting-period-close.service.ts:409`, `:653-670`
+- [26] `apps/api/src/services/pos-order-corrections.ts:283`, `:979` (cek `edgeMode`: edge menolak refund dan void tunai)
 - [23] `apps/web/src/features/ws05-payment-admin/components/refund-followup-dialog.tsx` (`ManualSettleStep`), `manual-settlement.ts` (cabang 1259)
 
 ## Yang belum pasti
@@ -126,5 +129,4 @@ Kode yang dibaca (path relatif ke root repo; worktree `legend-int-batch106` untu
 - Cara finance membuka daftar pengecualian (layar atau endpoint) tidak diverifikasi di runbook ini.
 - Kode dibaca dari worktree, bukan dari checkout `main`; nomor baris bisa bergeser setelah merge.
 - Pengecekan laci dan jurnal manual untuk refund offline (B1, B2) tidak diwajibkan atau dicatat oleh kode yang dibaca; itu prosedur, bukan fitur sistem.
-- B2 ditulis dari brief 1264 (edge rilis 1 tanpa baris pengecualian); alasan tidak adanya baris tidak diverifikasi di kode.
 - Belum ada runbook distribusi bagi hasil atau tutup buku sendiri; cek audit di bagian D diletakkan di runbook ini.
