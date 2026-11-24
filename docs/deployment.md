@@ -120,6 +120,8 @@ TRUST_PROXY=2
 # MIGRATION_DATABASE_URL=postgresql://user:password@direct-host:5432/app
 # Optional: member sign-in email over SMTP (legend-k2l). SMTP_HOST, SMTP_USER,
 # SMTP_PASS and EMAIL_FROM together or none; none = email sign-in answers 503.
+# The same sender mails the password reset link (legend-1255): without it
+# POST /api/auth/request-password-reset answers 503 and the web hides the link.
 # Port 465 uses implicit TLS (SMTP_SECURE=true); SMTP_SECURE=false requires STARTTLS.
 # SMTP_HOST=smtp.example.com
 # SMTP_PORT=465

@@ -4,7 +4,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { InvitationAcceptBody } from "@starter/shared/identity";
 import * as api from "./api";
-import { currentAuthQuery, loginChallengeQuery, loginKeys } from "./queries";
+import {
+  currentAuthQuery,
+  loginChallengeQuery,
+  loginKeys,
+  passwordResetStatusQuery,
+} from "./queries";
 
 export function useStartWhatsAppLogin() {
   return useMutation({
@@ -79,4 +84,22 @@ export function useStartGoogleLogin() {
  */
 export function useCurrentAuth() {
   return useQuery(currentAuthQuery());
+}
+
+/** `true` / `false` once known; `undefined` while loading or if the call failed. */
+export function usePasswordResetEnabled() {
+  return useQuery(passwordResetStatusQuery()).data;
+}
+
+export function useRequestPasswordReset() {
+  return useMutation({
+    mutationFn: (email: string) => api.requestPasswordResetEmail(email),
+  });
+}
+
+export function useResetPassword() {
+  return useMutation({
+    mutationFn: (input: { token: string; newPassword: string }) =>
+      api.resetPasswordWithToken(input.token, input.newPassword),
+  });
 }

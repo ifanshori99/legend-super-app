@@ -45,6 +45,12 @@ import { resolveHostname } from "../services/org-resolve.service";
 import { sharedDeviceIdsFromToken } from "../services/shared-device.service";
 import { logger } from "./logger";
 import { sealSecret } from "./secrets";
+import {
+  isCustomerPasswordAccount,
+  PASSWORD_RESET_TOKEN_SECONDS,
+  passwordResetAvailable,
+  sendPasswordResetEmail,
+} from "./password-reset";
 
 const authLog = logger.child({ module: "better-auth" });
 
@@ -99,12 +105,14 @@ function refuse(error: unknown): never {
  * deleteUserSessions (internal-adapter.mjs:503-521): the session delete hook
  * also removes the user's orphan push subscriptions on these paths. The
  * /admin/* ones are refused by hooks.before (only impersonation is enabled);
- * listed so enabling one later cannot skip the sweep. /reset-password is not
- * here: revokeSessionsOnPasswordReset is off, so it never reaches
- * deleteUserSessions; emailAndPassword.onPasswordReset sweeps instead.
+ * listed so enabling one later cannot skip the sweep. /reset-password is
+ * here too (legend-1255): revokeSessionsOnPasswordReset is on, so a reset ends
+ * every session of the user through deleteUserSessions; the orphan sweep in
+ * emailAndPassword.onPasswordReset stays for subscriptions with no session.
  */
 const USER_WIDE_SESSION_REVOKE_PATHS = new Set([
   "/revoke-sessions",
+  "/reset-password",
   "/change-password",
   "/delete-user",
   "/delete-user/callback",
@@ -128,6 +136,7 @@ const EXPLICIT_SESSION_END_PATHS = new Set([
   "/revoke-session",
   "/revoke-sessions",
   "/revoke-other-sessions",
+  "/reset-password",
   "/change-password",
   "/delete-user",
   "/delete-user/callback",
@@ -356,6 +365,31 @@ export const auth = betterAuth({
   database: drizzleAdapter(db, { provider: "pg", schema }),
   hooks: {
     before: createAuthMiddleware(async (ctx) => {
+      // legend-1255: without a mail sender the reset request says so (503)
+      // instead of pretending a mail left; the web hides the link by the
+      // status route. Answered before any user lookup, so it leaks nothing.
+      if (ctx.path === "/request-password-reset" && !passwordResetAvailable())
+        throw new APIError("SERVICE_UNAVAILABLE", {
+          code: "EMAIL_NOT_CONFIGURED",
+          message: "Password reset by email is not available.",
+        });
+      // legend-1255: the owner of a reset token is checked again when the
+      // token is used. A token asked for while the account was a customer
+      // must not reset the password after it became staff. Refused with the
+      // same answer as an unknown token. No row = Better Auth answers itself.
+      if (ctx.path === "/reset-password") {
+        const token = ctx.body?.token || ctx.query?.token;
+        if (typeof token !== "string" || token === "") return;
+        const pending = await ctx.context.internalAdapter.findVerificationValue(
+          `reset-password:${token}`,
+        );
+        if (pending && !(await isCustomerPasswordAccount(pending.value)))
+          throw new APIError("BAD_REQUEST", {
+            code: "INVALID_TOKEN",
+            message: "Invalid token",
+          });
+        return;
+      }
       if (!ctx.path.startsWith("/admin/")) return;
       if (ctx.path === "/admin/stop-impersonating") return;
       if (ctx.path === "/admin/has-permission" && !ctx.request) return;
@@ -724,8 +758,17 @@ export const auth = betterAuth({
     enabled: true,
     minPasswordLength: 8,
     maxPasswordLength: 128,
-    // Add an email provider before enabling verification or password recovery.
+    // Email verification stays off (a separate bead if it is ever needed).
     requireEmailVerification: false,
+    // legend-1255: reset by email. Token is single use and lasts one hour;
+    // the answer is the same for a known and an unknown address (Better Auth
+    // answers both alike; sendPasswordResetEmail does not wait for the mail).
+    resetPasswordTokenExpiresIn: PASSWORD_RESET_TOKEN_SECONDS,
+    // A reset ends every session of the account (a stolen session must not
+    // survive the password change).
+    revokeSessionsOnPasswordReset: true,
+    sendResetPassword: async ({ user, token }, request) =>
+      sendPasswordResetEmail({ user, token }, request),
     // legend-ofq4f (second opinion P1-1): a password reset by token has no
     // current session, so every push subscription of the user goes, orphans
     // included (no session row needs to exist for this to run). The password

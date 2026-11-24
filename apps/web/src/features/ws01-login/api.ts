@@ -4,6 +4,8 @@
 // (VITE_API_MOCK=true) serves the same shapes the API will
 // (docs/frontend.md "Typed endpoints and mock mode"). No fetch and no types
 // are written here: they come from @starter/shared/identity.
+import { apiFetch } from "@/lib/api/client";
+import { authClient } from "@/lib/auth-client";
 import { callEndpoint } from "@/lib/api/endpoint.ts";
 import {
   acceptTenantInvitation,
@@ -83,4 +85,45 @@ export async function googleAuthorizationUrl(returnTo?: string) {
 export async function fetchCurrentAuth(signal?: AbortSignal) {
   const response = await callEndpoint(getCurrentAuth, {}, { signal });
   return response.data;
+}
+
+/** GET /api/auth/password-reset/status — may the "Lupa kata sandi" link show? */
+export async function fetchPasswordResetStatus(signal?: AbortSignal) {
+  const response = await apiFetch<{ data: { enabled: boolean } }>(
+    "/api/auth/password-reset/status",
+    { signal },
+  );
+  return response.data.enabled;
+}
+
+/**
+ * POST /api/auth/request-password-reset — the same answer for every address.
+ * The mail's link is built by the API; a 503 means no mail sender is set up.
+ */
+export async function requestPasswordResetEmail(email: string) {
+  const result = await authClient.requestPasswordReset({ email });
+  if (result.error) throw new PasswordResetError(result.error.status ?? 0);
+}
+
+/** POST /api/auth/reset-password — the token works once, for one hour. */
+export async function resetPasswordWithToken(
+  token: string,
+  newPassword: string,
+) {
+  const result = await authClient.resetPassword({ newPassword, token });
+  if (result.error) throw new PasswordResetError(result.error.status ?? 0);
+}
+
+/** `code` feeds loginErrorKey: 429 reads as "too many", 0 as "offline". */
+export class PasswordResetError extends Error {
+  readonly code: string;
+  constructor(readonly status: number) {
+    super(`password reset failed (${status})`);
+    this.code =
+      status === 429
+        ? "RATE_LIMITED"
+        : status === 0
+          ? "NETWORK_ERROR"
+          : "RESET_FAILED";
+  }
 }

@@ -165,6 +165,41 @@ export const loginMessages = {
     alreadyLinkedHint:
       "Masuk ke akun pemilik nomor untuk menggabungkan riwayat. Penautan tidak membuat akun kedua.",
   },
+  // legend-1255: password reset by email ("/lupa-sandi" is not used: the two
+  // pages are /forgot-password and /reset-password, the link in the mail).
+  resetPassword: {
+    link: "Lupa kata sandi?",
+    forgotHeading: "Lupa kata sandi",
+    forgotSubtitle:
+      "Masukkan email akunmu. Kami kirim tautan untuk memilih kata sandi baru.",
+    emailLabel: "Email",
+    emailPlaceholder: "nama@contoh.id",
+    submit: "Kirim tautan atur ulang",
+    sentTitle: "Periksa emailmu",
+    sentBody:
+      "Jika {email} terdaftar, tautan atur ulang kata sandi sudah dikirim ke alamat itu. Tautan hanya bisa dipakai sekali dan berlaku 1 jam.",
+    checkSpam: "Belum menemukannya? Periksa folder spam atau promosi.",
+    privacy:
+      "Jawaban halaman ini sama untuk semua alamat, terdaftar atau tidak, agar tidak membocorkan akun.",
+    unavailableTitle: "Atur ulang lewat email belum tersedia",
+    unavailableHint:
+      "Pengiriman email belum diaktifkan di sini. Hubungi pengelola untuk mengatur ulang kata sandimu, atau masuk dengan cara lain.",
+    backToSignIn: "Kembali ke halaman masuk",
+    newHeading: "Pilih kata sandi baru",
+    newSubtitle: "Kata sandi lamamu berhenti berlaku setelah ini disimpan.",
+    passwordLabel: "Kata sandi baru",
+    passwordHint: "Minimal 8 karakter.",
+    save: "Simpan kata sandi",
+    doneTitle: "Kata sandi sudah diganti",
+    doneHint: "Masuk dengan kata sandi barumu.",
+    signIn: "Masuk",
+    invalidTitle: "Tautan sudah tidak berlaku",
+    invalidHint:
+      "Tautan hanya bisa dipakai sekali dan berlaku 1 jam. Minta tautan baru untuk melanjutkan.",
+    requestNew: "Minta tautan baru",
+    passwordTooShort: "Kata sandi minimal 8 karakter.",
+    passwordTooLong: "Kata sandi maksimal 128 karakter.",
+  },
   errors: {
     generic: "Masuk belum bisa diproses. Coba lagi sebentar lagi.",
     offline:

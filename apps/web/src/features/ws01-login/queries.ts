@@ -2,7 +2,11 @@
 // completed sign-in can invalidate the session view without touching other
 // features (docs/frontend.md "Query options and keys").
 import { queryOptions } from "@tanstack/react-query";
-import { fetchCurrentAuth, fetchLoginChallenge } from "./api";
+import {
+  fetchCurrentAuth,
+  fetchLoginChallenge,
+  fetchPasswordResetStatus,
+} from "./api";
 import { LOGIN_POLL_MS } from "./flow";
 
 export const loginKeys = {
@@ -10,6 +14,7 @@ export const loginKeys = {
   challenge: (challengeId: string) =>
     [...loginKeys.all, "challenge", challengeId] as const,
   currentAuth: () => [...loginKeys.all, "current-auth"] as const,
+  passwordResetStatus: () => [...loginKeys.all, "password-reset"] as const,
 };
 
 /**
@@ -45,6 +50,16 @@ export function currentAuthQuery() {
     queryKey: loginKeys.currentAuth(),
     queryFn: ({ signal }) => fetchCurrentAuth(signal),
     staleTime: 0,
+    retry: false,
+  });
+}
+
+/** Whether this deployment can send the password reset mail (SMTP set up). */
+export function passwordResetStatusQuery() {
+  return queryOptions({
+    queryKey: loginKeys.passwordResetStatus(),
+    queryFn: ({ signal }) => fetchPasswordResetStatus(signal),
+    staleTime: 5 * 60_000,
     retry: false,
   });
 }

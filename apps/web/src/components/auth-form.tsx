@@ -10,12 +10,17 @@ import { Label } from "@/components/ui/label";
 import { siteConfig } from "@/config/site";
 import { postLoginPath } from "@/lib/areas/post-login";
 import { hrisKeys } from "@/features/ws10-hris-employee/queries";
+import { usePasswordResetEnabled } from "@/features/ws01-login/hooks";
+import { useT } from "@/components/i18n";
 
 export function AuthForm({ mode }: { mode: "sign-in" | "sign-up" }) {
   const signingUp = mode === "sign-up";
   const router = useRouter();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const t = useT();
+  // Hidden unless the API says it can send the reset mail (SMTP set up).
+  const canReset = usePasswordResetEnabled() === true;
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
 
@@ -129,6 +134,14 @@ export function AuthForm({ mode }: { mode: "sign-in" | "sign-up" }) {
               maxLength={128}
               aria-describedby={signingUp ? "password-hint" : undefined}
             />
+            {!signingUp && canReset && (
+              <Link
+                className="inline-block rounded-sm text-sm font-medium text-foreground underline underline-offset-4 focus-visible:outline-2 focus-visible:outline-ring"
+                to="/forgot-password"
+              >
+                {t("login.resetPassword.link")}
+              </Link>
+            )}
             {signingUp && (
               <p id="password-hint" className="text-sm text-muted-foreground">
                 Use at least 8 characters.
