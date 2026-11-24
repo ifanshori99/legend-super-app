@@ -72,6 +72,12 @@ export function PeriodCloseBlocked({
   const [touched, setTouched] = React.useState(false);
   const [confirmOpen, setConfirmOpen] = React.useState(false);
   const [notice, setNotice] = React.useState<string | null>(null);
+  // Frozen when the confirm dialog opens: a background refetch must never
+  // swap the batch list under a confirmation or an MFA code. A stale list is
+  // refused by the server (409) and confirmed again.
+  const [confirmed, setConfirmed] = React.useState<ReturnType<
+    typeof overrideAttemptPayload
+  > | null>(null);
 
   if (blockers.isPending)
     return (
@@ -131,12 +137,8 @@ export function PeriodCloseBlocked({
     );
 
   const submit = async () => {
-    const payload = overrideAttemptPayload({
-      fiscalPeriodId: period.id,
-      expectedVersion: period.version,
-      reason,
-      sourceIds,
-    });
+    if (!confirmed) return;
+    const payload = confirmed;
     setNotice(null);
     try {
       await override.mutateAsync({
@@ -324,6 +326,14 @@ export function PeriodCloseBlocked({
                   reasonRef.current?.focus();
                   return;
                 }
+                setConfirmed(
+                  overrideAttemptPayload({
+                    fiscalPeriodId: period.id,
+                    expectedVersion: period.version,
+                    reason,
+                    sourceIds,
+                  }),
+                );
                 setConfirmOpen(true);
               }}
             >
@@ -338,7 +348,7 @@ export function PeriodCloseBlocked({
         onOpenChange={setConfirmOpen}
         title={t(`${STOCK}.confirmTitle` as const, { period: periodLabel })}
         description={t(`${STOCK}.confirmBody` as const, {
-          count: data.sources.length,
+          count: confirmed?.sourceIds.length ?? data.sources.length,
         })}
         confirmLabel={t(`${STOCK}.confirmSubmit` as const)}
         pending={override.isPending}
