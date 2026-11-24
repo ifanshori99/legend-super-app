@@ -18,6 +18,8 @@ export const accountingErrorHttpStatus = {
   /** A later period of the same legal entity is closed; reopen that one first. */
   PERIOD_REOPEN_OUT_OF_ORDER: 409,
   PERIOD_ALREADY_CLOSED: 409,
+  /** Stock sources of the period wait in inventory_gl_blocked (card 1260); no close until they post. */
+  PERIOD_INVENTORY_GL_BLOCKED: 422,
   PERIOD_ALREADY_OPEN: 409,
   /** The action needs a closed period (e.g. finalising a tax report). */
   PERIOD_NOT_CLOSED: 409,
@@ -136,6 +138,8 @@ const defaultMessages: Record<AccountingErrorCode, string> = {
   PERIOD_CLOSE_OUT_OF_ORDER: "Tutup periode sebelumnya terlebih dahulu.",
   PERIOD_REOPEN_OUT_OF_ORDER: "Buka ulang periode setelahnya terlebih dahulu.",
   PERIOD_ALREADY_CLOSED: "Periode ini sudah ditutup.",
+  PERIOD_INVENTORY_GL_BLOCKED:
+    "Masih ada sumber persediaan yang belum terjurnal. Selesaikan dulu, lalu tutup periode.",
   PERIOD_ALREADY_OPEN: "Periode ini masih terbuka.",
   PERIOD_NOT_CLOSED: "Periode ini belum ditutup.",
   REOPEN_REASON_REQUIRED: "Alasan pembukaan ulang wajib diisi.",

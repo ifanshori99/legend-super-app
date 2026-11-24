@@ -59,6 +59,7 @@ import {
   isNotNull,
   lte,
   max,
+  min,
   ne,
   sql,
 } from "drizzle-orm";
@@ -100,6 +101,7 @@ import {
   type InventoryGlSourceType,
 } from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
+import { logger } from "../lib/logger.ts";
 import { isTrainingOrder } from "./device-training.ts";
 import { postJournalFromRuleInTransaction } from "./accounting-journal.service.ts";
 import { wouldPostingBeBlockedByClosedPeriod } from "./accounting-period.service.ts";
@@ -411,10 +413,115 @@ async function settleStockSource(
           lastFailedAt: now,
         },
       });
+    // Card 1260: a parked source is invisible otherwise (a production batch
+    // can stay parked for good). Ids and codes only, no personal data.
+    logger.warn(
+      {
+        event: "inventory_gl.parked",
+        tenantId,
+        outletId,
+        sourceType: target.sourceType,
+        sourceId: target.domainId,
+        errorCode: code,
+      },
+      "Inventory GL source parked in inventory_gl_blocked",
+    );
     return { status: "blocked", code };
   }
   if (result.status !== "ignored") await clearBlocked(tx, tenantId, target);
   return result;
+}
+
+/** A parked source as shown to the person closing a period (card 1260). */
+export type BlockedInventoryGlSource = {
+  sourceType: InventoryGlSourceType;
+  sourceId: string;
+  errorCode: string;
+};
+
+/**
+ * Card 1260: the sources of the legal entity parked in `inventory_gl_blocked`
+ * whose first stock row falls in `period` or earlier on the outlet's business
+ * day (time zone + cutoff, the same clock the posting uses). Closing the
+ * period over them would freeze books that still miss their COGS, waste,
+ * count or production journal. A source without a dating stock row is listed
+ * (fail closed).
+ */
+export async function listBlockedInventoryGlUpTo(
+  tx: Tx,
+  tenantId: ScopedTenantContext["tenant"]["tenantId"],
+  legalEntityId: string,
+  period: string,
+): Promise<BlockedInventoryGlSource[]> {
+  const blocked = await tx
+    .select({
+      sourceType: inventoryGlBlocked.sourceType,
+      sourceId: inventoryGlBlocked.sourceId,
+      errorCode: inventoryGlBlocked.errorCode,
+      timezone: outlets.timezone,
+      businessDayCutoff: outlets.businessDayCutoff,
+    })
+    .from(inventoryGlBlocked)
+    .innerJoin(
+      outlets,
+      and(
+        eq(outlets.tenantId, inventoryGlBlocked.tenantId),
+        eq(outlets.id, inventoryGlBlocked.outletId),
+      ),
+    )
+    .where(
+      and(
+        eq(inventoryGlBlocked.tenantId, tenantId),
+        eq(outlets.legalEntityId, legalEntityId),
+      ),
+    )
+    .orderBy(
+      asc(inventoryGlBlocked.firstFailedAt),
+      asc(inventoryGlBlocked.sourceId),
+    );
+  const listed: BlockedInventoryGlSource[] = [];
+  for (const source of blocked) {
+    const dbId = sourceIdToDb(source.sourceId);
+    const [first] =
+      source.sourceType === "negative_stock_revaluation"
+        ? await tx
+            .select({ at: min(stockNegativeRevaluations.occurredAt) })
+            .from(stockNegativeRevaluations)
+            .where(
+              and(
+                eq(stockNegativeRevaluations.tenantId, tenantId),
+                eq(stockNegativeRevaluations.sourceId, dbId),
+              ),
+            )
+        : await tx
+            .select({ at: min(stockLedger.occurredAt) })
+            .from(stockLedger)
+            .where(
+              and(
+                eq(stockLedger.tenantId, tenantId),
+                eq(stockLedger.sourceType, source.sourceType),
+                eq(stockLedger.sourceId, dbId),
+              ),
+            );
+    const sourcePeriod = first?.at
+      ? periodOf(
+          businessDateOf(
+            first.at,
+            outletBusinessDayClock({
+              timezone: source.timezone,
+              businessDayCutoff: source.businessDayCutoff,
+            }),
+          ),
+        )
+      : null;
+    if (sourcePeriod === null || sourcePeriod <= period)
+      listed.push({
+        sourceType: source.sourceType,
+        sourceId: source.sourceId,
+        errorCode: source.errorCode,
+      });
+  }
+  return listed;
 }
 
 async function clearBlocked(
