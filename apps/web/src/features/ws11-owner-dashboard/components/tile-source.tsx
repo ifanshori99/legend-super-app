@@ -44,7 +44,7 @@ export function TileSource({
   )
     return (
       <span className={className ?? "text-muted-foreground"}>
-        {reportName} · {t("reportViewer.catalog.soon")}
+        {reportName} · {t("ownerDashboard.soon")}
       </span>
     );
   // No report viewer route yet (legend-tp3x): no link that lands on a 404.

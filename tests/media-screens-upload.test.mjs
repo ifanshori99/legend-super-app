@@ -212,6 +212,9 @@ Object.assign(state.bindings, {
   quantityFromInput: (value) => value || null,
   rejectedQuantityFromInput: (value) => value || "0",
   itemNameOf: () => "Item",
+  isZeroPriceLine: (line) => Number(line.unitPriceIdr) === 0,
+  bonusFlagOf: (line, isBonus) =>
+    Number(line.unitPriceIdr) === 0 && isBonus ? { isBonus: true } : {},
   uomCodeOf: () => "kg",
   formatQuantityWithUnit: String,
   amountFromInput: (value) => (value ? Number(value) : null),

@@ -12,6 +12,7 @@ export const ownerDashboardMessages = {
   estimateHint:
     "Angka berjalan sampai buku ditutup; angka resmi diambil dari periode yang sudah ditutup.",
   sourceAria: "Buka laporan sumber {report}",
+  soon: "Segera hadir",
   tabsLabel: "Bagian dashboard",
   todayShort: "Hari ini",
   tabs: {
