@@ -20,7 +20,7 @@ Untuk founder: dokumen ini mendaftar semua credential yang harus dipasang di pro
 | KirimDev (WhatsApp, bukan kurir)      | Sebagian           | Pesan keluar `legend-w8dfz` (review)                                                 |
 | Kurir / pengiriman                    | Belum ada kode     | Perlu konfirmasi founder, bead `legend-qgdp6`                                        |
 | GoFood, GrabFood, ShopeeFood          | Belum              | Akses partner dari founder: `legend-9tzc` (P0), adapter `legend-im8n`                |
-| Email (SMTP)                          | Sebagian           | Hanya untuk login member; tidak ada penyedia email transaksional                     |
+| Email (SMTP)                          | Sebagian           | Login member dan reset sandi; tidak ada penyedia email transaksional                 |
 | Web push (VAPID)                      | Sebagian           | `legend-ofq4f` sedang dikerjakan                                                     |
 | AI (LLM)                              | Siap               | Kunci per tenant; rotasi terjadwal `legend-rg8yl`                                    |
 | Object storage S3/R2                  | Siap (dua set key) | Lihat bagian Storage                                                                 |
@@ -122,13 +122,13 @@ Catatan penting: di kode, **KirimDev adalah penyedia WhatsApp**, bukan kurir. Fu
 
 ## 6. Email
 
-- **Fungsi.** Pengiriman email login member (`legend-k2l`). Tidak ada email transaksional lain (struk, tagihan).
-- **Credential (env).** Isi keempatnya bersama atau tidak sama sekali; bila kosong, login lewat email menjawab 503 (`docs/deployment.md:121-123`):
+- **Fungsi.** Pengiriman email login member (`legend-k2l`) dan tautan reset sandi (`legend-1255`). Tidak ada email transaksional lain (struk, tagihan).
+- **Credential (env).** Isi keempatnya bersama atau tidak sama sekali; bila kosong, login lewat email dan `POST /api/auth/request-password-reset` menjawab 503 dan web menyembunyikan tautan reset (`docs/deployment.md:119-123`):
   - `SMTP_HOST`, `SMTP_USER`, `SMTP_PASS` (rahasia), `EMAIL_FROM`; opsional `SMTP_PORT` (bawaan 465) dan `SMTP_SECURE` (`env.ts:503-511`).
   - Penyedia SMTP yang tertulis di kode: SumoPod `smtp.sumopod.com:465` (`apps/api/src/lib/email-sender.ts:11`, `:21`). Penyedia lain boleh, selama SMTP.
 - **Dari mana.** Dashboard penyedia SMTP (menu SMTP atau kredensial pengirim). Domain pengirim harus diverifikasi lewat DNS (SPF dan DKIM) supaya email tidak masuk spam.
 - **Webhook.** Tidak ada.
-- **Cara uji aman.** Coba login email dengan alamat sendiri. Tidak ada endpoint tes khusus.
+- **Cara uji aman.** Coba login email dan minta reset sandi dengan alamat sendiri. Tidak ada endpoint tes khusus.
 - **Status: Sebagian.** Layar integrasi `email` per tenant ada, tetapi adapter penyedia email per tenant belum ada (hanya antarmuka `EmailProvider`, `apps/api/src/services/notification-delivery.ts:51`).
 
 ## 7. Web push (notifikasi)
@@ -150,13 +150,13 @@ Catatan penting: di kode, **KirimDev adalah penyedia WhatsApp**, bukan kurir. Fu
 
 ## 9. Object storage (S3 atau R2)
 
-Ada **dua set key yang berbeda**, untuk dua fitur berbeda. Dua-duanya opsional; bila kosong fiturnya mati, bukan error. Bila diisi sebagian, aplikasi menolak start.
+Satu set key saja untuk semua fitur: unggahan umum (foto absensi, gambar menu, dokumen HRIS) dan dokumen hasil sistem (PDF statement bagi hasil, `legend-33im6`). Opsional; bila kosong fiturnya mati, bukan error (unggahan menjawab 503, statement tidak diterbitkan). Bila diisi sebagian, aplikasi menolak start.
 
-- **Set A, unggahan umum (foto absensi, gambar menu, dokumen HRIS).** Rahasia: `STORAGE_S3_ACCESS_KEY_ID`, `STORAGE_S3_SECRET_ACCESS_KEY`. Bukan rahasia: `STORAGE_S3_PRIVATE_BUCKET`, `STORAGE_S3_PUBLIC_BUCKET`, `STORAGE_PUBLIC_BASE_URL` (https); opsional `STORAGE_S3_ENDPOINT`, `STORAGE_S3_REGION`, `STORAGE_S3_FORCE_PATH_STYLE`. Rujukan: `.env.example:296-310`, `apps/api/src/services/core-storage-runtime.ts:15-27`. Tanpa set ini, unggahan menjawab 503.
-- **Set B, dokumen hasil sistem (PDF statement bagi hasil, `legend-33im6`).** `OBJECT_STORAGE_REGION`, `OBJECT_STORAGE_ACCESS_KEY_ID` dan `OBJECT_STORAGE_SECRET_ACCESS_KEY` (rahasia), `OBJECT_STORAGE_PRIVATE_BUCKET`, `OBJECT_STORAGE_PUBLIC_BUCKET`, `OBJECT_STORAGE_PUBLIC_BASE_URL`, opsional `OBJECT_STORAGE_ENDPOINT`. Kedua bucket harus berbeda (`env.ts:524-530`, `env.ts:615-640`, `.env.example:104-115`). Tanpa set ini, statement tidak diterbitkan.
+- **Wajib bersama.** Rahasia: `STORAGE_S3_ACCESS_KEY_ID`, `STORAGE_S3_SECRET_ACCESS_KEY`. Bukan rahasia: `STORAGE_S3_PRIVATE_BUCKET`, `STORAGE_S3_PUBLIC_BUCKET` (harus berbeda), `STORAGE_PUBLIC_BASE_URL` (https), `STORAGE_S3_REGION` (tanpa nilai bawaan: region salah merusak unggahan diam-diam). Opsional: `STORAGE_S3_ENDPOINT`, `STORAGE_S3_FORCE_PATH_STYLE`. Rujukan: `apps/api/src/config/env.ts:538-552`, `deploy/single-vm/runtime.env.example:95-112`.
+- **Usang.** `OBJECT_STORAGE_*` hanya fallback usang: API memberi peringatan sekali saat start dan menolak start bila kunci lama dan `STORAGE_S3_*` berisi nilai berbeda. Isi `STORAGE_S3_*` saja.
 - **Dari mana.** Dashboard penyedia (AWS S3 atau Cloudflare R2): buat dua bucket (privat dan publik), lalu buat access key terbatas pada bucket itu. Untuk R2, isi endpoint.
 - **Cara uji aman.** Unggah satu foto uji di tenant uji dan buka lewat tautan bertanda tangan; cek `GET /api/health` (pemindai).
-- **Status: Siap.** Bead: `legend-dzh9q` (set A, selesai), `legend-33im6` (set B).
+- **Status: Siap.** Bead: `legend-dzh9q` (unggahan umum, selesai), `legend-33im6` (statement bagi hasil).
 
 ## 10. Login Google, antivirus, Redis
 

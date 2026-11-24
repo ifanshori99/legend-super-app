@@ -392,7 +392,7 @@ export async function listParkedEdgeRefundFacts(
  * gateway refund it would allow) could pay the same money twice. Read-only.
  */
 export async function hasParkedEdgeRefund(
-  tx: Tx,
+  tx: Pick<Tx, "execute">,
   input: { tenantId: string; orderId: string },
 ): Promise<boolean> {
   const uuid = canonicalOrderId(input.orderId);
