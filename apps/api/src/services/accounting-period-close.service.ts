@@ -21,18 +21,25 @@
 // key of a close that already happened returns the current period and writes
 // no second snapshot.
 
-import { and, asc, desc, eq, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, lte, sql } from "drizzle-orm";
+import { AccessError } from "@starter/shared/access";
 import {
   AccountingError,
   assertPeriodVersion,
   assertReopenRequestable,
   decidePeriodClose,
   decidePeriodReopen,
+  PERIOD_CLOSE_OVERRIDABLE_CODE,
+  PERIOD_CLOSE_OVERRIDE_MAX_SOURCES,
+  periodCloseBlockersSchema,
+  closeFiscalPeriodOverrideInputSchema,
   periodCloseSnapshotSchema,
   periodReopenRequestSchema,
   rejectInputSchema,
   requestPeriodReopenInputSchema,
+  type CloseFiscalPeriodOverrideInput,
   type FiscalPeriod,
+  type PeriodCloseBlockers,
   type PeriodCloseSnapshot,
   type PeriodReopenRequest,
 } from "@starter/shared/accounting";
@@ -49,16 +56,23 @@ import {
 } from "@starter/shared/core";
 import { db } from "../db";
 import {
+  auditLogs,
   distributionRuns,
   fiscalPeriods,
   fiscalPeriodSnapshotLines,
   fiscalPeriodSnapshots,
+  inventoryItems,
   journalEntries,
   journalLines,
   periodReopenRequests,
+  productionOrders,
 } from "../db/schema";
 import { withTenant } from "../db/tenant";
-import { listBlockedInventoryGlUpTo } from "./inventory-gl-consumer.ts";
+import {
+  listBlockedInventoryGlUpTo,
+  type BlockedInventoryGlSource,
+} from "./inventory-gl-consumer.ts";
+import { sourceIdToDb } from "./inventory.service.ts";
 import { HttpError } from "../lib/http-error";
 import {
   lockLegalEntityForPeriodChange,
@@ -317,6 +331,80 @@ function balanceIdr(value: bigint): Idr {
 }
 
 /**
+ * Card 1263: only incomplete production batches may be closed over, and only
+ * when the closer can see every one of them.
+ */
+function closeBlockersOverridable(
+  blocked: readonly BlockedInventoryGlSource[],
+): boolean {
+  return (
+    blocked.length > 0 &&
+    blocked.length <= PERIOD_CLOSE_OVERRIDE_MAX_SOURCES &&
+    blocked.every(
+      (source) =>
+        source.sourceType === "production_order" &&
+        source.errorCode === PERIOD_CLOSE_OVERRIDABLE_CODE,
+    )
+  );
+}
+
+function sameIds(a: readonly string[], b: readonly string[]): boolean {
+  const left = new Set(a);
+  return (
+    left.size === a.length &&
+    a.length === b.length &&
+    b.every((id) => left.has(id))
+  );
+}
+
+/**
+ * The replayed key must be the override that this exact request made: same
+ * reason and same sources (read back from the append-only audit row). A key
+ * of a plain close, or a changed body, is a reuse, so nobody gets a success
+ * for a reason that was never recorded.
+ */
+async function assertSameOverrideReplay(
+  tx: TenantTransaction,
+  tenantId: string,
+  row: FiscalPeriodRow,
+  override: CloseOverride,
+): Promise<void> {
+  const rows = await tx
+    .select({ event: auditLogs.event })
+    .from(auditLogs)
+    .where(
+      and(
+        eq(auditLogs.tenantId, tenantId),
+        sql`${auditLogs.event}->>'action' = ${CLOSE_OVERRIDDEN_ACTION}`,
+        sql`${auditLogs.event}->>'objectId' = ${row.id}`,
+        sql`(${auditLogs.event}->'maskedChanges'->'after'->>'version')::int = ${row.version}`,
+      ),
+    );
+  const same = rows.some(({ event }) => {
+    const record = event as {
+      reason: string | null;
+      maskedChanges: { after: { sources?: { sourceId: string }[] } };
+    };
+    return (
+      record.reason === override.reason &&
+      sameIds(
+        (record.maskedChanges.after.sources ?? []).map((s) => s.sourceId),
+        override.sourceIds,
+      )
+    );
+  });
+  if (!same)
+    throw new CoreError(
+      "IDEMPOTENCY_KEY_REUSED",
+      "That idempotency key was already used for a different close.",
+    );
+}
+
+const CLOSE_OVERRIDDEN_ACTION = "accounting.period.close_overridden";
+
+type CloseOverride = { reason: string; sourceIds: readonly string[] };
+
+/**
  * Closes a month with a balance snapshot (§3.19). `expectedVersion` turns a
  * stale screen into PERIOD_CHANGED; the same `idempotencyKey` replays safely.
  */
@@ -326,6 +414,98 @@ export async function closeFiscalPeriod(
   input: { expectedVersion: number; idempotencyKey: string },
   actorId: UserId,
   now = new Date(),
+): Promise<FiscalPeriod> {
+  return closePeriod(context, fiscalPeriodId, input, null, actorId, now);
+}
+
+/**
+ * Card 1263 (founder no. 19): closes over production batches whose rows are
+ * still incomplete, with a written reason, a verified second factor and the
+ * exact list of blocked sources the closer saw. Every other check of the close
+ * stays. The batches stay parked: once complete they post into the next open
+ * period as a late adjustment, never into the closed one.
+ */
+export async function closeFiscalPeriodOverride(
+  context: ScopedTenantContext,
+  fiscalPeriodId: string,
+  input: CloseFiscalPeriodOverrideInput,
+  actorId: UserId,
+  options: { readonly mfaVerified: boolean },
+  now = new Date(),
+): Promise<FiscalPeriod> {
+  assertTrustedScopedContext(context);
+  if (!options.mfaVerified) throw new AccessError("MFA_REQUIRED");
+  const { reason, sourceIds, ...close } =
+    closeFiscalPeriodOverrideInputSchema.parse(input);
+  return closePeriod(
+    context,
+    fiscalPeriodId,
+    close,
+    { reason, sourceIds },
+    actorId,
+    now,
+  );
+}
+
+/** What a close of this period would be refused for (card 1263 screen). */
+export async function listPeriodCloseBlockers(
+  context: ScopedTenantContext,
+  fiscalPeriodId: string,
+): Promise<PeriodCloseBlockers> {
+  assertTrustedScopedContext(context);
+  const tenantId = context.tenant.tenantId;
+  return withTenant(db, context, async (tx) => {
+    const row = await readPeriod(tx, tenantId, fiscalPeriodId);
+    const blocked = await listBlockedInventoryGlUpTo(
+      tx,
+      tenantId,
+      row.legalEntityId,
+      row.period,
+    );
+    const listed = blocked.slice(0, PERIOD_CLOSE_OVERRIDE_MAX_SOURCES);
+    const batchIds = listed
+      .filter((source) => source.sourceType === "production_order")
+      .map((source) => sourceIdToDb(source.sourceId));
+    const items = batchIds.length
+      ? await tx
+          .select({ id: productionOrders.id, name: inventoryItems.name })
+          .from(productionOrders)
+          .innerJoin(
+            inventoryItems,
+            and(
+              eq(inventoryItems.tenantId, productionOrders.tenantId),
+              eq(inventoryItems.id, productionOrders.outputItemId),
+            ),
+          )
+          .where(
+            and(
+              eq(productionOrders.tenantId, tenantId),
+              inArray(productionOrders.id, batchIds),
+            ),
+          )
+      : [];
+    const itemNames = new Map(items.map((item) => [item.id, item.name]));
+    return periodCloseBlockersSchema.parse({
+      count: blocked.length,
+      overridable: row.status === "open" && closeBlockersOverridable(blocked),
+      sources: listed.map((source) => ({
+        ...source,
+        itemName:
+          source.sourceType === "production_order"
+            ? (itemNames.get(sourceIdToDb(source.sourceId)) ?? null)
+            : null,
+      })),
+    });
+  });
+}
+
+async function closePeriod(
+  context: ScopedTenantContext,
+  fiscalPeriodId: string,
+  input: { expectedVersion: number; idempotencyKey: string },
+  override: CloseOverride | null,
+  actorId: UserId,
+  now: Date,
 ): Promise<FiscalPeriod> {
   assertTrustedScopedContext(context);
   const idempotencyKey = idempotencyKeySchema.parse(input.idempotencyKey);
@@ -354,8 +534,11 @@ export async function closeFiscalPeriod(
         replay.fiscalPeriodId === row.id &&
         row.status === "closed" &&
         row.version === replay.version
-      )
+      ) {
+        if (override)
+          await assertSameOverrideReplay(tx, tenantId, row, override);
         return toFiscalPeriod(row);
+      }
       throw new CoreError(
         "IDEMPOTENCY_KEY_REUSED",
         "That idempotency key was already used for a different close.",
@@ -385,12 +568,23 @@ export async function closeFiscalPeriod(
       row.legalEntityId,
       row.period,
     );
-    if (blockedGl.length > 0)
+    const overridden = override && closeBlockersOverridable(blockedGl);
+    if (blockedGl.length > 0 && !overridden)
       throw new AccountingError(
         "PERIOD_INVENTORY_GL_BLOCKED",
         `Masih ada ${blockedGl.length} sumber persediaan yang belum terjurnal (diparkir). Selesaikan dulu, lalu tutup periode.`,
         { count: blockedGl.length, sources: blockedGl.slice(0, 20) },
       );
+    // The acknowledged list must be the one blocked now, under the entity
+    // lock: an empty or a different list is a stale screen.
+    if (
+      override &&
+      !sameIds(
+        blockedGl.map((source) => source.sourceId),
+        override.sourceIds,
+      )
+    )
+      throw new AccountingError("PERIOD_OVERRIDE_SOURCES_CHANGED");
 
     const balances = await cumulativeBalances(tx, tenantId, row, entityPeriods);
     let snapshot: { id: string } | undefined;
@@ -450,6 +644,24 @@ export async function closeFiscalPeriod(
       before: { status: "open", version: row.version },
       after: { status: "closed", version: closed.version },
     });
+    if (override)
+      await auditAccountingChange(tx, context, {
+        actorId,
+        action: CLOSE_OVERRIDDEN_ACTION,
+        objectType: "fiscal_period",
+        objectId: row.id,
+        reason: override.reason,
+        before: null,
+        after: {
+          version: closed.version,
+          count: blockedGl.length,
+          sources: blockedGl.map(({ sourceType, sourceId, errorCode }) => ({
+            sourceType,
+            sourceId,
+            errorCode,
+          })),
+        },
+      });
     return toFiscalPeriod(updated);
   }).catch((error: unknown) => {
     throw periodLockTimeoutError(error);

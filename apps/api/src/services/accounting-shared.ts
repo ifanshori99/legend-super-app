@@ -129,6 +129,9 @@ const AUDIT_SAFE_FIELDS = [
   "taxpayerIncluded",
   // legend-b8y6l: "sole_owner" marks a sole Owner's self-approval.
   "selfApproval",
+  // card 1263: ids and codes of the batches a close override acknowledged.
+  "sourceId",
+  "errorCode",
 ] as const;
 
 /** Writes one append-only audit row inside the caller's transaction. */
