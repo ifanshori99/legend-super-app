@@ -38,8 +38,10 @@ import {
 import {
   useCloseManualJournals,
   useClosePeriod,
+  usePeriodCloseBlockers,
   useTrialBalance,
 } from "../hooks";
+import { PeriodCloseBlocked } from "./period-close-override";
 
 type CheckState = "ok" | "blocked" | "info";
 
@@ -84,6 +86,23 @@ export function PeriodCloseDialog({
   const close = useClosePeriod(legalEntityId);
   const [confirmOpen, setConfirmOpen] = React.useState(false);
   const [serverError, setServerError] = React.useState<string | null>(null);
+  // Card 1263: the period whose close was refused for parked stock sources.
+  const [blockedPeriodId, setBlockedPeriodId] = React.useState<string | null>(
+    null,
+  );
+  const showBlocked = period !== null && blockedPeriodId === period.id;
+  const blockers = usePeriodCloseBlockers(period?.id, open && showBlocked);
+  // While sources are parked the plain close would only be refused again.
+  const closeHeldBySources =
+    showBlocked &&
+    (blockers.isPending || (blockers.data?.sources.length ?? 0) > 0);
+  const handleOpenChange = (next: boolean) => {
+    if (!next) {
+      setBlockedPeriodId(null);
+      setServerError(null);
+    }
+    onOpenChange(next);
+  };
 
   const loading = trial.isPending || journals.isPending;
   const failed = trial.isError || journals.isError;
@@ -172,8 +191,17 @@ export function PeriodCloseDialog({
         tone: "success",
       });
       setConfirmOpen(false);
-      onOpenChange(false);
+      handleOpenChange(false);
     } catch (error) {
+      if (
+        error instanceof ApiError &&
+        error.code === "PERIOD_INVENTORY_GL_BLOCKED"
+      ) {
+        // The refusal names no sources; the section below reads them.
+        setBlockedPeriodId(period.id);
+        setConfirmOpen(false);
+        return;
+      }
       setServerError(
         error instanceof ApiError
           ? error.message
@@ -185,7 +213,7 @@ export function PeriodCloseDialog({
 
   return (
     <>
-      <Dialog open={open} onOpenChange={onOpenChange}>
+      <Dialog open={open} onOpenChange={handleOpenChange}>
         <DialogContent className="sm:max-w-xl">
           <DialogHeader>
             <DialogTitle>
@@ -280,7 +308,15 @@ export function PeriodCloseDialog({
                 </dl>
               )}
 
-              {readiness.ready ? (
+              {showBlocked ? (
+                <PeriodCloseBlocked
+                  key={period.id}
+                  period={period}
+                  legalEntityId={legalEntityId}
+                  blockers={blockers}
+                  onClosed={() => handleOpenChange(false)}
+                />
+              ) : readiness.ready ? (
                 <div className="flex items-start gap-2 rounded-container border-(length:--border-w) border-success bg-success-subtle p-3">
                   <CircleCheck
                     className="mt-0.5 size-icon shrink-0 text-success"
@@ -316,7 +352,7 @@ export function PeriodCloseDialog({
             <Button
               type="button"
               variant="outline"
-              onClick={() => onOpenChange(false)}
+              onClick={() => handleOpenChange(false)}
               disabled={close.isPending}
             >
               {t("common.cancel")}
@@ -324,7 +360,11 @@ export function PeriodCloseDialog({
             <Button
               type="button"
               disabled={
-                !readiness.ready || close.isPending || loading || failed
+                !readiness.ready ||
+                close.isPending ||
+                loading ||
+                failed ||
+                closeHeldBySources
               }
               loading={close.isPending}
               onClick={() => {

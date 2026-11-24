@@ -11,6 +11,7 @@ import { createUlid } from "@starter/shared/core";
 import {
   approvePeriodReopen as approvePeriodReopenEndpoint,
   closeFiscalPeriod as closeFiscalPeriodEndpoint,
+  closeFiscalPeriodOverride as closeFiscalPeriodOverrideEndpoint,
   getBalanceSheet as getBalanceSheetEndpoint,
   getCashFlow as getCashFlowEndpoint,
   getEquityChanges as getEquityChangesEndpoint,
@@ -20,6 +21,7 @@ import {
   getStatementDrillDown as getStatementDrillDownEndpoint,
   getTrialBalance as getTrialBalanceEndpoint,
   listManualJournals as listManualJournalsEndpoint,
+  listPeriodCloseBlockers as listPeriodCloseBlockersEndpoint,
   listPeriodReopenRequests as listPeriodReopenRequestsEndpoint,
   rejectPeriodReopen as rejectPeriodReopenEndpoint,
   requestPeriodReopen as requestPeriodReopenEndpoint,
@@ -138,6 +140,44 @@ export async function closeFiscalPeriod(
   const response = await callEndpoint(closeFiscalPeriodEndpoint, {
     params: { fiscalPeriodId } as Params<typeof closeFiscalPeriodEndpoint>,
     body: { ...body, idempotencyKey: createUlid() },
+  });
+  return response.data;
+}
+
+/**
+ * Parked stock sources that stop the close (card 1263). The close refusal
+ * (422 PERIOD_INVENTORY_GL_BLOCKED) carries no list, so the dialog reads it here.
+ */
+export async function fetchPeriodCloseBlockers(
+  fiscalPeriodId: string,
+  signal?: AbortSignal,
+) {
+  const response = await callEndpoint(
+    listPeriodCloseBlockersEndpoint,
+    {
+      params: {
+        fiscalPeriodId,
+      } as Params<typeof listPeriodCloseBlockersEndpoint>,
+    },
+    { signal },
+  );
+  return response.data;
+}
+
+/**
+ * Close over incomplete production batches with a written reason. The caller
+ * owns the idempotency key (one per attempt, reused by a retry of the same
+ * request), unlike the plain close, which mints a key per call.
+ */
+export async function closeFiscalPeriodOverride(
+  fiscalPeriodId: string,
+  body: Body<typeof closeFiscalPeriodOverrideEndpoint>,
+) {
+  const response = await callEndpoint(closeFiscalPeriodOverrideEndpoint, {
+    params: {
+      fiscalPeriodId,
+    } as Params<typeof closeFiscalPeriodOverrideEndpoint>,
+    body,
   });
   return response.data;
 }

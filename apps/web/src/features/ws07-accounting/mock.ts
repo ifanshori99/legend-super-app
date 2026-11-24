@@ -418,7 +418,9 @@ registerMock(listManualJournals, ({ query, scenario }) => {
     rows,
     { cursor: query.cursor, limit: query.limit },
     (row) => row.id,
-    scenario,
+    // Card 1263: the blocked-close scenarios show a period whose journals are
+    // all finished, so the only thing stopping the close is the parked stock.
+    scenario.startsWith("period-close-blocked") ? "empty" : scenario,
   );
 });
 

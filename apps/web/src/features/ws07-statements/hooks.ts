@@ -10,6 +10,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import type { FiscalPeriod } from "@starter/shared/accounting";
+import { ApiError } from "@/lib/api/errors";
 import { accountingKeys, fiscalPeriodsQuery } from "../ws07-accounting/queries";
 import * as api from "./api";
 import type {
@@ -26,6 +27,7 @@ import {
   closeManualJournalsQuery,
   equityChangesStatementQuery,
   multiEntityStatementQuery,
+  periodCloseBlockersQuery,
   periodSnapshotQuery,
   profitAndLossStatementQuery,
   reopenRequestsQuery,
@@ -147,6 +149,14 @@ export function usePeriodSnapshot(
   return useQuery(options);
 }
 
+/** Parked stock sources of one period; read after a refused close (card 1263). */
+export function usePeriodCloseBlockers(
+  fiscalPeriodId: string | undefined,
+  enabled = true,
+) {
+  return useQuery(periodCloseBlockersQuery(fiscalPeriodId, enabled));
+}
+
 export function useReopenRequests(legalEntityId: string | undefined) {
   return useQuery(reopenRequestsQuery(legalEntityId));
 }
@@ -187,6 +197,50 @@ export function useClosePeriod(legalEntityId: string) {
       applyPeriod(period);
       void queryClient.invalidateQueries({
         queryKey: statementKeys.snapshot(period.id),
+      });
+    },
+    // The refusal carries no source list: mark the list stale so the dialog
+    // reads the current one (refetches at once when it is already showing).
+    onError: (error, input) => {
+      if (
+        error instanceof ApiError &&
+        error.code === "PERIOD_INVENTORY_GL_BLOCKED"
+      )
+        void queryClient.invalidateQueries({
+          queryKey: statementKeys.closeBlockers(input.fiscalPeriodId),
+        });
+    },
+  });
+}
+
+/**
+ * Close over incomplete production batches with a written reason (card 1263).
+ * The idempotency key belongs to the attempt, so the caller supplies it.
+ */
+export function useClosePeriodOverride(legalEntityId: string) {
+  const queryClient = useQueryClient();
+  const applyPeriod = useApplyPeriod(legalEntityId);
+  return useMutation({
+    mutationFn: (input: {
+      fiscalPeriodId: string;
+      expectedVersion: number;
+      idempotencyKey: string;
+      reason: string;
+      sourceIds: string[];
+    }) =>
+      api.closeFiscalPeriodOverride(input.fiscalPeriodId, {
+        expectedVersion: input.expectedVersion,
+        idempotencyKey: input.idempotencyKey,
+        reason: input.reason,
+        sourceIds: input.sourceIds,
+      }),
+    onSuccess: (period) => {
+      applyPeriod(period);
+      void queryClient.invalidateQueries({
+        queryKey: statementKeys.snapshot(period.id),
+      });
+      queryClient.removeQueries({
+        queryKey: statementKeys.closeBlockers(period.id),
       });
     },
   });

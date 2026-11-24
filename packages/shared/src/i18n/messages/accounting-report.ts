@@ -212,6 +212,68 @@ export const accountingReportMessages = {
       closed: "Periode {period} ditutup.",
       failed: "Periode tidak dapat ditutup.",
       errorTitle: "Daftar periksa tidak dapat dimuat",
+      // Card 1263: a close refused for parked stock sources, and the written
+      // reason that lets the owner or finance close over incomplete batches.
+      stock: {
+        title: "Ada sumber persediaan yang tertahan",
+        summary:
+          "Periode belum bisa ditutup. Sumber persediaan di bawah ini belum masuk jurnal.",
+        count: "{count} sumber",
+        listLabel: "Sumber persediaan yang tertahan",
+        unknownDate: "Tanggal tidak diketahui",
+        errorTitle: "Daftar sumber yang tertahan tidak dapat dimuat",
+        emptyTitle: "Tidak ada sumber yang tertahan lagi",
+        emptyHint:
+          "Daftar sudah kosong. Tekan Tutup periode sekali lagi untuk melanjutkan.",
+        fixFirst:
+          "Penutupan dengan alasan hanya untuk batch produksi yang belum lengkap, paling banyak 200 batch. Perbaiki sumber lain di daftar ini dulu, lalu tutup periode lagi.",
+        noPermission:
+          "Hanya owner atau keuangan yang dapat melanjutkan penutupan dengan alasan. Minta mereka melanjutkan, atau selesaikan batch ini lebih dulu.",
+        overrideTitle: "Tutup dengan alasan tertulis",
+        overrideHint:
+          "Batch di atas akan dijurnal di periode terbuka berikutnya sebagai penyesuaian terlambat. Jelaskan mengapa periode ini tetap ditutup.",
+        reasonLabel: "Alasan menutup periode",
+        reasonHint: "Minimal {min} karakter. Alasan tercatat permanen.",
+        reasonCounter: "{count} dari {max} karakter",
+        reasonRequired: "Alasan wajib diisi.",
+        reasonTooShort: "Alasan minimal {min} karakter.",
+        reasonTooLong: "Alasan maksimal {max} karakter.",
+        submit: "Tutup dengan alasan",
+        confirmTitle: "Tutup periode {period} dengan alasan?",
+        confirmBody:
+          "{count} batch yang belum lengkap akan dijurnal di periode terbuka berikutnya sebagai penyesuaian terlambat. Catatan penutupan dan alasan Anda tersimpan permanen dan tidak dapat diubah.",
+        confirmSubmit: "Ya, tutup dengan alasan",
+        closed: "Periode {period} ditutup dengan alasan.",
+        sourcesChanged:
+          "Daftar batch yang tertahan berubah. Periksa daftar terbaru di atas, lalu konfirmasi lagi. Alasan Anda tetap tersimpan.",
+        stillBlocked:
+          "Ada sumber yang tidak dapat ditutup dengan alasan. Daftar sudah diperbarui, periksa lagi.",
+        periodChanged:
+          "Status periode berubah. Tutup jendela ini, muat ulang halaman, lalu coba lagi.",
+        mfaRequired:
+          "Verifikasi dua langkah diperlukan untuk tindakan ini. Verifikasi lalu coba lagi.",
+        forbidden: "Anda tidak punya izin untuk menutup periode dengan alasan.",
+        failed: "Periode tidak dapat ditutup dengan alasan. Coba lagi.",
+        sourceType: {
+          production_order: "Batch produksi",
+          stock_count: "Stok opname",
+          waste_log: "Catatan buangan",
+          order: "Pesanan",
+          negative_stock_revaluation: "Penilaian ulang stok minus",
+          unknown: "Sumber persediaan",
+        },
+        reason: {
+          PRODUCTION_INCOMPLETE:
+            "Catatan bahan atau hasil produksi batch ini belum lengkap.",
+          PERIOD_CLOSED: "Periode tujuan jurnal sudah ditutup.",
+          ACCOUNT_MAPPING_MISSING: "Pemetaan akun persediaan belum diatur.",
+          ACCOUNT_NOT_POSTABLE: "Akun persediaan tidak dapat dijurnal.",
+          ACCOUNT_INACTIVE: "Akun persediaan tidak aktif.",
+          ACCOUNT_ENTITY_MISMATCH:
+            "Akun persediaan milik badan usaha yang lain.",
+          unknown: "Sumber ini belum dapat dijurnal.",
+        },
+      },
     },
     snapshotDialog: {
       title: "Snapshot periode {period}",

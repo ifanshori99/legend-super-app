@@ -43,6 +43,16 @@ export const MOCK_SCENARIOS = [
   "points-mint-fail",
   /** legend-0ne0z: two open bills (LG-0248 Kemang, LG-0251 Senopati). */
   "points-multi-bill",
+  /**
+   * Card 1263: closing November is refused (422 PERIOD_INVENTORY_GL_BLOCKED)
+   * for three incomplete production batches; the owner may close over them
+   * with a written reason. Business date of the close is 2026-12-05.
+   */
+  "period-close-blocked",
+  /** Card 1263: the refusal also lists a source no reason can close over. */
+  "period-close-blocked-other",
+  /** Card 1263: refused once, but the list is empty when the dialog reads it. */
+  "period-close-blocked-cleared",
 ] as const;
 export type MockScenario = (typeof MOCK_SCENARIOS)[number];
 

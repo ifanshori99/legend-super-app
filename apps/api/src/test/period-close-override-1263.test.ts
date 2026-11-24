@@ -564,7 +564,7 @@ describe("card 1263: close a period over incomplete production batches", () => {
     await owner.query(
       `INSERT INTO inventory_gl_blocked
          (tenant_id, source_type, source_id, outlet_id, error_code, first_failed_at, last_failed_at)
-       VALUES ($1, 'waste', $2, $3, 'ACCOUNT_MAPPING_MISSING', now(), now())`,
+       VALUES ($1, 'waste_log', $2, $3, 'ACCOUNT_MAPPING_MISSING', now(), now())`,
       [tenantId, raw, world.outletId],
     );
     const list = await blockers(finance, october.id);
@@ -583,7 +583,7 @@ describe("card 1263: close a period over incomplete production batches", () => {
     await owner.query(
       `INSERT INTO inventory_gl_blocked
          (tenant_id, source_type, source_id, outlet_id, error_code, first_failed_at, last_failed_at)
-       VALUES ($1, 'waste', $2, $3, 'PRODUCTION_INCOMPLETE', now(), now())`,
+       VALUES ($1, 'waste_log', $2, $3, 'PRODUCTION_INCOMPLETE', now(), now())`,
       [tenantId, raw, world.outletId],
     );
     const res = await override(finance, october.id, {
