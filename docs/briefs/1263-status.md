@@ -1,12 +1,13 @@
-# 1263 status (dihentikan 21 Nov, kuota Claude)
+# 1263 status (25 Nov)
 
-Sudah: worktree `../legend-1263` dari b2f0dc9c0, analisis kode selesai. Belum ada perubahan kode, test, atau migrasi.
-Belum: semua butir kartu 1263 (service, kontrak, izin, migrasi, route, web, screenshot, test).
-Langkah berikut (rencana hasil analisis):
-- Kontrak: endpoint baru `POST /api/accounting/fiscal-periods/:id/close-override` di `packages/shared/src/accounting/endpoints.ts`, body strict `{expectedVersion, idempotencyKey, reason (trim, 20-1000), sourceIds (unik, min 1)}`.
-- Izin: `["accounting.period.close_override", ["finance", "approve"]]` di `packages/shared/src/access/permissions.ts`; owner (semua kecuali platform/self) dan finance (`accounting.*`) otomatis dapat di `roles.ts`, peran lain tidak.
-- Migrasi 0523 grant ke baris template owner + finance tenant lama, salin pola `apps/api/drizzle/0505_payout_gl_resolve_grants.sql`; daftarkan di `apps/api/src/test/data-import-registry.test.ts` dan `_journal.json`.
-- Service `accounting-period-close.service.ts` `closeFiscalPeriod`: cek MFA dulu (`AccessError("MFA_REQUIRED")`, pola `accounting-cash-bank-entries.service.ts:899`); replay kunci tetap sebelum cek blok (idempoten); errorCode selain PRODUCTION_INCOMPLETE tetap 422; daftar sourceId beda atau sudah tidak terblok -> 409; audit kedua `accounting.period.close_overridden` lewat `auditAccountingChange` (reason + sources+errorCode). Naikkan `sources.slice(0, 20)` di detail 422 agar UI melihat daftar lengkap (batasi, mis. 200).
-- Route `accounting.routes.ts`: `requireTenantPermission("accounting.period.close_override")` + `sessionMfaVerifiedAt(req)`.
-- Test: perluas fixture `apps/api/src/test/inventory-gl-blocked-visible.test.ts` (sukses+audit, 422 kode lain, 409 basi, 403 tanpa izin/MFA, 400 alasan, batch terlambat -> periode buka dengan `lateAdjustmentFrom`, replay).
-- Web layar tutup buku + text-contract + screenshot 390/1280 `docs/review/img/period-close-override-*.png`.
+Sudah: kontrak, izin `accounting.period.close_override` (owner, finance), migrasi 0523, service, route, layar, test, screenshot. Cabang ws/1263-period-close-override didorong.
+- Route `POST /fiscal-periods/:id/close-override` meminta `accounting.period.close` DAN `close_override`, plus MFA sesi (kasir acting tidak mewarisi MFA).
+- `GET /fiscal-periods/:id/close-blockers` (tambahan dari rencana): detail 422 hanya mengirim nilai string ke klien, jadi daftar batch dibaca dari endpoint ini.
+- Hanya sumber `production_order` + `PRODUCTION_INCOMPLETE`, paling banyak 200; lainnya tetap 422.
+- Replay kunci yang sama dengan alasan atau daftar lain: 409 IDEMPOTENCY_KEY_REUSED.
+- Bukti: `period-close-override-1263.test.ts` merah 10 dari 12 (tanpa service dan route) lalu hijau 13 dari 13.
+Belum: review architect xhigh (tingkat K), merge train, gate penuh, layar terhadap API nyata.
+Diketahui:
+- Batch yang baru diparkir dan belum commit saat tutup tidak terlihat di daftar (celah sejak 1260: parkir tidak mengambil kunci badan usaha). Batch itu tetap terparkir dan muncul di tutup buku berikutnya.
+- `errorCode` adalah hasil percobaan terakhir, tidak dicoba ulang saat override.
+- Audit memakai kelas retensi `audit_2y` (sama dengan audit akuntansi lain).
