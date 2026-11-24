@@ -54,6 +54,7 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
     restart: "no"
+    mem_limit: 512m
   # First-boot job (legend-zoqc): creates the restricted application and queue
   # logins with the migration credentials. Run only through provision-roles.sh,
   # which passes the restricted URLs (and the optional maintenance login, legend-usyi,
@@ -72,14 +73,41 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
     restart: "no"
+    mem_limit: 512m
   api:
     image: ${API_IMAGE:?Set API_IMAGE}
     logging: *bounded-logging
     restart: unless-stopped
     env_file: ["${API_ENV_FILE:?Set API_ENV_FILE}"]
+    environment:
+      # Malware scanner (legend-w9hwh): internal network only, never published.
+      CLAMD_HOST: clamav
+      CLAMD_PORT: "3310"
+    # No depends_on clamav: `up -d --wait api` would wait for clamav to turn
+    # healthy (minutes of signature download) even with service_started.
+    # deploy.sh starts clamav on its own (`up -d clamav`).
     depends_on:
       postgres: { condition: service_healthy }
     mem_limit: 512m
+  # Malware scanner for uploads (docs/deployment.md, ClamAV). Pinned version, not
+  # latest. Needs outbound access to database.clamav.net for signatures and a
+  # VM with at least 4 GB RAM in total. The API starts without it: images are
+  # still accepted and PDFs answer 503 until clamd is up. No ports: the API
+  # reaches it over the Compose network.
+  clamav:
+    image: clamav/clamav:1.4.7
+    logging: *bounded-logging
+    restart: unless-stopped
+    volumes:
+      - clamav_db:/var/lib/clamav
+      - ../clamav/clamd.conf:/etc/clamav/clamd.conf:ro
+    healthcheck:
+      test: ["CMD", "clamdcheck.sh"]
+      interval: 60s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
+    mem_limit: 1536m
   web:
     image: ${WEB_IMAGE:?Set WEB_IMAGE}
     logging: *bounded-logging
@@ -139,6 +167,7 @@ volumes:
   postgres_spool:
   caddy_data:
   caddy_config:
+  clamav_db:
 
 networks:
   default:

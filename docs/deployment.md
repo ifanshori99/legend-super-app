@@ -344,10 +344,9 @@ API memindai unggahan lewat `clamd`. Gambar dipindai bila `clamd` ada. Bila `cla
 
 **Batas.**
 
-- `mem_limit: 2g` pada container.
-- `clamd.conf`: `ConcurrentDatabaseReload no`, `AlertExceedsMax yes`, `MaxFileSize 100M`, `MaxScanSize 200M`, `StreamMaxLength 12M`.
+- `mem_limit: 1536m` pada container (`deploy/single-vm/compose.yaml`, service `clamav`, image `clamav/clamav:1.4.7`, volume `clamav_db`). `CLAMD_HOST=clamav` dan `CLAMD_PORT=3310` sudah diisi di service `api` pada compose. Dengan ClamAV, VM minimal 4 GB RAM (postgres 768m, api 512m, web 512m, worker 384m, caddy 128m, clamav 1536m, ditambah sistem dan job migrate/provision-roles 512m masing-masing saat berjalan).
+- `clamd.conf` (`deploy/clamav/clamd.conf`, dipasang read-only oleh compose): `ConcurrentDatabaseReload no`, `AlertExceedsMax yes`, `MaxFileSize 100M`, `MaxScanSize 200M`, `StreamMaxLength 12M`.
 - `AlertExceedsMax yes` wajib: tanpa itu, berkas di atas batas dijawab `stream: OK` tanpa dipindai. Dengan opsi ini berkas di atas `MaxFileSize` atau `MaxScanSize` dijawab `FOUND` (422, ditolak). Berkas di atas `StreamMaxLength` dijawab `ERROR` oleh clamd, yang menjadi 503 `SCANNER_UNAVAILABLE` (bukan `FOUND`).
-- Peringatan: jangan isi `CLAMD_HOST` di produksi sebelum kartu M6 (legend-egrrp) masuk. Bukti payout PDF belum lewat `assertSafePdf`, jadi pemeriksaan strukturnya belum lengkap.
 - Dengan `ConcurrentDatabaseReload no`, pemindaian tertahan beberapa puluh detik saat reload signature harian. PDF yang masuk saat itu dijawab 503 dan bisa dicoba lagi.
 
 **Signature.** `freshclam` bawaan image butuh akses keluar ke `database.clamav.net`.
@@ -734,7 +733,7 @@ Built in: authenticated and origin-checked API routes, ownership filtered in SQL
 - [ ] The public API rate limits suit the venue: guests behind one NAT address and the web SSR traffic both share a per-IP bucket ([public API rate limits](#public-api-rate-limits)), and a Cloudflare rule covers `/api/qr/` and `/api/public/site/` at the edge.
 - [ ] Nothing untrusted is served under `COOKIE_DOMAIN` (see [Domains and cookies](#domains-and-cookies)). Operator setting: `COOKIE_DOMAIN=.example.invalid` in `api.env`.
 - [ ] The release composes a single API instance. Before running more than one API instance, `REDIS_URL` is required (shared rate-limit storage); until then the Better Auth rate limits and the login-challenge limits are kept per process, so each extra instance multiplies them (see [scaling](#connection-pooling-and-scaling)).
-- [ ] Your proxy or load balancer also caps request bodies and slow uploads. `deploy/caddy/Caddyfile` sets `request_body max_size` (2 MB for API JSON and web, 12 MB for multipart and `PUT` uploads, above the 10 MiB upload caps in the API) and server `timeouts` (`read_header 10s`, `read_body 60s`, `idle 2m`). Raise `max_size` there if an upload cap in the API grows.
+- [ ] Your proxy or load balancer also caps request bodies and slow uploads. `deploy/caddy/Caddyfile` sets `request_body max_size` (2 MB for API JSON and web, 12 MB for multipart and `PUT` uploads, above the 10 MiB upload caps in the API) and server `timeouts` (`read_header 10s`, `read_body 5m`, `idle 2m`). Raise `max_size` there if an upload cap in the API grows.
 - [ ] `admin` is granted only to people trusted with every account: its only app permission is `user: impersonate`, and impersonation of a tenant user goes through a support grant. Give moderators a narrower role ([roles](backend.md#role-based-access)).
 - [ ] Features that create many rows or call paid services have per-user limits.
 - [ ] Email verification and password recovery by email: decision (CTO, 20 Nov 2026): the first release ships without them, because no email provider exists yet (bead legend-wwuc). Login uses the existing WhatsApp and PIN flow. Turn them on once the email provider is ready.
