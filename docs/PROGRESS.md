@@ -1,5 +1,12 @@
 # PROGRESS — Legend Super App
 
+## CTO 25 Nov (sesi lanjutan sesudah jeda kuota)
+- int/batch106 16572fb44 (pushed): 1260, 1256, 1255, 1261, 1259, 1263 sudah masuk, konflik nol. Lint, typecheck, build hijau. Full test run 1 merah 7 (teks owner dashboard di chunk salah dari 1249; harness media tanpa stub bonus dari 1242), dibetulkan di 16572fb44. Run 2 berjalan: root 3726 lulus, API belum selesai (+-97 menit).
+- 1263: architect xhigh LOLOS, reviewer delta LOLOS, payload dibekukan bbaf222e6.
+- Second opinion uang batch106: LAYAK. 1264 `ws/1264-second-opinion-batch106` 8f5727298 (worktree ../legend-1263): cek refund terparkir di refund per item dan voucher, runbook refund B1/B2/D, kredensial storage. Kode LOLOS architect. Belum digabung; tsc + e2e berjalan di worktree itu.
+- Langkah berikut: run 2 hijau -> merge 1264 + test terarah -> ff milestone/m1, push, docs/merge-queue.md -> tutup bead tomda xhl5j gdjpu j7018 905j 29vw ecr16 ff393 17az7 mtbq9 ait0n. Tetap buka: k0i8 (sync offline), x73li (tunggu qlirp/ay6e6/y3huu), 0orff (UI platform), 07eg (PDF slip).
+- Worktree 1242-1261 dihapus (16, +5 GB).
+
 ## JEDA KUOTA 21 Nov (kuota Claude mingguan 2%, reset Selasa 24 Nov 18:00)
 Semua agent diminta commit + push lalu berhenti. Lanjut sesudah reset dari sini:
 1. Merge train int/batch106 (HEAD 8e811336a, 11 kartu sudah masuk termasuk 1244, gate hijau): baca `docs/briefs/1254-status.md` di int/batch106. Antrean belum masuk (semua LOLOS review): 1260 b2f0dc9c0, 1256 1841d4828, 1255 3d8138a1c, 1261 f942adbc2, 1259 527677a29. Rencana: gabung kelimanya berturut-turut, install sekali, SATU gate gabungan (lint, typecheck, kontrak, affected-tests --max 120 + test wajib: inventory-gl-blocked-visible, inventory-gl-production, period close, sentry, error-handler, password-reset-email, member-signin, better-auth-admin-lockdown, auth-shared-device-guard, ws05-manual-settle, text-contract, web-mock-build-guard, test-deploy.sh, API build).
