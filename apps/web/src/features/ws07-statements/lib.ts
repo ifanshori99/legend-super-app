@@ -27,6 +27,7 @@ import {
   type FiscalPeriod,
   type FiscalPeriodStatus,
   type ManualJournal,
+  type PeriodCloseBlockers,
   type PeriodReopenRequestStatus,
   type ProfitAndLoss,
   type ReportGroup,
@@ -772,6 +773,149 @@ export function reopenReasonIssue(
   if (trimmed === "") return "required";
   if (trimmed.length < minLength) return "too_short";
   return null;
+}
+
+// ---- Close override (card 1263) --------------------------------------------
+
+/** Same limits as `closeFiscalPeriodOverrideInputSchema` (trimmed reason). */
+export const OVERRIDE_REASON_MIN_LENGTH = 20;
+export const OVERRIDE_REASON_MAX_LENGTH = 1000;
+
+export type OverrideReasonIssue = "required" | "too_short" | "too_long" | null;
+
+/** Length is judged on the trimmed text, like the contract does. */
+export function overrideReasonIssue(reason: string): OverrideReasonIssue {
+  const length = reason.trim().length;
+  if (length === 0) return "required";
+  if (length < OVERRIDE_REASON_MIN_LENGTH) return "too_short";
+  if (length > OVERRIDE_REASON_MAX_LENGTH) return "too_long";
+  return null;
+}
+
+/**
+ * Closing over incomplete batches needs both permissions: the API requires
+ * `accounting.period.close` as well as the override one. The API re-checks.
+ */
+export function canOverridePeriodClose(
+  permissions: readonly string[],
+): boolean {
+  return (
+    permissions.includes("accounting.period.close") &&
+    permissions.includes("accounting.period.close_override")
+  );
+}
+
+export type OverrideMode =
+  /** The list came back empty: close again the normal way. */
+  | "empty"
+  /** Another kind of blocker is present: fix it first. */
+  | "fix_first"
+  /** Overridable, but the visitor may not continue. */
+  | "no_permission"
+  | "allowed";
+
+export function overrideMode(
+  blockers: Pick<PeriodCloseBlockers, "overridable" | "sources">,
+  canOverride: boolean,
+): OverrideMode {
+  if (blockers.sources.length === 0) return "empty";
+  if (!blockers.overridable) return "fix_first";
+  return canOverride ? "allowed" : "no_permission";
+}
+
+/** The ids sent to the API: exactly the sources shown, in the order shown. */
+export function overrideSourceIds(
+  blockers: Pick<PeriodCloseBlockers, "sources">,
+): string[] {
+  return blockers.sources.map((source) => source.sourceId);
+}
+
+/**
+ * What identifies one close attempt. The idempotency key follows this: a retry
+ * of the same request reuses its key; a changed reason, period version or
+ * source list is a new request and gets a new one.
+ */
+export function overrideAttemptPayload(input: {
+  fiscalPeriodId: string;
+  expectedVersion: number;
+  reason: string;
+  sourceIds: readonly string[];
+}) {
+  return {
+    fiscalPeriodId: input.fiscalPeriodId,
+    expectedVersion: input.expectedVersion,
+    reason: input.reason.trim(),
+    sourceIds: [...input.sourceIds],
+  };
+}
+
+const BLOCKER_SOURCE_KEYS: Record<string, MessageKey> = {
+  production_order:
+    "accounting.report.periods.closeDialog.stock.sourceType.production_order",
+  stock_count:
+    "accounting.report.periods.closeDialog.stock.sourceType.stock_count",
+  waste_log: "accounting.report.periods.closeDialog.stock.sourceType.waste_log",
+  order: "accounting.report.periods.closeDialog.stock.sourceType.order",
+  negative_stock_revaluation:
+    "accounting.report.periods.closeDialog.stock.sourceType.negative_stock_revaluation",
+};
+
+const BLOCKER_REASON_KEYS: Record<string, MessageKey> = {
+  PRODUCTION_INCOMPLETE:
+    "accounting.report.periods.closeDialog.stock.reason.PRODUCTION_INCOMPLETE",
+  PERIOD_CLOSED:
+    "accounting.report.periods.closeDialog.stock.reason.PERIOD_CLOSED",
+  ACCOUNT_MAPPING_MISSING:
+    "accounting.report.periods.closeDialog.stock.reason.ACCOUNT_MAPPING_MISSING",
+  ACCOUNT_NOT_POSTABLE:
+    "accounting.report.periods.closeDialog.stock.reason.ACCOUNT_NOT_POSTABLE",
+  ACCOUNT_INACTIVE:
+    "accounting.report.periods.closeDialog.stock.reason.ACCOUNT_INACTIVE",
+  ACCOUNT_ENTITY_MISMATCH:
+    "accounting.report.periods.closeDialog.stock.reason.ACCOUNT_ENTITY_MISMATCH",
+};
+
+/** Label of a source type when the source has no item name (never a raw id). */
+export function blockerSourceKey(sourceType: string): MessageKey {
+  return (
+    BLOCKER_SOURCE_KEYS[sourceType] ??
+    "accounting.report.periods.closeDialog.stock.sourceType.unknown"
+  );
+}
+
+/** Short reason text of a parked source's error code. */
+export function blockerReasonKey(errorCode: string): MessageKey {
+  return (
+    BLOCKER_REASON_KEYS[errorCode] ??
+    "accounting.report.periods.closeDialog.stock.reason.unknown"
+  );
+}
+
+/** Catalog text of a refused close-override request; null: use the generic one. */
+export function closeOverrideErrorKey(code: string): MessageKey | null {
+  switch (code) {
+    case "PERIOD_OVERRIDE_SOURCES_CHANGED":
+      return "accounting.report.periods.closeDialog.stock.sourcesChanged";
+    case "PERIOD_INVENTORY_GL_BLOCKED":
+      return "accounting.report.periods.closeDialog.stock.stillBlocked";
+    case "PERIOD_CHANGED":
+      return "accounting.report.periods.closeDialog.stock.periodChanged";
+    case "MFA_REQUIRED":
+      return "accounting.report.periods.closeDialog.stock.mfaRequired";
+    case "FORBIDDEN":
+    case "PERMISSION_DENIED":
+      return "accounting.report.periods.closeDialog.stock.forbidden";
+    default:
+      return null;
+  }
+}
+
+/** Refusals that mean the shown list is out of date and must be read again. */
+export function closeOverrideNeedsRefetch(code: string): boolean {
+  return (
+    code === "PERIOD_OVERRIDE_SOURCES_CHANGED" ||
+    code === "PERIOD_INVENTORY_GL_BLOCKED"
+  );
 }
 
 // ---- Snapshot history ------------------------------------------------------

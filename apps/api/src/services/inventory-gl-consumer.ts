@@ -437,6 +437,9 @@ export type BlockedInventoryGlSource = {
   sourceType: InventoryGlSourceType;
   sourceId: string;
   errorCode: string;
+  outletName: string;
+  /** Outlet business day of the first stock row; null when there is none. */
+  businessDate: string | null;
 };
 
 /**
@@ -458,6 +461,7 @@ export async function listBlockedInventoryGlUpTo(
       sourceType: inventoryGlBlocked.sourceType,
       sourceId: inventoryGlBlocked.sourceId,
       errorCode: inventoryGlBlocked.errorCode,
+      outletName: outlets.name,
       timezone: outlets.timezone,
       businessDayCutoff: outlets.businessDayCutoff,
     })
@@ -503,22 +507,22 @@ export async function listBlockedInventoryGlUpTo(
                 eq(stockLedger.sourceId, dbId),
               ),
             );
-    const sourcePeriod = first?.at
-      ? periodOf(
-          businessDateOf(
-            first.at,
-            outletBusinessDayClock({
-              timezone: source.timezone,
-              businessDayCutoff: source.businessDayCutoff,
-            }),
-          ),
+    const businessDate = first?.at
+      ? businessDateOf(
+          first.at,
+          outletBusinessDayClock({
+            timezone: source.timezone,
+            businessDayCutoff: source.businessDayCutoff,
+          }),
         )
       : null;
-    if (sourcePeriod === null || sourcePeriod <= period)
+    if (businessDate === null || periodOf(businessDate) <= period)
       listed.push({
         sourceType: source.sourceType,
         sourceId: source.sourceId,
         errorCode: source.errorCode,
+        outletName: source.outletName,
+        businessDate,
       });
   }
   return listed;

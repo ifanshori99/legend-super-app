@@ -6,6 +6,7 @@ import { notFound, useRouteContext } from "@tanstack/react-router";
 import type { PermissionCode } from "@starter/shared/access";
 import type { AreaAccess } from "@/lib/areas/access";
 import { evaluateGuard, holdsAny } from "@/lib/areas/guard";
+import { canOverridePeriodClose } from "../ws07-statements/lib";
 
 /** Journal viewers need `accounting.journal.view`; posting adds `.post`. */
 export const ACCOUNTING_VIEW: readonly PermissionCode[] = [
@@ -36,6 +37,20 @@ export function useCanPostJournals(): boolean {
     access?: AreaAccess;
   };
   return context.access ? holdsAny(context.access, ACCOUNTING_POST) : false;
+}
+
+/**
+ * Whether the visitor may close a period over incomplete production batches
+ * with a written reason (card 1263): needs `accounting.period.close` and
+ * `accounting.period.close_override`. Fails closed without route access.
+ */
+export function useCanOverridePeriodClose(): boolean {
+  const context = useRouteContext({ strict: false }) as {
+    access?: AreaAccess;
+  };
+  return context.access
+    ? canOverridePeriodClose(context.access.permissions)
+    : false;
 }
 
 /**

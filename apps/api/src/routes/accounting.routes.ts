@@ -8,6 +8,7 @@ import { Router, type Request } from "express";
 import {
   approvePeriodReopen,
   closeFiscalPeriod,
+  closeFiscalPeriodOverride,
   createAccount,
   downloadTaxReport,
   exportTaxReport,
@@ -24,6 +25,7 @@ import {
   listAccounts,
   listFiscalPeriods,
   listJournals,
+  listPeriodCloseBlockers,
   listPeriodReopenRequests,
   listTaxReports,
   rejectPeriodReopen,
@@ -34,6 +36,7 @@ import {
 } from "@starter/shared/accounting";
 import { userIdSchema } from "@starter/shared/core";
 import { HttpError } from "../lib/http-error";
+import { sessionMfaVerifiedAt } from "../lib/mfa";
 import { getAuth, requireAuth } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
@@ -57,7 +60,9 @@ import {
 import {
   approvePeriodReopen as approvePeriodReopenService,
   closeFiscalPeriod as closeFiscalPeriodService,
+  closeFiscalPeriodOverride as closeFiscalPeriodOverrideService,
   getPeriodSnapshot as getPeriodSnapshotService,
+  listPeriodCloseBlockers as listPeriodCloseBlockersService,
   listPeriodReopenRequests as listPeriodReopenRequestsService,
   rejectPeriodReopen as rejectPeriodReopenService,
   requestPeriodReopen as requestPeriodReopenService,
@@ -90,6 +95,11 @@ const post = requireTenantPermission("accounting.journal.post");
 // Close and reopen request share one code; approve/reject is a separate code so
 // the approver can differ from the requester and closer (ACC-02).
 const closePeriod = requireTenantPermission("accounting.period.close");
+// Card 1263: closing over incomplete production batches needs this on top of
+// the normal close permission, and a verified second factor.
+const overrideClose = requireTenantPermission(
+  "accounting.period.close_override",
+);
 const approveReopen = requireTenantPermission(
   "accounting.period_reopen.approve",
 );
@@ -230,6 +240,46 @@ accountingRouter.post(
         fiscalPeriodId,
         input,
         actorId(req),
+      ),
+    });
+  },
+);
+
+accountingRouter.get(
+  route(listPeriodCloseBlockers.path),
+  closePeriod,
+  async (req, res) => {
+    const { fiscalPeriodId } = listPeriodCloseBlockers.params.parse(req.params);
+    res.json({
+      data: await listPeriodCloseBlockersService(
+        getScopedTenantContext(req),
+        fiscalPeriodId,
+      ),
+    });
+  },
+);
+
+accountingRouter.post(
+  route(closeFiscalPeriodOverride.path),
+  closePeriod,
+  overrideClose,
+  jsonBody,
+  async (req, res) => {
+    const { fiscalPeriodId } = closeFiscalPeriodOverride.params.parse(
+      req.params,
+    );
+    const input = closeFiscalPeriodOverride.body.parse(req.body);
+    res.json({
+      data: await closeFiscalPeriodOverrideService(
+        getScopedTenantContext(req),
+        fiscalPeriodId,
+        input,
+        actorId(req),
+        // An acting cashier never inherits the session owner's second factor.
+        {
+          mfaVerified:
+            !req.actingStaff && (await sessionMfaVerifiedAt(req)) !== null,
+        },
       ),
     });
   },

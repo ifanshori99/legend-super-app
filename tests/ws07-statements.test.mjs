@@ -12,6 +12,9 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, test } from "node:test";
 import { dispatchMock, resetMocks } from "../apps/web/src/lib/mock/runtime.ts";
+import * as control from "../apps/web/src/lib/mock/control.ts";
+import { createAttemptKeyTracker } from "../apps/web/src/features/ws05-payment-admin/attempt-key.ts";
+import * as i18n from "../packages/shared/src/i18n/index.ts";
 // Registers this feature's statement and period handlers.
 import "../apps/web/src/features/ws07-statements/mock.ts";
 import * as statements from "../apps/web/src/features/ws07-statements/lib.ts";
@@ -584,5 +587,261 @@ describe("period helpers", () => {
       statements.blockingJournalCounts(fixtures.manualJournals, "2026-10"),
       { draft: 0, pending: 0 },
     );
+  });
+});
+
+// ---- Card 1263: close over incomplete production batches --------------------
+
+describe("card 1263 close override", () => {
+  const blockedSources = [
+    { sourceId: "SRC-A", errorCode: "PRODUCTION_INCOMPLETE" },
+    { sourceId: "SRC-B", errorCode: "PRODUCTION_INCOMPLETE" },
+  ];
+
+  test("the reason is judged trimmed, 20 to 1000 characters", () => {
+    assert.equal(statements.overrideReasonIssue(""), "required");
+    assert.equal(statements.overrideReasonIssue("   \n "), "required");
+    assert.equal(
+      statements.overrideReasonIssue("terlalu singkat"),
+      "too_short",
+    );
+    // Padding does not count toward the minimum.
+    assert.equal(
+      statements.overrideReasonIssue(`  ${"a".repeat(19)}  `),
+      "too_short",
+    );
+    assert.equal(statements.overrideReasonIssue(`  ${"a".repeat(20)}  `), null);
+    assert.equal(statements.overrideReasonIssue("a".repeat(1000)), null);
+    assert.equal(statements.overrideReasonIssue("a".repeat(1001)), "too_long");
+    // Same limits as the contract the API enforces.
+    const body = (reason) =>
+      accounting.closeFiscalPeriodOverrideInputSchema.safeParse({
+        expectedVersion: 1,
+        idempotencyKey: "attempt-key-1",
+        reason,
+        sourceIds: ["SRC-A"],
+      }).success;
+    for (const reason of ["a".repeat(19), "a".repeat(20), "a".repeat(1001)])
+      assert.equal(
+        body(reason),
+        statements.overrideReasonIssue(reason) === null,
+        String(reason.length),
+      );
+  });
+
+  test("the override is only offered to a holder of both permissions", () => {
+    assert.equal(
+      statements.canOverridePeriodClose([
+        "accounting.period.close",
+        "accounting.period.close_override",
+      ]),
+      true,
+    );
+    assert.equal(
+      statements.canOverridePeriodClose(["accounting.period.close"]),
+      false,
+    );
+    assert.equal(
+      statements.canOverridePeriodClose(["accounting.period.close_override"]),
+      false,
+    );
+    assert.equal(statements.canOverridePeriodClose([]), false);
+
+    const overridable = { overridable: true, sources: blockedSources };
+    assert.equal(statements.overrideMode(overridable, true), "allowed");
+    assert.equal(statements.overrideMode(overridable, false), "no_permission");
+    assert.equal(
+      statements.overrideMode({ ...overridable, overridable: false }, true),
+      "fix_first",
+    );
+    // A list emptied meanwhile: close again the normal way.
+    assert.equal(
+      statements.overrideMode({ overridable: false, sources: [] }, true),
+      "empty",
+    );
+    assert.equal(
+      statements.overrideMode({ overridable: true, sources: [] }, true),
+      "empty",
+    );
+  });
+
+  test("sourceIds are exactly the shown sources, in the shown order", () => {
+    assert.deepEqual(
+      statements.overrideSourceIds({ sources: blockedSources }),
+      ["SRC-A", "SRC-B"],
+    );
+    assert.deepEqual(statements.overrideSourceIds({ sources: [] }), []);
+  });
+
+  test("the idempotency key survives a retry and changes with the request", () => {
+    let created = 0;
+    const tracker = createAttemptKeyTracker(() => `override-key-${++created}`);
+    const base = {
+      fiscalPeriodId: november.id,
+      expectedVersion: november.version,
+      reason: "Batch menunggu bahan yang belum tercatat.",
+      sourceIds: ["SRC-A", "SRC-B"],
+    };
+    const payload = (patch = {}) =>
+      statements.overrideAttemptPayload({ ...base, ...patch });
+    const first = tracker.keyFor(payload());
+    // A retry (same inputs, trailing whitespace aside) reuses the key.
+    assert.equal(tracker.keyFor(payload()), first);
+    assert.equal(
+      tracker.keyFor(payload({ reason: `${base.reason}  ` })),
+      first,
+    );
+    // A changed reason or source list is a new request.
+    const reasonKey = tracker.keyFor(
+      payload({ reason: "Alasan lain yang cukup panjang." }),
+    );
+    assert.notEqual(reasonKey, first);
+    const sourcesKey = tracker.keyFor(payload({ sourceIds: ["SRC-A"] }));
+    assert.notEqual(sourcesKey, reasonKey);
+    assert.notEqual(
+      tracker.keyFor(payload({ expectedVersion: november.version + 1 })),
+      sourcesKey,
+    );
+    // A settled attempt starts over.
+    const before = tracker.keyFor(payload());
+    tracker.settle();
+    assert.notEqual(tracker.keyFor(payload()), before);
+  });
+
+  test("every refusal and source label resolves to catalog text", () => {
+    const t = i18n.createTranslator();
+    const keys = [
+      statements.blockerSourceKey("production_order"),
+      statements.blockerSourceKey("stock_count"),
+      statements.blockerSourceKey("something_new"),
+      statements.blockerReasonKey("PRODUCTION_INCOMPLETE"),
+      statements.blockerReasonKey("ACCOUNT_MAPPING_MISSING"),
+      statements.blockerReasonKey("SOMETHING_NEW"),
+    ];
+    for (const code of [
+      "PERIOD_OVERRIDE_SOURCES_CHANGED",
+      "PERIOD_INVENTORY_GL_BLOCKED",
+      "PERIOD_CHANGED",
+      "MFA_REQUIRED",
+      "FORBIDDEN",
+    ])
+      keys.push(statements.closeOverrideErrorKey(code));
+    for (const key of keys) {
+      assert.ok(i18n.isMessageKey(key), String(key));
+      assert.notEqual(t(key), key);
+    }
+    assert.equal(statements.closeOverrideErrorKey("SOMETHING_NEW"), null);
+    assert.equal(
+      statements.closeOverrideNeedsRefetch("PERIOD_OVERRIDE_SOURCES_CHANGED"),
+      true,
+    );
+    assert.equal(statements.closeOverrideNeedsRefetch("MFA_REQUIRED"), false);
+  });
+
+  test("mock: a refused close lists the batches and the override closes over them", async () => {
+    control.setScenario("period-close-blocked");
+    const refused = await failure(
+      post(`${periodPath(november)}/close`, {
+        expectedVersion: november.version,
+        idempotencyKey: ulid(10),
+      }),
+    );
+    assert.equal(refused.status, 422);
+    assert.equal(refused.code, "PERIOD_INVENTORY_GL_BLOCKED");
+
+    const list = await get(`${periodPath(november)}/close-blockers`);
+    assert.equal(list.data.overridable, true);
+    assert.equal(list.data.count, list.data.sources.length);
+    assert.ok(list.data.sources.length >= 2);
+    const ids = statements.overrideSourceIds(list.data);
+    const reason = "Batch menunggu bahan yang belum tercatat.";
+    const body = (patch = {}) => ({
+      expectedVersion: november.version,
+      idempotencyKey: ulid(11),
+      reason,
+      sourceIds: ids,
+      ...patch,
+    });
+
+    // A source list that is not exactly the parked one is refused.
+    const partial = await failure(
+      post(`${periodPath(november)}/close-override`, {
+        ...body(),
+        sourceIds: ids.slice(1),
+      }),
+    );
+    assert.equal(partial.status, 409);
+    assert.equal(partial.code, "PERIOD_OVERRIDE_SOURCES_CHANGED");
+    const stale = await failure(
+      post(`${periodPath(november)}/close-override`, {
+        ...body(),
+        expectedVersion: november.version - 1 || 2,
+      }),
+    );
+    assert.equal(stale.code, "PERIOD_CHANGED");
+    const short = await failure(
+      post(
+        `${periodPath(november)}/close-override`,
+        body({ reason: "singkat" }),
+      ),
+    );
+    assert.equal(short.code, "VALIDATION_ERROR");
+
+    const closed = await post(`${periodPath(november)}/close-override`, body());
+    assert.equal(closed.data.status, "closed");
+    // The same attempt replays to the same period instead of failing.
+    const replay = await post(`${periodPath(november)}/close-override`, body());
+    assert.equal(replay.data.id, closed.data.id);
+    assert.equal(replay.data.version, closed.data.version);
+  });
+
+  test("mock: the MFA refusal closes on a retry with the same key", async () => {
+    control.setScenario("period-close-blocked-mfa");
+    const list = await get(`${periodPath(november)}/close-blockers`);
+    const body = {
+      expectedVersion: november.version,
+      idempotencyKey: ulid(12),
+      reason: "Batch menunggu bahan yang belum tercatat.",
+      sourceIds: statements.overrideSourceIds(list.data),
+    };
+    const refused = await failure(
+      post(`${periodPath(november)}/close-override`, body),
+    );
+    assert.equal(refused.status, 403);
+    assert.equal(refused.code, "MFA_REQUIRED");
+    const closed = await post(`${periodPath(november)}/close-override`, body);
+    assert.equal(closed.data.status, "closed");
+  });
+
+  test("mock: another kind of blocker is not overridable", async () => {
+    control.setScenario("period-close-blocked-other");
+    const list = await get(`${periodPath(november)}/close-blockers`);
+    assert.equal(list.data.overridable, false);
+    assert.equal(statements.overrideMode(list.data, true), "fix_first");
+    const refused = await failure(
+      post(`${periodPath(november)}/close-override`, {
+        expectedVersion: november.version,
+        idempotencyKey: ulid(12),
+        reason: "Batch menunggu bahan yang belum tercatat.",
+        sourceIds: statements.overrideSourceIds(list.data),
+      }),
+    );
+    assert.equal(refused.code, "PERIOD_INVENTORY_GL_BLOCKED");
+  });
+
+  test("mock: a list cleared after the refusal lets the next close through", async () => {
+    control.setScenario("period-close-blocked-cleared");
+    const closeBody = (key) => ({
+      expectedVersion: november.version,
+      idempotencyKey: ulid(key),
+    });
+    const refused = await failure(
+      post(`${periodPath(november)}/close`, closeBody(13)),
+    );
+    assert.equal(refused.code, "PERIOD_INVENTORY_GL_BLOCKED");
+    const list = await get(`${periodPath(november)}/close-blockers`);
+    assert.equal(statements.overrideMode(list.data, true), "empty");
+    const closed = await post(`${periodPath(november)}/close`, closeBody(14));
+    assert.equal(closed.data.status, "closed");
   });
 });

@@ -110,7 +110,9 @@ import {
 } from "./payables.ts";
 import { periodKeySchema } from "./period-key.ts";
 import {
+  closeFiscalPeriodOverrideInputSchema,
   fiscalPeriodSchema,
+  periodCloseBlockersSchema,
   periodCloseSnapshotSchema,
   periodReopenRequestSchema,
   requestPeriodReopenInputSchema,
@@ -381,6 +383,21 @@ export const closeFiscalPeriod = defineEndpoint({
     expectedVersion: z.number().int().min(1),
     idempotencyKey: idempotencyKeySchema,
   }),
+  response: dataResponseSchema(fiscalPeriodSchema),
+});
+/** Parked stock sources that stop a close of this period (card 1263). */
+export const listPeriodCloseBlockers = defineEndpoint({
+  method: "GET",
+  path: `${BASE}/fiscal-periods/:fiscalPeriodId/close-blockers`,
+  params: periodParams,
+  response: dataResponseSchema(periodCloseBlockersSchema),
+});
+/** Close over incomplete production batches with a written reason (MFA). */
+export const closeFiscalPeriodOverride = defineEndpoint({
+  method: "POST",
+  path: `${BASE}/fiscal-periods/:fiscalPeriodId/close-override`,
+  params: periodParams,
+  body: closeFiscalPeriodOverrideInputSchema,
   response: dataResponseSchema(fiscalPeriodSchema),
 });
 export const getPeriodSnapshot = defineEndpoint({

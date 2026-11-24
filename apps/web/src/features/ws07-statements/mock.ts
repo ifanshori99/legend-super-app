@@ -33,6 +33,7 @@ import {
   cafeLegendAccountingFixtures,
   cashFlowStatementSchema,
   closeFiscalPeriod,
+  closeFiscalPeriodOverride,
   decidePeriodClose,
   decidePeriodReopen,
   drillDownLineSchema,
@@ -46,6 +47,7 @@ import {
   getProfitAndLoss,
   getStatementDrillDown,
   getTrialBalance,
+  listPeriodCloseBlockers,
   listPeriodReopenRequests,
   naturalBalance,
   periodBounds,
@@ -61,6 +63,7 @@ import {
   type FiscalPeriod,
   type JournalSourceType,
   type LedgerLine,
+  type PeriodCloseBlocker,
   type PeriodCloseSnapshot,
   type PeriodReopenRequest,
 } from "@starter/shared/accounting";
@@ -108,6 +111,8 @@ type StatementsMockState = {
   snapshots: Map<string, PeriodCloseSnapshot>;
   /** Idempotency and replay: request key → created/updated id. */
   created: Map<string, string>;
+  /** "period-close-blocked-cleared": periods already refused once. */
+  refusedOnce: Set<string>;
 };
 
 const state = createMockStore<StatementsMockState>(() => ({
@@ -117,6 +122,7 @@ const state = createMockStore<StatementsMockState>(() => ({
     [fixtures.octoberSnapshot.fiscalPeriodId, fixtures.octoberSnapshot],
   ]),
   created: new Map(),
+  refusedOnce: new Set(),
 }));
 
 /**
@@ -548,7 +554,134 @@ function snapshotFor(period: FiscalPeriod): PeriodCloseSnapshot {
   });
 }
 
-register(closeFiscalPeriod, ({ params, body }) => {
+// ---- Close over incomplete batches (card 1263) ----------------------------
+
+/** The business date the blocked scenarios close on (November has ended). */
+const STOCK_BLOCK_TODAY = "2026-12-05";
+const PERIOD_INVENTORY_GL_BLOCKED_MESSAGE =
+  "Masih ada sumber persediaan yang belum terjurnal. Selesaikan dulu, lalu tutup periode.";
+
+const incompleteBatch = (
+  sourceId: string,
+  itemName: string,
+  businessDate: string,
+): PeriodCloseBlocker => ({
+  sourceType: "production_order",
+  sourceId,
+  errorCode: "PRODUCTION_INCOMPLETE",
+  outletName: "Cafe Legend Bandung",
+  businessDate,
+  itemName,
+});
+
+const INCOMPLETE_BATCHES: PeriodCloseBlocker[] = [
+  incompleteBatch("01JD2K8M4N6P0Q2R4S6T8V0W2A", "Roti brioche", "2026-11-27"),
+  incompleteBatch("01JD2K8M4N6P0Q2R4S6T8V0W2B", "Saus karamel", "2026-11-28"),
+  incompleteBatch(
+    "01JD2K8M4N6P0Q2R4S6T8V0W2C",
+    "Adonan croissant",
+    "2026-11-30",
+  ),
+];
+
+const OTHER_BLOCKER: PeriodCloseBlocker = {
+  sourceType: "stock_count",
+  sourceId: "01JD2K8M4N6P0Q2R4S6T8V0W2D",
+  errorCode: "ACCOUNT_MAPPING_MISSING",
+  outletName: "Cafe Legend Bandung",
+  businessDate: null,
+  itemName: null,
+};
+
+/** Parked sources of a scenario; none outside the blocked scenarios. */
+function blockedSourcesFor(scenario: string): PeriodCloseBlocker[] {
+  if (
+    scenario === "period-close-blocked" ||
+    scenario === "period-close-blocked-mfa" ||
+    scenario === "period-close-blocked-cleared"
+  )
+    return INCOMPLETE_BATCHES.map((row) => ({ ...row }));
+  if (scenario === "period-close-blocked-other")
+    return [
+      ...INCOMPLETE_BATCHES.slice(0, 2).map((row) => ({ ...row })),
+      { ...OTHER_BLOCKER },
+    ];
+  return [];
+}
+
+const isBlockedScenario = (scenario: string) =>
+  scenario.startsWith("period-close-blocked");
+
+register(listPeriodCloseBlockers, ({ params, scenario }) => {
+  findPeriod(params.fiscalPeriodId);
+  // "cleared": the refusal happened, but nothing is parked any more.
+  const sources =
+    scenario === "period-close-blocked-cleared"
+      ? []
+      : blockedSourcesFor(scenario);
+  return {
+    data: {
+      count: sources.length,
+      overridable:
+        sources.length > 0 &&
+        sources.every((row) => row.errorCode === "PRODUCTION_INCOMPLETE"),
+      sources,
+    },
+  };
+});
+
+register(closeFiscalPeriodOverride, ({ params, body, scenario }) => {
+  const current = state.get();
+  const replayKey = `override:${params.fiscalPeriodId}:${body.idempotencyKey}`;
+  const replayed = current.created.get(replayKey);
+  if (replayed) return { data: findPeriod(replayed) };
+
+  const period = findPeriod(params.fiscalPeriodId);
+  const stepUpKey = `mfa:${period.id}`;
+  if (
+    scenario === "period-close-blocked-mfa" &&
+    !current.refusedOnce.has(stepUpKey)
+  ) {
+    current.refusedOnce.add(stepUpKey);
+    throw new ApiError(
+      403,
+      "MFA_REQUIRED",
+      "Verifikasi dua langkah diperlukan.",
+    );
+  }
+  assertPeriodVersion(period, body.expectedVersion);
+  const sources = blockedSourcesFor(scenario);
+  if (sources.some((row) => row.errorCode !== "PRODUCTION_INCOMPLETE"))
+    throw new ApiError(
+      422,
+      "PERIOD_INVENTORY_GL_BLOCKED",
+      PERIOD_INVENTORY_GL_BLOCKED_MESSAGE,
+    );
+  const shown = new Set(sources.map((row) => row.sourceId));
+  if (
+    scenario === "period-close-blocked-cleared" ||
+    shown.size !== body.sourceIds.length ||
+    body.sourceIds.some((id) => !shown.has(id))
+  )
+    throw new ApiError(
+      409,
+      "PERIOD_OVERRIDE_SOURCES_CHANGED",
+      "Daftar batch yang tertahan berubah. Muat ulang daftar, lalu ulangi.",
+    );
+  const closed = decidePeriodClose({
+    period,
+    entityPeriods: current.periods,
+    today: STOCK_BLOCK_TODAY,
+    actorId: requester(),
+    now: nowIso(),
+  });
+  current.snapshots.set(closed.id, snapshotFor(closed));
+  replacePeriod(closed);
+  current.created.set(replayKey, closed.id);
+  return { data: findPeriod(closed.id) };
+});
+
+register(closeFiscalPeriod, ({ params, body, scenario }) => {
   const current = state.get();
   const replayKey = `close:${params.fiscalPeriodId}:${body.idempotencyKey}`;
   const replayed = current.created.get(replayKey);
@@ -560,10 +693,23 @@ register(closeFiscalPeriod, ({ params, body }) => {
   const closed = decidePeriodClose({
     period,
     entityPeriods: current.periods,
-    today: fixtures.asOf,
+    today: isBlockedScenario(scenario) ? STOCK_BLOCK_TODAY : fixtures.asOf,
     actorId: requester(),
     now: nowIso(),
   });
+  // "cleared" refuses once, then the retry closes like a normal period.
+  const refuse =
+    scenario === "period-close-blocked-cleared"
+      ? !current.refusedOnce.has(period.id)
+      : blockedSourcesFor(scenario).length > 0;
+  if (refuse) {
+    current.refusedOnce.add(period.id);
+    throw new ApiError(
+      422,
+      "PERIOD_INVENTORY_GL_BLOCKED",
+      PERIOD_INVENTORY_GL_BLOCKED_MESSAGE,
+    );
+  }
   current.snapshots.set(closed.id, snapshotFor(closed));
   replacePeriod(closed);
   current.created.set(replayKey, closed.id);

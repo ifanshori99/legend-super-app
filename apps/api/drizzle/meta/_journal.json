@@ -3564,6 +3564,13 @@
       "when": 1795170190617,
       "tag": "0522_inventory_gl_postings_source_key",
       "breakpoints": true
+    },
+    {
+      "idx": 523,
+      "version": "7",
+      "when": 1795170290617,
+      "tag": "0523_period_close_override_grants",
+      "breakpoints": true
     }
   ]
 }

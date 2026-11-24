@@ -9,6 +9,7 @@ import {
   fetchEquityChanges,
   fetchManualJournals,
   fetchMultiEntityProfitAndLoss,
+  fetchPeriodCloseBlockers,
   fetchPeriodReopenRequests,
   fetchPeriodSnapshot,
   fetchProfitAndLoss,
@@ -47,6 +48,8 @@ export const statementKeys = {
   }) => [...statementKeys.all, "drill-down", query] as const,
   snapshot: (fiscalPeriodId: string) =>
     [...statementKeys.all, "period-snapshot", fiscalPeriodId] as const,
+  closeBlockers: (fiscalPeriodId: string) =>
+    [...statementKeys.all, "close-blockers", fiscalPeriodId] as const,
   reopenRequests: (legalEntityId: string) =>
     [...statementKeys.all, "reopen-requests", legalEntityId] as const,
   closeManualJournals: (legalEntityId: string) =>
@@ -144,5 +147,27 @@ export function closeManualJournalsQuery(legalEntityId: string | undefined) {
         signal,
       ),
     enabled: Boolean(legalEntityId),
+  });
+}
+
+/**
+ * The list is only meaningful at the moment of a refused close and an override
+ * sends exactly what it shows, so it is never served from cache.
+ */
+export function periodCloseBlockersQuery(
+  fiscalPeriodId: string | undefined,
+  enabled = true,
+) {
+  return queryOptions({
+    queryKey: statementKeys.closeBlockers(fiscalPeriodId ?? "none"),
+    queryFn: ({ signal }) =>
+      fetchPeriodCloseBlockers(fiscalPeriodId ?? "", signal),
+    enabled: enabled && Boolean(fiscalPeriodId),
+    staleTime: 0,
+    gcTime: 0,
+    // The closer acknowledges the list on screen: it must not change by itself
+    // behind an open confirmation. It is read again after a refusal.
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
 }
