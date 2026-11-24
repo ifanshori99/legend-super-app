@@ -484,7 +484,10 @@ const accessBaseMessages = {
     accounting: {
       journal: { view: "Lihat jurnal", post: "Posting jurnal" },
       reconcile: "Rekonsiliasi akuntansi",
-      period: { close: "Tutup periode" },
+      period: {
+        close: "Tutup periode",
+        close_override: "Tutup periode dengan batch produksi tertahan",
+      },
       period_reopen: { approve: "Setujui buka kembali periode" },
       supplier_payment: { process: "Proses pembayaran supplier" },
       tax_report: { manage: "Kelola laporan pajak" },

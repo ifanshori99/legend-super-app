@@ -30,6 +30,7 @@
 
 import { z } from "zod";
 import {
+  idempotencyKeySchema,
   idrSchema,
   isoDateTimeSchema,
   tenantIdSchema,
@@ -327,3 +328,55 @@ export const periodCloseSnapshotSchema = z
       });
   });
 export type PeriodCloseSnapshot = z.infer<typeof periodCloseSnapshotSchema>;
+
+// ---- Close override (card 1263, founder no. 19) ----------------------------
+
+/** Only a batch whose stock rows are incomplete may be closed over. */
+export const PERIOD_CLOSE_OVERRIDABLE_CODE = "PRODUCTION_INCOMPLETE";
+/** Above this many parked sources no override is offered: fix the cause first. */
+export const PERIOD_CLOSE_OVERRIDE_MAX_SOURCES = 200;
+
+const closeBlockerSourceIdSchema = z.string().trim().min(1).max(64);
+
+/** One parked stock source that stops a close, as shown to the closer. */
+export const periodCloseBlockerSchema = z.strictObject({
+  sourceType: z.string().min(1).max(64),
+  sourceId: closeBlockerSourceIdSchema,
+  errorCode: z.string().min(1).max(64),
+  outletName: z.string(),
+  /** Outlet business day of the first stock row (null: none found). */
+  businessDate: z.iso.date().nullable(),
+  /** Output item of a production batch; null for other sources. */
+  itemName: z.string().nullable(),
+});
+export type PeriodCloseBlocker = z.infer<typeof periodCloseBlockerSchema>;
+
+export const periodCloseBlockersSchema = z.strictObject({
+  count: z.number().int().min(0),
+  /** Every blocker is PRODUCTION_INCOMPLETE and all of them are listed. */
+  overridable: z.boolean(),
+  sources: z
+    .array(periodCloseBlockerSchema)
+    .max(PERIOD_CLOSE_OVERRIDE_MAX_SOURCES),
+});
+export type PeriodCloseBlockers = z.infer<typeof periodCloseBlockersSchema>;
+
+/**
+ * Body of a close override. `sourceIds` must be exactly the sources blocked at
+ * that moment (PERIOD_OVERRIDE_SOURCES_CHANGED otherwise).
+ */
+export const closeFiscalPeriodOverrideInputSchema = z.strictObject({
+  expectedVersion: z.number().int().min(1),
+  idempotencyKey: idempotencyKeySchema,
+  reason: z.string().trim().min(20).max(1000),
+  sourceIds: z
+    .array(closeBlockerSourceIdSchema)
+    .min(1)
+    .max(PERIOD_CLOSE_OVERRIDE_MAX_SOURCES)
+    .refine((ids) => new Set(ids).size === ids.length, {
+      message: "sourceIds must be unique",
+    }),
+});
+export type CloseFiscalPeriodOverrideInput = z.infer<
+  typeof closeFiscalPeriodOverrideInputSchema
+>;

@@ -20,6 +20,8 @@ export const accountingErrorHttpStatus = {
   PERIOD_ALREADY_CLOSED: 409,
   /** Stock sources of the period wait in inventory_gl_blocked (card 1260); no close until they post. */
   PERIOD_INVENTORY_GL_BLOCKED: 422,
+  /** The acknowledged sources differ from the ones blocked now (card 1263); re-read. */
+  PERIOD_OVERRIDE_SOURCES_CHANGED: 409,
   PERIOD_ALREADY_OPEN: 409,
   /** The action needs a closed period (e.g. finalising a tax report). */
   PERIOD_NOT_CLOSED: 409,
@@ -140,6 +142,8 @@ const defaultMessages: Record<AccountingErrorCode, string> = {
   PERIOD_ALREADY_CLOSED: "Periode ini sudah ditutup.",
   PERIOD_INVENTORY_GL_BLOCKED:
     "Masih ada sumber persediaan yang belum terjurnal. Selesaikan dulu, lalu tutup periode.",
+  PERIOD_OVERRIDE_SOURCES_CHANGED:
+    "Daftar batch yang tertahan berubah. Muat ulang daftar, lalu ulangi.",
   PERIOD_ALREADY_OPEN: "Periode ini masih terbuka.",
   PERIOD_NOT_CLOSED: "Periode ini belum ditutup.",
   REOPEN_REASON_REQUIRED: "Alasan pembukaan ulang wajib diisi.",

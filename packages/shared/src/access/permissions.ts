@@ -169,6 +169,8 @@ const entries = [
   ["accounting.journal.post", ["finance"]],
   ["accounting.reconcile", ["finance"]],
   ["accounting.period.close", ["finance"]],
+  // Card 1263 (founder no. 19): close over incomplete production batches.
+  ["accounting.period.close_override", ["finance", "approve"]],
   ["accounting.period_reopen.approve", ["finance", "approve"]],
   ["accounting.supplier_payment.process", ["finance"]],
   ["accounting.tax_report.manage", ["finance"]],
