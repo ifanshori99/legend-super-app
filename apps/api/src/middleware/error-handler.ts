@@ -27,6 +27,7 @@ import { TaxError } from "@starter/shared/tax";
 import { HttpError } from "../lib/http-error";
 import { AuditUnavailableError } from "../services/audit-writer";
 import { toLoggableError } from "../lib/safe-error";
+import { captureServerError } from "../lib/sentry";
 
 export const notFound: RequestHandler = () => {
   throw new HttpError(404, "NOT_FOUND", "Route not found.");
@@ -192,8 +193,11 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
 
   // pino-http logs res.err with its own serializer: hand it a copy without
   // database row values (bound parameters, "Failing row contains ...").
-  res.err = toLoggableError(
+  const safe = toLoggableError(
     error instanceof Error ? error : new Error(String(error)),
   ) as Error;
+  res.err = safe;
+  // Sentry gets the same row-free copy, never the raw driver error.
+  captureServerError(safe);
   return send(500, "INTERNAL_ERROR", "Something went wrong. Try again.");
 };
