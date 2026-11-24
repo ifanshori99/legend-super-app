@@ -494,6 +494,41 @@ describe("card 1263: close a period over incomplete production batches", () => {
     expect(await overrideAudits(october.id)).toHaveLength(1);
   });
 
+  it("[1263-REDACTED] a replay skips redacted audit rows instead of answering 500", async () => {
+    const { productionId, october } = await parkedWorld();
+    const body = {
+      sourceIds: [productionId],
+      idempotencyKey: `pco-${randomUUID()}`,
+    };
+    expect((await override(finance, october.id, body)).status).toBe(200);
+    // The masker may turn any value into "[REDACTED]": once the version, once
+    // the source list of a row with the right version and reason.
+    for (const path of ["version", "sources"])
+      await owner.query(
+        `INSERT INTO audit_logs (tenant_id, id, outlet_id, event, retention_class)
+         SELECT tenant_id, gen_random_uuid(), outlet_id,
+                jsonb_set(event, $3::text[], '"[REDACTED]"'), retention_class
+           FROM audit_logs
+          WHERE tenant_id = $1 AND event->>'objectId' = $2
+            AND event->>'action' = 'accounting.period.close_overridden'
+            AND jsonb_typeof(event->'maskedChanges'->'after'->'version') = 'number'
+          LIMIT 1`,
+        [tenantId, october.id, ["maskedChanges", "after", path]],
+      );
+    expect(await overrideAudits(october.id)).toHaveLength(3);
+
+    const again = await override(finance, october.id, body);
+    expect(again.status).toBe(200);
+    expect(again.body.data.version).toBe(2);
+    // A redacted list proves nothing: a changed list is still a reused key.
+    const other = await override(finance, october.id, {
+      ...body,
+      sourceIds: [randomUUID()],
+    });
+    expect(other.status).toBe(409);
+    expect(other.body.error.code).toBe("IDEMPOTENCY_KEY_REUSED");
+  });
+
   it("[1263-AUDIT] the audit row cannot be changed or deleted by the app role", async () => {
     const { productionId, october } = await parkedWorld();
     expect(

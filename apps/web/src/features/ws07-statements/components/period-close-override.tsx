@@ -4,8 +4,10 @@
 // and, when every one is an incomplete production batch and the visitor holds
 // the override permission, takes a written reason and closes in two steps.
 // The API re-checks everything: the permission, MFA and that `sourceIds` is
-// exactly the list still parked.
+// exactly the list still parked. MFA_REQUIRED / REAUTH_REQUIRED opens the shared
+// step-up panel in place; the same request is sent again after the code.
 import * as React from "react";
+import { Link } from "@tanstack/react-router";
 import { CircleAlert, CircleCheck, Info, ShieldAlert } from "lucide-react";
 import type {
   FiscalPeriod,
@@ -19,9 +21,14 @@ import { FormField } from "@/components/ui/form-field";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
+import { useTotpFactor } from "@/features/ws01-approvals/hooks";
 import { useAttemptKey } from "@/features/ws05-payment-admin/use-attempt-key";
 import { ConfirmDialog } from "@/features/ws07-accounting/components/confirm-dialog";
 import { useCanOverridePeriodClose } from "@/features/ws07-accounting/guard";
+import {
+  useStepUp,
+  VerifyPanel,
+} from "@/features/ws10-payroll-payout/components/approval-verify";
 import { ApiError } from "@/lib/api/errors";
 import { useClosePeriodOverride } from "../hooks";
 import {
@@ -58,6 +65,8 @@ export function PeriodCloseBlocked({
   const canOverride = useCanOverridePeriodClose();
   const override = useClosePeriodOverride(legalEntityId);
   const attempt = useAttemptKey();
+  const stepUp = useStepUp();
+  const factor = useTotpFactor(stepUp.active);
   const reasonRef = React.useRef<HTMLTextAreaElement>(null);
   const [reason, setReason] = React.useState("");
   const [touched, setTouched] = React.useState(false);
@@ -135,6 +144,7 @@ export function PeriodCloseBlocked({
         idempotencyKey: attempt.keyFor(payload),
       });
       attempt.settle();
+      stepUp.reset();
       toast({
         title: t(`${STOCK}.closed` as const, { period: periodLabel }),
         tone: "success",
@@ -143,6 +153,9 @@ export function PeriodCloseBlocked({
       onClosed();
     } catch (error) {
       setConfirmOpen(false);
+      // The attempt key stays: the retry after the code is the same request.
+      if (stepUp.capture(error)) return;
+      stepUp.reset();
       const code = error instanceof ApiError ? error.code : "";
       if (closeOverrideNeedsRefetch(code)) {
         // A new list is a new request: it must be confirmed again.
@@ -183,11 +196,7 @@ export function PeriodCloseBlocked({
           {t(`${STOCK}.count` as const, { count: data.count })}
         </p>
       </div>
-      <ul
-        aria-label={t(`${STOCK}.listLabel` as const)}
-        tabIndex={0}
-        className="grid max-h-80 gap-2 overflow-y-auto"
-      >
+      <ul aria-label={t(`${STOCK}.listLabel` as const)} className="grid gap-2">
         {data.sources.map((source) => (
           <li
             key={source.sourceId}
@@ -274,27 +283,53 @@ export function PeriodCloseBlocked({
               value={reason}
               rows={4}
               maxLength={OVERRIDE_REASON_MAX_LENGTH}
+              readOnly={stepUp.active}
               onChange={(event) => setReason(event.target.value)}
               onBlur={() => setTouched(true)}
             />
           </FormField>
-          <Button
-            type="button"
-            variant="destructive"
-            className="w-full sm:w-auto sm:justify-self-end"
-            disabled={override.isPending}
-            onClick={() => {
-              setTouched(true);
-              setNotice(null);
-              if (issue) {
-                reasonRef.current?.focus();
-                return;
-              }
-              setConfirmOpen(true);
-            }}
-          >
-            {t(`${STOCK}.submit` as const)}
-          </Button>
+          {stepUp.active ? (
+            <>
+              <VerifyPanel
+                key={stepUp.round}
+                copy={{
+                  title: t(`${STOCK}.mfaTitle` as const),
+                  mfaHint: t(`${STOCK}.mfaRequired` as const),
+                  cancel: t(`${STOCK}.mfaBack` as const),
+                }}
+                needs={stepUp.needs}
+                busy={override.isPending}
+                onVerified={() => void submit()}
+                onCancel={() => stepUp.reset()}
+              />
+              {factor.isSuccess && !factor.totp && (
+                <Link
+                  to="/kelola/keamanan"
+                  className="inline-flex min-h-11 items-center text-sm font-semibold text-primary underline underline-offset-4"
+                >
+                  {t(`${STOCK}.mfaEnroll` as const)}
+                </Link>
+              )}
+            </>
+          ) : (
+            <Button
+              type="button"
+              variant="destructive"
+              className="w-full sm:w-auto sm:justify-self-end"
+              disabled={override.isPending}
+              onClick={() => {
+                setTouched(true);
+                setNotice(null);
+                if (issue) {
+                  reasonRef.current?.focus();
+                  return;
+                }
+                setConfirmOpen(true);
+              }}
+            >
+              {t(`${STOCK}.submit` as const)}
+            </Button>
+          )}
         </div>
       )}
 

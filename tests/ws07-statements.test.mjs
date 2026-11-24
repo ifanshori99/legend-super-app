@@ -795,6 +795,24 @@ describe("card 1263 close override", () => {
     assert.equal(replay.data.version, closed.data.version);
   });
 
+  test("mock: the MFA refusal closes on a retry with the same key", async () => {
+    control.setScenario("period-close-blocked-mfa");
+    const list = await get(`${periodPath(november)}/close-blockers`);
+    const body = {
+      expectedVersion: november.version,
+      idempotencyKey: ulid(12),
+      reason: "Batch menunggu bahan yang belum tercatat.",
+      sourceIds: statements.overrideSourceIds(list.data),
+    };
+    const refused = await failure(
+      post(`${periodPath(november)}/close-override`, body),
+    );
+    assert.equal(refused.status, 403);
+    assert.equal(refused.code, "MFA_REQUIRED");
+    const closed = await post(`${periodPath(november)}/close-override`, body);
+    assert.equal(closed.data.status, "closed");
+  });
+
   test("mock: another kind of blocker is not overridable", async () => {
     control.setScenario("period-close-blocked-other");
     const list = await get(`${periodPath(november)}/close-blockers`);

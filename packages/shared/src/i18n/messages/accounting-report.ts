@@ -233,7 +233,7 @@ export const accountingReportMessages = {
         overrideHint:
           "Batch di atas akan dijurnal di periode terbuka berikutnya sebagai penyesuaian terlambat. Jelaskan mengapa periode ini tetap ditutup.",
         reasonLabel: "Alasan menutup periode",
-        reasonHint: "Minimal {min} karakter. Alasan tercatat permanen.",
+        reasonHint: "Minimal {min} karakter. Alasan tercatat di log audit.",
         reasonCounter: "{count} dari {max} karakter",
         reasonRequired: "Alasan wajib diisi.",
         reasonTooShort: "Alasan minimal {min} karakter.",
@@ -241,7 +241,7 @@ export const accountingReportMessages = {
         submit: "Tutup dengan alasan",
         confirmTitle: "Tutup periode {period} dengan alasan?",
         confirmBody:
-          "{count} batch yang belum lengkap akan dijurnal di periode terbuka berikutnya sebagai penyesuaian terlambat. Catatan penutupan dan alasan Anda tersimpan permanen dan tidak dapat diubah.",
+          "{count} batch yang belum lengkap akan dijurnal di periode terbuka berikutnya sebagai penyesuaian terlambat. Catatan penutupan dan alasan Anda tercatat di log audit dan tidak dapat diubah.",
         confirmSubmit: "Ya, tutup dengan alasan",
         closed: "Periode {period} ditutup dengan alasan.",
         sourcesChanged:
@@ -251,7 +251,10 @@ export const accountingReportMessages = {
         periodChanged:
           "Status periode berubah. Tutup jendela ini, muat ulang halaman, lalu coba lagi.",
         mfaRequired:
-          "Verifikasi dua langkah diperlukan untuk tindakan ini. Verifikasi lalu coba lagi.",
+          "Periode belum ditutup. Buka aplikasi autentikator Anda dan masukkan kode 6 digit terbaru. Setelah kode benar, periode langsung ditutup dengan alasan di atas.",
+        mfaTitle: "Verifikasi untuk menutup periode",
+        mfaBack: "Ubah alasan",
+        mfaEnroll: "Buka menu Keamanan",
         forbidden: "Anda tidak punya izin untuk menutup periode dengan alasan.",
         failed: "Periode tidak dapat ditutup dengan alasan. Coba lagi.",
         sourceType: {

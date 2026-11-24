@@ -597,6 +597,7 @@ const OTHER_BLOCKER: PeriodCloseBlocker = {
 function blockedSourcesFor(scenario: string): PeriodCloseBlocker[] {
   if (
     scenario === "period-close-blocked" ||
+    scenario === "period-close-blocked-mfa" ||
     scenario === "period-close-blocked-cleared"
   )
     return INCOMPLETE_BATCHES.map((row) => ({ ...row }));
@@ -636,6 +637,18 @@ register(closeFiscalPeriodOverride, ({ params, body, scenario }) => {
   if (replayed) return { data: findPeriod(replayed) };
 
   const period = findPeriod(params.fiscalPeriodId);
+  const stepUpKey = `mfa:${period.id}`;
+  if (
+    scenario === "period-close-blocked-mfa" &&
+    !current.refusedOnce.has(stepUpKey)
+  ) {
+    current.refusedOnce.add(stepUpKey);
+    throw new ApiError(
+      403,
+      "MFA_REQUIRED",
+      "Verifikasi dua langkah diperlukan.",
+    );
+  }
   assertPeriodVersion(period, body.expectedVersion);
   const sources = blockedSourcesFor(scenario);
   if (sources.some((row) => row.errorCode !== "PRODUCTION_INCOMPLETE"))

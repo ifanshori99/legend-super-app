@@ -5,9 +5,10 @@ Sudah: kontrak, izin `accounting.period.close_override` (owner, finance), migras
 - `GET /fiscal-periods/:id/close-blockers` (tambahan dari rencana): detail 422 hanya mengirim nilai string ke klien, jadi daftar batch dibaca dari endpoint ini.
 - Hanya sumber `production_order` + `PRODUCTION_INCOMPLETE`, paling banyak 200; lainnya tetap 422.
 - Replay kunci yang sama dengan alasan atau daftar lain: 409 IDEMPOTENCY_KEY_REUSED.
-- Bukti: `period-close-override-1263.test.ts` merah 10 dari 12 (tanpa service dan route) lalu hijau 13 dari 13.
-Belum: review architect xhigh (tingkat K), merge train, gate penuh, layar terhadap API nyata.
+- Bukti: `period-close-override-1263.test.ts` merah 10 dari 12 (tanpa service dan route) lalu hijau 13 dari 13; tambahan [1263-REDACTED] merah (500) lalu hijau.
+- Architect LOLOS di 2b83260ed. Perbaikan sesudahnya: MFA_REQUIRED membuka panel kode di tempat (kunci percobaan sama), hanya isi dialog yang bergulir, satu tombol tutup, teks "tercatat di log audit", replay tahan baris audit "[REDACTED]".
+Belum: review perbaikan sesudah 2b83260ed, merge train, gate penuh, layar terhadap API nyata.
 Diketahui:
 - Batch yang baru diparkir dan belum commit saat tutup tidak terlihat di daftar (celah sejak 1260: parkir tidak mengambil kunci badan usaha). Batch itu tetap terparkir dan muncul di tutup buku berikutnya.
 - `errorCode` adalah hasil percobaan terakhir, tidak dicoba ulang saat override.
-- Audit memakai kelas retensi `audit_2y` (sama dengan audit akuntansi lain).
+- Audit memakai kelas retensi `audit_2y` (satu-satunya kelas di kode; PRD.md:197 menetapkan log audit 2 tahun, catatan keuangan 10 tahun).

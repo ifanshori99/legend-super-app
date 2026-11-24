@@ -53,6 +53,8 @@ export const MOCK_SCENARIOS = [
   "period-close-blocked-other",
   /** Card 1263: refused once, but the list is empty when the dialog reads it. */
   "period-close-blocked-cleared",
+  /** Card 1263: the first close with a reason is refused for MFA (403). */
+  "period-close-blocked-mfa",
 ] as const;
 export type MockScenario = (typeof MOCK_SCENARIOS)[number];
 

@@ -377,18 +377,24 @@ async function assertSameOverrideReplay(
         eq(auditLogs.tenantId, tenantId),
         sql`${auditLogs.event}->>'action' = ${CLOSE_OVERRIDDEN_ACTION}`,
         sql`${auditLogs.event}->>'objectId' = ${row.id}`,
-        sql`(${auditLogs.event}->'maskedChanges'->'after'->>'version')::int = ${row.version}`,
+        // Compared as text: a masked value ("[REDACTED]") is not a number.
+        sql`${auditLogs.event}->'maskedChanges'->'after'->>'version' = ${String(row.version)}`,
       ),
     );
   const same = rows.some(({ event }) => {
     const record = event as {
       reason: string | null;
-      maskedChanges: { after: { sources?: { sourceId: string }[] } };
+      maskedChanges: {
+        after: { sources?: { sourceId: string }[] | string };
+      };
     };
+    const { sources } = record.maskedChanges.after;
+    // A masked list is a string: it proves nothing, so it never matches.
     return (
       record.reason === override.reason &&
+      Array.isArray(sources) &&
       sameIds(
-        (record.maskedChanges.after.sources ?? []).map((s) => s.sourceId),
+        sources.map((s) => s.sourceId),
         override.sourceIds,
       )
     );

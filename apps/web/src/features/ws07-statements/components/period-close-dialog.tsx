@@ -96,6 +96,9 @@ export function PeriodCloseDialog({
   const closeHeldBySources =
     showBlocked &&
     (blockers.isPending || (blockers.data?.sources.length ?? 0) > 0);
+  // With the list on screen the section below owns the only close button.
+  const hidePlainClose =
+    showBlocked && (blockers.data?.sources.length ?? 0) > 0;
   const handleOpenChange = (next: boolean) => {
     if (!next) {
       setBlockedPeriodId(null);
@@ -214,7 +217,7 @@ export function PeriodCloseDialog({
   return (
     <>
       <Dialog open={open} onOpenChange={handleOpenChange}>
-        <DialogContent className="sm:max-w-xl">
+        <DialogContent className="overflow-hidden sm:max-w-xl">
           <DialogHeader>
             <DialogTitle>
               {t("accounting.report.periods.closeDialog.title", {
@@ -226,129 +229,137 @@ export function PeriodCloseDialog({
             </DialogDescription>
           </DialogHeader>
 
-          {loading && (
-            <div className="grid gap-2" aria-busy="true">
-              <span className="sr-only">{t("common.loading")}</span>
-              {Array.from({ length: 4 }, (_, index) => (
-                <Skeleton key={index} className="h-14" />
-              ))}
-            </div>
-          )}
-
-          {!loading && failed && (
-            <ErrorState
-              title={t("accounting.report.periods.closeDialog.errorTitle")}
-              description={t("state.errorHint")}
-              onRetry={() => {
-                void trial.refetch();
-                void journals.refetch();
-              }}
-            />
-          )}
-
-          {!loading && !failed && period && (
-            <div className="grid gap-4">
-              <div className="grid gap-2">
-                <p className="type-eyebrow text-muted-foreground">
-                  {t("accounting.report.periods.closeDialog.checklist")}
-                </p>
-                <ul className="grid gap-2">
-                  {checklist.map((item) => {
-                    const { icon: Icon, tone } = CHECK_ICONS[item.state];
-                    return (
-                      <li
-                        key={item.key}
-                        className="flex items-start gap-2 rounded-container border-(length:--border-w) border-border p-3"
-                      >
-                        <Icon
-                          className={`mt-0.5 size-icon shrink-0 ${tone}`}
-                          aria-hidden="true"
-                        />
-                        <div className="grid gap-0.5 text-sm leading-5">
-                          <p className="font-medium">{t(item.key)}</p>
-                          <p
-                            className={
-                              item.state === "blocked"
-                                ? "text-danger"
-                                : "text-muted-foreground"
-                            }
-                          >
-                            {item.detail}
-                          </p>
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
+          {/* Only the body scrolls: the header and the buttons stay whole. */}
+          <div
+            role="region"
+            aria-label={t("accounting.report.periods.closeDialog.checklist")}
+            tabIndex={0}
+            className="-mx-1 min-h-0 flex-1 overflow-y-auto px-1 outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+          >
+            {loading && (
+              <div className="grid gap-2" aria-busy="true">
+                <span className="sr-only">{t("common.loading")}</span>
+                {Array.from({ length: 4 }, (_, index) => (
+                  <Skeleton key={index} className="h-14" />
+                ))}
               </div>
+            )}
 
-              {trial.data && (
-                <dl className="grid gap-3 rounded-container border-(length:--border-w) border-border bg-surface-2 p-3 sm:grid-cols-2">
-                  <div className="grid gap-0.5">
-                    <dt className="type-eyebrow text-muted-foreground">
-                      {t("accounting.report.periods.closeDialog.totalDebit")}
-                    </dt>
-                    <dd>
-                      <Money amount={trial.data.totalDebitIdr} />
-                    </dd>
-                  </div>
-                  <div className="grid gap-0.5">
-                    <dt className="type-eyebrow text-muted-foreground">
-                      {t("accounting.report.periods.closeDialog.totalCredit")}
-                    </dt>
-                    <dd>
-                      <Money amount={trial.data.totalCreditIdr} />
-                    </dd>
-                  </div>
-                  <p className="text-sm text-muted-foreground sm:col-span-2">
-                    {t("accounting.report.periods.closeDialog.totals", {
-                      date: formatBusinessDate(periodEnd),
-                    })}
+            {!loading && failed && (
+              <ErrorState
+                title={t("accounting.report.periods.closeDialog.errorTitle")}
+                description={t("state.errorHint")}
+                onRetry={() => {
+                  void trial.refetch();
+                  void journals.refetch();
+                }}
+              />
+            )}
+
+            {!loading && !failed && period && (
+              <div className="grid gap-4">
+                <div className="grid gap-2">
+                  <p className="type-eyebrow text-muted-foreground">
+                    {t("accounting.report.periods.closeDialog.checklist")}
                   </p>
-                </dl>
-              )}
-
-              {showBlocked ? (
-                <PeriodCloseBlocked
-                  key={period.id}
-                  period={period}
-                  legalEntityId={legalEntityId}
-                  blockers={blockers}
-                  onClosed={() => handleOpenChange(false)}
-                />
-              ) : readiness.ready ? (
-                <div className="flex items-start gap-2 rounded-container border-(length:--border-w) border-success bg-success-subtle p-3">
-                  <CircleCheck
-                    className="mt-0.5 size-icon shrink-0 text-success"
-                    aria-hidden="true"
-                  />
-                  <div className="grid gap-0.5 text-sm leading-5">
-                    <p className="font-semibold">
-                      {t("accounting.report.periods.closeDialog.readyTitle")}
-                    </p>
-                    <p className="text-muted-foreground">
-                      {t("accounting.report.periods.closeDialog.readyHint")}
-                    </p>
-                  </div>
+                  <ul className="grid gap-2">
+                    {checklist.map((item) => {
+                      const { icon: Icon, tone } = CHECK_ICONS[item.state];
+                      return (
+                        <li
+                          key={item.key}
+                          className="flex items-start gap-2 rounded-container border-(length:--border-w) border-border p-3"
+                        >
+                          <Icon
+                            className={`mt-0.5 size-icon shrink-0 ${tone}`}
+                            aria-hidden="true"
+                          />
+                          <div className="grid gap-0.5 text-sm leading-5">
+                            <p className="font-medium">{t(item.key)}</p>
+                            <p
+                              className={
+                                item.state === "blocked"
+                                  ? "text-danger"
+                                  : "text-muted-foreground"
+                              }
+                            >
+                              {item.detail}
+                            </p>
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
                 </div>
-              ) : (
-                <p role="alert" className="text-sm font-medium text-danger">
-                  {t("accounting.report.periods.closeDialog.blockersTitle")}
-                </p>
-              )}
 
-              {serverError && (
-                <p
-                  role="alert"
-                  className="rounded-lg border-(length:--border-w) border-danger bg-danger-subtle p-3 text-sm text-danger"
-                >
-                  {serverError}
-                </p>
-              )}
-            </div>
-          )}
+                {trial.data && (
+                  <dl className="grid gap-3 rounded-container border-(length:--border-w) border-border bg-surface-2 p-3 sm:grid-cols-2">
+                    <div className="grid gap-0.5">
+                      <dt className="type-eyebrow text-muted-foreground">
+                        {t("accounting.report.periods.closeDialog.totalDebit")}
+                      </dt>
+                      <dd>
+                        <Money amount={trial.data.totalDebitIdr} />
+                      </dd>
+                    </div>
+                    <div className="grid gap-0.5">
+                      <dt className="type-eyebrow text-muted-foreground">
+                        {t("accounting.report.periods.closeDialog.totalCredit")}
+                      </dt>
+                      <dd>
+                        <Money amount={trial.data.totalCreditIdr} />
+                      </dd>
+                    </div>
+                    <p className="text-sm text-muted-foreground sm:col-span-2">
+                      {t("accounting.report.periods.closeDialog.totals", {
+                        date: formatBusinessDate(periodEnd),
+                      })}
+                    </p>
+                  </dl>
+                )}
 
-          <DialogFooter>
+                {showBlocked ? (
+                  <PeriodCloseBlocked
+                    key={period.id}
+                    period={period}
+                    legalEntityId={legalEntityId}
+                    blockers={blockers}
+                    onClosed={() => handleOpenChange(false)}
+                  />
+                ) : readiness.ready ? (
+                  <div className="flex items-start gap-2 rounded-container border-(length:--border-w) border-success bg-success-subtle p-3">
+                    <CircleCheck
+                      className="mt-0.5 size-icon shrink-0 text-success"
+                      aria-hidden="true"
+                    />
+                    <div className="grid gap-0.5 text-sm leading-5">
+                      <p className="font-semibold">
+                        {t("accounting.report.periods.closeDialog.readyTitle")}
+                      </p>
+                      <p className="text-muted-foreground">
+                        {t("accounting.report.periods.closeDialog.readyHint")}
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <p role="alert" className="text-sm font-medium text-danger">
+                    {t("accounting.report.periods.closeDialog.blockersTitle")}
+                  </p>
+                )}
+
+                {serverError && (
+                  <p
+                    role="alert"
+                    className="rounded-lg border-(length:--border-w) border-danger bg-danger-subtle p-3 text-sm text-danger"
+                  >
+                    {serverError}
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+
+          <DialogFooter className="mt-0 shrink-0">
             <Button
               type="button"
               variant="outline"
@@ -357,23 +368,25 @@ export function PeriodCloseDialog({
             >
               {t("common.cancel")}
             </Button>
-            <Button
-              type="button"
-              disabled={
-                !readiness.ready ||
-                close.isPending ||
-                loading ||
-                failed ||
-                closeHeldBySources
-              }
-              loading={close.isPending}
-              onClick={() => {
-                setServerError(null);
-                setConfirmOpen(true);
-              }}
-            >
-              {t("accounting.report.periods.closeDialog.submit")}
-            </Button>
+            {!hidePlainClose && (
+              <Button
+                type="button"
+                disabled={
+                  !readiness.ready ||
+                  close.isPending ||
+                  loading ||
+                  failed ||
+                  closeHeldBySources
+                }
+                loading={close.isPending}
+                onClick={() => {
+                  setServerError(null);
+                  setConfirmOpen(true);
+                }}
+              >
+                {t("accounting.report.periods.closeDialog.submit")}
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

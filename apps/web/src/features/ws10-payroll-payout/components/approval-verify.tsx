@@ -77,7 +77,7 @@ export function VerifyPanel({
   /** Leave the step-up without sending anything. */
   onCancel?: () => void;
   /** Other screens swap the payout wording for their own (already translated). */
-  copy?: { title?: string; mfaHint?: string };
+  copy?: { title?: string; mfaHint?: string; cancel?: string };
 }) {
   const t = useT();
   const factor = useTotpFactor(needs.mfa);
@@ -232,7 +232,7 @@ export function VerifyPanel({
             disabled={working}
             onClick={onCancel}
           >
-            {t("payrollPayoutReview.verify.cancel")}
+            {copy?.cancel ?? t("payrollPayoutReview.verify.cancel")}
           </Button>
         )}
       </div>
