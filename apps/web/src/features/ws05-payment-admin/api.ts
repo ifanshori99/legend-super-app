@@ -29,6 +29,7 @@ import {
   resolveRefundReconHold as resolveRefundReconHoldEndpoint,
   resolveUnallocatedFund as resolveUnallocatedFundEndpoint,
   retryRefundPayout as retryRefundPayoutEndpoint,
+  settleRefundManually as settleRefundManuallyEndpoint,
   updateEdcCashierDefault as updateEdcCashierDefaultEndpoint,
   updateEdcTerminal as updateEdcTerminalEndpoint,
   updatePaymentRoute as updatePaymentRouteEndpoint,
@@ -125,6 +126,11 @@ export const retryRefundPayout = (
   params: Params<typeof retryRefundPayoutEndpoint>,
   body: Body<typeof retryRefundPayoutEndpoint>,
 ) => callEndpoint(retryRefundPayoutEndpoint, { params, body });
+
+export const settleRefundManually = (
+  params: Params<typeof settleRefundManuallyEndpoint>,
+  body: Body<typeof settleRefundManuallyEndpoint>,
+) => callEndpoint(settleRefundManuallyEndpoint, { params, body });
 
 export const releaseQuarantinedRefund = (
   params: Params<typeof releaseQuarantinedRefundEndpoint>,

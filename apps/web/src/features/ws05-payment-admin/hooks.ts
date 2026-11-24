@@ -11,6 +11,7 @@ import type {
   ApproveRefundInput,
   CreateEdcTerminalInput,
   CreateRefundInput,
+  ManualRefundSettlementInput,
   QuarantinedRefundActionInput,
   RejectRefundInput,
   RetryRefundPayoutInput,
@@ -44,6 +45,7 @@ import {
   resolveRefundReconHold,
   resolveUnallocatedFund,
   retryRefundPayout,
+  settleRefundManually,
   saveEdcCashierDefault,
   savePaymentRoute,
   testIntegrationConnection,
@@ -231,6 +233,19 @@ export function useReopenQuarantinedRefund() {
       refundId: string;
       body: QuarantinedRefundActionInput;
     }) => reopenQuarantinedRefund({ refundId: input.refundId }, input.body),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: [listRefundsEndpoint.id] }),
+  });
+}
+
+/** Records an approved refund finance paid by hand (card 1259). */
+export function useSettleRefundManually() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: {
+      refundId: string;
+      body: ManualRefundSettlementInput;
+    }) => settleRefundManually({ refundId: input.refundId }, input.body),
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: [listRefundsEndpoint.id] }),
   });

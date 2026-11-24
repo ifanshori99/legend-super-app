@@ -45,6 +45,7 @@ import { posOrderDetailMessages } from "./pos-order-detail.ts";
 import { posIssueChargeMessages } from "./pos-issue-charge.ts";
 import { posReceiptPublicMessages } from "./pos-receipt-public.ts";
 import { paymentDuitkuMessages } from "./ws05-duitku-credentials.ts";
+import { paymentManualSettleMessages } from "./ws05-manual-settle.ts";
 import { paymentRefundFollowupMessages } from "./ws05-refund-followup.ts";
 import { reservationMessages } from "./reservation.ts";
 import { reservationGuestMessages } from "./reservation-guest.ts";
@@ -1819,6 +1820,8 @@ export const id = {
   paymentAdmin: {
     // Refund follow-up: reject/retry/quarantine (legend-kfkt, legend-hn5q).
     refundFollowup: paymentRefundFollowupMessages,
+    // Manual refund settlement (card 1259, legend-xd2q).
+    manualSettle: paymentManualSettleMessages,
     // Duitku credentials form (legend-vntqt).
     duitku: paymentDuitkuMessages,
     title: "Pembayaran",

@@ -4,7 +4,7 @@
 // ("Periksa status"), never retried; every write carries one idempotency key
 // per dialog or attempt and its button is disabled while pending.
 import * as React from "react";
-import { Link } from "@tanstack/react-router";
+import { Link, useRouteContext } from "@tanstack/react-router";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import {
@@ -18,11 +18,20 @@ import {
 import { FormField } from "@/components/ui/form-field";
 import { Money } from "@/components/ui/money";
 import { StatusPill } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
 import type { MessageKey } from "@starter/shared/i18n";
 import type { RefundView } from "@starter/shared/payment/admin";
 import { cn } from "cn";
+import { ANONYMOUS_ACCESS, type AreaAccess } from "@/lib/areas/access";
 import { formatMoment, methodLabelKey } from "../format";
 import {
   useRefunds,
@@ -30,7 +39,16 @@ import {
   useReleaseQuarantinedRefund,
   useReopenQuarantinedRefund,
   useRetryRefundPayout,
+  useSettleRefundManually,
 } from "../hooks";
+import {
+  MANUAL_SETTLE_CHANNELS,
+  canSettleManually,
+  checkManualSettlement,
+  manualSettlementRefusalKey,
+  type ManualSettlementField,
+  type ManualSettlementForm,
+} from "../manual-settlement.ts";
 import {
   needsEvidenceMapping,
   payoutErrorKey,
@@ -87,6 +105,12 @@ export function RefundFollowupDialog({
   const refunds = useRefunds();
   const refund = refunds.data?.data.find((entry) => entry.id === refundId);
   const [rejecting, setRejecting] = React.useState(false);
+  // "Catat refund manual" is a two-step form inside this dialog. Presentation
+  // only: the API re-checks payment.reconcile, state and MFA.
+  const [settling, setSettling] = React.useState(false);
+  const { access } = useRouteContext({ strict: false }) as {
+    access?: AreaAccess;
+  };
   // Release and re-open confirm as a step inside this dialog (no dialog on dialog).
   const [quarantine, setQuarantine] = React.useState<
     "release" | "reopen" | null
@@ -133,7 +157,13 @@ export function RefundFollowupDialog({
     <>
       <Dialog open onOpenChange={(open) => (!open ? onClose() : undefined)}>
         <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-2xl">
-          {quarantine ? (
+          {settling ? (
+            <ManualSettleStep
+              refund={refund}
+              onBack={() => setSettling(false)}
+              onClose={onClose}
+            />
+          ) : quarantine ? (
             <QuarantineStep
               refund={refund}
               action={quarantine}
@@ -282,6 +312,18 @@ export function RefundFollowupDialog({
                     onClick={() => setRejecting(true)}
                   >
                     {t(key("action.reject"))}
+                  </Button>
+                )}
+                {canSettleManually(
+                  refund,
+                  (access ?? ANONYMOUS_ACCESS).permissions,
+                ) && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setSettling(true)}
+                  >
+                    {t("paymentAdmin.manualSettle.open")}
                   </Button>
                 )}
                 {actions.reopen && (
@@ -756,6 +798,276 @@ function QuarantineStep({
           </Button>
         </DialogFooter>
       </form>
+    </>
+  );
+}
+
+const EMPTY_SETTLEMENT: ManualSettlementForm = {
+  paidAtLocal: "",
+  channel: "",
+  externalReference: "",
+  amountIdr: "",
+  note: "",
+};
+
+/**
+ * Two steps: fill in the proof, then confirm what will be recorded. One
+ * idempotency key per user attempt (a repeat after a failure replays); the
+ * server decides state, amount, provider lookup and MFA, and its refusal code
+ * is shown in Bahasa Indonesia.
+ */
+function ManualSettleStep({
+  refund,
+  onBack,
+  onClose,
+}: {
+  refund: RefundView;
+  onBack: () => void;
+  onClose: () => void;
+}) {
+  const t = useT();
+  const toast = useToast();
+  const settle = useSettleRefundManually();
+  const attempt = useAttemptKey();
+  const [form, setForm] =
+    React.useState<ManualSettlementForm>(EMPTY_SETTLEMENT);
+  const [confirming, setConfirming] = React.useState(false);
+  const [fieldError, setFieldError] = React.useState<{
+    field: ManualSettlementField;
+    message: string;
+  } | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
+  const set = (patch: Partial<ManualSettlementForm>) => {
+    setForm((current) => ({ ...current, ...patch }));
+    setFieldError(null);
+  };
+  const errorOf = (field: ManualSettlementField) =>
+    fieldError?.field === field ? fieldError.message : undefined;
+
+  const review = (event: React.FormEvent) => {
+    event.preventDefault();
+    const check = checkManualSettlement(refund, form);
+    if (!check.ok) {
+      setFieldError({ field: check.field, message: t(check.messageKey) });
+      return;
+    }
+    setFieldError(null);
+    setConfirming(true);
+  };
+
+  const submit = () => {
+    const check = checkManualSettlement(refund, form);
+    if (!check.ok) {
+      setConfirming(false);
+      setFieldError({ field: check.field, message: t(check.messageKey) });
+      return;
+    }
+    setError(null);
+    const idempotencyKey = attempt.keyFor({
+      refundId: refund.id,
+      ...check.body,
+    });
+    settle.mutate(
+      { refundId: refund.id, body: { ...check.body, idempotencyKey } },
+      {
+        onSuccess: () => {
+          attempt.settle();
+          toast({
+            title: t("paymentAdmin.manualSettle.done", {
+              reference: refund.paymentReference,
+            }),
+          });
+          onClose();
+        },
+        onError: (cause) => {
+          const refusal =
+            cause instanceof ApiError
+              ? manualSettlementRefusalKey(cause.status, cause.code)
+              : null;
+          setError(
+            refusal ? t(refusal) : t("paymentAdmin.manualSettle.failed"),
+          );
+        },
+      },
+    );
+  };
+
+  const channelLabel = (channel: string) =>
+    t(`paymentAdmin.manualSettle.channels.${channel}` as MessageKey);
+
+  return (
+    <>
+      <DialogHeader>
+        <DialogTitle>{t("paymentAdmin.manualSettle.title")}</DialogTitle>
+        <DialogDescription>
+          {t(key("refundOrder"), { reference: refund.paymentReference })}
+        </DialogDescription>
+      </DialogHeader>
+      <div className="grid gap-1">
+        <p className="text-sm text-muted-foreground">
+          {t("paymentAdmin.manualSettle.amountLabel")}
+        </p>
+        <Money amount={refund.amountIdr} size="lg" />
+        <p className="text-sm text-muted-foreground">
+          {t(methodLabelKey(refund.method))} · {refund.reason}
+        </p>
+      </div>
+      <div
+        role="status"
+        className={cn(
+          "grid gap-1 rounded-control border-(length:--border-w) p-card",
+          NOTICE_TONE.warning,
+        )}
+      >
+        <p className="font-semibold">
+          {t("paymentAdmin.manualSettle.warnTitle")}
+        </p>
+        <p className="text-sm leading-5">
+          {t("paymentAdmin.manualSettle.warnBody")}
+        </p>
+        <p className="text-sm leading-5">
+          {t("paymentAdmin.manualSettle.mfaHint")}
+        </p>
+      </div>
+      <p className="text-sm font-semibold">
+        {t(
+          confirming
+            ? "paymentAdmin.manualSettle.stepConfirm"
+            : "paymentAdmin.manualSettle.stepRecord",
+        )}
+      </p>
+      {confirming ? (
+        <div className="grid gap-4">
+          <h3 className="font-semibold">
+            {t("paymentAdmin.manualSettle.confirmTitle")}
+          </h3>
+          <p className="text-sm leading-5">
+            {t("paymentAdmin.manualSettle.confirmBody")}
+          </p>
+          <dl className="grid gap-3 sm:grid-cols-2">
+            <Detail label={t("paymentAdmin.manualSettle.amountPaid")}>
+              <Money amount={refund.amountIdr} className="font-semibold" />
+            </Detail>
+            <Detail label={t("paymentAdmin.manualSettle.paidAt")}>
+              {formatMoment(new Date(form.paidAtLocal).toISOString())}
+            </Detail>
+            <Detail label={t("paymentAdmin.manualSettle.channel")}>
+              {channelLabel(form.channel)}
+            </Detail>
+            <Detail label={t("paymentAdmin.manualSettle.externalReference")}>
+              {form.externalReference.trim()}
+            </Detail>
+            <Detail label={t("paymentAdmin.manualSettle.note")}>
+              {form.note.trim()}
+            </Detail>
+          </dl>
+          {error && (
+            <p role="alert" className="text-sm font-medium text-danger">
+              {error}
+            </p>
+          )}
+          <DialogFooter className="flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={settle.isPending}
+              onClick={() => setConfirming(false)}
+            >
+              {t("paymentAdmin.manualSettle.back")}
+            </Button>
+            <Button type="button" onClick={submit} loading={settle.isPending}>
+              {t("paymentAdmin.manualSettle.confirmSubmit")}
+            </Button>
+          </DialogFooter>
+        </div>
+      ) : (
+        <form className="grid gap-4" onSubmit={review} noValidate>
+          <FormField
+            label={t("paymentAdmin.manualSettle.paidAt")}
+            required
+            error={errorOf("paidAt")}
+          >
+            <Input
+              type="datetime-local"
+              value={form.paidAtLocal}
+              onChange={(event) => set({ paidAtLocal: event.target.value })}
+            />
+          </FormField>
+          <FormField
+            label={t("paymentAdmin.manualSettle.channel")}
+            required
+            error={errorOf("channel")}
+          >
+            <Select
+              value={form.channel}
+              onValueChange={(value) =>
+                set({ channel: value as ManualSettlementForm["channel"] })
+              }
+            >
+              <SelectTrigger>
+                <SelectValue
+                  placeholder={t(
+                    "paymentAdmin.manualSettle.channelPlaceholder",
+                  )}
+                />
+              </SelectTrigger>
+              <SelectContent>
+                {MANUAL_SETTLE_CHANNELS.map((channel) => (
+                  <SelectItem key={channel} value={channel}>
+                    {channelLabel(channel)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </FormField>
+          <FormField
+            label={t("paymentAdmin.manualSettle.externalReference")}
+            hint={t("paymentAdmin.manualSettle.externalReferenceHint")}
+            required
+            error={errorOf("externalReference")}
+          >
+            <Input
+              value={form.externalReference}
+              maxLength={100}
+              onChange={(event) =>
+                set({ externalReference: event.target.value })
+              }
+            />
+          </FormField>
+          <FormField
+            label={t("paymentAdmin.manualSettle.amountPaid")}
+            hint={t("paymentAdmin.manualSettle.amountPaidHint")}
+            required
+            error={errorOf("amountIdr")}
+          >
+            <Input
+              inputMode="numeric"
+              value={form.amountIdr}
+              onChange={(event) => set({ amountIdr: event.target.value })}
+            />
+          </FormField>
+          <FormField
+            label={t("paymentAdmin.manualSettle.note")}
+            required
+            error={errorOf("note")}
+          >
+            <Textarea
+              value={form.note}
+              rows={3}
+              placeholder={t("paymentAdmin.manualSettle.notePlaceholder")}
+              onChange={(event) => set({ note: event.target.value })}
+            />
+          </FormField>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onBack}>
+              {t("paymentAdmin.manualSettle.back")}
+            </Button>
+            <Button type="submit">
+              {t("paymentAdmin.manualSettle.review")}
+            </Button>
+          </DialogFooter>
+        </form>
+      )}
     </>
   );
 }
