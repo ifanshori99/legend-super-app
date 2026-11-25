@@ -66,6 +66,8 @@ import { accessTicketCredentialSchema } from "@starter/shared/facility";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
 import { env } from "../config/env.ts";
+import { db } from "../db/index.ts";
+import { withTenant } from "../db/tenant.ts";
 import {
   getEdgeRuntimeState,
   setEdgeRuntimeStateForTests,
@@ -80,6 +82,8 @@ import {
   setPosReceiptPort,
   type PosReceiptPort,
 } from "../services/pos-order-ports.ts";
+import { listPosTicketProducts } from "../services/facility-pos-ticket-catalog.ts";
+import { assertPosTicketsIssuableForReference } from "../services/facility-pos-tickets.ts";
 import { sellPosTicket } from "../services/facility-pos-ticket-sale.ts";
 import { openPosShift } from "../services/pos-shift.service.ts";
 import { createPosOverride } from "../services/staff-override.service.ts";
@@ -1696,5 +1700,44 @@ describe("1269 F0 shower off: nothing is sold, no money is taken, old bills can 
     await setRule(coworking);
     const sold = await ring();
     expect(sold.status, JSON.stringify(sold.body)).toBe(201);
+  });
+
+  it("F0-05 the cashier's ticket list leaves the shower out and keeps it when the switch is on", async () => {
+    const context = establishScopedTenantContext(sessionContext(), {
+      kind: "tenant",
+    });
+    const listed = async () =>
+      (
+        await listPosTicketProducts(
+          context,
+          outletIdSchema.parse(tenant.outletId),
+        )
+      ).products.map((product) => product.id);
+    expect(await listed()).toContain(ids.product);
+    flag.FACILITY_SHOWER_ENABLED = false;
+    expect(await listed()).not.toContain(ids.product);
+  });
+
+  it("F0-06 a card sale for an earlier shower bill is refused before the terminal is asked", async () => {
+    const bought = await buy();
+    const context = establishScopedTenantContext(sessionContext(), {
+      kind: "tenant",
+    });
+    const { rows } = await owner.query<{ number: string }>(
+      "SELECT number FROM orders WHERE id = $1::uuid",
+      [ulidToUuid(bought.orderId)],
+    );
+    const check = () =>
+      withTenant(db, context, (tx) =>
+        assertPosTicketsIssuableForReference(tx, context, {
+          outletId: outletIdSchema.parse(tenant.outletId),
+          reference: rows[0]!.number,
+        }),
+      );
+    await check();
+    flag.FACILITY_SHOWER_ENABLED = false;
+    await expect(check()).rejects.toMatchObject({
+      code: "FACILITY_SHOWER_DISABLED",
+    });
   });
 });
