@@ -7,7 +7,8 @@ CREATE TABLE "edge_catalog_tombstones" (
 	"outlet_id" uuid,
 	"deleted_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"sync_txid" bigint DEFAULT (pg_current_xact_id()::text)::bigint NOT NULL,
-	CONSTRAINT "edge_catalog_tombstones_tenant_id_stream_id_received_pk" PRIMARY KEY("tenant_id","stream","id","received")
+	CONSTRAINT "edge_catalog_tombstones_tenant_id_stream_id_received_pk" PRIMARY KEY("tenant_id","stream","id","received"),
+	CONSTRAINT "edge_catalog_tombstones_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE cascade ON UPDATE no action
 );
 --> statement-breakpoint
 ALTER TABLE "item_availability" ADD COLUMN "sync_txid" bigint DEFAULT (pg_current_xact_id()::text)::bigint NOT NULL;--> statement-breakpoint
@@ -22,7 +23,6 @@ ALTER TABLE "payment_edc_terminals" ADD COLUMN "sync_txid" bigint DEFAULT (pg_cu
 ALTER TABLE "pos_approval_policies" ADD COLUMN "sync_txid" bigint DEFAULT (pg_current_xact_id()::text)::bigint NOT NULL;--> statement-breakpoint
 ALTER TABLE "kitchen_capacity_rules" ADD COLUMN "sync_txid" bigint DEFAULT (pg_current_xact_id()::text)::bigint NOT NULL;--> statement-breakpoint
 ALTER TABLE "kitchen_menu_loads" ADD COLUMN "sync_txid" bigint DEFAULT (pg_current_xact_id()::text)::bigint NOT NULL;--> statement-breakpoint
-ALTER TABLE "edge_catalog_tombstones" ADD CONSTRAINT "edge_catalog_tombstones_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "edge_catalog_tombstones_sync_txid_idx" ON "edge_catalog_tombstones" USING btree ("tenant_id","sync_txid","id");--> statement-breakpoint
 CREATE INDEX "item_availability_sync_txid_idx" ON "item_availability" USING btree ("tenant_id","sync_txid","id");--> statement-breakpoint
 CREATE INDEX "approval_policies_sync_txid_idx" ON "approval_policies" USING btree ("tenant_id","sync_txid","id");--> statement-breakpoint

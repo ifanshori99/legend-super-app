@@ -1,4 +1,4 @@
--- Hand SQL of the paid WFC tables (brief 1270 W1, migration 0526; PRD v1.7 §3
+-- Hand SQL of the paid WFC tables (brief 1270 W1, migration 0527; PRD v1.7 §3
 -- F25/F39, FAC-14). btree_gist comes from 0044.
 --
 -- A seat cannot be double-booked. Only claims that still occupy the seat count;

@@ -5,11 +5,7 @@ import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { Money } from "@/components/ui/money";
 import { cartTotals, lineTotalIdr } from "@/features/ws04-pos-order/cart-logic";
-import type {
-  CartLine,
-  OjolPlatform,
-  SaleChannel,
-} from "@/features/ws04-pos-order/types";
+import type { CartLine, OrderMeta } from "@/features/ws04-pos-order/types";
 import {
   ChannelDetail,
   ChannelToggle,
@@ -17,12 +13,7 @@ import {
 } from "./channel-toggle";
 
 /** What the cashier has chosen for the order itself, next to the lines. */
-export interface CartOrderMeta {
-  channel: SaleChannel;
-  tableLabel: string | null;
-  ojolPlatform: OjolPlatform | null;
-  ojolRef: string;
-}
+export type CartOrderMeta = OrderMeta;
 
 export interface CartPaneProps {
   lines: CartLine[];
@@ -126,7 +117,9 @@ export function CartPane({
       <ChannelDetail
         channel={meta.channel}
         tableLabel={meta.tableLabel}
-        onTableChange={(tableLabel) => onMetaChange({ tableLabel })}
+        onTableChange={({ label, sessionId }) =>
+          onMetaChange({ tableLabel: label, tableSessionId: sessionId })
+        }
         ojolPlatform={meta.ojolPlatform}
         onOjolPlatformChange={(ojolPlatform) => onMetaChange({ ojolPlatform })}
         ojolRef={meta.ojolRef}
@@ -151,7 +144,7 @@ export function CartPane({
               <CartLineRow
                 key={line.lineId}
                 line={line}
-                locked={submitting}
+                locked={busy}
                 onSetQuantity={onSetQuantity}
                 onToggleHold={onToggleHold}
               />

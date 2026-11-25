@@ -8,6 +8,11 @@ import {
 import { cn } from "cn";
 import { useT } from "@/components/i18n";
 import { ApiError } from "@/lib/api/errors";
+import {
+  needsCashierClose,
+  ORDER_INTENT_PENDING,
+  PARK_INTENT_PENDING,
+} from "@/features/ws04-pos-order/order-flow";
 import type { AreaAccess } from "@/lib/areas/access";
 import { holdsAny } from "@/lib/areas/guard";
 import { ModifierDialog } from "@/features/ws04-pos-order/components/modifier-dialog";
@@ -16,16 +21,23 @@ import {
   Notice,
   PosPageHeading,
 } from "@/features/ws04-pos-kasir/components/shared";
-import { cartTotals } from "@/features/ws04-pos-order/cart-logic";
-import { useDraftCart } from "@/features/ws04-pos-order/draft-store";
+import { cartTotals, needsChoice } from "@/features/ws04-pos-order/cart-logic";
+import { inputOfMeta, sameOrder } from "@/features/ws04-pos-order/order-wire";
+import { readDraft, useDraftCart } from "@/features/ws04-pos-order/draft-store";
 import {
   isContractPending,
+  useCashierDraftKey,
+  useCloseResume,
+  useOtherCashierPending,
+  usePendingOrder,
   useParkDraft,
+  useReplayPendingResumes,
   useSubmitOrder,
 } from "@/features/ws04-pos-order/hooks";
 import type {
   CartLine,
   MenuItem,
+  OrderMeta,
   ParkedDraft,
 } from "@/features/ws04-pos-order/types";
 import { CartPane, type CartOrderMeta } from "./cart-pane";
@@ -34,7 +46,8 @@ import type { ChannelDetailError } from "./channel-toggle";
 import { MobileCartBar } from "./mobile-cart-bar";
 import { ParkedDraftsSheet } from "./parked-drafts-sheet";
 
-type StatusMessage = "parkedOk" | "resumedOk" | "heldReleased" | "placed";
+type StatusMessage =
+  "parkedOk" | "resumedOk" | "resumedMissing" | "heldReleased" | "placed";
 
 interface Status {
   key: StatusMessage;
@@ -56,18 +69,28 @@ export function CashierMainScreen() {
   const t = useT();
   const navigate = useNavigate();
   const router = useRouter();
-  const cart = useDraftCart("kasir");
+  const draftKey = useCashierDraftKey();
+  const cart = useDraftCart(draftKey);
   const access = (useRouteContext({ strict: false }) as { access?: AreaAccess })
     .access;
   const canAcceptPayment = access
     ? holdsAny(access, ["pos.payment.accept"])
     : false;
-  const submit = useSubmitOrder({ draftKey: "kasir" });
-  const park = useParkDraft();
+  const submit = useSubmitOrder({ draftKey });
+  const park = useParkDraft({ draftKey });
+  // A send whose answer was lost (or a refresh, or a copied tab): the cashier
+  // brings it back exactly and sends it again with the same key.
+  const pendingOrder = usePendingOrder(draftKey);
+  const pendingPark = usePendingOrder(draftKey, "park");
+  const otherCashierPending = useOtherCashierPending();
+  const closeResume = useCloseResume();
+  // A resume that was sent but not answered is replayed when the screen opens.
+  const replay = useReplayPendingResumes({ draftKey });
 
   const [meta, setMeta] = useState<CartOrderMeta>({
     channel: "dine_in",
     tableLabel: null,
+    tableSessionId: null,
     ojolPlatform: null,
     ojolRef: "",
   });
@@ -169,9 +192,10 @@ export function CashierMainScreen() {
   };
 
   const pick = (item: MenuItem) => {
-    if (item.soldOut) return;
+    // A success empties the cart: an item added meanwhile would be lost.
+    if (item.soldOut || park.isPending || submit.isPending) return;
     setStatus(null);
-    if (item.modifierGroups.length === 0) {
+    if (!needsChoice(item)) {
       cart.add(item, { modifiers: [], note: "", quantity: 1 });
       return;
     }
@@ -179,8 +203,8 @@ export function CashierMainScreen() {
   };
 
   const continueOrder = () => {
-    const { channel, tableLabel, ojolPlatform, ojolRef } = meta;
-    if (channel === "dine_in" && !tableLabel) {
+    const { channel, tableSessionId, ojolPlatform, ojolRef } = meta;
+    if (channel === "dine_in" && !tableSessionId) {
       fail("table");
       return;
     }
@@ -195,16 +219,12 @@ export function CashierMainScreen() {
     setFieldError(null);
     setStatus(null);
     setRemoved([]);
+    send(meta, cart.lines);
+  };
+
+  const send = (sent: OrderMeta, lines: CartLine[]) => {
     submit.mutate(
-      {
-        channel,
-        tableLabel: channel === "dine_in" ? tableLabel : null,
-        ojol:
-          channel === "ojol_manual" && ojolPlatform
-            ? { platform: ojolPlatform, externalRef: ojolRef.trim() }
-            : null,
-        lines: cart.lines,
-      },
+      { ...inputOfMeta(sent, lines), meta: sent },
       {
         // The hook empties the draft; here the screen only moves on. Only a
         // cashier who may take payment goes to the payment screen.
@@ -218,6 +238,47 @@ export function CashierMainScreen() {
           }
           setStatus({ key: "placed", params: { number: order.number } });
         },
+        onSettled: pendingOrder.refresh,
+      },
+    );
+  };
+
+  // Bringing the unclear order back replaces the cart on screen. When that
+  // cart is a different order, it is parked first (and only replaced once the
+  // park is done), after the cashier agrees.
+  const [confirmRestore, setConfirmRestore] = useState(false);
+
+  const restoreNow = () => {
+    const snapshot = pendingOrder.pending;
+    if (!snapshot) return;
+    setConfirmRestore(false);
+    setStatus(null);
+    setRemoved([]);
+    setFieldError(null);
+    cart.replace(snapshot.lines);
+    setMeta(snapshot.meta);
+    send(snapshot.meta, snapshot.lines);
+  };
+
+  const restorePending = () => {
+    const snapshot = pendingOrder.pending;
+    if (!snapshot) return;
+    if (cart.lines.length > 0 && !sameOrder(cart.lines, meta, snapshot)) {
+      setConfirmRestore(true);
+      return;
+    }
+    restoreNow();
+  };
+
+  const parkThenRestore = () => {
+    park.mutate(
+      { ...inputOfMeta(meta, cart.lines), meta },
+      {
+        onSuccess: () => {
+          cart.clear();
+          restoreNow();
+        },
+        onSettled: pendingPark.refresh,
       },
     );
   };
@@ -226,12 +287,34 @@ export function CashierMainScreen() {
     setStatus(null);
     setRemoved([]);
     park.mutate(
-      { channel: meta.channel, lines: cart.lines },
+      { ...inputOfMeta(meta, cart.lines), meta },
       {
         onSuccess: () => {
           cart.clear();
           setStatus({ key: "parkedOk" });
         },
+        onSettled: pendingPark.refresh,
+      },
+    );
+  };
+
+  // A park whose answer was lost: sent again with the same key and bytes (the
+  // cart on screen is not touched), or closed after the cashier checked.
+  const resendPark = () => {
+    const snapshot = pendingPark.pending;
+    if (!snapshot) return;
+    setStatus(null);
+    park.mutate(
+      { ...inputOfMeta(snapshot.meta, snapshot.lines), meta: snapshot.meta },
+      {
+        onSuccess: () => {
+          // Same cart as the one parked: it is on the held list now, so it
+          // leaves the screen. A different cart stays: it is a new order.
+          // Read again now: an item added while this was sending must stay.
+          if (sameOrder(readDraft(draftKey), meta, snapshot)) cart.clear();
+          setStatus({ key: "parkedOk" });
+        },
+        onSettled: pendingPark.refresh,
       },
     );
   };
@@ -244,17 +327,55 @@ export function CashierMainScreen() {
     cart.replace(cart.lines.map((line) => ({ ...line, hold: false })));
   };
 
-  const resumed = (draft: ParkedDraft) => {
-    // useResumeDraft already added the draft's lines to the cart.
-    setMeta((current) => ({ ...current, channel: draft.channel }));
+  const resumed = (draft: ParkedDraft & { missing?: number }) => {
+    // useResumeDraft already added the draft's lines to the cart. The table
+    // session may have closed since, so the table is chosen again.
+    setMeta((current) => ({
+      ...current,
+      channel: draft.channel,
+      ojolPlatform: draft.ojol?.platform ?? current.ojolPlatform,
+      ojolRef: draft.ojol?.externalRef ?? current.ojolRef,
+    }));
     setFieldError(null);
     setParkedOpen(false);
     setRemoved([]);
-    setStatus({ key: "resumedOk" });
+    setStatus(
+      draft.missing
+        ? { key: "resumedMissing", params: { count: draft.missing } }
+        : { key: "resumedOk" },
+    );
+  };
+
+  const submitCode =
+    submit.error instanceof ApiError ? submit.error.code : null;
+  // Another cart than the unresolved one: the pending notice explains it.
+  const pendingCode = submitCode === ORDER_INTENT_PENDING;
+  // The server refused the key for a different body: only the cashier closes it.
+  const keyRefused = needsCashierClose(submit.error);
+  // A park refused because another cart is unclear: the notice above says it.
+  const parkConflict =
+    park.error instanceof ApiError && park.error.code === PARK_INTENT_PENDING;
+  const forbidden =
+    submit.error instanceof ApiError && submit.error.status === 403;
+
+  const describePending = (sent: OrderMeta): string => {
+    const channel = t(
+      sent.channel === "dine_in"
+        ? "posOrderCart.channel.dineIn"
+        : sent.channel === "takeaway"
+          ? "posOrderCart.channel.takeaway"
+          : "posOrderCart.channel.ojol",
+    );
+    return sent.channel === "dine_in" && sent.tableLabel
+      ? `${channel} · ${t("posOrderCart.table.value", { label: sent.tableLabel })}`
+      : channel;
   };
 
   const feedback: ReactNode = (
     <div aria-live="polite" className="grid gap-2 empty:hidden">
+      {replay.data && !status && (
+        <Notice tone="info" title={t("posOrderCart.status.resumedOk")} />
+      )}
       {status && (
         <Notice
           tone="info"
@@ -273,7 +394,82 @@ export function CashierMainScreen() {
           </Button>
         </Notice>
       )}
-      {submit.isError && (
+      {pendingOrder.pending && !submit.isPending && !keyRefused && (
+        <Notice tone="warning" title={t("posOrderCart.pending.title")}>
+          <div className="grid gap-2">
+            <p>
+              {t("posOrderCart.pending.body", {
+                where: describePending(pendingOrder.pending.meta),
+                count: pendingOrder.pending.lines.reduce(
+                  (sum, line) => sum + line.quantity,
+                  0,
+                ),
+              })}
+            </p>
+            {confirmRestore ? (
+              <>
+                <p className="font-semibold">
+                  {t("posOrderCart.pending.replaceBody", {
+                    count: totals.itemCount,
+                  })}
+                </p>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    loading={park.isPending}
+                    onClick={parkThenRestore}
+                  >
+                    {t("posOrderCart.pending.replaceConfirm")}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setConfirmRestore(false)}
+                  >
+                    {t("posOrderCart.pending.replaceCancel")}
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <Button type="button" variant="outline" onClick={restorePending}>
+                {t("posOrderCart.pending.restore")}
+              </Button>
+            )}
+          </div>
+        </Notice>
+      )}
+      {keyRefused && (
+        <Notice
+          tone="danger"
+          title={t(
+            forbidden
+              ? "posOrderCart.forbidden.title"
+              : "posOrderCart.reused.title",
+          )}
+        >
+          <div className="grid gap-2">
+            <p>
+              {t(
+                forbidden
+                  ? "posOrderCart.forbidden.body"
+                  : "posOrderCart.reused.body",
+              )}
+            </p>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                pendingOrder.close();
+                submit.reset();
+              }}
+            >
+              {t("posOrderCart.reused.confirm")}
+            </Button>
+          </div>
+        </Notice>
+      )}
+      {submit.isError && !pendingCode && !keyRefused && (
         <ActionError
           pending={isContractPending(submit.error)}
           title={t("posOrderCart.error.submitTitle")}
@@ -282,7 +478,62 @@ export function CashierMainScreen() {
           onRetry={continueOrder}
         />
       )}
-      {park.isError && (
+      {otherCashierPending && (
+        <Notice tone="info" title={t("posOrderCart.otherCashier.title")}>
+          {t("posOrderCart.otherCashier.body")}
+        </Notice>
+      )}
+      {pendingPark.pending && !park.isPending && (
+        <Notice tone="warning" title={t("posOrderCart.parkPending.title")}>
+          <div className="grid gap-2">
+            <p>
+              {t("posOrderCart.parkPending.body", {
+                where: describePending(pendingPark.pending.meta),
+                count: pendingPark.pending.lines.reduce(
+                  (sum, line) => sum + line.quantity,
+                  0,
+                ),
+              })}
+            </p>
+            <div className="flex gap-2">
+              <Button type="button" variant="outline" onClick={resendPark}>
+                {t("posOrderCart.parkPending.resend")}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={pendingPark.close}
+              >
+                {t("posOrderCart.parkPending.close")}
+              </Button>
+            </div>
+          </div>
+        </Notice>
+      )}
+      {replay.failures
+        .filter((failure) => needsCashierClose(failure.error))
+        .map((failure) => (
+          <Notice
+            key={failure.id}
+            tone="danger"
+            title={t("posOrderCart.resumeClose.title")}
+          >
+            <div className="grid gap-2">
+              <p>{t("posOrderCart.resumeClose.body")}</p>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  closeResume(failure.id);
+                  replay.dismiss(failure.id);
+                }}
+              >
+                {t("posOrderCart.resumeClose.confirm")}
+              </Button>
+            </div>
+          </Notice>
+        ))}
+      {park.isError && !parkConflict && (
         <ActionError
           pending={isContractPending(park.error)}
           title={t("posOrderCart.error.parkTitle")}
@@ -354,11 +605,13 @@ export function CashierMainScreen() {
           if (!open) setPickedItem(null);
         }}
         onConfirm={(selection) => {
+          if (park.isPending || submit.isPending) return;
           if (pickedItem) cart.add(pickedItem, selection);
           setPickedItem(null);
         }}
       />
       <ParkedDraftsSheet
+        draftKey={draftKey}
         open={parkedOpen}
         onOpenChange={setParkedOpen}
         onResumed={resumed}

@@ -13,6 +13,11 @@ import {
 } from "./cart-logic.ts";
 import type { CartLine, MenuItem } from "./types.ts";
 
+/** The cashier's cart: per outlet and cashier, so a shared till never mixes them. */
+export function cashierDraftKey(outletId: string, actorId: string): string {
+  return `kasir:${outletId}:${actorId}`;
+}
+
 const STORAGE_PREFIX = "legend-pos-order-draft:";
 const EMPTY: CartLine[] = [];
 
@@ -41,6 +46,8 @@ function isCartLine(value: unknown): value is CartLine {
   return (
     isText(value.lineId) &&
     isText(value.menuItemId) &&
+    (value.variantId === null || isText(value.variantId)) &&
+    (value.variantName === null || isText(value.variantName)) &&
     isText(value.name) &&
     typeof value.unitPriceIdr === "number" &&
     Number.isFinite(value.unitPriceIdr) &&

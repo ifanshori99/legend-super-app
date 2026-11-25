@@ -146,7 +146,7 @@ CREATE INDEX "wfc_seat_reservations_hold_idx" ON "wfc_seat_reservations" USING b
 --> statement-breakpoint
 CREATE INDEX "wfc_business_settings_effective_idx" ON "wfc_business_settings" USING btree ("tenant_id","outlet_id","effective_from","version");
 --> statement-breakpoint
--- Hand SQL of the paid WFC tables (brief 1270 W1, migration 0526; PRD v1.7 §3
+-- Hand SQL of the paid WFC tables (brief 1270 W1, migration 0527; PRD v1.7 §3
 -- F25/F39, FAC-14). btree_gist comes from 0044.
 --
 -- A seat cannot be double-booked. Only claims that still occupy the seat count;

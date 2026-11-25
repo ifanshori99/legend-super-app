@@ -62,6 +62,7 @@ function menuItem(id, priceIdr, extra = {}) {
     code: null,
     course: course1,
     modifierGroups: [],
+    variants: [],
     ...extra,
   };
 }

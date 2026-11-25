@@ -95,6 +95,8 @@ export * from "./edge-catalog-tombstone";
 export * from "./edge-print";
 export * from "./edge-catalog-gate-state";
 export * from "./edge-catalog-sale-overrides";
+// WS-02 edge -> cloud commands (card F1, brief 1269).
+export * from "./edge-cloud-command";
 // WS-04 POS order service (legend-kk7).
 export * from "./pos-order";
 export * from "./pos-parked-order";
@@ -225,6 +227,6 @@ export * from "./sealed-secret-reseal";
 export * from "./customer-reviews";
 
 // Brief 1270 W1 paid WFC: seats, hourly quota, seat claims, business settings
-// (migration 0526).
+// (migration 0527).
 export * from "./wfc-seat";
 export * from "./wfc-settings";

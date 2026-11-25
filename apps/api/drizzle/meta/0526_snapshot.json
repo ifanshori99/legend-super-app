@@ -1,5 +1,5 @@
 {
-  "id": "2d5683be-3839-40a2-afd6-d9f868e21549",
+  "id": "1908ddb0-dc7b-496d-af26-2f11b6ceda9a",
   "prevId": "0073e6d7-0962-4db2-a220-29f8e49aa02c",
   "version": "7",
   "dialect": "postgresql",
@@ -10715,15 +10715,6 @@
             "tenant_id",
             "id"
           ]
-        },
-        "floor_zones_tenant_outlet_id_key": {
-          "name": "floor_zones_tenant_outlet_id_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "outlet_id",
-            "id"
-          ]
         }
       },
       "policies": {},
@@ -12433,15 +12424,6 @@
           "nullsNotDistinct": false,
           "columns": [
             "tenant_id",
-            "id"
-          ]
-        },
-        "payment_links_tenant_outlet_id_key": {
-          "name": "payment_links_tenant_outlet_id_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "outlet_id",
             "id"
           ]
         }
@@ -28225,36 +28207,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "wfc_kind": {
-          "name": "wfc_kind",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "wfc_access": {
-          "name": "wfc_access",
-          "type": "varchar(10)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "seat_fee_idr": {
-          "name": "seat_fee_idr",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "credit_idr": {
-          "name": "credit_idr",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "duration_minutes": {
-          "name": "duration_minutes",
-          "type": "smallint",
-          "primaryKey": false,
-          "notNull": false
-        },
         "is_active": {
           "name": "is_active",
           "type": "boolean",
@@ -28376,10 +28328,6 @@
         "facility_products_type_check": {
           "name": "facility_products_type_check",
           "value": "\"facility_products\".\"type\" IN ('single', 'package_component', 'subscription_plan')"
-        },
-        "facility_products_wfc_check": {
-          "name": "facility_products_wfc_check",
-          "value": "(\"facility_products\".\"wfc_kind\" IS NULL AND \"facility_products\".\"wfc_access\" IS NULL AND \"facility_products\".\"seat_fee_idr\" IS NULL AND \"facility_products\".\"credit_idr\" IS NULL AND \"facility_products\".\"duration_minutes\" IS NULL) OR (\"facility_products\".\"wfc_kind\" IS NOT NULL AND \"facility_products\".\"wfc_kind\" IN ('day_pass', 'seat_reservation') AND \"facility_products\".\"wfc_access\" IS NOT NULL AND \"facility_products\".\"wfc_access\" IN ('off_peak', 'all_day') AND \"facility_products\".\"type\" = 'single' AND \"facility_products\".\"menu_item_id\" IS NULL AND \"facility_products\".\"sessions\" = 1 AND \"facility_products\".\"max_per_day\" IS NULL AND \"facility_products\".\"seat_fee_idr\" IS NOT NULL AND \"facility_products\".\"seat_fee_idr\" > 0 AND \"facility_products\".\"credit_idr\" IS NOT NULL AND \"facility_products\".\"credit_idr\" > 0 AND \"facility_products\".\"price_idr\" = \"facility_products\".\"seat_fee_idr\" + \"facility_products\".\"credit_idr\" AND (\"facility_products\".\"wfc_kind\" = 'seat_reservation') = (\"facility_products\".\"duration_minutes\" IS NOT NULL) AND (\"facility_products\".\"duration_minutes\" IS NULL OR \"facility_products\".\"duration_minutes\" BETWEEN 1 AND 1440))"
         },
         "facility_products_amount_check": {
           "name": "facility_products_amount_check",
@@ -53226,6 +53174,499 @@
         "edge_catalog_sale_overrides_closed_check": {
           "name": "edge_catalog_sale_overrides_closed_check",
           "value": "(\"edge_catalog_sale_overrides\".\"closed_at\" IS NULL) = (\"edge_catalog_sale_overrides\".\"closed_reason\" IS NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.edge_command_executions": {
+      "name": "edge_command_executions",
+      "schema": "",
+      "columns": {
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outlet_id": {
+          "name": "outlet_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "edge_node_id": {
+          "name": "edge_node_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "edge_instance_id": {
+          "name": "edge_instance_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "varchar(60)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "body_sha256": {
+          "name": "body_sha256",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(20)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "result": {
+          "name": "result",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "code": {
+          "name": "code",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "decided_at": {
+          "name": "decided_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "purged_at": {
+          "name": "purged_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "edge_command_executions_node_idx": {
+          "name": "edge_command_executions_node_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "edge_node_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "edge_command_executions_purge_idx": {
+          "name": "edge_command_executions_purge_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "decided_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"edge_command_executions\".\"status\" = 'succeeded' AND \"edge_command_executions\".\"purged_at\" IS NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "edge_command_executions_tenant_id_tenants_id_fk": {
+          "name": "edge_command_executions_tenant_id_tenants_id_fk",
+          "tableFrom": "edge_command_executions",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "edge_command_executions_outlet_id_outlets_id_fk": {
+          "name": "edge_command_executions_outlet_id_outlets_id_fk",
+          "tableFrom": "edge_command_executions",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "edge_command_executions_edge_node_fk": {
+          "name": "edge_command_executions_edge_node_fk",
+          "tableFrom": "edge_command_executions",
+          "tableTo": "edge_nodes",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id",
+            "edge_node_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "outlet_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "edge_command_executions_tenant_id_id_pk": {
+          "name": "edge_command_executions_tenant_id_id_pk",
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "edge_command_executions_kind_check": {
+          "name": "edge_command_executions_kind_check",
+          "value": "\"edge_command_executions\".\"kind\" ~ '^[a-z][a-z_]*(\\.[a-z][a-z_]*)+$'"
+        },
+        "edge_command_executions_sha_check": {
+          "name": "edge_command_executions_sha_check",
+          "value": "\"edge_command_executions\".\"body_sha256\" ~ '^[0-9a-f]{64}$'"
+        },
+        "edge_command_executions_status_check": {
+          "name": "edge_command_executions_status_check",
+          "value": "(\"edge_command_executions\".\"status\" = 'executing' AND \"edge_command_executions\".\"decided_at\" IS NULL AND \"edge_command_executions\".\"result\" IS NULL AND \"edge_command_executions\".\"code\" IS NULL)\n        OR (\"edge_command_executions\".\"status\" = 'succeeded' AND \"edge_command_executions\".\"decided_at\" IS NOT NULL AND (\"edge_command_executions\".\"result\" IS NULL) = (\"edge_command_executions\".\"purged_at\" IS NOT NULL) AND \"edge_command_executions\".\"code\" IS NULL)\n        OR (\"edge_command_executions\".\"status\" = 'refused' AND \"edge_command_executions\".\"decided_at\" IS NOT NULL AND \"edge_command_executions\".\"result\" IS NULL AND \"edge_command_executions\".\"code\" IS NOT NULL)\n        OR (\"edge_command_executions\".\"status\" IN ('expired', 'absent') AND \"edge_command_executions\".\"decided_at\" IS NOT NULL AND \"edge_command_executions\".\"result\" IS NULL AND \"edge_command_executions\".\"code\" IS NULL)"
+        },
+        "edge_command_executions_purged_check": {
+          "name": "edge_command_executions_purged_check",
+          "value": "\"edge_command_executions\".\"purged_at\" IS NULL OR \"edge_command_executions\".\"status\" = 'succeeded'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.edge_command_requests": {
+      "name": "edge_command_requests",
+      "schema": "",
+      "columns": {
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outlet_id": {
+          "name": "outlet_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "edge_node_id": {
+          "name": "edge_node_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "varchar(60)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "subject_type": {
+          "name": "subject_type",
+          "type": "varchar(40)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "subject_id": {
+          "name": "subject_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "body": {
+          "name": "body",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "body_sha256": {
+          "name": "body_sha256",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(20)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "attempts": {
+          "name": "attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "result": {
+          "name": "result",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "code": {
+          "name": "code",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "last_attempt_at": {
+          "name": "last_attempt_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "settled_at": {
+          "name": "settled_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "purged_at": {
+          "name": "purged_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "edge_command_requests_open_subject_key": {
+          "name": "edge_command_requests_open_subject_key",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "outlet_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "subject_type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "subject_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"edge_command_requests\".\"status\" IN ('pending', 'unknown')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "edge_command_requests_open_idx": {
+          "name": "edge_command_requests_open_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "outlet_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"edge_command_requests\".\"status\" IN ('pending', 'unknown')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "edge_command_requests_purge_idx": {
+          "name": "edge_command_requests_purge_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "outlet_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "settled_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"edge_command_requests\".\"purged_at\" IS NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "edge_command_requests_tenant_id_tenants_id_fk": {
+          "name": "edge_command_requests_tenant_id_tenants_id_fk",
+          "tableFrom": "edge_command_requests",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "edge_command_requests_outlet_id_outlets_id_fk": {
+          "name": "edge_command_requests_outlet_id_outlets_id_fk",
+          "tableFrom": "edge_command_requests",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "edge_command_requests_edge_node_fk": {
+          "name": "edge_command_requests_edge_node_fk",
+          "tableFrom": "edge_command_requests",
+          "tableTo": "edge_nodes",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id",
+            "edge_node_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "outlet_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "edge_command_requests_tenant_id_id_pk": {
+          "name": "edge_command_requests_tenant_id_id_pk",
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "edge_command_requests_kind_check": {
+          "name": "edge_command_requests_kind_check",
+          "value": "\"edge_command_requests\".\"kind\" ~ '^[a-z][a-z_]*(\\.[a-z][a-z_]*)+$'"
+        },
+        "edge_command_requests_sha_check": {
+          "name": "edge_command_requests_sha_check",
+          "value": "\"edge_command_requests\".\"body_sha256\" ~ '^[0-9a-f]{64}$' AND (\"edge_command_requests\".\"body\" IS NULL OR \"edge_command_requests\".\"body_sha256\" = encode(sha256(convert_to(\"edge_command_requests\".\"body\", 'UTF8')), 'hex'))"
+        },
+        "edge_command_requests_status_check": {
+          "name": "edge_command_requests_status_check",
+          "value": "(\"edge_command_requests\".\"status\" IN ('pending', 'unknown') AND \"edge_command_requests\".\"settled_at\" IS NULL AND \"edge_command_requests\".\"result\" IS NULL AND \"edge_command_requests\".\"code\" IS NULL)\n        OR (\"edge_command_requests\".\"status\" = 'succeeded' AND \"edge_command_requests\".\"settled_at\" IS NOT NULL AND (\"edge_command_requests\".\"result\" IS NULL) = (\"edge_command_requests\".\"purged_at\" IS NOT NULL) AND \"edge_command_requests\".\"code\" IS NULL)\n        OR (\"edge_command_requests\".\"status\" = 'refused' AND \"edge_command_requests\".\"settled_at\" IS NOT NULL AND \"edge_command_requests\".\"result\" IS NULL AND \"edge_command_requests\".\"code\" IS NOT NULL)\n        OR (\"edge_command_requests\".\"status\" IN ('expired', 'absent') AND \"edge_command_requests\".\"settled_at\" IS NOT NULL AND \"edge_command_requests\".\"result\" IS NULL AND \"edge_command_requests\".\"code\" IS NULL)"
+        },
+        "edge_command_requests_purged_check": {
+          "name": "edge_command_requests_purged_check",
+          "value": "(\"edge_command_requests\".\"body\" IS NULL) = (\"edge_command_requests\".\"purged_at\" IS NOT NULL) AND (\"edge_command_requests\".\"purged_at\" IS NULL OR \"edge_command_requests\".\"settled_at\" IS NOT NULL)"
+        },
+        "edge_command_requests_attempts_check": {
+          "name": "edge_command_requests_attempts_check",
+          "value": "\"edge_command_requests\".\"attempts\" >= 0 AND (\"edge_command_requests\".\"attempts\" > 0) = (\"edge_command_requests\".\"last_attempt_at\" IS NOT NULL) AND (\"edge_command_requests\".\"status\" <> 'pending' OR \"edge_command_requests\".\"attempts\" = 0)"
         }
       },
       "isRLSEnabled": false
@@ -100177,1017 +100618,6 @@
         "customer_reviews_moderation_status_check": {
           "name": "customer_reviews_moderation_status_check",
           "value": "\"customer_reviews\".\"moderation_status\" IN ('pending', 'published', 'hidden')"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.wfc_seat_reservations": {
-      "name": "wfc_seat_reservations",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "tenant_id": {
-          "name": "tenant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "outlet_id": {
-          "name": "outlet_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "seat_id": {
-          "name": "seat_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "product_id": {
-          "name": "product_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "customer_profile_id": {
-          "name": "customer_profile_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "kind": {
-          "name": "kind",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "access": {
-          "name": "access",
-          "type": "varchar(10)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "business_date": {
-          "name": "business_date",
-          "type": "date",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "slot": {
-          "name": "slot",
-          "type": "tstzrange",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "starts_at": {
-          "name": "starts_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "generated": {
-            "as": "lower(slot)",
-            "type": "stored"
-          }
-        },
-        "ends_at": {
-          "name": "ends_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "generated": {
-            "as": "upper(slot)",
-            "type": "stored"
-          }
-        },
-        "status": {
-          "name": "status",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "seat_fee_idr": {
-          "name": "seat_fee_idr",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "credit_idr": {
-          "name": "credit_idr",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "price_idr": {
-          "name": "price_idr",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "settings_version_id": {
-          "name": "settings_version_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "floor_per_hour_idr": {
-          "name": "floor_per_hour_idr",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "paid_idr": {
-          "name": "paid_idr",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "refunded_idr": {
-          "name": "refunded_idr",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "payment_link_id": {
-          "name": "payment_link_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "payment_link_expires_at": {
-          "name": "payment_link_expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "hold_expires_at": {
-          "name": "hold_expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "wfc_seat_reservations_payment_link_key": {
-          "name": "wfc_seat_reservations_payment_link_key",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "payment_link_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"wfc_seat_reservations\".\"payment_link_id\" IS NOT NULL",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "wfc_seat_reservations_customer_idx": {
-          "name": "wfc_seat_reservations_customer_idx",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "customer_profile_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "starts_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "wfc_seat_reservations_outlet_idx": {
-          "name": "wfc_seat_reservations_outlet_idx",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "outlet_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "starts_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "wfc_seat_reservations_hold_idx": {
-          "name": "wfc_seat_reservations_hold_idx",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "hold_expires_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"wfc_seat_reservations\".\"status\" = 'pending_payment'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "wfc_seat_reservations_tenant_id_tenants_id_fk": {
-          "name": "wfc_seat_reservations_tenant_id_tenants_id_fk",
-          "tableFrom": "wfc_seat_reservations",
-          "tableTo": "tenants",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "wfc_seat_reservations_outlet_id_outlets_id_fk": {
-          "name": "wfc_seat_reservations_outlet_id_outlets_id_fk",
-          "tableFrom": "wfc_seat_reservations",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "wfc_seat_reservations_seat_fk": {
-          "name": "wfc_seat_reservations_seat_fk",
-          "tableFrom": "wfc_seat_reservations",
-          "tableTo": "wfc_seats",
-          "columnsFrom": [
-            "tenant_id",
-            "outlet_id",
-            "seat_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "outlet_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "wfc_seat_reservations_product_fk": {
-          "name": "wfc_seat_reservations_product_fk",
-          "tableFrom": "wfc_seat_reservations",
-          "tableTo": "facility_products",
-          "columnsFrom": [
-            "tenant_id",
-            "outlet_id",
-            "product_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "outlet_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "wfc_seat_reservations_customer_fk": {
-          "name": "wfc_seat_reservations_customer_fk",
-          "tableFrom": "wfc_seat_reservations",
-          "tableTo": "customer_profiles",
-          "columnsFrom": [
-            "tenant_id",
-            "customer_profile_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "wfc_seat_reservations_settings_fk": {
-          "name": "wfc_seat_reservations_settings_fk",
-          "tableFrom": "wfc_seat_reservations",
-          "tableTo": "wfc_business_settings",
-          "columnsFrom": [
-            "tenant_id",
-            "outlet_id",
-            "settings_version_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "outlet_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "wfc_seat_reservations_link_fk": {
-          "name": "wfc_seat_reservations_link_fk",
-          "tableFrom": "wfc_seat_reservations",
-          "tableTo": "payment_links",
-          "columnsFrom": [
-            "tenant_id",
-            "outlet_id",
-            "payment_link_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "outlet_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "wfc_seat_reservations_tenant_outlet_id_key": {
-          "name": "wfc_seat_reservations_tenant_outlet_id_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "outlet_id",
-            "id"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "wfc_seat_reservations_kind_check": {
-          "name": "wfc_seat_reservations_kind_check",
-          "value": "\"wfc_seat_reservations\".\"kind\" IN ('day_pass', 'seat_reservation') AND \"wfc_seat_reservations\".\"access\" IN ('off_peak', 'all_day')"
-        },
-        "wfc_seat_reservations_status_check": {
-          "name": "wfc_seat_reservations_status_check",
-          "value": "\"wfc_seat_reservations\".\"status\" IN ('pending_payment', 'confirmed', 'checked_in', 'completed', 'no_show', 'cancelled', 'refunded')"
-        },
-        "wfc_seat_reservations_slot_check": {
-          "name": "wfc_seat_reservations_slot_check",
-          "value": "NOT isempty(\"wfc_seat_reservations\".\"slot\") AND NOT lower_inf(\"wfc_seat_reservations\".\"slot\") AND NOT upper_inf(\"wfc_seat_reservations\".\"slot\") AND lower_inc(\"wfc_seat_reservations\".\"slot\") AND NOT upper_inc(\"wfc_seat_reservations\".\"slot\")"
-        },
-        "wfc_seat_reservations_amount_check": {
-          "name": "wfc_seat_reservations_amount_check",
-          "value": "\"wfc_seat_reservations\".\"seat_fee_idr\" > 0 AND \"wfc_seat_reservations\".\"credit_idr\" > 0 AND \"wfc_seat_reservations\".\"price_idr\" = \"wfc_seat_reservations\".\"seat_fee_idr\" + \"wfc_seat_reservations\".\"credit_idr\" AND \"wfc_seat_reservations\".\"floor_per_hour_idr\" > 0 AND \"wfc_seat_reservations\".\"paid_idr\" IN (0, \"wfc_seat_reservations\".\"price_idr\") AND \"wfc_seat_reservations\".\"refunded_idr\" >= 0 AND \"wfc_seat_reservations\".\"refunded_idr\" <= \"wfc_seat_reservations\".\"paid_idr\""
-        },
-        "wfc_seat_reservations_link_check": {
-          "name": "wfc_seat_reservations_link_check",
-          "value": "(\"wfc_seat_reservations\".\"payment_link_id\" IS NULL) = (\"wfc_seat_reservations\".\"payment_link_expires_at\" IS NULL) AND (\"wfc_seat_reservations\".\"paid_idr\" = 0 OR \"wfc_seat_reservations\".\"payment_link_id\" IS NOT NULL)"
-        },
-        "wfc_seat_reservations_paid_check": {
-          "name": "wfc_seat_reservations_paid_check",
-          "value": "\"wfc_seat_reservations\".\"status\" NOT IN ('confirmed', 'checked_in', 'completed', 'no_show', 'refunded') OR (\"wfc_seat_reservations\".\"paid_idr\" = \"wfc_seat_reservations\".\"price_idr\" AND \"wfc_seat_reservations\".\"payment_link_id\" IS NOT NULL)"
-        },
-        "wfc_seat_reservations_refund_check": {
-          "name": "wfc_seat_reservations_refund_check",
-          "value": "(\"wfc_seat_reservations\".\"status\" <> 'refunded' OR \"wfc_seat_reservations\".\"refunded_idr\" = \"wfc_seat_reservations\".\"paid_idr\") AND (\"wfc_seat_reservations\".\"status\" NOT IN ('pending_payment', 'confirmed', 'checked_in') OR \"wfc_seat_reservations\".\"refunded_idr\" = 0)"
-        },
-        "wfc_seat_reservations_hold_check": {
-          "name": "wfc_seat_reservations_hold_check",
-          "value": "(\"wfc_seat_reservations\".\"status\" = 'pending_payment') = (\"wfc_seat_reservations\".\"hold_expires_at\" IS NOT NULL)"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.wfc_seats": {
-      "name": "wfc_seats",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "tenant_id": {
-          "name": "tenant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "outlet_id": {
-          "name": "outlet_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "zone_id": {
-          "name": "zone_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "code": {
-          "name": "code",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'active'"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "wfc_seats_tenant_id_tenants_id_fk": {
-          "name": "wfc_seats_tenant_id_tenants_id_fk",
-          "tableFrom": "wfc_seats",
-          "tableTo": "tenants",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "wfc_seats_outlet_id_outlets_id_fk": {
-          "name": "wfc_seats_outlet_id_outlets_id_fk",
-          "tableFrom": "wfc_seats",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "wfc_seats_outlet_fk": {
-          "name": "wfc_seats_outlet_fk",
-          "tableFrom": "wfc_seats",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "tenant_id",
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "wfc_seats_zone_fk": {
-          "name": "wfc_seats_zone_fk",
-          "tableFrom": "wfc_seats",
-          "tableTo": "floor_zones",
-          "columnsFrom": [
-            "tenant_id",
-            "outlet_id",
-            "zone_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "outlet_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "wfc_seats_tenant_outlet_id_key": {
-          "name": "wfc_seats_tenant_outlet_id_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "outlet_id",
-            "id"
-          ]
-        },
-        "wfc_seats_zone_code_key": {
-          "name": "wfc_seats_zone_code_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "outlet_id",
-            "zone_id",
-            "code"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "wfc_seats_status_check": {
-          "name": "wfc_seats_status_check",
-          "value": "\"wfc_seats\".\"status\" IN ('active', 'inactive')"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.wfc_business_settings": {
-      "name": "wfc_business_settings",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "tenant_id": {
-          "name": "tenant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "outlet_id": {
-          "name": "outlet_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "version": {
-          "name": "version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "effective_from": {
-          "name": "effective_from",
-          "type": "date",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "total_seats": {
-          "name": "total_seats",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "wfc_seats": {
-          "name": "wfc_seats",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "open_hours_per_month": {
-          "name": "open_hours_per_month",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "fixed_cost_idr": {
-          "name": "fixed_cost_idr",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "target_revenue_idr": {
-          "name": "target_revenue_idr",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "target_profit_idr": {
-          "name": "target_profit_idr",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "target_occupancy_bp": {
-          "name": "target_occupancy_bp",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "spend_per_person_idr": {
-          "name": "spend_per_person_idr",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "cogs_bp": {
-          "name": "cogs_bp",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "avg_stay_minutes": {
-          "name": "avg_stay_minutes",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "no_show_minutes": {
-          "name": "no_show_minutes",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 30
-        },
-        "reason": {
-          "name": "reason",
-          "type": "varchar(500)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "proposed_by": {
-          "name": "proposed_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "approved_by": {
-          "name": "approved_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "approval_request_id": {
-          "name": "approval_request_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "wfc_business_settings_effective_idx": {
-          "name": "wfc_business_settings_effective_idx",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "outlet_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "effective_from",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "version",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "wfc_business_settings_tenant_id_tenants_id_fk": {
-          "name": "wfc_business_settings_tenant_id_tenants_id_fk",
-          "tableFrom": "wfc_business_settings",
-          "tableTo": "tenants",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "wfc_business_settings_outlet_id_outlets_id_fk": {
-          "name": "wfc_business_settings_outlet_id_outlets_id_fk",
-          "tableFrom": "wfc_business_settings",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "wfc_business_settings_proposed_by_user_id_fk": {
-          "name": "wfc_business_settings_proposed_by_user_id_fk",
-          "tableFrom": "wfc_business_settings",
-          "tableTo": "user",
-          "columnsFrom": [
-            "proposed_by"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "wfc_business_settings_approved_by_user_id_fk": {
-          "name": "wfc_business_settings_approved_by_user_id_fk",
-          "tableFrom": "wfc_business_settings",
-          "tableTo": "user",
-          "columnsFrom": [
-            "approved_by"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "wfc_business_settings_approval_fk": {
-          "name": "wfc_business_settings_approval_fk",
-          "tableFrom": "wfc_business_settings",
-          "tableTo": "approval_requests",
-          "columnsFrom": [
-            "tenant_id",
-            "approval_request_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "wfc_business_settings_outlet_fk": {
-          "name": "wfc_business_settings_outlet_fk",
-          "tableFrom": "wfc_business_settings",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "tenant_id",
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "wfc_business_settings_tenant_outlet_id_key": {
-          "name": "wfc_business_settings_tenant_outlet_id_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "outlet_id",
-            "id"
-          ]
-        },
-        "wfc_business_settings_version_key": {
-          "name": "wfc_business_settings_version_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "outlet_id",
-            "version"
-          ]
-        },
-        "wfc_business_settings_approval_key": {
-          "name": "wfc_business_settings_approval_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "approval_request_id"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "wfc_business_settings_two_person_check": {
-          "name": "wfc_business_settings_two_person_check",
-          "value": "\"wfc_business_settings\".\"proposed_by\" <> \"wfc_business_settings\".\"approved_by\""
-        },
-        "wfc_business_settings_seats_check": {
-          "name": "wfc_business_settings_seats_check",
-          "value": "\"wfc_business_settings\".\"wfc_seats\" BETWEEN 1 AND \"wfc_business_settings\".\"total_seats\""
-        },
-        "wfc_business_settings_amount_check": {
-          "name": "wfc_business_settings_amount_check",
-          "value": "\"wfc_business_settings\".\"fixed_cost_idr\" > 0 AND \"wfc_business_settings\".\"target_revenue_idr\" > 0 AND \"wfc_business_settings\".\"target_profit_idr\" >= 0 AND \"wfc_business_settings\".\"spend_per_person_idr\" > 0"
-        },
-        "wfc_business_settings_range_check": {
-          "name": "wfc_business_settings_range_check",
-          "value": "\"wfc_business_settings\".\"version\" >= 1 AND \"wfc_business_settings\".\"open_hours_per_month\" BETWEEN 1 AND 744 AND \"wfc_business_settings\".\"target_occupancy_bp\" BETWEEN 1 AND 10000 AND \"wfc_business_settings\".\"cogs_bp\" BETWEEN 1 AND 9999 AND \"wfc_business_settings\".\"avg_stay_minutes\" BETWEEN 1 AND 1440 AND \"wfc_business_settings\".\"no_show_minutes\" BETWEEN 1 AND 240"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.wfc_hourly_quotas": {
-      "name": "wfc_hourly_quotas",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "tenant_id": {
-          "name": "tenant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "outlet_id": {
-          "name": "outlet_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "day_of_week": {
-          "name": "day_of_week",
-          "type": "smallint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "hour": {
-          "name": "hour",
-          "type": "smallint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "seats": {
-          "name": "seats",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "updated_by": {
-          "name": "updated_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "wfc_hourly_quotas_tenant_id_tenants_id_fk": {
-          "name": "wfc_hourly_quotas_tenant_id_tenants_id_fk",
-          "tableFrom": "wfc_hourly_quotas",
-          "tableTo": "tenants",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "wfc_hourly_quotas_outlet_id_outlets_id_fk": {
-          "name": "wfc_hourly_quotas_outlet_id_outlets_id_fk",
-          "tableFrom": "wfc_hourly_quotas",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "wfc_hourly_quotas_updated_by_user_id_fk": {
-          "name": "wfc_hourly_quotas_updated_by_user_id_fk",
-          "tableFrom": "wfc_hourly_quotas",
-          "tableTo": "user",
-          "columnsFrom": [
-            "updated_by"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "wfc_hourly_quotas_outlet_fk": {
-          "name": "wfc_hourly_quotas_outlet_fk",
-          "tableFrom": "wfc_hourly_quotas",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "tenant_id",
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "wfc_hourly_quotas_cell_key": {
-          "name": "wfc_hourly_quotas_cell_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "outlet_id",
-            "day_of_week",
-            "hour"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "wfc_hourly_quotas_cell_check": {
-          "name": "wfc_hourly_quotas_cell_check",
-          "value": "\"wfc_hourly_quotas\".\"day_of_week\" BETWEEN 0 AND 6 AND \"wfc_hourly_quotas\".\"hour\" BETWEEN 0 AND 23"
-        },
-        "wfc_hourly_quotas_seats_check": {
-          "name": "wfc_hourly_quotas_seats_check",
-          "value": "\"wfc_hourly_quotas\".\"seats\" BETWEEN 0 AND 1000"
         }
       },
       "isRLSEnabled": false
