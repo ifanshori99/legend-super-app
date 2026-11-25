@@ -97,9 +97,9 @@ const server = {
   order: orderOf(),
   qris: null as Record<string, unknown> | null,
   /** What the next money request does. */
-  onTender: (_call: Call): unknown => undefined,
-  onComplete: (_call: Call): unknown => undefined,
-  onReceipt: (_call: Call): unknown => undefined,
+  onTender: (): unknown => undefined,
+  onComplete: (): unknown => undefined,
+  onReceipt: (): unknown => undefined,
 };
 
 const lost = () => {
@@ -166,9 +166,9 @@ beforeEach(() => {
     throw new Error("no receipt");
   };
   net.respond = (call) => {
-    if (call.path.endsWith("/tenders")) return server.onTender(call);
-    if (call.path.endsWith("/complete")) return server.onComplete(call);
-    if (call.path.endsWith("/receipts")) return server.onReceipt(call);
+    if (call.path.endsWith("/tenders")) return server.onTender();
+    if (call.path.endsWith("/complete")) return server.onComplete();
+    if (call.path.endsWith("/receipts")) return server.onReceipt();
     if (call.path.endsWith("/qris/cancel")) {
       server.qris = { ...server.qris, state: "cancelling" };
       return { data: server.qris };
