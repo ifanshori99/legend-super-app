@@ -31,6 +31,7 @@ import {
   mapServiceRequest,
   mapTableOrders,
   NO_TABLE_SESSION,
+  readAllPages,
   removeSentLines,
 } from "@/features/ws04-pos-order/captain-wire";
 import {
@@ -640,4 +641,27 @@ test("a table fire replays an unclear fire of the same items as it was, without 
     replay: [],
     rest: [ITEM_A],
   });
+});
+
+test("a list is read to its last page, and a cursor that repeats stops the read", async () => {
+  const seen: (string | undefined)[] = [];
+  const pages: Record<string, { data: number[]; next: string | null }> = {
+    first: { data: [1, 2], next: "b" },
+    b: { data: [3], next: "c" },
+    c: { data: [4], next: null },
+  };
+  const all = await readAllPages(async (cursor) => {
+    seen.push(cursor);
+    const page = pages[cursor ?? "first"]!;
+    return { data: page.data, meta: { limit: 2, nextCursor: page.next } };
+  });
+  assert.deepEqual(all, [1, 2, 3, 4]);
+  assert.deepEqual(seen, [undefined, "b", "c"]);
+  await assert.rejects(
+    readAllPages(async () => ({
+      data: [1],
+      meta: { limit: 1, nextCursor: "same" },
+    })),
+    (error: unknown) => error instanceof ApiError,
+  );
 });

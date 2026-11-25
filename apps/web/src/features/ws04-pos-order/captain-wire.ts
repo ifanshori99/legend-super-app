@@ -122,3 +122,32 @@ export function canResolveCall(call: Pick<ServiceCall, "type" | "status">) {
   if (call.status === "resolved") return false;
   return call.type !== "request_bill" || call.status === "acknowledged";
 }
+
+/**
+ * Read a cursor-paged list to its last page (a list that stops at the first
+ * page would hide the rest). A cursor that comes back twice is a broken server
+ * answer, not a reason to loop.
+ */
+export async function readAllPages<Item>(
+  fetchPage: (
+    cursor: string | undefined,
+  ) => Promise<{ data: Item[]; meta: { nextCursor: string | null } }>,
+): Promise<Item[]> {
+  const items: Item[] = [];
+  const seen = new Set<string>();
+  let cursor: string | undefined;
+  for (;;) {
+    const page = await fetchPage(cursor);
+    items.push(...page.data);
+    const next = page.meta.nextCursor;
+    if (next === null) return items;
+    if (seen.has(next))
+      throw new ApiError(
+        502,
+        "PAGE_CURSOR_REPEATED",
+        "Daftar dari server tidak selesai dibaca. Coba muat ulang.",
+      );
+    seen.add(next);
+    cursor = next;
+  }
+}

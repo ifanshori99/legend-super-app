@@ -48,6 +48,7 @@ import {
   captainMeta,
   mapServiceRequest,
   mapTableOrders,
+  readAllPages,
   removeSentLines,
 } from "./captain-wire";
 import {
@@ -420,14 +421,17 @@ export async function fetchTableOrder(
   );
   if (!table) throw new ApiError(404, "NOT_FOUND", "Meja tidak ditemukan.");
   if (table.sessionId === null) return { table, orders: [] };
-  const { data: summaries } = await callEndpoint(listPosOrders, {
-    params: { outletId },
-    query: {
-      status: "awaiting_payment,sent",
-      tableSessionId: table.sessionId as never,
-      limit: 100,
-    } as never,
-  });
+  const summaries = await readAllPages((cursor) =>
+    callEndpoint(listPosOrders, {
+      params: { outletId },
+      query: {
+        status: "awaiting_payment,sent",
+        tableSessionId: table.sessionId as never,
+        limit: 100,
+        cursor,
+      } as never,
+    }),
+  );
   const details = await Promise.all(
     summaries.map(async (summary) => {
       const { data } = await callEndpoint(getPosOrder, {
@@ -695,15 +699,15 @@ export async function fetchServiceCalls(
     return local("panggilan waiter", (e) => e.serviceCalls(), "query");
   const pages = await Promise.all(
     (["pending", "acknowledged"] as const).map((status) =>
-      callEndpoint(listServiceRequests, {
-        params: { outletId },
-        query: { status, limit: 100 } as never,
-      }),
+      readAllPages((cursor) =>
+        callEndpoint(listServiceRequests, {
+          params: { outletId },
+          query: { status, limit: 100, cursor } as never,
+        }),
+      ),
     ),
   );
-  return pages
-    .flatMap((page) => page.data)
-    .flatMap((request) => mapServiceRequest(request) ?? []);
+  return pages.flat().flatMap((request) => mapServiceRequest(request) ?? []);
 }
 
 export async function acknowledgeCall(
