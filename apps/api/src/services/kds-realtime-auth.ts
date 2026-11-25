@@ -39,7 +39,11 @@ import {
 } from "@starter/shared/core/server";
 import { env } from "../config/env.ts";
 import { sessionAcceptedHere } from "../lib/edge-session.ts";
-import { EDGE_STAFF_PIN } from "../lib/request-context.ts";
+import {
+  EDGE_STAFF_PIN,
+  setRequestAuthMethod,
+  setRequestUser,
+} from "../lib/request-context.ts";
 import { withEdgeDeviceOfHeaders } from "./edge-device-auth.ts";
 import { pool } from "../db/index.ts";
 import { auth } from "../lib/auth.ts";
@@ -214,6 +218,11 @@ async function resolveConnection(
         userId = acting.staffUserId;
       }
     }
+    // E2: no requireAuth on an upgrade; the resolver cuts an edge PIN session
+    // to the edge list only when the request context names it (edge only: the
+    // cloud opens no context here).
+    setRequestUser(userId);
+    setRequestAuthMethod(authMethod);
     const data = await loadTenantAccess(
       establishScopedTenantContext(tenant, { kind: "tenant" }),
       userId,

@@ -24,7 +24,7 @@ export const EDGE_STAFF_SESSION_DEVICE_TYPES = [
 /**
  * The only permissions an edge staff session can carry, and only when the
  * user's role holds them (deny by default: a code that is not here grants
- * nothing). The approve codes are used through the approver PIN flow. No
+ * nothing). No `pos.*.approve`: an approver proves it with their own PIN. No
  * refund, write-off, master data or payment administration.
  */
 export const EDGE_STAFF_SESSION_PERMISSIONS: readonly PermissionCode[] = [
@@ -34,11 +34,6 @@ export const EDGE_STAFF_SESSION_PERMISSIONS: readonly PermissionCode[] = [
   "pos.payment.accept",
   "pos.discount.apply",
   "pos.void.request",
-  "pos.void.approve",
-  "pos.discount.approve",
-  "pos.cash_drawer.approve",
-  "pos.price_correction.approve",
-  "pos.edc_standalone.approve",
   "shift.cash.operate",
   "shift.cash.approve_close",
   "shift.cash.view_all",
