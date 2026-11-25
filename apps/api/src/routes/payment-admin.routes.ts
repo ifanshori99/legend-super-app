@@ -21,6 +21,7 @@ import * as funds from "../services/payment-admin-funds.service.ts";
 import * as edcReconciliation from "../services/edc-reconciliation.service.ts";
 import * as reconciliation from "../services/payment-admin-reconciliation.service.ts";
 import * as corrections from "../services/payment-reconciliation-correction.service.ts";
+import * as settlementEmit from "../services/payment-settlement-emit.service.ts";
 import * as settlementImport from "../services/payment-settlement-import.service.ts";
 import * as refunds from "../services/payment-refund.service.ts";
 import * as followups from "../services/system-refund-followup.ts";
@@ -474,6 +475,21 @@ paymentAdminRouter.post(
         scope(req),
         actor(req),
         contract.importSettlement.body.parse(req.body),
+        key(req),
+      ),
+    });
+  },
+);
+paymentAdminRouter.post(
+  route(contract.reconcileSettlements.path),
+  jsonBody,
+  requireTenantPermission("accounting.reconcile"),
+  async (req, res) => {
+    res.json({
+      data: await settlementEmit.reconcileSettlements(
+        scope(req),
+        actor(req),
+        contract.reconcileSettlements.body.parse(req.body),
         key(req),
       ),
     });

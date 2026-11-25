@@ -806,6 +806,44 @@ export const settlementImportViewSchema = z.strictObject({
 });
 export type SettlementImportView = z.infer<typeof settlementImportViewSchema>;
 
+/**
+ * Ties imported gateway settlements to the bank statement line that paid them
+ * (1269 C4a). The nets must add up to the line exactly and every settlement is
+ * of another outlet: each one emits `settlement.reconciled` once, ever.
+ */
+export const reconcileSettlementsInputSchema = clientInputSchema({
+  bankStatementLineId: uuidSchema,
+  settlementIds: z
+    .array(uuidSchema)
+    .min(1)
+    .max(50)
+    .refine((ids) => new Set(ids).size === ids.length, {
+      message: "settlements must be unique",
+    }),
+});
+export type ReconcileSettlementsInput = z.infer<
+  typeof reconcileSettlementsInputSchema
+>;
+
+/** What was reconciled: one `settlement.reconciled` event per settlement. */
+export const settlementReconciledViewSchema = z.strictObject({
+  bankStatementLineId: uuidSchema,
+  settledOn: businessDateSchema,
+  amountIdr: positiveIdr,
+  settlements: z.array(
+    z.strictObject({
+      settlementId: uuidSchema,
+      outletId: outletIdSchema,
+      grossIdr: positiveIdr,
+      feeIdr: nonnegativeIdr,
+      netIdr: nonnegativeIdr,
+    }),
+  ),
+});
+export type SettlementReconciledView = z.infer<
+  typeof settlementReconciledViewSchema
+>;
+
 // ---- Endpoints ----------------------------------------------------------
 // All routes are staff-only (outlet session + RBAC: payment.transaction.view,
 // payment.reconcile, payment.edc.manage); the API re-checks every request.
@@ -1063,6 +1101,13 @@ export const importSettlement = defineEndpoint({
   path: `${ADMIN}/reconciliation/settlements`,
   body: importSettlementInputSchema,
   response: dataResponseSchema(settlementImportViewSchema),
+});
+/** Tenant-wide finance only (payment.reconcile and accounting.reconcile). */
+export const reconcileSettlements = defineEndpoint({
+  method: "POST",
+  path: `${ADMIN}/reconciliation/settlements/reconcile`,
+  body: reconcileSettlementsInputSchema,
+  response: dataResponseSchema(settlementReconciledViewSchema),
 });
 /** EDC-06: every settlement difference is a case resolved with a written note. */
 export const resolveReconciliationCase = defineEndpoint({
