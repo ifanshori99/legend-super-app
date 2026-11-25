@@ -41,6 +41,8 @@ function isCartLine(value: unknown): value is CartLine {
   return (
     isText(value.lineId) &&
     isText(value.menuItemId) &&
+    (value.variantId === null || isText(value.variantId)) &&
+    (value.variantName === null || isText(value.variantName)) &&
     isText(value.name) &&
     typeof value.unitPriceIdr === "number" &&
     Number.isFinite(value.unitPriceIdr) &&

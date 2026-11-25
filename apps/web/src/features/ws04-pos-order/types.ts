@@ -38,6 +38,13 @@ export interface ModifierGroup {
   options: ModifierOption[];
 }
 
+/** A size or kind with its own price; an item with variants needs one chosen. */
+export interface MenuVariant {
+  id: string;
+  name: string;
+  priceIdr: number;
+}
+
 export interface MenuItem {
   id: string;
   name: string;
@@ -48,6 +55,8 @@ export interface MenuItem {
   soldOut: boolean;
   code: string | null;
   course: Course;
+  /** Empty for an item without variants. */
+  variants: MenuVariant[];
   modifierGroups: ModifierGroup[];
 }
 
@@ -71,8 +80,14 @@ export type LineStatus = "draft" | "held" | "sent";
 export interface CartLine {
   lineId: string;
   menuItemId: string;
+  /** The chosen variant, or null for an item without variants. */
+  variantId: string | null;
+  variantName: string | null;
   name: string;
-  /** Base price of the item; modifier deltas are added on top. */
+  /**
+   * Display estimate: the item's (or chosen variant's) price; modifier deltas
+   * are added on top. The server prices the order; this is never sent.
+   */
   unitPriceIdr: number;
   quantity: number;
   modifiers: SelectedModifier[];
@@ -81,7 +96,8 @@ export interface CartLine {
   hold: boolean;
 }
 
-export interface OrderLine extends Omit<CartLine, "hold"> {
+export interface OrderLine
+  extends Omit<CartLine, "hold" | "variantId" | "variantName"> {
   status: Exclude<LineStatus, "draft">;
 }
 
@@ -99,6 +115,8 @@ export interface ParkedDraft {
   id: string;
   label: string;
   channel: SaleChannel;
+  tableSessionId: string | null;
+  ojol: OjolInput | null;
   lines: CartLine[];
   parkedAt: string;
   subtotalIdr: number;
@@ -147,7 +165,8 @@ export interface OjolInput {
 
 export interface SubmitOrderInput {
   channel: SaleChannel;
-  tableLabel: string | null;
+  /** The open table session of the chosen table (dine-in); never the label. */
+  tableSessionId: string | null;
   ojol: OjolInput | null;
   lines: CartLine[];
 }
@@ -164,6 +183,8 @@ export interface FireLinesInput {
 
 export interface ParkDraftInput {
   channel: SaleChannel;
+  tableSessionId: string | null;
+  ojol: OjolInput | null;
   lines: CartLine[];
 }
 

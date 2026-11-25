@@ -93,6 +93,7 @@ function item(
     soldOut: false,
     code: null,
     course,
+    variants: [],
     modifierGroups: [],
     ...extra,
   };
