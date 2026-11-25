@@ -62,7 +62,7 @@ function PinLocked({ lockedUntil, onUnlocked }: PinLockedProps) {
           {t("payslipPin.common.backToList")}
         </Link>
       </Button>
-      <Button asChild variant="link" className="w-full">
+      <Button asChild variant="link" className="min-h-11 w-full sm:min-h-0">
         <Link to="/karyawan/slip-gaji/lupa-pin">
           {t("payslipPin.common.forgotPin")}
         </Link>

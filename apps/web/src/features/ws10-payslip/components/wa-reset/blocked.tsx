@@ -142,7 +142,9 @@ function WaResetBlocked({
         type="button"
         size={asLink ? "sm" : "lg"}
         variant={primary ? "default" : asLink ? "link" : "outline"}
-        className={asLink ? "min-h-6 w-fit py-1" : WRAP_BUTTON_CLASS}
+        className={
+          asLink ? "min-h-11 w-fit py-1 sm:min-h-6" : WRAP_BUTTON_CLASS
+        }
         onClick={onHrHelp}
       >
         {urgent

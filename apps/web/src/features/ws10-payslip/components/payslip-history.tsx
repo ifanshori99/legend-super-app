@@ -35,7 +35,7 @@ function PinInfoCard({ canChangePin }: { canChangePin: boolean }) {
               asChild
               variant="link"
               size="sm"
-              className="mt-1 h-auto w-fit justify-start p-0"
+              className="mt-1 h-auto min-h-11 w-fit justify-start p-0 sm:min-h-0"
             >
               <Link to="/karyawan/slip-gaji/ubah-pin">
                 <KeyRound aria-hidden="true" />

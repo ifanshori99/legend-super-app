@@ -129,7 +129,7 @@ function CellMenu({
             employee: employee.fullName,
             date: formatDayLabel(day),
           })}
-          className="inline-grid size-7 place-items-center rounded-md border border-dashed border-border text-muted-foreground transition-colors hover:bg-surface-2 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+          className="relative inline-grid size-7 place-items-center after:absolute after:-inset-2 after:content-[''] rounded-md border border-dashed border-border text-muted-foreground transition-colors hover:bg-surface-2 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
         >
           <Plus className="size-3.5" aria-hidden="true" />
         </button>

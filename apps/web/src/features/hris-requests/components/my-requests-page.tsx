@@ -170,7 +170,12 @@ export function MyRequestsPage() {
         </>
       )}
 
-      <Button asChild variant="link" size="sm" className="w-fit">
+      <Button
+        asChild
+        variant="link"
+        size="sm"
+        className="min-h-11 w-fit sm:min-h-0"
+      >
         <Link to="/karyawan/libur">
           <CalendarDays aria-hidden="true" />
           {t("hrisRequestsMine.list.holidayLink")}

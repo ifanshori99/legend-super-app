@@ -387,7 +387,7 @@ function PinChange({ onDone }: PinChangeProps) {
             ? t("payslipPin.ubahPin.submitting")
             : t("payslipPin.ubahPin.submit")}
         </Button>
-        <Button asChild variant="link" className="mx-auto">
+        <Button asChild variant="link" className="mx-auto min-h-11 sm:min-h-0">
           <Link to="/karyawan/slip-gaji/lupa-pin">
             {t("payslipPin.ubahPin.forgotCurrent")}
           </Link>

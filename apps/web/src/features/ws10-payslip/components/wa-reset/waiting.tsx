@@ -263,7 +263,7 @@ function WaResetWaiting({
               type="button"
               variant="link"
               size="sm"
-              className="min-h-6 w-fit justify-start py-1"
+              className="min-h-11 w-fit justify-start py-1 sm:min-h-6"
               onClick={onNotVerified}
             >
               {t("payslipWaReset.waiting.notVerified")}
