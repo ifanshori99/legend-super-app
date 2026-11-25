@@ -14,7 +14,9 @@ test("the export button is offered only in mock mode until the export API exists
   assert.equal(lib.reportExportOffered({ mock: true }), true);
 });
 
-test("a report is coming soon outside mock mode only when none of its metrics has a source", () => {
+const HELD_BACK = ["finance", "attendance", "payroll", "performance"];
+
+test("a report is coming soon outside mock mode when its family is held back or none of its metrics has a source", () => {
   const unbuilt = dashboard.dashboardMetricDefinitions; // catalog exists
   assert.ok(unbuilt.length > 0);
   let soon = 0;
@@ -24,13 +26,26 @@ test("a report is coming soon outside mock mode only when none of its metrics ha
     );
     assert.equal(
       lib.reportHasData(report, { mock: false }),
-      !allUnbuilt,
+      !allUnbuilt && !HELD_BACK.includes(report.family),
       report.code,
     );
     assert.equal(lib.reportHasData(report, { mock: true }), true, report.code);
     if (allUnbuilt) soon += 1;
   }
   assert.ok(soon > 0, "the catalog still has reports without a source");
+});
+
+test("release 1 opens no report of the four held back families", () => {
+  for (const family of HELD_BACK) {
+    const reports = dashboard.reportCatalog.filter((r) => r.family === family);
+    assert.ok(reports.length > 0, family);
+    for (const report of reports)
+      assert.equal(
+        lib.reportHasData(report, { mock: false }),
+        false,
+        report.code,
+      );
+  }
 });
 
 test("a tile or deep link to a sourceless report is coming soon, not a screen", () => {

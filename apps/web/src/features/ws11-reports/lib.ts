@@ -35,18 +35,33 @@ export function reportExportOffered(options: { mock: boolean }): boolean {
 }
 
 /**
- * Whether a report has data on the server. One source of truth: the shared
- * list of metric codes the server registry has no source for
+ * Families held back from release 1 as told to the founder (keputusan 21 Nov
+ * no. 17): finance, attendance, payroll, performance stay "Segera hadir" even
+ * when some of their metrics already have a source. Remove a family only after
+ * the founder approves opening it.
+ */
+const FAMILIES_HELD_BACK: ReadonlySet<string> = new Set([
+  "finance",
+  "attendance",
+  "payroll",
+  "performance",
+]);
+
+/**
+ * Whether a report opens. Two rules, both must pass: its family is not held
+ * back, and at least one of its metrics has a server source
  * (`METRIC_CODES_WITHOUT_SOURCE`, kept equal to the registry by
- * apps/api/src/test/ms-source-availability.test.ts). A report whose metrics
- * are all unbuilt is listed as "Segera hadir" instead of linking to an empty
- * screen. Mock mode keeps every report clickable.
+ * apps/api/src/test/ms-source-availability.test.ts). Otherwise it is listed as
+ * "Segera hadir". Mock mode keeps every report clickable.
  */
 export function reportHasData(
-  report: { readonly metrics: readonly string[] },
+  report: { readonly family: string; readonly metrics: readonly string[] },
   options: { mock: boolean },
 ): boolean {
-  return options.mock || reportHasSource(report);
+  return (
+    options.mock ||
+    (!FAMILIES_HELD_BACK.has(report.family) && reportHasSource(report))
+  );
 }
 
 const reportByRoute: ReadonlyMap<string, ReportDefinition> = new Map(
