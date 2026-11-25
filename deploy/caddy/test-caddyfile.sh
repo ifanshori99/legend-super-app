@@ -11,8 +11,8 @@ grep -Fq '@internal path /api/internal /api/internal/*' "$cloud" || fail 'cloud 
 grep -Fq '@internal path /api/internal /api/internal/*' "$edge" || fail 'edge front does not close /api/internal and /api/internal/*'
 # Every public proxy block drops a client-supplied ask token; only the loopback
 # listener on 2019 adds the real one.
-proxies=$(grep -c 'reverse_proxy' "$cloud")
-stripped=$(grep -c 'header_up -X-Tls-Ask-Token' "$cloud")
+proxies=$(grep -Ec '^[[:space:]]*reverse_proxy([[:space:]]|$)' "$cloud")
+stripped=$(grep -Ec '^[[:space:]]*header_up -X-Tls-Ask-Token' "$cloud")
 [ "$stripped" -eq "$((proxies - 1))" ] || fail "$stripped of $((proxies - 1)) public reverse_proxy blocks strip X-Tls-Ask-Token"
 grep -Fq 'header_up X-Tls-Ask-Token "{$TLS_ASK_TOKEN}"' "$cloud" || fail 'the loopback ask bridge no longer adds the token'
 # Body caps and slow-client timeouts stay in place.
