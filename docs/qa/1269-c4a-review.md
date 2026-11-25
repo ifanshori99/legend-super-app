@@ -15,3 +15,7 @@ Path relatif ke `apps/api/src/`.
 Aman: emit ganda, urutan kunci, RLS, izin ganda, unmatch tidak bisa emit ulang, refund dipotong dari payout = ditolak.
 
 Keputusan CTO: 1, 2, 3, 4, 5, 8 dan komentar basi `settlement-events.ts` dibetulkan di cabang; 6, 7, 9 jadi kartu (6 memblokir C4b).
+
+## Re-review 26 Nov (4262ca419): LULUS, 0 P0/P1
+
+Sisa (jurnal gross/gabungan net, batas atas jendela) ke kartu legend-osqou.44, memblokir C4b.
