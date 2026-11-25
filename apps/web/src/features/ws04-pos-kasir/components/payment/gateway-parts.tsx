@@ -78,17 +78,25 @@ export function remainingMsOf(
   return Math.max(0, Date.parse(expiresAt) - now);
 }
 
+/** An attempt that may still take the customer's money: never leave it. */
+const LIVE_STATUSES: readonly PaymentAttempt["status"][] = [
+  "waiting",
+  "cancelling",
+  "unknown",
+  "confirmed",
+];
+
 /**
- * True when a fresh status read shows the old payment is still not paid, so the
- * cashier may leave it for another method. A paid bill, a confirmed payment, or
- * a session that no longer holds this attempt means the screen is about to
- * change by itself: stay.
+ * True when a fresh status read shows the old payment is over and not paid, so
+ * the cashier may leave it for another method. A paid bill, a payment that may
+ * still arrive, or a session that no longer holds this attempt means the screen
+ * is about to change by itself: stay.
  */
 export function safeToLeave(next: PaymentSession, attemptId: string): boolean {
   return (
     !next.bill.paid &&
     next.activeAttempt?.id === attemptId &&
-    next.activeAttempt.status !== "confirmed"
+    !LIVE_STATUSES.includes(next.activeAttempt.status)
   );
 }
 
@@ -340,6 +348,7 @@ export function WaitingPanel({
   remainingMs,
   noticeTitle,
   noticeBody,
+  action,
   children,
 }: {
   orderId: string;
@@ -352,6 +361,8 @@ export function WaitingPanel({
   remainingMs?: number | null;
   noticeTitle: string;
   noticeBody: string;
+  /** One more footer button (cancel the QRIS). */
+  action?: ReactNode;
   /** Extra content between the amount and the notice (the VA number). */
   children?: ReactNode;
 }) {
@@ -363,6 +374,7 @@ export function WaitingPanel({
       aside={<StatusPill tone="warning">{statusLabel}</StatusPill>}
       footer={
         <>
+          {action}
           <Button
             variant="outline"
             loading={check.isPending}
@@ -419,6 +431,7 @@ export function ExpiredPanel({
   noticeBody,
   onChangeMethod,
   showCheck,
+  action,
   children,
 }: {
   orderId: string;
@@ -428,8 +441,10 @@ export function ExpiredPanel({
   description: string;
   noticeBody: string;
   onChangeMethod: () => void;
-  /** Offer a manual status check (the QRIS panel checks by itself). */
+  /** Offer a manual status check (the QRIS panel checks before a new code). */
   showCheck: boolean;
+  /** One more footer button (make a new QRIS). */
+  action?: ReactNode;
   /** Progress or error lines under the notice. */
   children?: ReactNode;
 }) {
@@ -469,6 +484,7 @@ export function ExpiredPanel({
                 : t("posKasirGateway.common.checkStatus")}
             </Button>
           )}
+          {action}
           <Button onClick={switchMethod} disabled={check.isPending}>
             {t("posKasirGateway.common.otherMethod")}
           </Button>

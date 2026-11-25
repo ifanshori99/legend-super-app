@@ -74,7 +74,9 @@ export function EdcWaiting({
             type="button"
             variant="outline"
             loading={cancel.isPending}
-            onClick={() => cancel.mutate({ orderId, attemptId: attempt.id })}
+            onClick={() =>
+              cancel.mutate({ orderId, attemptId: attempt.id, method: "edc" })
+            }
           >
             {t("posKasirEdc.waiting.cancel")}
           </Button>

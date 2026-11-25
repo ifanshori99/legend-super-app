@@ -39,6 +39,25 @@ export const posKasirPaymentMessages = {
     title:
       "Pembayaran QR sedang dikonfirmasi penyedia. Tunggu konfirmasi sebelum menerima pembayaran lain.",
   },
+  unresolved: {
+    panelTitle: "Pembayaran belum pasti",
+    pill: "Terkunci",
+    title: "Hasil pembayaran belum diketahui",
+    body: "Jawaban server belum diterima. Pembayaran ini mungkin sudah tercatat.",
+    noticeTitle: "Jangan terima pembayaran lain dulu",
+    noticeBody:
+      "Semua cara bayar tagihan ini terkunci. Kirim ulang permintaan yang sama: pembayaran tidak akan tercatat dua kali.",
+    otherTitle: "Dikirim oleh kasir lain",
+    otherBody:
+      "Kasir yang mengirim permintaan ini perlu masuk dengan PIN lalu mengirim ulang.",
+    corruptTitle: "Permintaan sebelumnya tidak bisa dibaca",
+    corruptBody:
+      "Semua cara bayar tagihan ini terkunci. Muat ulang tagihan, lalu hubungi supervisor bila tetap terkunci.",
+    resend: "Kirim ulang permintaan yang sama",
+    resending: "Mengirim ulang…",
+    reload: "Muat ulang tagihan",
+    errorTitle: "Hasil masih belum pasti",
+  },
   dpLunas: {
     title: "Tidak ada pembayaran tambahan",
     body: "DP reservasi {amount} sudah dialokasikan ke seluruh tagihan. Tidak perlu menerima pembayaran lagi.",
@@ -60,6 +79,9 @@ export const posKasirPaymentMessages = {
     paid: "Tagihan lunas",
     paidHint: "Pastikan pelanggan menerima kembalian dan struk.",
     paidDeposit: "DP reservasi telah menutup seluruh tagihan.",
+    unresolved: "Pembayaran belum pasti",
+    unresolvedHint:
+      "Kirim ulang permintaan yang sama sebelum memakai cara lain.",
     qris: "Pembayaran QRIS",
     qrisHint: "Tunggu konfirmasi sebelum menyelesaikan tagihan.",
     qrisExpiredHint: "Status pembayaran diperbarui otomatis.",
@@ -75,6 +97,7 @@ export const posKasirPaymentMessages = {
   methods: {
     title: "Pilih metode pembayaran",
     hint: "Semua metode dapat dipakai untuk pembayaran gabungan.",
+    hintFull: "Setiap metode melunasi seluruh sisa tagihan.",
     count: "{count} pembayaran",
     groupLabel: "Metode pembayaran",
     selected: "dipilih",
@@ -122,7 +145,11 @@ export const posKasirPaymentMessages = {
     noChange: "Tagihan sudah lunas",
     total: "Total {amount} sudah lunas.",
     receipt: "Struk {receiptNo} siap dicetak.",
-    receiptPrinted: "Struk {receiptNo} sudah dicetak.",
+    receiptPrinted: "Struk {receiptNo} dikirim ke printer.",
+    receiptNotPrinted: "Struk {receiptNo} tidak tercetak.",
+    heldTitle: "Lunas, ada item ditahan",
+    heldHint:
+      "Pesanan masih terbuka. Kirim item yang ditahan ke dapur dulu, lalu cetak struk.",
     deposit: "DP reservasi",
     cashForBill: "Tunai untuk tagihan",
     received: "Uang diterima",

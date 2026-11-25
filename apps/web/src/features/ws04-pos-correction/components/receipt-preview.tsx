@@ -238,7 +238,17 @@ export function ReceiptPreview({ order, subtitle, switcher }: Props) {
       }
     >
       {body}
-      {printed && (
+      {printed && printed.printResult !== "queued_to_printer" && (
+        <Notice
+          tone="warning"
+          title={t("posCorrection.receipt.notPrintedTitle")}
+        >
+          {t("posCorrection.receipt.notPrintedBody", {
+            receiptNo: printed.receipt.number,
+          })}
+        </Notice>
+      )}
+      {printed?.printResult === "queued_to_printer" && (
         <Notice tone="info" title={t("posCorrection.receipt.printedTitle")}>
           {t("posCorrection.receipt.printedBody", {
             receiptNo: printed.receipt.number,

@@ -18,9 +18,12 @@ import { isSettledByDeposit } from "../../payment-due";
 import { BillPanel, Notice, PosPageHeading, PosTwoPane } from "../shared";
 import {
   isContractPending,
+  useCompleteWhenPaid,
   usePaymentMethods,
   usePaymentSession,
   useRemoveVoucher,
+  useStartPayment,
+  useUnresolvedPayment,
 } from "../../hooks";
 import type { PaymentAttempt, PaymentMethodCode } from "../../types";
 import { CardOnlinePanel } from "./card-online-panel";
@@ -35,6 +38,7 @@ import { PointsPanel } from "./points-panel";
 import { QrisPanel } from "./qris-panel";
 import { SplitPanel } from "./split-panel";
 import { SuccessPanel } from "./success-panel";
+import { UnresolvedPanel } from "./unresolved-panel";
 import { VaPanel } from "./va-panel";
 import { VoucherPanel } from "./voucher-panel";
 
@@ -57,6 +61,14 @@ const GATEWAY_PANELS: Record<
   ewallet: EwalletPanel,
   card: CardOnlinePanel,
 };
+
+// Only a payment that is over may be put aside for another method; one that
+// may still take the customer's money stays on screen.
+const OVER: readonly PaymentAttempt["status"][] = [
+  "expired",
+  "failed",
+  "declined",
+];
 
 function headingKeys(
   attempt: PaymentAttempt | null,
@@ -110,6 +122,8 @@ export function PaymentScreen({ orderId }: { orderId: string }) {
   const session = usePaymentSession(orderId);
   const methods = usePaymentMethods(orderId);
   const removeVoucher = useRemoveVoucher(orderId);
+  const startQris = useStartPayment();
+  const unresolvedPayment = useUnresolvedPayment(orderId);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [step, setStep] = useState<Step>({ kind: "methods", selected: null });
   // "Pilih metode lain" on an expired or failed attempt: hide that attempt
@@ -118,7 +132,7 @@ export function PaymentScreen({ orderId }: { orderId: string }) {
     null,
   );
 
-  const { bill, activeAttempt } = session;
+  const { bill, activeAttempt, partialAllowed } = session;
 
   // A payment was just confirmed but the bill is not settled: the old step
   // (its method and amount) is stale and would charge again. Back to the
@@ -128,6 +142,12 @@ export function PaymentScreen({ orderId }: { orderId: string }) {
         .filter((a) => a.status === "confirmed")
         .reduce((sum, a) => sum + a.amountIdr, 0)
     : 0;
+  // Money was taken here: the order can be completed. A bill the DP covered
+  // alone is completed when its receipt is printed.
+  useCompleteWhenPaid(
+    orderId,
+    confirmedIdr > 0 ? session.completion : undefined,
+  );
   const [seenConfirmedIdr, setSeenConfirmedIdr] = useState(confirmedIdr);
   if (confirmedIdr !== seenConfirmedIdr) {
     setSeenConfirmedIdr(confirmedIdr);
@@ -178,9 +198,13 @@ export function PaymentScreen({ orderId }: { orderId: string }) {
   }
 
   const attempt =
-    activeAttempt && activeAttempt.id !== dismissedAttemptId
+    activeAttempt &&
+    (activeAttempt.id !== dismissedAttemptId ||
+      !OVER.includes(activeAttempt.status))
       ? activeAttempt
       : null;
+  // A paid bill has nothing left to take: the stored request no longer matters.
+  const unresolved = bill.paid ? null : unresolvedPayment;
 
   const toMethods = () => {
     if (activeAttempt) setDismissedAttemptId(activeAttempt.id);
@@ -190,7 +214,11 @@ export function PaymentScreen({ orderId }: { orderId: string }) {
   // EDC brings its own page layout (terminal, locked amount, reference lines),
   // so the whole screen is handed to it, from the first step to the result.
   const edcStep = step.kind === "pay" && step.method === "edc" ? step : null;
-  if (!bill.paid && (attempt?.method === "edc" || (!attempt && edcStep))) {
+  if (
+    !bill.paid &&
+    !unresolved &&
+    (attempt?.method === "edc" || (!attempt && edcStep))
+  ) {
     return (
       <EdcPanel
         orderId={orderId}
@@ -242,6 +270,15 @@ export function PaymentScreen({ orderId }: { orderId: string }) {
   } else if (bill.paid) {
     keys = ["paid", "paidHint"];
     panel = <SuccessPanel {...attemptProps} amountIdr={bill.totalIdr} />;
+  } else if (unresolved) {
+    keys = ["unresolved", "unresolvedHint"];
+    panel = (
+      <UnresolvedPanel
+        orderId={orderId}
+        payment={unresolved}
+        onReload={() => void session.refetch()}
+      />
+    );
   } else if (attempt && attempt.method !== "cash" && attempt.method !== "edc") {
     const Gateway =
       attempt.status === "failed"
@@ -254,16 +291,26 @@ export function PaymentScreen({ orderId }: { orderId: string }) {
         orderId={orderId}
         selected={step.selected ?? (cashEnabled ? "cash" : null)}
         onSelect={(method) => setStep({ kind: "methods", selected: method })}
-        onContinue={(method) =>
+        partialAllowed={partialAllowed}
+        onContinue={(method) => {
           // With payments already taken, show the combined view first.
+          const split =
+            partialAllowed &&
+            bill.allocations.some((a) => a.status === "confirmed");
           setStep({
-            kind: bill.allocations.some((a) => a.status === "confirmed")
-              ? "split"
-              : "pay",
+            kind: split ? "split" : "pay",
             method,
             amountIdr: bill.remainingIdr,
-          })
-        }
+          });
+          // This tap is the one that makes the QRIS; the panel never does.
+          startQris.reset();
+          if (method === "qris" && !split)
+            startQris.mutate({
+              orderId,
+              method: "qris",
+              amountIdr: bill.remainingIdr,
+            });
+        }}
         onPartial={(method) =>
           setStep({ kind: "split", method, amountIdr: bill.remainingIdr })
         }
@@ -300,6 +347,8 @@ export function PaymentScreen({ orderId }: { orderId: string }) {
       amountIdr: Math.min(step.amountIdr, bill.remainingIdr),
     };
     if (step.method === "cash") panel = <CashPanel {...props} />;
+    else if (step.method === "qris")
+      panel = <QrisPanel {...props} starter={startQris} />;
     else if (step.method !== "edc") {
       const Gateway = GATEWAY_PANELS[step.method];
       panel = <Gateway {...props} />;
@@ -335,7 +384,7 @@ export function PaymentScreen({ orderId }: { orderId: string }) {
               voucher={bill.voucher ?? null}
               removingVoucher={removeVoucher.isPending}
               onRemoveVoucher={
-                attempt ? undefined : () => setConfirmRemove(true)
+                attempt || unresolved ? undefined : () => setConfirmRemove(true)
               }
             />
             <Dialog
@@ -386,7 +435,7 @@ export function PaymentScreen({ orderId }: { orderId: string }) {
                 </DialogFooter>
               </DialogContent>
             </Dialog>
-            {!bill.paid && !attempt && (
+            {!bill.paid && !attempt && !unresolved && (
               <div className="grid gap-2 sm:grid-cols-2">
                 <Button
                   variant="outline"

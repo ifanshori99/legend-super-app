@@ -250,6 +250,10 @@ export function useRequestEdcApproval() {
 
 const NO_INTENT: IntentState = { status: "none" };
 
+export type UnresolvedPayment = NonNullable<
+  ReturnType<typeof useUnresolvedPayment>
+>;
+
 /**
  * The payment request of this bill that has no known answer, from any tab. Null
  * while this tab is still sending it: the panel that sent it shows the progress.

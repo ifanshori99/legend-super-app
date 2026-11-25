@@ -12,9 +12,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { useRecordEdcStandalone } from "../../hooks";
-import { useRequestOverride, useSupervisorOptions } from "../../shift-hooks";
-import type { EdcTerminal, PaymentBill } from "../../types";
+import {
+  useEdcApprovers,
+  useRecordEdcStandalone,
+  useRequestEdcApproval,
+} from "../../hooks";
+import type { EdcMode, EdcTerminal, PaymentBill } from "../../types";
 import { Notice, PosPanel, StatusPill } from "../shared";
 import { EdcLayout, useEdcErrorText } from "./edc-side";
 
@@ -29,17 +32,20 @@ export function EdcStandalone({
   orderId,
   bill,
   terminal,
+  mode,
   onBack,
 }: {
   orderId: string;
   bill: PaymentBill;
   terminal: EdcTerminal | undefined;
+  /** How the customer paid on the machine. */
+  mode: EdcMode;
   onBack: () => void;
 }) {
   const t = useT();
   const errorText = useEdcErrorText();
-  const supervisors = useSupervisorOptions();
-  const override = useRequestOverride();
+  const supervisors = useEdcApprovers();
+  const override = useRequestEdcApproval();
   const record = useRecordEdcStandalone();
   const [bankRef, setBankRef] = useState("");
   const [approvalCode, setApprovalCode] = useState("");
@@ -73,11 +79,9 @@ export function EdcStandalone({
     } else {
       try {
         const approval = await override.mutateAsync({
-          action: "edc_standalone",
-          valueIdr: amountIdr,
+          orderId,
+          amountIdr,
           reason: t("posKasirEdc.standalone.reason", { ref: bankRef.trim() }),
-          objectType: "pos_order",
-          objectId: orderId,
           approverUserId: approver,
           pin,
         });
@@ -94,6 +98,8 @@ export function EdcStandalone({
       .mutateAsync({
         orderId,
         terminalId: terminal.id,
+        amountIdr,
+        edcMode: mode,
         bankRef: bankRef.trim(),
         ...(approvalCode.trim() ? { approvalCode: approvalCode.trim() } : {}),
         overrideId,
@@ -104,7 +110,11 @@ export function EdcStandalone({
       .catch((error: unknown) => {
         // A spent or mismatched approval cannot be reused: ask for a new PIN.
         const code = error instanceof ApiError ? error.code : undefined;
-        if (code === "OVERRIDE_USED" || code === "OVERRIDE_INVALID") {
+        if (
+          code === "OVERRIDE_USED" ||
+          code === "OVERRIDE_INVALID" ||
+          code === "EDC_STANDALONE_APPROVAL_REQUIRED"
+        ) {
           approvalRef.current = null;
           setPin("");
         }
@@ -125,7 +135,7 @@ export function EdcStandalone({
       sideTerminal={
         terminal && {
           title: terminal.label,
-          detail: `${t("posKasirEdc.side.mode.card")} · ${t("posKasirEdc.side.standalone")}`,
+          detail: `${t(`posKasirEdc.side.mode.${mode}`)} · ${t("posKasirEdc.side.standalone")}`,
         }
       }
       sideNote={t("posKasirEdc.side.standaloneNote")}
@@ -237,6 +247,14 @@ export function EdcStandalone({
                 />
               </FormField>
             </div>
+            {(supervisors.isError || supervisors.data?.length === 0) && (
+              <Notice
+                tone="warning"
+                title={t("posKasirEdc.standalone.noApprover")}
+              >
+                {t("posKasirEdc.standalone.noApproverHint")}
+              </Notice>
+            )}
             {record.error && (
               <Notice
                 tone="danger"

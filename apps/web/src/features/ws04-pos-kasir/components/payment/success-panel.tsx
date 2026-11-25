@@ -5,11 +5,13 @@ import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { Money } from "@/components/ui/money";
 import { Notice, PosPanel, StateBlock, StatusPill } from "../shared";
+import { ORDER_COMPLETE_FAILED } from "../../api";
 import { usePaymentSession, usePrintReceipt } from "../../hooks";
 import { useOrderTickets } from "../../ticket/hooks";
 import { confirmedAllocations } from "./payment-helpers";
 import { PaidTicketCard } from "./paid-ticket-card";
 import type { PaymentPanelProps } from "./panel-types";
+import { ReceiptNotPrinted, wasQueued } from "./receipt-result-notice";
 
 function Row({ label, amountIdr }: { label: string; amountIdr: number }) {
   return (
@@ -28,7 +30,7 @@ function Row({ label, amountIdr }: { label: string; amountIdr: number }) {
 export function SuccessPanel({ orderId }: PaymentPanelProps) {
   const t = useT();
   const navigate = useNavigate();
-  const { bill, cash, receiptNo } = usePaymentSession(orderId);
+  const { bill, cash, receiptNo, completion } = usePaymentSession(orderId);
   const print = usePrintReceipt();
   // Same query as the ticket card (shared cache): with a ticket ready, issuing
   // it is the one primary action and the footer print button steps back.
@@ -41,6 +43,9 @@ export function SuccessPanel({ orderId }: PaymentPanelProps) {
   const confirmed = confirmedAllocations(bill);
   const change = cash?.changeIdr ?? 0;
   const printedNo = print.data?.receiptNo ?? receiptNo;
+  const notPrinted =
+    print.data && !wasQueued(print.data) ? print.data : undefined;
+  const held = completion === "held";
   const toNewTransaction = () => void navigate({ to: "/pos/meja" });
 
   return (
@@ -63,10 +68,17 @@ export function SuccessPanel({ orderId }: PaymentPanelProps) {
           <Button
             type="button"
             variant={hasIssuedTicket ? "outline" : "default"}
-            disabled={print.isPending}
+            disabled={print.isPending || held}
             aria-busy={print.isPending}
             onClick={() =>
-              print.mutate({ orderId }, { onSuccess: toNewTransaction })
+              print.mutate(
+                { orderId },
+                {
+                  onSuccess: (result) => {
+                    if (wasQueued(result)) toNewTransaction();
+                  },
+                },
+              )
             }
           >
             {print.isPending
@@ -92,9 +104,11 @@ export function SuccessPanel({ orderId }: PaymentPanelProps) {
           }),
           printedNo
             ? t(
-                print.isSuccess
-                  ? "posKasirPayment.success.receiptPrinted"
-                  : "posKasirPayment.success.receipt",
+                notPrinted
+                  ? "posKasirPayment.success.receiptNotPrinted"
+                  : print.isSuccess
+                    ? "posKasirPayment.success.receiptPrinted"
+                    : "posKasirPayment.success.receipt",
                 { receiptNo: printedNo },
               )
             : null,
@@ -136,7 +150,28 @@ export function SuccessPanel({ orderId }: PaymentPanelProps) {
           )}
         </dl>
         <PaidTicketCard orderId={orderId} />
-        {print.isError && (
+        {held && (
+          <Notice
+            tone="warning"
+            title={t("posKasirPayment.success.heldTitle")}
+            className="w-full max-w-2xl text-left"
+          >
+            {t("posKasirPayment.success.heldHint")}
+          </Notice>
+        )}
+        {notPrinted && (
+          <ReceiptNotPrinted result={notPrinted} onSkip={toNewTransaction} />
+        )}
+        {print.isError && print.error.code === ORDER_COMPLETE_FAILED && (
+          <Notice
+            tone="danger"
+            title={t("posKasirPayment.success.completeFailedTitle")}
+            className="w-full max-w-2xl text-left"
+          >
+            {t("posKasirPayment.success.completeFailedHint")}
+          </Notice>
+        )}
+        {print.isError && print.error.code !== ORDER_COMPLETE_FAILED && (
           <div className="grid w-full max-w-2xl justify-items-start gap-3">
             <Notice
               tone="danger"

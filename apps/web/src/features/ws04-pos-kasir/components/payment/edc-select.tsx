@@ -99,7 +99,12 @@ export function EdcSelect({
   // The terminal in effect may be the automatic first-ready one: the side card
   // names a terminal only after the cashier chose one.
   const [picked, setPicked] = useState(false);
-  const canSend = terminal !== undefined && terminal.status === "ready";
+  // A machine that is not connected takes no amount from here: the cashier
+  // keys it on the machine and records the slip (standalone).
+  const manual = terminal !== undefined && !terminal.integrated;
+  const takesMode = terminal?.modes?.includes(mode) ?? true;
+  const canSend =
+    terminal !== undefined && terminal.status === "ready" && !manual;
   const amountText = formatRupiah(amountIdr);
 
   return (
@@ -130,23 +135,33 @@ export function EdcSelect({
             <Button type="button" variant="outline" onClick={onBack}>
               {t("posKasirEdc.select.back")}
             </Button>
-            <Button
-              type="button"
-              disabled={!canSend}
-              loading={start.isPending}
-              onClick={() =>
-                terminal &&
-                start.mutate({
-                  orderId,
-                  method: "edc",
-                  amountIdr,
-                  terminalId: terminal.id,
-                  edcMode: mode,
-                })
-              }
-            >
-              {t("posKasirEdc.select.send", { amount: amountText })}
-            </Button>
+            {manual ? (
+              <Button
+                type="button"
+                disabled={!takesMode}
+                onClick={onStandalone}
+              >
+                {t("posKasirEdc.select.standalone")}
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                disabled={!canSend}
+                loading={start.isPending}
+                onClick={() =>
+                  terminal &&
+                  start.mutate({
+                    orderId,
+                    method: "edc",
+                    amountIdr,
+                    terminalId: terminal.id,
+                    edcMode: mode,
+                  })
+                }
+              >
+                {t("posKasirEdc.select.send", { amount: amountText })}
+              </Button>
+            )}
           </>
         }
       >
@@ -170,6 +185,7 @@ export function EdcSelect({
                   name={`${group}-mode`}
                   value={item}
                   checked={mode === item}
+                  disabled={terminal?.modes?.includes(item) === false}
                   onChange={() => onModeChange(item)}
                 >
                   {t(`posKasirEdc.side.mode.${item}`)}
@@ -226,18 +242,31 @@ export function EdcSelect({
               </div>
             )}
           </fieldset>
-          <Notice tone="info" title={t("posKasirEdc.select.autoTitle")}>
-            {t("posKasirEdc.select.autoBody")}
-          </Notice>
-          <Button
-            type="button"
-            variant="link"
-            className="justify-self-start"
-            onClick={onStandalone}
-            disabled={start.isPending}
+          <Notice
+            tone="info"
+            title={t(
+              manual
+                ? "posKasirEdc.select.manualTitle"
+                : "posKasirEdc.select.autoTitle",
+            )}
           >
-            {t("posKasirEdc.select.standalone")}
-          </Button>
+            {t(
+              manual
+                ? "posKasirEdc.select.manualBody"
+                : "posKasirEdc.select.autoBody",
+            )}
+          </Notice>
+          {!manual && (
+            <Button
+              type="button"
+              variant="link"
+              className="justify-self-start"
+              onClick={onStandalone}
+              disabled={start.isPending}
+            >
+              {t("posKasirEdc.select.standalone")}
+            </Button>
+          )}
           {start.error && (
             <Notice tone="danger" title={t("posKasirEdc.select.sendError")}>
               {errorText(start.error)}
