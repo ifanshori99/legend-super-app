@@ -1,15 +1,16 @@
 # PROGRESS — Legend Super App
 
-## JEDA KUOTA 25 Nov malam (semua agent dihentikan, WIP ter-push)
+## CTO 26 Nov (kuota pulih, lanjut)
 
-- B1 `ws/1268-b1` e67c1ec7f WIP: perbaikan review (docs/qa/1268-b1-review.md) belum terbukti hijau; lanjut uji hijau, lalu review delta dari 3569ce143.
-- 1162 `ws/1268-1162` 5956f70b9 WIP: test merah `void_deposit_applied`; lanjut `accounting-finance-exceptions.service.ts:246`, web `ws07-finance-exceptions/lib.ts:98` + i18n `:68`, `receipt-page.tsx:70` `?? 0`.
-- C0 `ws/1269-c0` d6a403012: review delta LULUS. Sisa 3 P3: 422 pada endpoint status (`platform-integration.service.ts:685-745`), gerbang lihat DEPLOYMENT_MODE/DATA_CLASSIFICATION, `check-refund-flag.sh` tolak sandbox sebelum migrasi.
-- E1 `ws/1269-e1` 13c1cd18d bersih: 195 test ulangan lulus, satu bukti gagal-dulu ada; sisa bukti kedua, typecheck akhir, review architect xhigh (belum ada hasil; periksa 9 ekspektasi test yang diubah).
-- E2 `ws/1269-e2` b42219e66 WIP: 6 berkas test merah (setelan edge mode).
-- F0 `ws/1269-f0` 7c2e99288 WIP: hanya shower ditutup; test dan review belum selesai.
-- W7 mockup belum menghasilkan berkas. WFC menunggu founder: arah usulan kredit makan/minum + 5 angka bisnis (catatan CTO brief 1270).
-- int/rc2 142a1b0fa tetap; gerbang gabungan belum dijalankan.
+- `int/rc2` a9307974b = int/rc1 + E8 + F11a + B3 + 1162 (d53f8d10a) + C0 (123715616, bead .1 ditutup). Gerbang gabungan belum dijalankan.
+- B1 `ws/1268-b1` cb84da5c2: perbaikan P1 selesai, 207 test lulus; re-review architect berjalan, lalu gabung, lalu B2 (Opus) dan W0.
+- 1162 `ws/1268-1162` 4738019da: P2 selesai, 74 test lulus (bukti merah tidak terlihat); re-review berjalan, lalu gabung ulang.
+- E2 `ws/1269-e2` fdb477789: typecheck hijau, batch test tetangga berjalan; lalu review architect xhigh, gabung sebelum E1.
+- E1 `ws/1269-e1` fa67d15b8 + perbaikan langkah 1-3 belum commit; antre test.
+- F0 `ws/1269-f0` 1e36a5629: perbaikan review (docs/qa/1269-f0-review.md) berjalan; lalu WFC W1.
+- C2a `ws/1269-c2a` (worktree ../legend-1269-c2a) dimulai, Opus; lalu C4a.
+- W7 mockup WFC berjalan (`design/mockups/wfc/`), lalu review founder. Brief 1270 bagian "Revisi keputusan 28" berlaku; rilis 1 135 jam, W13 (usulan AI, 10 jam) menunggu pilihan founder.
+- Perkiraan 11-17 Des dengan 3 agent.
 
 ## CTO 25 Nov malam (1268 sambung POS, tanpa GitHub Actions)
 
