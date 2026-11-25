@@ -464,6 +464,139 @@ describe("tax: edge = cloud to the rupiah", () => {
     expect(await bill(edge.database, priced.id)).toEqual(after);
   });
 
+  /** The running loop and a restart, on the edge's stored checkpoints. */
+  function taxRig() {
+    const live = createCatalogFreshness();
+    const held = () => live.snapshot().salesGate.taxUnsynced;
+    // A restart: the stored state alone decides.
+    const atBoot = async () => {
+      const boot = createCatalogFreshness();
+      await seedCatalogFreshness(boot, scope("device"), nodeId, edge.database);
+      return boot.snapshot().salesGate.taxUnsynced;
+    };
+    // One whole tick, offline or with the cloud answering; every tax stream
+    // must have been recorded, so an early look proves nothing.
+    const tick = async (
+      online: boolean,
+      expected: readonly string[],
+      checkpoints: typeof db = edge.database,
+    ) => {
+      await settleCloud(owner);
+      let recorded = 0;
+      const errors: unknown[] = [];
+      const worker = startEdgeMasterSyncLoop({
+        database: checkpoints,
+        config: {
+          cloudUrl: new URL("https://cloud.v4.test"),
+          credential,
+        } as never,
+        intervalMs: 60_000,
+        catalogOnStart: true,
+        onError: (error) => errors.push(error),
+        catalog: {
+          context: scope("device"),
+          edgeNodeId: nodeId,
+          freshness: {
+            ...live,
+            recordSuccess: (stream, at) => {
+              live.recordSuccess(stream, at);
+              recorded += 1;
+            },
+            recordFailure: (stream, failure) => {
+              live.recordFailure(stream, failure);
+              recorded += 1;
+            },
+          },
+          pull: (options) =>
+            pullCatalog({
+              ...options,
+              database: edge.database,
+              streams: CATALOG_TAX_STREAMS,
+              fetchPage: (stream, since) =>
+                online
+                  ? page(stream, since ?? undefined)
+                  : Promise.reject(new Error("offline")),
+            }),
+        },
+      });
+      try {
+        await vi.waitFor(
+          () => expect(recorded).toBe(CATALOG_TAX_STREAMS.length),
+          { timeout: 10_000, interval: 50 },
+        );
+      } finally {
+        await worker.stop();
+      }
+      expect(held()).toEqual(expected);
+      return errors;
+    };
+    return { live, tick, atBoot };
+  }
+
+  /** A database whose transactions fail from call `from` on. */
+  const failing = (from = 1): typeof db => {
+    let calls = 0;
+    return new Proxy(edge.database, {
+      get(target, property, receiver) {
+        if (property !== "transaction")
+          return Reflect.get(target, property, receiver);
+        return (...args: unknown[]) => {
+          calls += 1;
+          return calls >= from
+            ? Promise.reject(new Error("database unavailable"))
+            : (target.transaction as (...a: unknown[]) => unknown)(...args);
+        };
+      },
+    });
+  };
+
+  const rewindTax = () =>
+    edge.owner.query(
+      "UPDATE edge_pull_checkpoints SET watermark = 'rewind' WHERE stream = ANY($1)",
+      [CATALOG_TAX_STREAMS.map((name) => `catalog:${name}`)],
+    );
+
+  it("offline without a rewind keeps selling on the last rules", async () => {
+    await insert(owner, "tax_rules", taxRule());
+    const { live, tick, atBoot } = taxRig();
+    await tick(true, []);
+    await tick(false, []);
+    expect(live.snapshot().salesBlocked).toBe(false);
+    expect(live.snapshot().streams.tax_rules?.failureReason).not.toBeNull();
+    expect(await atBoot()).toEqual([]);
+  });
+
+  it("an unreadable checkpoint while running is reported and changes nothing: no hold, no release", async () => {
+    await insert(owner, "tax_rules", taxRule());
+    const { live, tick } = taxRig();
+    await tick(true, []);
+    const errors = await tick(false, [], failing());
+    expect(live.snapshot().salesBlocked).toBe(false);
+    expect(errors.map((error) => (error as Error).message)).toContain(
+      "database unavailable",
+    );
+
+    await rewindTax();
+    await tick(false, CATALOG_TAX_STREAMS);
+    await tick(false, CATALOG_TAX_STREAMS, failing());
+  }, 30_000);
+
+  it.each([
+    ["nothing readable", 1],
+    ["only the last success readable", 2],
+  ])("an unreadable checkpoint at boot holds: %s", async (_label, from) => {
+    await insert(owner, "tax_rules", taxRule());
+    await pull(CATALOG_TAX_STREAMS);
+    await rewindTax();
+    const boot = createCatalogFreshness();
+    await expect(
+      seedCatalogFreshness(boot, scope("device"), nodeId, failing(from)),
+    ).rejects.toThrow("database unavailable");
+    expect(boot.snapshot().salesGate.taxUnsynced).toEqual([
+      ...CATALOG_TAX_STREAMS,
+    ]);
+  });
+
   it("a rewind with a version the restored cloud lost: held until it is out of force, then the cloud's rupiah", async () => {
     await insert(owner, "tax_rules", taxRule());
     await insert(owner, "tax_settings", settings());
@@ -481,49 +614,7 @@ describe("tax: edge = cloud to the rupiah", () => {
       }),
     );
     await pull();
-    const live = createCatalogFreshness();
-    const held = () => live.snapshot().salesGate.taxUnsynced;
-    // A restart: the stored state alone decides.
-    const atBoot = async () => {
-      const boot = createCatalogFreshness();
-      await seedCatalogFreshness(boot, scope("device"), nodeId, edge.database);
-      return boot.snapshot().salesGate.taxUnsynced;
-    };
-    // The running loop, offline or with the cloud answering.
-    const tick = async (online: boolean, expected: readonly string[]) => {
-      await settleCloud(owner);
-      const worker = startEdgeMasterSyncLoop({
-        database: edge.database,
-        config: {
-          cloudUrl: new URL("https://cloud.v4.test"),
-          credential,
-        } as never,
-        intervalMs: 60_000,
-        catalogOnStart: true,
-        catalog: {
-          context: scope("device"),
-          edgeNodeId: nodeId,
-          freshness: live,
-          pull: (options) =>
-            pullCatalog({
-              ...options,
-              streams: CATALOG_TAX_STREAMS,
-              fetchPage: (stream, since) =>
-                online
-                  ? page(stream, since ?? undefined)
-                  : Promise.reject(new Error("offline")),
-            }),
-        },
-      });
-      try {
-        await vi.waitFor(() => expect(held()).toEqual(expected), {
-          timeout: 10_000,
-          interval: 50,
-        });
-      } finally {
-        await worker.stop();
-      }
-    };
+    const { tick, atBoot } = taxRig();
     await tick(true, []);
     expect(await atBoot()).toEqual([]);
 
@@ -532,11 +623,7 @@ describe("tax: edge = cloud to the rupiah", () => {
     await owner.query("DELETE FROM tax_settings WHERE id = $1", [
       ghostSettings.id,
     ]);
-    const streams = CATALOG_TAX_STREAMS.map((name) => `catalog:${name}`);
-    await edge.owner.query(
-      "UPDATE edge_pull_checkpoints SET watermark = 'rewind' WHERE stream = ANY($1)",
-      [streams],
-    );
+    await rewindTax();
     const cloud = await bill(db);
     // The ghost still wins on the edge: exactly why nothing may be sold.
     expect(await bill(edge.database)).not.toEqual(cloud);

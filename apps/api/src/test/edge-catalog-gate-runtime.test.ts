@@ -236,6 +236,41 @@ describe("legend-osqou.22 no tax rules on the edge, no sale", () => {
     expect(() => assertCatalogSalesAllowed()).not.toThrow();
   });
 
+  it("a seed that failed once at boot is read again: an offline edge opens without a restart", async () => {
+    const rig = await newEdge();
+    const clock = clocks(T0);
+    let reads = 0;
+    const errors: unknown[] = [];
+    const handle = await startCatalogGate({
+      context: rig.context,
+      scope: rig.scope,
+      overrides: overrideStub().stub,
+      seed: async (freshness) => {
+        reads += 1;
+        if (reads === 1) throw new Error("database unavailable");
+        for (const name of STREAMS) freshness.seedLastSuccess(name, T0);
+      },
+      onError: (error) => errors.push(error),
+      persistMs: 100,
+      wall: clock.wall,
+      mono: clock.mono,
+    });
+    handles.push(handle);
+    setSalesGateEdgeModeForTests(() => true);
+    expect(getSalesGateState()).toMatchObject({
+      blocked: true,
+      reason: "TAX_NOT_SYNCED",
+    });
+    expect(errors).toHaveLength(1);
+    // No pull ever succeeds here: only the stored state opens the gate.
+    await vi.waitFor(() => expect(getSalesGateState().blocked).toBe(false), {
+      timeout: 3_000,
+      interval: 50,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(reads).toBe(2); // read: no further seeds
+  });
+
   it("the cloud sells without any of this", async () => {
     const rig = await newEdge();
     await start(rig, clocks(T0), { seed: T0, tax: null });

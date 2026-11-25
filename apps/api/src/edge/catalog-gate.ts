@@ -312,11 +312,18 @@ export async function startCatalogGate(options: {
     await persist();
   };
 
-  const seedFreshness = async () => {
+  // A failed read is tried again: unseeded tax holds sales, and an offline
+  // edge has no pull that could release it.
+  const seedFreshness = async (): Promise<void> => {
+    if (stopped) return;
     try {
       await options.seed?.(freshness);
     } catch (error) {
       onError(error);
+      if (stopped) return;
+      const timer = setTimeout(() => void seedFreshness(), retryMs);
+      timer.unref?.();
+      retryTimer = timer;
     }
   };
   // Boot: record the tracking start, then load an override that survived.
