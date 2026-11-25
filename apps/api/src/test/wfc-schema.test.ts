@@ -1208,19 +1208,25 @@ describe("review 2: a claim is a frozen snapshot on legal steps", () => {
       no_show: ["status = 'no_show'"],
       completed: ["status = 'checked_in'", "status = 'completed'"],
     };
-    /** A refund the provider itself reported on an intent of the link. */
-    async function providerRefund(s: Setup, linkId: string, amount: number) {
-      const intentId = randomUUID();
-      await asTenant(s.world.tenantId, async (client) => {
-        await insertInto(client, "payment_intents", {
-          id: intentId,
+    type Intent = { id: string; ref: string };
+    /** A provider transaction that paid the link (amount: the link total). */
+    async function payIntent(
+      s: Setup,
+      linkId: string,
+      overrides: Record<string, unknown> = {},
+    ): Promise<Intent> {
+      const intent = { id: randomUUID(), ref: `pay-${randomUUID()}` };
+      await asTenant(s.world.tenantId, (client) =>
+        insertInto(client, "payment_intents", {
+          id: intent.id,
           tenant_id: s.world.tenantId,
           outlet_id: s.world.outletA,
           payment_link_id: linkId,
           method: "qris",
           provider: "doit",
           amount_idr: 70_000,
-          idempotency_key: `wfc-${intentId}`,
+          idempotency_key: `wfc-${intent.id}`,
+          provider_ref: intent.ref,
           status: "paid",
           paid_at: new Date(),
           instructions: JSON.stringify({
@@ -1229,19 +1235,44 @@ describe("review 2: a claim is a frozen snapshot on legal steps", () => {
             issuer: null,
           }),
           expires_at: new Date(),
-        });
-        await insertInto(client, "payment_provider_refunds", {
+          ...overrides,
+        }),
+      );
+      return intent;
+    }
+    /** A refund the provider itself reported on a transaction of an intent. */
+    const refundOn = (
+      s: Setup,
+      intent: Intent,
+      amount: number,
+      overrides: Record<string, unknown> = {},
+    ) =>
+      asTenant(s.world.tenantId, (client) =>
+        insertInto(client, "payment_provider_refunds", {
           tenant_id: s.world.tenantId,
           outlet_id: s.world.outletA,
-          payment_intent_id: intentId,
+          payment_intent_id: intent.id,
           provider: "doit",
           provider_refund_id: `rf-${randomUUID()}`,
-          provider_payment_ref: `pay-${randomUUID()}`,
+          provider_payment_ref: intent.ref,
           amount_idr: amount,
           source: "refund_webhook",
-        });
-      });
-    }
+          ...overrides,
+        }),
+      );
+    /** A second payment of an intent, held as unallocated money. */
+    const unallocatedOn = (s: Setup, intent: Intent) =>
+      asTenant(s.world.tenantId, (client) =>
+        insertInto(client, "payment_unallocated_funds", {
+          tenant_id: s.world.tenantId,
+          outlet_id: s.world.outletA,
+          payment_intent_id: intent.id,
+          amount_idr: 70_000,
+          reason: "double_payment",
+        }),
+      );
+    const providerRefund = async (s: Setup, linkId: string, amount: number) =>
+      refundOn(s, await payIntent(s, linkId), amount);
 
     it.each(Object.keys(after))("%s gives no money back", async (status) => {
       const s = await setup();
@@ -1257,13 +1288,79 @@ describe("review 2: a claim is a frozen snapshot on legal steps", () => {
           ).rejects.toMatchObject(refused);
       };
       await refuse("no provider refund");
-      // Another link's refund does not count, nor one rupiah short.
+      // Another link's refund does not count.
       await providerRefund(s, await seedLink(s), 70_000);
-      await providerRefund(s, linkId, 50_000);
-      await providerRefund(s, linkId, 19_999);
+      await refuse("another link");
+      // Refunded in steps on the settling transaction: one rupiah short is not
+      // enough, the full total is.
+      const settling = await payIntent(s, linkId);
+      await refundOn(s, settling, 50_000);
+      await refundOn(s, settling, 19_999);
       await refuse("one rupiah short");
-      await providerRefund(s, linkId, 1);
+      await refundOn(s, settling, 1);
       await updateClaim(s, row.id, FULL);
+    });
+
+    it("a refund of a double payment is not the refund of the seat", async () => {
+      const s = await setup();
+      const build = await claimRow(s);
+      const cases: Record<string, (linkId: string) => Promise<void>> = {
+        "a second intent paid twice": async (linkId) => {
+          await payIntent(s, linkId);
+          const second = await payIntent(s, linkId);
+          await unallocatedOn(s, second);
+          await refundOn(s, second, 70_000);
+        },
+        "a second transaction of the same intent": async (linkId) => {
+          const intent = await payIntent(s, linkId);
+          await unallocatedOn(s, intent);
+          await refundOn(s, intent, 70_000);
+        },
+        "refunds split over two intents": async (linkId) => {
+          await refundOn(s, await payIntent(s, linkId), 35_000);
+          await refundOn(s, await payIntent(s, linkId), 35_000);
+        },
+        "another transaction reference": async (linkId) => {
+          await refundOn(s, await payIntent(s, linkId), 70_000, {
+            provider_payment_ref: `pay-${randomUUID()}`,
+          });
+        },
+        "another provider": async (linkId) => {
+          await refundOn(s, await payIntent(s, linkId), 70_000, {
+            provider: "duitku",
+          });
+        },
+        "an intent below the total": async (linkId) => {
+          await refundOn(
+            s,
+            await payIntent(s, linkId, { amount_idr: 69_999 }),
+            70_000,
+          );
+        },
+        "an intent never paid": async (linkId) => {
+          await refundOn(
+            s,
+            await payIntent(s, linkId, { paid_at: null, status: "pending" }),
+            70_000,
+          );
+        },
+        "an intent without a provider reference": async (linkId) => {
+          await refundOn(
+            s,
+            await payIntent(s, linkId, { provider_ref: null }),
+            70_000,
+          );
+        },
+      };
+      for (const [label, arrange] of Object.entries(cases)) {
+        const row = build();
+        const linkId = await confirmedClaim(s, row);
+        await updateClaim(s, row.id, "status = 'no_show'");
+        await arrange(linkId);
+        await expect(updateClaim(s, row.id, FULL), label).rejects.toMatchObject(
+          refused,
+        );
+      }
     });
 
     it("a step that uses the seat never carries a refund", async () => {
@@ -1291,9 +1388,10 @@ describe("review 2: a claim is a frozen snapshot on legal steps", () => {
       await settleLink(s, linkId);
       await updateClaim(s, row.id, CONFIRM);
       await updateClaim(s, row.id, "status = 'no_show'");
-      await providerRefund(s, linkId, 70_000);
+      const intent = await payIntent(s, linkId, { amount_idr: 77_000 });
+      await refundOn(s, intent, 70_000);
       await expect(updateClaim(s, row.id, FULL)).rejects.toMatchObject(refused);
-      await providerRefund(s, linkId, 7_000);
+      await refundOn(s, intent, 7_000);
       await updateClaim(s, row.id, FULL);
     });
 

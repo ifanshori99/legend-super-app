@@ -97,8 +97,12 @@ CREATE TRIGGER "wfc_business_settings_approval_trg"
 --
 -- A seat that was used or not shown up for (checked_in, no_show, completed) is
 -- not refunded, and a confirmed claim is cancelled or refunded only before its
--- slot begins. The one exception is money the provider already gave back: its
--- refunds on the link's intents reach the link's total.
+-- slot begins. The one exception is money the provider already gave back on
+-- the settling transaction itself: one paid intent of the link (provider
+-- reference set, amount at least the link total, no unallocated money on it)
+-- whose refunds on that same provider transaction reach the link total. A
+-- refund of a double payment, of another intent or spread over intents does
+-- not count; those cases go to Finance by hand.
 --
 -- Lock order: payment link first, then claim (settlement holds the link). An
 -- UPDATE already holds the claim, so the link is taken NOWAIT: a caller in the
@@ -198,15 +202,29 @@ BEGIN
        OR (NEW.refunded_idr > OLD.refunded_idr
            AND NOT (NEW.status IN ('cancelled', 'refunded')
                     AND OLD.status IN ('pending_payment', 'confirmed', 'cancelled'))) THEN
-      IF ((SELECT sum(r.amount_idr)
-             FROM public.payment_provider_refunds r
+      IF NOT EXISTS (
+           SELECT 1
+             FROM public.payment_links l
              JOIN public.payment_intents i
-               ON i.tenant_id = r.tenant_id AND i.id = r.payment_intent_id
-            WHERE i.tenant_id = OLD.tenant_id
-              AND i.payment_link_id = OLD.payment_link_id)
-          >= (SELECT l.total_idr FROM public.payment_links l
-               WHERE l.tenant_id = OLD.tenant_id AND l.id = OLD.payment_link_id))
-         IS NOT TRUE THEN
+               ON i.tenant_id = l.tenant_id AND i.outlet_id = l.outlet_id
+              AND i.payment_link_id = l.id
+            WHERE l.tenant_id = OLD.tenant_id
+              AND l.outlet_id = OLD.outlet_id
+              AND l.id = OLD.payment_link_id
+              AND i.paid_at IS NOT NULL
+              AND i.provider_ref IS NOT NULL
+              AND i.amount_idr >= l.total_idr
+              AND NOT EXISTS (
+                    SELECT 1 FROM public.payment_unallocated_funds u
+                     WHERE u.tenant_id = i.tenant_id
+                       AND u.payment_intent_id = i.id)
+              AND (SELECT coalesce(sum(r.amount_idr), 0)
+                     FROM public.payment_provider_refunds r
+                    WHERE r.tenant_id = i.tenant_id
+                      AND r.payment_intent_id = i.id
+                      AND r.provider = i.provider
+                      AND r.provider_payment_ref = i.provider_ref)
+                  >= l.total_idr) THEN
         RAISE EXCEPTION 'wfc claim % is no longer refundable', OLD.id
           USING ERRCODE = '23514';
       END IF;
