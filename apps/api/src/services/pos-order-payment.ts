@@ -114,11 +114,11 @@ const paidPayloadSchema = z.looseObject({
 });
 
 /** True on an edge node (same rule as device-pin.service.ts). */
-function isEdgeProcess(): boolean {
+export function isEdgeProcess(): boolean {
   return getEdgeRuntimeState().edgeMode || process.env.EDGE_MODE === "true";
 }
 
-async function edgeHasGatewayCredentials(
+export async function edgeHasGatewayCredentials(
   context: ScopedTenantContext,
   outletId: string,
 ): Promise<boolean> {

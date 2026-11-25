@@ -8,7 +8,7 @@ import {
   type UserId,
 } from "@starter/shared/core";
 import { messagesId } from "@starter/shared/i18n";
-import type { ReceiptDocument } from "@starter/shared/pos";
+import type { ReceiptDocument, ReceiptPrintResult } from "@starter/shared/pos";
 import { edgePrinters } from "../db/schema/edge-print.ts";
 import { getEdgeRuntimeState } from "../edge/runtime.ts";
 import { markReprint } from "../edge/print/escpos.ts";
@@ -46,6 +46,11 @@ export function receiptData(document: ReceiptDocument): ReceiptData {
       amount: tender.amountIdr,
     })),
   };
+}
+
+/** Only the edge owns printers; on the cloud a print request prints nothing. */
+export function receiptPrintResult(): ReceiptPrintResult {
+  return getEdgeRuntimeState().edgeMode ? "queued_to_printer" : "not_printed";
 }
 
 export async function enqueueReceiptOnEdge(

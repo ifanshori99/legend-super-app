@@ -198,6 +198,7 @@ export async function captainPaymentFixture(label: string) {
   };
   return {
     ...fixture,
+    deviceToken: token,
     context,
     gateway,
     post,

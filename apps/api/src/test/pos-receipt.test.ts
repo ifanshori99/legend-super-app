@@ -1744,16 +1744,19 @@ describe("POS-07 receipt document (legend-93a)", () => {
     ]);
   });
 
-  it("POS-07 the printed deliveries are recorded: print and link are sent at once, the link is returned", async () => {
+  it("POS-07 the deliveries are recorded: the link is sent at once and returned, the cloud print says not printed (1268 B2)", async () => {
     const s = await showcase();
     const { deliveries, link } = s.issued;
     expect(
       deliveries.map((row: { channel: string }) => row.channel).sort(),
     ).toEqual(["link", "print"]);
-    for (const row of deliveries) {
-      expect(row.status).toBe("sent");
-      expect(row.sentAt).toEqual(expect.any(String));
-    }
+    for (const row of deliveries)
+      expect(row).toMatchObject(
+        row.channel === "print"
+          ? { status: "failed", sentAt: null, failureReason: "not_printed" }
+          : { status: "sent", sentAt: expect.any(String) },
+      );
+    expect(s.issued.printResult).toBe("not_printed");
     expect(link).toMatchObject({ receiptId: s.issued.receipt.id });
     // The link opens the web page of the tenant, not the API.
     expect(link.url.startsWith(`${WEB_URL}/r/`)).toBe(true);

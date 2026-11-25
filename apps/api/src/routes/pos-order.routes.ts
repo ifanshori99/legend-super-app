@@ -35,6 +35,7 @@ import {
   getPosCatalog,
   getPosOrder,
   getPosOrderActionAvailability,
+  getPosPaymentOptions,
   getPosQris,
   listPosQrisReconciliations,
   listPosOrderEvents,
@@ -58,6 +59,7 @@ import { requireAuthAllowSharedDevice } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
+  getAccessSnapshot,
   getScopedTenantContext,
   requireOutletPermission,
 } from "../middleware/permissions.ts";
@@ -71,6 +73,7 @@ import * as corrections from "../services/pos-order-corrections.ts";
 import * as discounts from "../services/pos-order-discounts.ts";
 import { addPosTender as addPosTenderService } from "../services/pos-order-payment.ts";
 import * as pos from "../services/pos-order.service.ts";
+import { getPosPaymentOptions as getPosPaymentOptionsService } from "../services/pos-payment-options.service.ts";
 import * as qrisHold from "../services/pos-qris-hold.ts";
 import * as vaRelease from "../services/payment-va-release.ts";
 import { listPosQrisReconciliations as listPosQrisReconciliationsService } from "../services/pos-qris-release-recon.ts";
@@ -414,15 +417,33 @@ posOrderRouter.post(
   },
 );
 
+posOrderRouter.get("/payment-options", pay, async (req, res) => {
+  const { outletId } = getPosPaymentOptions.params.parse(req.params);
+  res.json({
+    data: await getPosPaymentOptionsService(
+      getScopedTenantContext(req),
+      outletId,
+      { deviceId: await currentDeviceIdOf(req) },
+    ),
+  });
+});
+
 // legend-yhia9: the QR hold. Cancel hides the QR and waits for provider proof
 // (202); release is a manager approval (Q93, pos-overrides flow).
 posOrderRouter.get("/orders/:orderId/qris", view, async (req, res) => {
   const { outletId, orderId } = getPosQris.params.parse(req.params);
   res.json({
-    data: await qrisHold.getPosQrisHold(
+    data: await qrisHold.getPosQrisStatus(
       getScopedTenantContext(req),
       outletId,
       orderId,
+      {
+        canAcceptPayment:
+          getAccessSnapshot(req).contextFor("pos.payment.accept", {
+            type: "outlet",
+            id: outletId,
+          }) !== null,
+      },
     ),
   });
 });
