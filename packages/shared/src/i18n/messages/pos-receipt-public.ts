@@ -27,6 +27,7 @@ export const posReceiptPublicMessages = {
   rounding: "Pembulatan",
   total: "Total",
   payment: "Pembayaran",
+  deposit: "Uang muka (DP)",
   paid: "Jumlah dibayar",
   tender: {
     cash: "Tunai",

@@ -1171,6 +1171,40 @@ describe("legend-771dl order.voided", () => {
     });
   });
 
+  it("a void of a sale funded partly by a reservation deposit is refused and writes nothing", async () => {
+    // legend-j772n review P3: the void row would reverse the whole total while
+    // the DP part is not a tender; a full gateway refund could pay it twice.
+    const orderId = createUlid(++clock);
+    await deliver([
+      paidEvent(orderId, {
+        paidDepositIdr: 10000,
+        paidEdcIdr: 10000,
+        tenders: [
+          { method: "cash", amountIdr: 50000, receivedIdr: 50000 },
+          { method: "edc_card", amountIdr: 10000 },
+          { method: "points", amountIdr: 7000, pointsUsed: 70 },
+        ],
+      }),
+    ]);
+    expect(await ingestOf(orderId)).toMatchObject({ state: "ingested" });
+    const event = voidedEvent(orderId, 2, {
+      voidId: randomUUID(),
+      overrideId: createUlid(++clock),
+    });
+
+    await deliver([event]);
+
+    expect(await voidRows(orderId)).toHaveLength(0);
+    expect(await ingestOf(orderId)).toMatchObject({
+      state: "ingested",
+      reason: expect.stringMatching(/(^|:)void_deposit_applied$/),
+    });
+    expect(await parkedRowsOf(event)).toBe(1);
+    expect((await orderRows(orderId))[0]).toMatchObject({
+      status: "completed",
+    });
+  });
+
   it("a void without an approver is refused as void_actor_missing", async () => {
     const orderId = await paidOrder();
     const event = voidedEvent(orderId, 2, {
