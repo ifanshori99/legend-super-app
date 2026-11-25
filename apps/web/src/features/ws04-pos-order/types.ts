@@ -96,8 +96,10 @@ export interface CartLine {
   hold: boolean;
 }
 
-export interface OrderLine
-  extends Omit<CartLine, "hold" | "variantId" | "variantName"> {
+export interface OrderLine extends Omit<
+  CartLine,
+  "hold" | "variantId" | "variantName"
+> {
   status: Exclude<LineStatus, "draft">;
 }
 
@@ -161,6 +163,22 @@ export interface OrderingConnectivity {
 export interface OjolInput {
   platform: OjolPlatform;
   externalRef: string;
+}
+
+/** What the cashier chose for the order itself, next to the lines. */
+export interface OrderMeta {
+  channel: SaleChannel;
+  tableLabel: string | null;
+  /** The open session of the chosen table; this, not the label, is sent. */
+  tableSessionId: string | null;
+  ojolPlatform: OjolPlatform | null;
+  ojolRef: string;
+}
+
+/** The cart and meta of a send that is not answered yet, kept for a re-send. */
+export interface OrderSnapshot {
+  lines: CartLine[];
+  meta: OrderMeta;
 }
 
 export interface SubmitOrderInput {

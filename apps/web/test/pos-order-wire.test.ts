@@ -9,16 +9,25 @@ import { addLine } from "@/features/ws04-pos-order/cart-logic";
 import {
   placeOrder,
   parkCart,
-  resumeParked,
+  resumeParkedInto,
+  readPendingOrder,
+  closeOrderIntent,
+  pendingResumeIds,
+  ACTOR_MISSING,
   ORDER_INTENT_PENDING,
   type FlowDeps,
 } from "@/features/ws04-pos-order/order-flow";
 import { peekIntent } from "@/features/ws04-pos-order/intent-store";
-import { createBodyOf, mapParked } from "@/features/ws04-pos-order/order-wire";
+import {
+  createBodyOf,
+  draftFromPark,
+  mapParked,
+} from "@/features/ws04-pos-order/order-wire";
 import type {
   CartLine,
   Catalog,
   MenuItem,
+  OrderMeta,
   SubmitOrderInput,
 } from "@/features/ws04-pos-order/types";
 
@@ -92,6 +101,18 @@ function input(over: Partial<SubmitOrderInput> = {}): SubmitOrderInput {
 
 class MemoryStorage {
   private map = new Map<string, string>();
+  get length() {
+    return this.map.size;
+  }
+  key(index: number) {
+    return [...this.map.keys()][index] ?? null;
+  }
+  /** A copied tab: the same entries in its own storage. */
+  clone() {
+    const copy = new MemoryStorage();
+    for (const [key, value] of this.map) copy.setItem(key, value);
+    return copy;
+  }
   getItem(key: string) {
     return this.map.get(key) ?? null;
   }
@@ -317,16 +338,20 @@ test("a 5xx keeps the key", async () => {
   assert.equal(new Set(state.createCalls).size, 1);
 });
 
-test("park and resume are keyed and repeat their key", async () => {
+test("park is keyed and does not need the catalog", async () => {
   const { state, deps } = fakeServer();
   const storage = new MemoryStorage();
-  const parkedA = await parkCart(deps(storage), input());
-  const parkedB = await parkCart(deps(storage), input());
-  assert.notEqual(parkedA.id, "");
-  assert.equal(parkedB.id.startsWith("parked-"), true);
-  assert.equal(state.parked.size, 2, "a finished park forgets its key");
-  await resumeParked(deps(storage), "parked-1");
-  assert.equal(state.resumed.size, 1);
+  const parked = await parkCart(deps(storage), input());
+  assert.equal(state.parked.size, 1);
+  const draft = draftFromPark(
+    {
+      id: parked.id,
+      label: "Meja",
+      parkedAt: "2026-11-26T00:00:00.000Z",
+    } as never,
+    input(),
+  );
+  assert.equal(draft.lines, LINES, "the cart that was parked, no catalog read");
 });
 
 test("a parked cart comes back from the catalog; gone items are counted", () => {
@@ -363,4 +388,239 @@ test("a parked cart comes back from the catalog; gone items are counted", () => 
   assert.equal(draft.lines.length, 1);
   assert.equal(draft.lines[0]?.variantId, LARGE.id);
   assert.equal(draft.subtotalIdr, (LARGE.priceIdr + OPTION.priceDeltaIdr) * 2);
+});
+
+// ---- Review of W1 (docs/qa/1268-w1-review.md) ------------------------------
+
+const META: OrderMeta = {
+  channel: "dine_in",
+  tableLabel: "A01",
+  tableSessionId: SESSION,
+  ojolPlatform: null,
+  ojolRef: "",
+};
+const SCOPE = { outletId: "o1", actorId: "u1", subject: "kasir" };
+
+class FlakyStorage extends MemoryStorage {
+  failRemove = 0;
+  removeItem(key: string) {
+    if (this.failRemove-- > 0) throw new Error("tab closed");
+    super.removeItem(key);
+  }
+}
+
+test("resume: a catalog failure sends nothing; the lines are saved before the key is forgotten", async () => {
+  const { state, deps } = fakeServer();
+  const storage = new MemoryStorage();
+  const d = deps(storage);
+  let sent = 0;
+  const realResume = d.resume;
+  d.resume = async (id, body) => {
+    sent += 1;
+    const parked = await realResume(id, body);
+    if (sent === 1) throw NETWORK();
+    return parked;
+  };
+  await assert.rejects(
+    resumeParkedInto(
+      d,
+      "p1",
+      async () => Promise.reject(new Error("catalog")),
+      () => {},
+    ),
+  );
+  assert.equal(sent, 0, "the server was not asked while the catalog failed");
+  assert.deepEqual(pendingResumeIds(storage, SCOPE), []);
+
+  // The reply is lost: the intent stays, the open screen replays it.
+  await assert.rejects(
+    resumeParkedInto(
+      d,
+      "p1",
+      async () => "cat",
+      () => {},
+    ),
+  );
+  assert.deepEqual(pendingResumeIds(storage, SCOPE), ["p1"]);
+  const applied: string[] = [];
+  await resumeParkedInto(
+    d,
+    "p1",
+    async () => "cat",
+    (parked) => {
+      applied.push(parked.id);
+      assert.deepEqual(
+        pendingResumeIds(storage, SCOPE),
+        ["p1"],
+        "key still kept while applying",
+      );
+    },
+  );
+  assert.deepEqual(applied, ["p1"]);
+  assert.deepEqual(pendingResumeIds(storage, SCOPE), []);
+  assert.equal(new Set(state.resumed.keys()).size, 1, "one key for both tries");
+});
+
+test("resume: a crash after the lines were saved does not add them twice", async () => {
+  const { deps } = fakeServer();
+  const storage = new FlakyStorage();
+  const d = deps(storage);
+  const applied: string[] = [];
+  storage.failRemove = 1;
+  await assert.rejects(
+    resumeParkedInto(
+      d,
+      "p1",
+      async () => "cat",
+      (p) => applied.push(p.id),
+    ),
+  );
+  assert.equal(applied.length, 1);
+  const again = await resumeParkedInto(
+    d,
+    "p1",
+    async () => "cat",
+    (p) => applied.push(p.id),
+  );
+  assert.equal(again, null);
+  assert.equal(applied.length, 1, "applied once");
+  assert.deepEqual(pendingResumeIds(storage, SCOPE), []);
+});
+
+test("an unclear send keeps its lines and meta; the re-send uses the same key", async () => {
+  const { state, deps } = fakeServer();
+  const storage = new MemoryStorage();
+  state.loseCreateReply = 1;
+  await assert.rejects(placeOrder(deps(storage), input(), META));
+  const pending = readPendingOrder(storage, SCOPE);
+  assert.deepEqual(pending?.meta, META);
+  assert.equal(pending?.lines.length, LINES.length);
+  // The cashier emptied the cart meanwhile; the restored one is sent as it was.
+  const restored = input({
+    lines: pending!.lines,
+    tableSessionId: pending!.meta.tableSessionId,
+  });
+  await placeOrder(deps(storage), restored, pending!.meta);
+  assert.equal(state.orders.size, 1);
+  assert.equal(new Set(state.createCalls).size, 1);
+  assert.equal(readPendingOrder(storage, SCOPE), null);
+});
+
+test("a reused key is never closed on its own; the cashier closes it", async () => {
+  const { state, deps } = fakeServer();
+  const storage = new MemoryStorage();
+  state.failCreate = new ApiError(409, "IDEMPOTENCY_KEY_REUSED", "reused");
+  await assert.rejects(placeOrder(deps(storage), input(), META));
+  assert.notEqual(readPendingOrder(storage, SCOPE), null);
+  closeOrderIntent(storage, SCOPE);
+  assert.equal(readPendingOrder(storage, SCOPE), null);
+});
+
+test("final refusals close the key, 401/403/408/429 keep it", async () => {
+  for (const [status, closed] of [
+    [422, true],
+    [404, true],
+    [409, true],
+    [401, false],
+    [403, false],
+    [408, false],
+    [429, false],
+    [500, false],
+  ] as const) {
+    const { state, deps } = fakeServer();
+    const storage = new MemoryStorage();
+    state.failCreate = new ApiError(status, "X", "x");
+    await assert.rejects(placeOrder(deps(storage), input(), META));
+    assert.equal(
+      readPendingOrder(storage, SCOPE) === null,
+      closed,
+      `status ${status}`,
+    );
+  }
+});
+
+test("a saved option that left the catalog is counted missing, not dropped", () => {
+  const catalog: Catalog = {
+    categories: [],
+    items: [withVariants],
+    updatedAt: "2026-11-26T00:00:00.000Z",
+    source: "live",
+  };
+  const { draft, missing } = mapParked(
+    {
+      id: "p1" as never,
+      label: "Meja",
+      channel: "pos",
+      serviceType: "dine_in",
+      tableSessionId: null,
+      externalRef: null,
+      parkedAt: "2026-11-26T00:00:00.000Z",
+      items: [
+        {
+          menuItemId: withVariants.id,
+          variantId: LARGE.id,
+          modifierIds: [OPTION.id, uuid()],
+          quantity: 1,
+        },
+      ],
+    } as never,
+    catalog,
+    uuid,
+  );
+  assert.equal(missing, 1);
+  assert.equal(draft.lines.length, 0);
+});
+
+test("nothing is sent without an outlet or a cashier", async () => {
+  for (const scope of [
+    { outletId: "o1", actorId: "", subject: "kasir" },
+    { outletId: "", actorId: "u1", subject: "kasir" },
+  ]) {
+    const { state, deps } = fakeServer();
+    const storage = new MemoryStorage();
+    const code = (error: unknown) =>
+      error instanceof ApiError && error.code === ACTOR_MISSING;
+    await assert.rejects(placeOrder(deps(storage, scope), input(), META), code);
+    await assert.rejects(parkCart(deps(storage, scope), input()), code);
+    await assert.rejects(
+      resumeParkedInto(
+        deps(storage, scope),
+        "p1",
+        async () => 1,
+        () => {},
+      ),
+      code,
+    );
+    assert.equal(state.createCalls.length, 0);
+    assert.equal(state.parked.size, 0);
+    assert.equal(storage.length, 0);
+  }
+});
+
+test("a copied tab repeats the same key: one order whoever sends first", async () => {
+  const { state, deps } = fakeServer();
+  const tabA = new MemoryStorage();
+  state.loseCreateReply = 1;
+  await assert.rejects(placeOrder(deps(tabA), input(), META));
+  const tabB = tabA.clone();
+  await placeOrder(deps(tabB), input(), META);
+  await placeOrder(deps(tabA), input(), META);
+  assert.equal(state.orders.size, 1);
+  assert.equal(new Set(state.createCalls).size, 1);
+});
+
+test("another cashier or outlet never reuses or sees the key", async () => {
+  const { state, deps } = fakeServer();
+  const storage = new MemoryStorage();
+  state.loseCreateReply = 1;
+  await assert.rejects(placeOrder(deps(storage), input(), META));
+  const other = { outletId: "o1", actorId: "u2", subject: "kasir" };
+  const elsewhere = { outletId: "o2", actorId: "u1", subject: "kasir" };
+  assert.equal(readPendingOrder(storage, other), null);
+  assert.equal(readPendingOrder(storage, elsewhere), null);
+  await placeOrder(deps(storage, other), input(), META);
+  await placeOrder(deps(storage, elsewhere), input(), META);
+  assert.equal(new Set(state.createCalls).size, 3, "three scopes, three keys");
+  // The first cashier's unresolved send is untouched.
+  assert.notEqual(readPendingOrder(storage, SCOPE), null);
 });

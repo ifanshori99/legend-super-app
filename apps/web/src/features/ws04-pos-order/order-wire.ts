@@ -212,6 +212,8 @@ export function mapParked(
       missing += 1;
       continue;
     }
+    // Every saved option must still exist; otherwise the line would come back
+    // cheaper or different without a word, so it is counted as missing.
     const modifiers = wire.modifierIds.flatMap((optionId) =>
       item.modifierGroups.flatMap((group) =>
         group.options
@@ -224,6 +226,10 @@ export function mapParked(
           })),
       ),
     );
+    if (modifiers.length !== wire.modifierIds.length) {
+      missing += 1;
+      continue;
+    }
     lines.push({
       lineId: newLineId(),
       menuItemId: item.id,
@@ -287,4 +293,24 @@ export function mapFloor(board: FloorBoard): CaptainTable[] {
     sessionId: row.session?.id ?? null,
     hasOpenCall: row.openServiceRequestCount > 0,
   }));
+}
+
+/**
+ * The parked entry as the cart that was just parked: the lines are the ones
+ * the cashier had, so parking never depends on loading the catalog.
+ */
+export function draftFromPark(
+  parked: PosParkedOrder,
+  input: SubmitOrderInput,
+): ParkedDraft {
+  return {
+    id: parked.id,
+    label: parked.label,
+    channel: input.channel,
+    tableSessionId: input.tableSessionId,
+    ojol: input.ojol,
+    lines: input.lines,
+    parkedAt: parked.parkedAt,
+    subtotalIdr: cartTotals(input.lines).subtotalIdr,
+  };
 }

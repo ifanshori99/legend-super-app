@@ -5,12 +5,20 @@
 // load it directly. It holds random keys, the order id the create returned and
 // a fingerprint of the cart; nothing the server trusts.
 //
-// The key stays until the answer is known: 2xx, or a definitive refusal of that
-// key (400/404/409/410/422). A timeout, 5xx, 401, 403 or 429 keep it. While a
-// key is unresolved, a different request in the same scope is refused
-// (`conflict`): the first one may have been recorded.
+// The key stays until the answer is known: 2xx, or a final refusal of that key
+// (a 4xx other than 401, 403, 408 and 429; IDEMPOTENCY_KEY_REUSED is closed
+// only by the cashier, see `isFinalRefusal`). A timeout, 5xx, 401, 403 or 429
+// keep it. While a key is unresolved, a different request in the same scope is
+// refused (`conflict`): the first one may have been recorded. The entry also
+// keeps a snapshot of what was being sent (cart lines and meta), so the cashier
+// can bring that exact order back and send it again with the same key.
+// Scope = outlet + cashier + cart: another outlet or account never sees or
+// reuses a key (a copied tab shares the storage, so it repeats the same key).
 
-type StorageLike = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+type StorageLike = Pick<
+  Storage,
+  "getItem" | "setItem" | "removeItem" | "key" | "length"
+>;
 
 export type IntentKind = "create" | "submit" | "park" | "resume";
 
@@ -29,6 +37,8 @@ type Entry = {
   key: string;
   /** What the first step produced (the order id between create and submit). */
   data: string | null;
+  /** What was being sent (opaque to the store): lines and meta of the cart. */
+  snapshot: string | null;
 };
 
 const PREFIX = "legend-pos-order-intent:";
@@ -52,6 +62,7 @@ function read(storage: StorageLike, scope: IntentScope): Entry | null {
       signature: value.signature,
       key: value.key,
       data: typeof value.data === "string" ? value.data : null,
+      snapshot: typeof value.snapshot === "string" ? value.snapshot : null,
     };
   } catch {
     return null;
@@ -68,6 +79,7 @@ export function beginIntent(
   scope: IntentScope,
   signature: string,
   makeKey: () => string,
+  snapshot: string | null = null,
 ): { key: string; data: string | null; conflict: boolean } {
   const current = read(storage, scope);
   if (current && current.signature !== signature)
@@ -76,7 +88,7 @@ export function beginIntent(
   const key = makeKey();
   storage.setItem(
     slot(scope),
-    JSON.stringify({ signature, key, data: null } satisfies Entry),
+    JSON.stringify({ signature, key, data: null, snapshot } satisfies Entry),
   );
   return { key, data: null, conflict: false };
 }
@@ -107,8 +119,27 @@ export function endIntent(
 export function peekIntent(
   storage: StorageLike,
   scope: IntentScope,
-): { signature: string; key: string; data: string | null } | null {
+): {
+  signature: string;
+  key: string;
+  data: string | null;
+  snapshot: string | null;
+} | null {
   return read(storage, scope);
+}
+
+/** The subjects with an unresolved intent of one kind (e.g. parked ids to resume). */
+export function listIntentSubjects(
+  storage: StorageLike,
+  base: Pick<IntentScope, "outletId" | "actorId" | "kind">,
+): string[] {
+  const prefix = slot({ ...base, subject: "" });
+  const subjects: string[] = [];
+  for (let index = 0; index < storage.length; index += 1) {
+    const name = storage.key(index);
+    if (name?.startsWith(prefix)) subjects.push(name.slice(prefix.length));
+  }
+  return subjects;
 }
 
 /** A request was sent and its answer is not known yet. */
@@ -119,13 +150,19 @@ export function hasUnresolvedIntent(
   return read(storage, scope) !== null;
 }
 
-/** HTTP statuses that mean the server recorded nothing for the key. */
-const DEFINITIVE_REFUSALS = new Set([400, 404, 409, 410, 413, 422]);
+/** The server refused the key for a different body: the cashier must look. */
+export const KEY_REUSED_CODE = "IDEMPOTENCY_KEY_REUSED";
 
 /**
- * True when the key can be forgotten after this failure. A network error has
- * no status; timeout, 5xx, 401, 403 and 429 are all unknown outcomes.
+ * True when the server recorded nothing for the key and said so for good: a
+ * 4xx other than 401, 403 (token/permission, may pass after a new PIN), 408 and
+ * 429. A network error (no status), timeout and 5xx are unknown outcomes.
+ * IDEMPOTENCY_KEY_REUSED is never final here: the first request may exist.
  */
-export function isDefinitiveRefusal(status: number | null): boolean {
-  return status !== null && DEFINITIVE_REFUSALS.has(status);
+export function isFinalRefusal(status: number | null, code?: string): boolean {
+  if (status === null || status < 400 || status >= 500) return false;
+  // Any idempotency code (reused key, request still running) is not final.
+  if (code?.startsWith("IDEMPOTENCY") || code?.includes("IN_PROGRESS"))
+    return false;
+  return ![401, 403, 408, 429].includes(status);
 }

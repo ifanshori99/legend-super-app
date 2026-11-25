@@ -1,20 +1,23 @@
 // The cashier's keyed sends (brief 1268 W1): create + submit an order, park a
 // cart, resume a parked cart. Pure over injected transport and storage, so Node
 // tests drive it with fakes. The intent (key, exact request fingerprint, the
-// created order id) is written to storage BEFORE a request goes out and is
-// forgotten only on a 2xx or a definitive refusal of that key; a lost reply
-// therefore repeats the same key and gives one order, also after a refresh.
+// created order id, a snapshot of the cart and meta) is written to storage
+// BEFORE a request goes out and is forgotten only on a 2xx or a final refusal
+// of that key; a lost reply therefore repeats the same key and gives one order,
+// also after a refresh or in a copied tab. The key is scoped to outlet +
+// cashier + cart: without an outlet or cashier nothing is sent.
 import { ApiError } from "@/lib/api/errors";
 import {
   beginIntent,
   endIntent,
-  isDefinitiveRefusal,
+  isFinalRefusal,
+  listIntentSubjects,
   peekIntent,
   recordIntentData,
   type IntentScope,
 } from "./intent-store.ts";
 import { createBodyOf, parkBodyOf, submitBodyOf } from "./order-wire.ts";
-import type { SubmitOrderInput } from "./types.ts";
+import type { OrderMeta, OrderSnapshot, SubmitOrderInput } from "./types.ts";
 
 type Storage3 = Parameters<typeof beginIntent>[0];
 
@@ -42,13 +45,25 @@ export interface FlowDeps<Order, Parked> {
 }
 
 export const ORDER_INTENT_PENDING = "ORDER_INTENT_PENDING";
+export const ACTOR_MISSING = "ACTOR_MISSING";
+const APPLIED = "applied";
 
 function pendingError(): ApiError {
   return new ApiError(
     409,
     ORDER_INTENT_PENDING,
-    "Pengiriman sebelumnya belum jelas hasilnya. Kembalikan isi keranjang seperti semula lalu coba lagi.",
+    "Ada pesanan yang belum jelas terkirim. Kembalikan pesanan itu lalu kirim ulang.",
   );
+}
+
+/** No outlet or no cashier: nothing may be sent (a key needs both). */
+function assertScope(scope: FlowScope): void {
+  if (scope.outletId === "" || scope.actorId === "")
+    throw new ApiError(
+      401,
+      ACTOR_MISSING,
+      "Kasir belum dikenali. Masuk dengan PIN lagi.",
+    );
 }
 
 const scopeOf = (
@@ -62,29 +77,52 @@ const scopeOf = (
   subject,
 });
 
-/** One keyed request: begin (persist) -> send -> end on 2xx or refusal. */
+function forgetOnFinalRefusal(
+  storage: Storage3,
+  scope: IntentScope,
+  key: string,
+  error: unknown,
+): void {
+  if (error instanceof ApiError && isFinalRefusal(error.status, error.code))
+    endIntent(storage, scope, key);
+}
+
+/**
+ * One keyed request: begin (persist) -> send -> `after` -> end on 2xx. `after`
+ * runs before the key is forgotten, so what the answer carries (a consumed
+ * parked cart) is saved while a retry is still possible.
+ */
 async function keyedSend<T>(
   deps: { storage: Storage3; makeKey: () => string },
   scope: IntentScope,
   signature: string,
   send: (key: string) => Promise<T>,
+  snapshot: string | null = null,
+  after?: (result: T, key: string) => void,
 ): Promise<T> {
-  const begun = beginIntent(deps.storage, scope, signature, deps.makeKey);
+  const begun = beginIntent(
+    deps.storage,
+    scope,
+    signature,
+    deps.makeKey,
+    snapshot,
+  );
   if (begun.conflict) throw pendingError();
   try {
     const result = await send(begun.key);
+    after?.(result, begun.key);
     endIntent(deps.storage, scope, begun.key);
     return result;
   } catch (error) {
-    if (
-      error instanceof ApiError &&
-      isDefinitiveRefusal(error.status) &&
-      error.code !== "IDEMPOTENCY_KEY_REUSED"
-    )
-      endIntent(deps.storage, scope, begun.key);
+    forgetOnFinalRefusal(deps.storage, scope, begun.key, error);
     throw error;
   }
 }
+
+const snapshotOf = (input: SubmitOrderInput, meta?: OrderMeta) =>
+  meta
+    ? JSON.stringify({ lines: input.lines, meta } satisfies OrderSnapshot)
+    : null;
 
 /**
  * Create the order (`key:create`), then submit it (`key:submit`, draft). The
@@ -94,9 +132,12 @@ async function keyedSend<T>(
 export async function placeOrder<Order, Parked>(
   deps: FlowDeps<Order, Parked>,
   input: SubmitOrderInput,
+  meta?: OrderMeta,
 ): Promise<Order> {
+  assertScope(deps.scope);
   const body = createBodyOf(input);
   const signature = JSON.stringify(body);
+  const snapshot = snapshotOf(input, meta);
   const submitScope = scopeOf(deps.scope, "submit");
   const createScope = scopeOf(deps.scope, "create");
 
@@ -122,10 +163,12 @@ export async function placeOrder<Order, Parked>(
           submitScope,
           signature,
           deps.makeKey,
+          snapshot,
         );
         recordIntentData(deps.storage, submitScope, next.key, order.id);
         return { order, submitKey: next.key };
       },
+      snapshot,
     );
     orderId = created.order.id;
     submitKey = created.submitKey;
@@ -136,20 +179,62 @@ export async function placeOrder<Order, Parked>(
     endIntent(deps.storage, submitScope, submitKey);
     return submitted;
   } catch (error) {
-    if (
-      error instanceof ApiError &&
-      isDefinitiveRefusal(error.status) &&
-      error.code !== "IDEMPOTENCY_KEY_REUSED"
-    )
-      endIntent(deps.storage, submitScope, submitKey);
+    forgetOnFinalRefusal(deps.storage, submitScope, submitKey, error);
     throw error;
   }
 }
 
-export function parkCart<Order, Parked>(
+/**
+ * The order whose answer is not known yet (create or submit), as it was sent:
+ * lines and meta. The cashier brings it back and sends it again; the same key
+ * is used, never a new one.
+ */
+export function readPendingOrder(
+  storage: Storage3,
+  scope: FlowScope,
+): OrderSnapshot | null {
+  return parseOrderSnapshot(pendingOrderText(storage, scope));
+}
+
+/** The stored snapshot text (stable between reads, for a store subscription). */
+export function pendingOrderText(
+  storage: Storage3,
+  scope: FlowScope,
+): string | null {
+  if (scope.outletId === "" || scope.actorId === "") return null;
+  const entry =
+    peekIntent(storage, scopeOf(scope, "submit")) ??
+    peekIntent(storage, scopeOf(scope, "create"));
+  return entry?.snapshot ?? null;
+}
+
+export function parseOrderSnapshot(text: string | null): OrderSnapshot | null {
+  if (!text) return null;
+  try {
+    const parsed = JSON.parse(text) as Partial<OrderSnapshot>;
+    return Array.isArray(parsed.lines) && parsed.meta
+      ? (parsed as OrderSnapshot)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The cashier checked the open orders and says the unresolved send did not
+ * land (or is not wanted): the intent is closed. Used after a refused key
+ * (IDEMPOTENCY_KEY_REUSED), which is never closed on its own.
+ */
+export function closeOrderIntent(storage: Storage3, scope: FlowScope): void {
+  endIntent(storage, scopeOf(scope, "create"));
+  endIntent(storage, scopeOf(scope, "submit"));
+}
+
+export async function parkCart<Order, Parked>(
   deps: FlowDeps<Order, Parked>,
   input: SubmitOrderInput,
 ): Promise<Parked> {
+  assertScope(deps.scope);
   const body = parkBodyOf(input);
   return keyedSend(
     deps,
@@ -159,14 +244,48 @@ export function parkCart<Order, Parked>(
   );
 }
 
-export function resumeParked<Order, Parked>(
+/** Parked carts whose resume was sent but not answered (replayed on open). */
+export function pendingResumeIds(
+  storage: Storage3,
+  scope: FlowScope,
+): string[] {
+  if (scope.outletId === "" || scope.actorId === "") return [];
+  return listIntentSubjects(storage, {
+    outletId: scope.outletId,
+    actorId: scope.actorId,
+    kind: "resume",
+  });
+}
+
+/**
+ * Resume a parked cart. The catalog is loaded BEFORE the server consumes the
+ * snapshot (a failure there sends nothing), and `apply` saves the lines into
+ * the draft BEFORE the key is forgotten; the "applied" mark keeps a replay
+ * after a crash from adding them twice. Returns null when it was already
+ * applied.
+ */
+export async function resumeParkedInto<Order, Parked, Catalog>(
   deps: FlowDeps<Order, Parked>,
   parkedId: string,
-): Promise<Parked> {
+  loadCatalog: () => Promise<Catalog>,
+  apply: (parked: Parked, catalog: Catalog) => void,
+): Promise<Parked | null> {
+  assertScope(deps.scope);
+  const scope = scopeOf(deps.scope, "resume", parkedId);
+  if (peekIntent(deps.storage, scope)?.data === APPLIED) {
+    endIntent(deps.storage, scope);
+    return null;
+  }
+  const catalog = await loadCatalog();
   return keyedSend(
     deps,
-    scopeOf(deps.scope, "resume", parkedId),
+    scope,
     "resume",
     (key) => deps.resume(parkedId, { idempotencyKey: key }),
+    null,
+    (parked, key) => {
+      apply(parked, catalog);
+      recordIntentData(deps.storage, scope, key, APPLIED);
+    },
   );
 }

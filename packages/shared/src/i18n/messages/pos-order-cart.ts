@@ -82,6 +82,16 @@ export const posOrderCartMessages = {
     lineRemoved: "Item dihapus",
     undo: "Urungkan",
   },
+  pending: {
+    title: "Ada pesanan yang belum jelas terkirim",
+    body: "{where}: {count} item. Kembalikan pesanan ini lalu kirim ulang. Pesanan tidak akan dobel.",
+    restore: "Kembalikan pesanan tertunda",
+  },
+  reused: {
+    title: "Pengiriman ditolak server",
+    body: "Isi pesanan berbeda dari pengiriman sebelumnya. Periksa pesanan terbuka di kasir dan pastikan tidak ada pesanan dobel, lalu tutup peringatan ini.",
+    confirm: "Sudah saya periksa",
+  },
   error: {
     pendingTitle: "Fitur ini belum tersambung ke server",
     submitTitle: "Pesanan belum terkirim",

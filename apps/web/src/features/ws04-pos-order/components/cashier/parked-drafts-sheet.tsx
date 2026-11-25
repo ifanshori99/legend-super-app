@@ -172,7 +172,11 @@ function ParkedList({
                   if (resume.isPending) return;
                   resume.mutate(
                     { id: draft.id },
-                    { onSuccess: (resumed) => onResumed(resumed) },
+                    {
+                      onSuccess: (resumed) => {
+                        if (resumed) onResumed(resumed);
+                      },
+                    },
                   );
                 }}
               >

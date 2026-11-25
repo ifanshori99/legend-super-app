@@ -5,11 +5,7 @@ import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { Money } from "@/components/ui/money";
 import { cartTotals, lineTotalIdr } from "@/features/ws04-pos-order/cart-logic";
-import type {
-  CartLine,
-  OjolPlatform,
-  SaleChannel,
-} from "@/features/ws04-pos-order/types";
+import type { CartLine, OrderMeta } from "@/features/ws04-pos-order/types";
 import {
   ChannelDetail,
   ChannelToggle,
@@ -17,14 +13,7 @@ import {
 } from "./channel-toggle";
 
 /** What the cashier has chosen for the order itself, next to the lines. */
-export interface CartOrderMeta {
-  channel: SaleChannel;
-  tableLabel: string | null;
-  /** The open session of the chosen table; this, not the label, is sent. */
-  tableSessionId: string | null;
-  ojolPlatform: OjolPlatform | null;
-  ojolRef: string;
-}
+export type CartOrderMeta = OrderMeta;
 
 export interface CartPaneProps {
   lines: CartLine[];

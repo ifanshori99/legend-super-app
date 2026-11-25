@@ -4,6 +4,7 @@
 // so the list is `.data`. Mutations update the cache, so a screen rerenders
 // from the hook result alone. Outside mock mode a call without a contract fails
 // with an ApiError whose code is CONTRACT_PENDING (see `isContractPending`).
+import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
 import {
   useMutation,
   useQuery,
@@ -18,6 +19,9 @@ import { useCloudConnection } from "@/features/ws02-edge/hooks";
 import { useActiveStaff } from "@/features/ws01-device-pin/storage";
 import {
   acknowledgeCall,
+  closePendingOrder,
+  pendingOrderText,
+  pendingResumes,
   addToTable,
   fireLines,
   fireTableLines,
@@ -27,6 +31,7 @@ import {
   submitOrder,
 } from "./api";
 import { readDraft, writeDraft } from "./draft-store";
+import { parseOrderSnapshot } from "./order-flow";
 import {
   callNumberQuery,
   captainTablesQuery,
@@ -43,6 +48,8 @@ import {
   type Catalog,
   type FireLinesInput,
   type FireTableLinesInput,
+  type OrderMeta,
+  type OrderSnapshot,
   type OrderingConnectivity,
   type ParkDraftInput,
   type ParkedDraft,
@@ -53,6 +60,9 @@ import {
 } from "./types";
 
 export { useDraftCart } from "./draft-store";
+
+/** What the screen sends: the order and the meta kept for a re-send. */
+export type PlaceOrderInput = SubmitOrderInput & { meta?: OrderMeta };
 
 /** A resumed parked cart; `missing` lines left the catalog and were not restored. */
 export type ResumedDraft = ParkedDraft & { missing: number };
@@ -146,14 +156,15 @@ export function useSubmitOrder({
   draftKey,
 }: {
   draftKey: string;
-}): UseMutationResult<PosOrderView, Error, SubmitOrderInput> {
+}): UseMutationResult<PosOrderView, Error, PlaceOrderInput> {
   const queryClient = useQueryClient();
   const outletId = useOutletId();
   const actorId = useActorId();
-  return useMutation<PosOrderView, Error, SubmitOrderInput>({
+  return useMutation<PosOrderView, Error, PlaceOrderInput>({
     // The keyed intent is persisted by the api call itself (order-flow), so a
     // refresh after an unknown outcome repeats the same keys.
-    mutationFn: (input) => submitOrder(outletId, actorId, draftKey, input),
+    mutationFn: ({ meta, ...input }) =>
+      submitOrder(outletId, actorId, draftKey, input, meta),
     onSuccess: () => {
       writeDraft(draftKey, []);
       // A takeaway order used its call number: the next one moves on.
@@ -162,6 +173,62 @@ export function useSubmitOrder({
       });
     },
   });
+}
+
+/**
+ * The send of this cart whose answer is not known (lost reply, refresh, copied
+ * tab): its lines and meta as they were sent, or null. `refresh` re-reads it
+ * after a send; `close` ends a refused (reused) key once the cashier has
+ * checked the open orders.
+ */
+export function usePendingOrder(draftKey: string): {
+  pending: OrderSnapshot | null;
+  refresh: () => void;
+  close: () => void;
+} {
+  const outletId = useOutletId();
+  const actorId = useActorId();
+  const text = useSyncExternalStore(
+    subscribePending,
+    () => pendingOrderText(outletId, actorId, draftKey),
+    () => null,
+  );
+  const pending = useMemo(() => parseOrderSnapshot(text), [text]);
+  const close = useCallback(() => {
+    closePendingOrder(outletId, actorId, draftKey);
+    notifyPending();
+  }, [outletId, actorId, draftKey]);
+  return { pending, refresh: notifyPending, close };
+}
+
+const pendingListeners = new Set<() => void>();
+function subscribePending(listener: () => void): () => void {
+  pendingListeners.add(listener);
+  // Another tab changed its own storage copy: nothing to do; a copied tab only
+  // shares the keys it started with.
+  return () => {
+    pendingListeners.delete(listener);
+  };
+}
+function notifyPending(): void {
+  pendingListeners.forEach((listener) => listener());
+}
+
+/**
+ * Replays a resume that was sent but not answered, when the screen opens: the
+ * server gives the same parked cart for the same key and it is put back in the
+ * draft. Nothing runs without an outlet and a cashier.
+ */
+export function useReplayPendingResumes({ draftKey }: { draftKey: string }) {
+  const outletId = useOutletId();
+  const actorId = useActorId();
+  const resume = useResumeDraft({ draftKey });
+  const { mutate } = resume;
+  useEffect(() => {
+    if (outletId === "" || actorId === "") return;
+    for (const id of pendingResumes(outletId, actorId)) mutate({ id });
+  }, [outletId, actorId, mutate]);
+  return resume;
 }
 
 export function useFireLines(): UseMutationResult<
@@ -209,14 +276,17 @@ export function useResumeDraft({
   draftKey,
 }: {
   draftKey: string;
-}): UseMutationResult<ResumedDraft, Error, { id: string }> {
+}): UseMutationResult<ResumedDraft | null, Error, { id: string }> {
   const queryClient = useQueryClient();
   const outletId = useOutletId();
   const actorId = useActorId();
-  return useMutation<ResumedDraft, Error, { id: string }>({
-    mutationFn: ({ id }) => resumeDraft(outletId, actorId, id),
-    onSuccess: (resumed) =>
-      writeDraft(draftKey, [...readDraft(draftKey), ...resumed.lines]),
+  return useMutation<ResumedDraft | null, Error, { id: string }>({
+    // The lines go into the draft inside the call, before its key is
+    // forgotten: a lost reply or a refresh cannot lose the parked cart.
+    mutationFn: ({ id }) =>
+      resumeDraft(outletId, actorId, id, (draft) =>
+        writeDraft(draftKey, [...readDraft(draftKey), ...draft.lines]),
+      ),
     // Taken or already gone: either way the list must be read again.
     onSettled: () =>
       void queryClient.invalidateQueries({

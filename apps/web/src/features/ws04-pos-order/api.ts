@@ -20,14 +20,23 @@ import { API_MOCK } from "@/lib/api/mock-flag";
 import { demoMenuPhoto } from "@/lib/demo-media";
 import { DEMO_PHOTO_NAMES } from "./fixtures";
 import {
+  closeOrderIntent,
   placeOrder,
   parkCart,
-  resumeParked,
+  pendingResumeIds,
+  pendingOrderText as readPendingText,
+  resumeParkedInto,
   type CreateBody,
   type ParkBody,
   type SubmitBody,
 } from "./order-flow";
-import { mapCatalog, mapFloor, mapOrder, mapParked } from "./order-wire";
+import {
+  draftFromPark,
+  mapCatalog,
+  mapFloor,
+  mapOrder,
+  mapParked,
+} from "./order-wire";
 import { runPosOrderMock, type PosOrderEngine } from "./mock-engine";
 import {
   CONTRACT_PENDING,
@@ -36,6 +45,7 @@ import {
   type Catalog,
   type FireLinesInput,
   type FireTableLinesInput,
+  type OrderMeta,
   type ParkDraftInput,
   type ParkedDraft,
   type PosOrderView,
@@ -149,13 +159,15 @@ function flowDeps(outletId: string, actorId: string, draftKey: string) {
 
 /**
  * Create then submit the order. The body carries ids and quantities only; the
- * server prices it. `draftKey` scopes the persisted intent to the cart.
+ * server prices it. `draftKey` scopes the persisted intent to the cart; `meta`
+ * is kept with the intent so an unclear send can be brought back as it was.
  */
 export async function submitOrder(
   outletId: string,
   actorId: string,
   draftKey: string,
   input: SubmitOrderInput,
+  meta?: OrderMeta,
 ): Promise<PosOrderView> {
   if (API_MOCK)
     return local("buat pesanan", (e) =>
@@ -165,8 +177,35 @@ export async function submitOrder(
       }),
     );
   return mapOrder(
-    await placeOrder(flowDeps(outletId, actorId, draftKey), input),
+    await placeOrder(flowDeps(outletId, actorId, draftKey), input, meta),
   );
+}
+
+/** The unresolved send of this cart as stored text (null: none, or mock). */
+export function pendingOrderText(
+  outletId: string,
+  actorId: string,
+  draftKey: string,
+): string | null {
+  if (API_MOCK || typeof window === "undefined") return null;
+  return readPendingText(window.sessionStorage, {
+    outletId,
+    actorId,
+    subject: draftKey,
+  });
+}
+
+/** The cashier checked the open orders: close a refused (reused) key. */
+export function closePendingOrder(
+  outletId: string,
+  actorId: string,
+  draftKey: string,
+): void {
+  closeOrderIntent(window.sessionStorage, {
+    outletId,
+    actorId,
+    subject: draftKey,
+  });
 }
 
 /** DEMO-CONTRACT: fire by line id (firePosOrderItems needs server item ids). */
@@ -202,31 +241,53 @@ export async function parkDraft(
   input: ParkDraftInput,
 ): Promise<ParkedDraft> {
   if (API_MOCK) return local("tahan pesanan", (e) => e.parkDraft(input));
-  const [parked, catalog] = await Promise.all([
-    parkCart(flowDeps(outletId, actorId, draftKey), input),
-    fetchCatalog(outletId),
-  ]);
-  return mapParked(parked, catalog, newLineId).draft;
+  // The catalog is not needed: the draft shown is the cart that was parked.
+  const parked = await parkCart(flowDeps(outletId, actorId, draftKey), input);
+  return draftFromPark(parked, input);
+}
+
+/** Parked carts whose resume was sent but never answered. */
+export function pendingResumes(outletId: string, actorId: string): string[] {
+  if (API_MOCK) return [];
+  return pendingResumeIds(window.sessionStorage, {
+    outletId,
+    actorId,
+    subject: "kasir",
+  });
 }
 
 /**
- * Consumes the parked snapshot and returns it as cart lines. A line whose item
- * left the catalog is not restored; `missing` says how many.
+ * Consumes the parked snapshot and gives it back as cart lines through
+ * `onApplied`, which runs BEFORE the key is forgotten (so a refresh or a lost
+ * reply cannot lose the cart). A line whose item or option left the catalog is
+ * not restored; `missing` says how many. Null: it was already applied.
  */
 export async function resumeDraft(
   outletId: string,
   actorId: string,
   id: string,
-): Promise<ParkedDraft & { missing: number }> {
+  onApplied: (draft: ParkedDraft) => void,
+): Promise<(ParkedDraft & { missing: number }) | null> {
   if (API_MOCK)
-    return local("lanjutkan pesanan ditahan", (e) => ({
-      ...e.resumeDraft(id),
-      missing: 0,
-    }));
-  const parked = await resumeParked(flowDeps(outletId, actorId, "kasir"), id);
-  const catalog = await fetchCatalog(outletId);
-  const mapped = mapParked(parked, catalog, newLineId);
-  return { ...mapped.draft, missing: mapped.missing };
+    return local("lanjutkan pesanan ditahan", (e) => {
+      const draft = e.resumeDraft(id);
+      onApplied(draft);
+      return { ...draft, missing: 0 };
+    });
+  const result: { applied: (ParkedDraft & { missing: number }) | null } = {
+    applied: null,
+  };
+  await resumeParkedInto(
+    flowDeps(outletId, actorId, "kasir"),
+    id,
+    () => fetchCatalog(outletId),
+    (parked, catalog) => {
+      const mapped = mapParked(parked, catalog, newLineId);
+      onApplied(mapped.draft);
+      result.applied = { ...mapped.draft, missing: mapped.missing };
+    },
+  );
+  return result.applied;
 }
 
 const newLineId = () => `line-${globalThis.crypto.randomUUID()}`;
