@@ -53,8 +53,11 @@ import {
 import type { EventCatalogEntry, EventEnvelope } from "../events/index.ts";
 import { tenderBucket } from "./calculations.ts";
 import {
+  blindCountsSchema,
   cashMovementTypeSchema,
+  endOfDayRecapSchema,
   orderChannelSchema,
+  posShiftCountIdSchema,
   posRefundIdSchema,
   posShiftIdSchema,
   posTenderMethodSchema,
@@ -441,6 +444,44 @@ export type CashierShiftOpenedPayload = z.infer<
   typeof cashierShiftOpenedPayloadSchema
 >;
 
+/**
+ * 1269 E3: what the cloud needs to write the closed drawer of an edge outlet
+ * (pos_shifts, its count and its cash movements) exactly as the edge closed
+ * it. Absent on events of an older producer: the cloud then refuses the drawer
+ * (the event stays parked), it never guesses a figure.
+ */
+export const cashierShiftCloseDetailSchema = z.strictObject({
+  openedAt: isoDateTimeSchema,
+  closedBy: userIdSchema,
+  approvalOverrideId: storedApprovalIdSchema,
+  approvedAt: isoDateTimeSchema,
+  /** Every held cash row on the count (pos_shifts.held_cash_out_idr). */
+  heldTotalIdr: nonnegativeIdr,
+  count: z.strictObject({
+    id: posShiftCountIdSchema,
+    sequence: z.number().int().positive(),
+    counts: blindCountsSchema,
+    heldCorrectionIdr: nonnegativeIdr.nullable(),
+    cashWatermark: z.number().int().nonnegative().nullable(),
+    submittedBy: userIdSchema,
+    submittedAt: isoDateTimeSchema,
+    forced: z.boolean(),
+  }),
+  /** Every cash movement of the shift: the list the cloud must hold in full. */
+  movements: z.array(
+    z.strictObject({
+      movementId: uuidIdSchema<"CashMovementId">(),
+      needsApproval: z.boolean(),
+      outcome: z.enum(["expired", "approved", "rejected"]).nullable(),
+      decidedBy: userIdSchema.nullable(),
+      decidedAt: isoDateTimeSchema.nullable(),
+    }),
+  ),
+});
+export type CashierShiftCloseDetail = z.infer<
+  typeof cashierShiftCloseDetailSchema
+>;
+
 export const cashierShiftClosedPayloadSchema = z
   .strictObject({
     shiftId: posShiftIdSchema,
@@ -476,6 +517,8 @@ export const cashierShiftClosedPayloadSchema = z
     approvedBy: userIdSchema,
     approvalRequestId: storedApprovalIdSchema,
     closedAt: isoDateTimeSchema,
+    /** 1269 E3: absent on older events. */
+    close: cashierShiftCloseDetailSchema.optional(),
   })
   .superRefine((payload, ctx) => {
     if (
@@ -515,6 +558,11 @@ export const dayClosedPayloadSchema = z.strictObject({
   accountingSyncStatus: z.enum(["pending", "posted"]),
   closedBy: userIdSchema,
   closedAt: isoDateTimeSchema,
+  /**
+   * 1269 E3 (legend-8yqik): the frozen recap, which the cloud mirrors into
+   * pos_daily_closes for an edge outlet. Absent on older events (not mirrored).
+   */
+  recap: endOfDayRecapSchema.optional(),
 });
 export type DayClosedPayload = z.infer<typeof dayClosedPayloadSchema>;
 

@@ -1202,7 +1202,7 @@ export const blindCashCountSchema = z.strictObject({
 export type BlindCashCount = z.infer<typeof blindCashCountSchema>;
 
 /** The blind count sheet: listed denominations, each at most once, 1..10 rows. */
-const blindCountsSchema = z
+export const blindCountsSchema = z
   .array(blindCashCountSchema)
   .min(1)
   .max(IDR_CASH_DENOMINATIONS.length)
