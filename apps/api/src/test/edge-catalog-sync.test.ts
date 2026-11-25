@@ -1204,7 +1204,7 @@ describe("97p query contract", () => {
 
   it("97p rejects an unknown stream, a limit outside 1..100 and unknown keys", () => {
     const bad = [
-      { stream: "tax_rules" },
+      { stream: "payments" },
       { limit: 10 },
       { stream: "menu_items", limit: 0 },
       { stream: "menu_items", limit: 101 },
@@ -3011,7 +3011,7 @@ describe("97p HTTP: GET /api/edge-sync/catalog", () => {
 
   it("97p refuses an invalid stream or limit with a 4xx", async () => {
     for (const query of [
-      { stream: "tax_rules" },
+      { stream: "payments" },
       { stream: "menu_items", limit: 101 },
       { stream: "menu_items", since: "bukan-cursor" },
       { stream: "price_list_items" },
