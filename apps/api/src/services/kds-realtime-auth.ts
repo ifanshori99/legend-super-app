@@ -38,6 +38,9 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 import { env } from "../config/env.ts";
+import { sessionAcceptedHere } from "../lib/edge-session.ts";
+import { EDGE_STAFF_PIN } from "../lib/request-context.ts";
+import { withEdgeDeviceOfHeaders } from "./edge-device-auth.ts";
 import { pool } from "../db/index.ts";
 import { auth } from "../lib/auth.ts";
 import { assertSupportAccess } from "./platform-support.service.ts";
@@ -100,11 +103,25 @@ export async function resolveKdsStaffConnection(
   request: IncomingMessage,
 ): Promise<{ userId: string; context: ScopedTenantContext } | null> {
   try {
-    const target = parseKdsRealtimeUrl(request.url);
-    if (!target) return null;
     // Browser carrier (legend-dsbqr): subprotocol tokens become the two
     // headers below. Idempotent, so every wakeup / recheck can call it again.
     if (!carryKdsCredentialsFromProtocols(request)) return null;
+    // E2 (brief 1269): the upgrade runs outside Express, so an edge checks the
+    // device token's digest here.
+    return await withEdgeDeviceOfHeaders(request.headers, () =>
+      resolveConnection(request),
+    );
+  } catch {
+    return null;
+  }
+}
+
+async function resolveConnection(
+  request: IncomingMessage,
+): Promise<{ userId: string; context: ScopedTenantContext } | null> {
+  try {
+    const target = parseKdsRealtimeUrl(request.url);
+    if (!target) return null;
     const session = await auth.api.getSession({
       headers: fromNodeHeaders(request.headers),
       query: { disableCookieCache: true },
@@ -112,11 +129,15 @@ export async function resolveKdsStaffConnection(
     if (!session) return null;
     // legend-k2l, design ws08 M2 sign-in method gate: this upgrade runs outside
     // requireAuth, so requestMayUseStaffRoles never sees it. Staff roles need a
-    // password sign-in; a missing method counts as `legacy`.
+    // password sign-in (on an edge: the staff PIN login); a missing method
+    // counts as `legacy`.
     const authMethod =
       (session.session as { authMethod?: string | null }).authMethod ??
       "legacy";
-    if (authMethod !== "password") return null;
+    // E2 (brief 1269): an edge PIN session on an edge only, with its own
+    // device's token; `resolveConnection` runs inside the verified context.
+    if (!sessionAcceptedHere(session.session)) return null;
+    if (authMethod !== "password" && authMethod !== EDGE_STAFF_PIN) return null;
     const tenant = await tenantOf(request);
     if (!tenant) return null;
     // A support (impersonated) session keeps the socket only while its support

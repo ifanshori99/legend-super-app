@@ -18,6 +18,7 @@ import { normalizeEmail } from "@starter/shared/identity";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { siteConfig } from "@starter/shared/site";
 import { env } from "../config/env";
+import { isEdgeNode } from "../edge/mode.ts";
 import { db } from "../db";
 import * as schema from "../db/schema";
 import { withTenant } from "../db/tenant";
@@ -587,6 +588,13 @@ export const auth = betterAuth({
     session: {
       create: {
         before: async (session, ctx) => {
+          // E2 (brief 1269): an edge has only staff PIN sessions, written by
+          // services/edge-staff-session.service.ts. No password sign-in there.
+          if (isEdgeNode())
+            throw new APIError("FORBIDDEN", {
+              code: "EDGE_SIGN_IN_WITH_PIN",
+              message: "Masuk di outlet memakai PIN staf.",
+            });
           // legend-k2l: the method is decided here (see sessionAuthMethodFor).
           const authMethod = sessionAuthMethodFor(
             ctx?.path,
@@ -838,6 +846,13 @@ export const auth = betterAuth({
       // requireActingStaffOnSharedDevice and POST /staff-pins/pos-session.
       sharedDeviceIds: {
         type: "string[]",
+        required: false,
+        input: false,
+      },
+      // E2 (brief 1269): device of an `edge_staff_pin` session. Never written
+      // through Better Auth; declared so getSession returns it.
+      edgeDeviceId: {
+        type: "string",
         required: false,
         input: false,
       },

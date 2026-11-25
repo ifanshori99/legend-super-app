@@ -8,7 +8,9 @@
 // authenticated by its own credential; tenant and outlet come only from the
 // verified credential, never from the query. Records include revoked devices
 // (that is how a revocation reaches the edge) and carry no secret: no token,
-// only the `tokenIssuedAt` floor the edge needs to rotate old tokens out.
+// only the `tokenIssuedAt` floor the edge needs to rotate old tokens out and,
+// when the edge asks (`?deviceTokenHashes=1`, E2 brief 1269), the SHA-256 of the
+// current token, by which alone the edge accepts it.
 // Keyset paging on (updated_at, id), opaque cursor, settle window for rows
 // whose commit lags their `updated_at`.
 //
@@ -83,6 +85,7 @@ import { outlets, tenants } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
 import { outletContext } from "./device-pin-support.ts";
 import { logger } from "../lib/logger.ts";
+import { endEdgeStaffSessionsOfDevice } from "./edge-staff-session-revoke.ts";
 import { toDevice } from "./device.service.ts";
 import {
   applyCloudDeviceReceiptSequence,
@@ -143,6 +146,8 @@ export const deviceSyncQuerySchema = z.strictObject({
    * primary edge with a binding, like the sequences). Absent = an old edge.
    */
   receiptWriteoffs: z.literal("1").optional(),
+  /** E2 (brief 1269): `1` adds each device's token digest. Absent = an old edge. */
+  deviceTokenHashes: z.literal("1").optional(),
 });
 export type DeviceSyncQuery = z.infer<typeof deviceSyncQuerySchema>;
 
@@ -225,6 +230,7 @@ export async function listDeviceRecordsSince(
     receiptRuns,
     receiptRefused,
     receiptWriteoffs: withWriteoffs,
+    deviceTokenHashes: withTokenHashes,
   } = deviceSyncQuerySchema.parse(query);
   const since = parseWatermark(query.since);
   const now = options.now ?? new Date();
@@ -505,6 +511,7 @@ export async function listDeviceRecordsSince(
     data: page.map(({ row }) => ({
       ...toDevice(row),
       tokenIssuedAt: row.tokenIssuedAt?.toISOString() ?? null,
+      ...(withTokenHashes === undefined ? {} : { tokenHash: row.tokenHash }),
       updatedAt: row.updatedAt.toISOString(),
     })),
     ...(sequences === undefined ? {} : { receiptSequences: sequences }),
@@ -623,6 +630,23 @@ export async function applyDeviceRecords(
         (tokenIssuedAt !== null && tokenIssuedAt.getTime() > local.getTime())
           ? tokenIssuedAt
           : local;
+      // E2 (brief 1269): the digest belongs to the floor's token. A newer floor
+      // brings its own (absent = none: the old token must not pass), an older
+      // record changes nothing, the same floor keeps what it does not carry.
+      const hashOf = (local: {
+        tokenIssuedAt: Date | null;
+        tokenHash: string | null;
+      }): string | null => {
+        const floor = local.tokenIssuedAt?.getTime() ?? null;
+        const incoming = tokenIssuedAt?.getTime() ?? null;
+        if (incoming === floor)
+          return record.tokenHash === undefined
+            ? local.tokenHash
+            : record.tokenHash;
+        return floor === null || (incoming !== null && incoming > floor)
+          ? (record.tokenHash ?? null)
+          : local.tokenHash;
+      };
 
       if (!local) {
         await tx.insert(devices).values({
@@ -642,6 +666,7 @@ export async function applyDeviceRecords(
           status: record.status,
           revokedAt,
           tokenIssuedAt,
+          tokenHash: record.tokenHash ?? null,
           createdAt: version,
           updatedAt: version,
         });
@@ -665,6 +690,7 @@ export async function applyDeviceRecords(
           status: record.status,
           revokedAt,
           tokenIssuedAt: floorOf(local.tokenIssuedAt),
+          tokenHash: hashOf(local),
           trainingMode: record.trainingMode,
           // A record without the field keeps the local flag; it must never
           // switch the shared-device guard off by omission. Shared mode exists
@@ -685,6 +711,9 @@ export async function applyDeviceRecords(
             : {}),
         })
         .where(eq(devices.id, local.id));
+      // E2 (brief 1269): a revoked device ends its PIN sessions at once.
+      if (record.status === "revoked")
+        await endEdgeStaffSessionsOfDevice(tx, local.id);
       applied += 1;
     }
     return { applied, skipped: ordered.length - applied };

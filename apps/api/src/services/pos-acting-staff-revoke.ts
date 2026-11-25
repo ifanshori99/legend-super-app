@@ -11,6 +11,7 @@ import type { ActingStaffRevokeReason } from "@starter/shared/pos/acting-staff";
 import { outletIdSchema, type TenantContext } from "@starter/shared/core";
 import { and, eq, isNull, sql, type SQL } from "drizzle-orm";
 import { posActingStaff } from "../db/schema/pos-acting-staff.ts";
+import { endEdgeStaffSessionsOfUser } from "./edge-staff-session-revoke.ts";
 import type { Tx } from "./permission-resolver.ts";
 
 async function revokeWhere(
@@ -31,8 +32,11 @@ async function revokeWhere(
     );
 }
 
-/** All live tokens of one staff member at one outlet (pin reset, inactive). */
-export function revokeActingStaffForStaff(
+/**
+ * All live tokens of one staff member at one outlet (pin reset, inactive), and
+ * on an edge the staff member's PIN sessions (E2, brief 1269).
+ */
+export async function revokeActingStaffForStaff(
   tx: Tx,
   tenant: TenantContext,
   input: {
@@ -41,7 +45,7 @@ export function revokeActingStaffForStaff(
     readonly reason: ActingStaffRevokeReason;
   },
 ): Promise<void> {
-  return revokeWhere(
+  await revokeWhere(
     tx,
     tenant,
     input.reason,
@@ -50,6 +54,10 @@ export function revokeActingStaffForStaff(
       eq(posActingStaff.staffUserId, input.staffUserId),
     ),
   );
+  await endEdgeStaffSessionsOfUser(tx, {
+    tenantId: tenant.tenantId,
+    userId: input.staffUserId,
+  });
 }
 
 /** The live token of one device (switch, end, shift close). */

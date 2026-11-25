@@ -345,7 +345,7 @@ describe("device token digest (decision 1)", () => {
     expect(await storedHash(enrolled.device.id)).toBe(sha256(reissued.token));
     expect(JSON.stringify(reissued.device)).not.toContain("okenHash");
     const { rows } = await asOwner(
-      "SELECT before, after FROM audit_logs WHERE object_id = $1",
+      "SELECT event FROM audit_logs WHERE event->>'objectId' = $1",
       [enrolled.device.id],
     );
     expect(rows.length).toBeGreaterThan(0);
@@ -588,12 +588,16 @@ describe("staff PIN login on the edge (decision 3)", () => {
     expect(end).toBeGreaterThan(before + 11 * HOUR);
     expect(end).toBeLessThanOrEqual(Date.now() + 12 * HOUR);
     const { rows: audits } = await asOwner(
-      "SELECT action, actor_id, device_id, before, after FROM audit_logs WHERE action = 'edge_staff_session.started' AND device_id = $1",
-      [device.id],
+      "SELECT event FROM audit_logs WHERE event->>'action' = 'edge_staff_session.started' AND event->>'objectId' = $1",
+      [rows[0].id],
     );
     expect(audits).toHaveLength(1);
-    expect(audits[0].actor_id).toBe(cashier.userId);
+    expect(audits[0].event).toMatchObject({
+      actorId: cashier.userId,
+      deviceId: device.id,
+    });
     expect(JSON.stringify(audits)).not.toContain(PIN);
+    expect(JSON.stringify(audits)).not.toContain(sha256(device.token));
 
     const cookie = cookieOf(response);
     expect((await board(cookie, device.token)).status).toBe(200);
@@ -625,7 +629,7 @@ describe("staff PIN login on the edge (decision 3)", () => {
       pin: PIN,
       deviceId: randomUUID(),
     } as never);
-    expect(extra.status).toBe(400);
+    expect(extra.status).toBe(422);
     expect(await edgeSessionsOf(device.id)).toHaveLength(0);
   });
 
@@ -782,13 +786,21 @@ describe("operational permissions only (decision 4)", () => {
     const device = await newDevice();
     const cookie = await loggedIn(device);
     expect((await board(cookie, device.token)).status).toBe(200);
+    const path = `/api/floor/zones/${randomUUID()}`;
     const manage = await request(edgeApp)
-      .post("/api/floor/zones")
+      .delete(path)
       .set({ Host: tenant.hostname, Cookie: cookie })
       .set(originHeader)
-      .set(DEVICE_TOKEN_HEADER, device.token)
-      .send({ outletId: tenant.outletId, name: "Teras", sortOrder: 0 });
+      .set(DEVICE_TOKEN_HEADER, device.token);
     expect(manage.status).toBe(403);
+    // The role does hold it: the same call with a password on the cloud passes
+    // the permission check and ends at the unknown zone.
+    asCloud();
+    const cloud = await request(cloudApp)
+      .delete(path)
+      .set({ Host: tenant.hostname, Cookie: cashier.cookie })
+      .set(originHeader);
+    expect(cloud.status).toBe(404);
   });
 
   it("a listed permission the role does not hold is refused", async () => {
@@ -798,8 +810,7 @@ describe("operational permissions only (decision 4)", () => {
       .get(`/api/outlets/${tenant.outletId}/expo`)
       .set({ Host: tenant.hostname, Cookie: cookie })
       .set(DEVICE_TOKEN_HEADER, device.token);
-    expect([403, 404]).toContain(feed.status);
-    expect(feed.status).not.toBe(200);
+    expect(feed.status).toBe(403);
   });
 
   it("the owner-only catalog override stays closed to a PIN session", async () => {

@@ -1,6 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { RequestHandler } from "express";
+import type { DeviceTokenPayload } from "@starter/shared/platform";
+import { isEdgeNode } from "../edge/mode.ts";
 
 // Set by the support-session guard (legend-6yfhc) when the request runs on an
 // impersonated session under an active support access grant.
@@ -26,6 +28,16 @@ export type RequestActingStaff = {
   tokenId: string;
 };
 
+/** `session.auth_method` of a staff PIN login on an outlet edge (E2, brief 1269). */
+export const EDGE_STAFF_PIN = "edge_staff_pin";
+
+// Set on an edge once the request's device token matched its stored digest
+// (services/edge-device-auth.ts); lib/device-token.ts answers from it.
+export type RequestEdgeDevice = {
+  readonly token: string;
+  readonly payload: DeviceTokenPayload;
+};
+
 type RequestContext = {
   reqId: string;
   userId?: string;
@@ -33,6 +45,7 @@ type RequestContext = {
   // legend-k2l: how the authenticated session signed in (session.auth_method).
   authMethod?: string;
   actingStaff?: RequestActingStaff;
+  edgeDevice?: RequestEdgeDevice;
 };
 
 const storage = new AsyncLocalStorage<RequestContext>();
@@ -55,6 +68,42 @@ export function setRequestAuthMethod(authMethod: string) {
   if (store) store.authMethod = authMethod;
 }
 
+export function setRequestEdgeDevice(value: RequestEdgeDevice) {
+  const store = storage.getStore();
+  if (store) store.edgeDevice = value;
+}
+
+export function getRequestEdgeDevice(): RequestEdgeDevice | undefined {
+  return storage.getStore()?.edgeDevice;
+}
+
+/** Runs `run` with this device verified (WebSocket upgrades have no request context). */
+export function runWithEdgeDevice<T>(
+  value: RequestEdgeDevice | undefined,
+  run: () => T,
+): T {
+  const store = storage.getStore();
+  return storage.run(
+    { ...(store ?? { reqId: randomUUID() }), edgeDevice: value },
+    run,
+  );
+}
+
+/**
+ * E2 (brief 1269): true when `userId` acts on this request through an
+ * `edge_staff_pin` session: the session's user, or the acting cashier on it.
+ * Their role permissions are then cut to the edge list (permission-resolver).
+ */
+export function requestIsEdgeStaffPin(userId: string): boolean {
+  const store = storage.getStore();
+  if (store?.authMethod !== EDGE_STAFF_PIN) return false;
+  const id = userId.toLowerCase();
+  return (
+    store.userId?.toLowerCase() === id ||
+    store.actingStaff?.staffUserId.toLowerCase() === id
+  );
+}
+
 /**
  * legend-k2l: may this request act on `userId`'s staff role assignments?
  * Only a password sign-in may (design ws08 M2). A session opened by WhatsApp,
@@ -62,12 +111,16 @@ export function setRequestAuthMethod(authMethod: string) {
  * so a staff person using the member app never carries staff access. Applies
  * only to the authenticated caller's own access on an HTTP request: workers
  * (no request context) and lookups of another user's access are unchanged.
+ * On an edge node an `edge_staff_pin` session may as well (E2, brief 1269).
  */
 export function requestMayUseStaffRoles(userId: string): boolean {
   const store = storage.getStore();
   if (!store || store.userId !== userId || store.authMethod === undefined)
     return true;
-  return store.authMethod === "password";
+  return (
+    store.authMethod === "password" ||
+    (store.authMethod === EDGE_STAFF_PIN && isEdgeNode())
+  );
 }
 
 export function setRequestSupport(value: RequestSupport) {

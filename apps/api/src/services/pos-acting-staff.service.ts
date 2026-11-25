@@ -38,6 +38,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import { db } from "../db/index.ts";
 import { posActingStaff } from "../db/schema/pos-acting-staff.ts";
 import { staffPins } from "../db/schema/device-pin.ts";
+import { assertEdgeIdentityFresh } from "../edge/identity-freshness.ts";
 import { user } from "../db/schema/user.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
@@ -108,6 +109,8 @@ export async function issueActingStaff(
     readonly pin: string;
   },
 ): Promise<PosSessionResponse> {
+  // E2 (brief 1269): a cashier switch is a new login on an edge.
+  await assertEdgeIdentityFresh();
   // Wrong PIN, lockout and "not a member" all throw here, before anything is
   // stored (the attempt counter commits on its own transaction).
   const { switch: verified, pinVersion } =

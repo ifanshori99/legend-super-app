@@ -21,7 +21,11 @@
 // station-bound service re-asserts the station from this same snapshot
 // (legend-fsb7).
 
-import { requestMayUseStaffRoles } from "../lib/request-context";
+import { edgeSessionPermissions } from "../lib/edge-session.ts";
+import {
+  requestIsEdgeStaffPin,
+  requestMayUseStaffRoles,
+} from "../lib/request-context";
 import {
   PERMISSION_CODES,
   canonicalPermissionCode,
@@ -227,6 +231,7 @@ export async function loadTenantAccessInTransaction(
                   ),
             ),
           );
+  const edgePinOnly = requestIsEdgeStaffPin(userId);
   const rawClock = assignmentRows[0]?.dbClock;
   return {
     assignments: assignmentRows.map(toAssignment),
@@ -241,7 +246,14 @@ export async function loadTenantAccessInTransaction(
                 ? rawClock
                 : new Date(rawClock),
         }),
-    roles: roleRows.map(toRoleGrant),
+    // E2 (brief 1269): an edge PIN session carries only the listed operational
+    // permissions, whatever else the role holds.
+    roles: roleRows.map((row) => {
+      const role = toRoleGrant(row);
+      return edgePinOnly
+        ? { ...role, permissions: edgeSessionPermissions(role.permissions) }
+        : role;
+    }),
     org: {
       brands: brandRows.map((row) => ({ id: brandIdSchema.parse(row.id) })),
       outlets: outletRows.map((row) => ({

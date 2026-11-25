@@ -12,3 +12,4 @@ export * from "./catalog-record-event.ts";
 export * from "./selfie-seal.ts";
 export * from "./printers.ts";
 export * from "./link-dead-letter.ts";
+export * from "./staff-session.ts";

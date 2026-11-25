@@ -13,8 +13,10 @@ import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { ACTING_STAFF_ERROR_CODES } from "@starter/shared/pos/acting-staff";
 import { auth } from "../lib/auth";
 import { verifyDeviceToken } from "../lib/device-token";
+import { isEdgeNode } from "../edge/mode.ts";
 import { HttpError } from "../lib/http-error";
 import { isSharedDeviceApiAllowed } from "../lib/shared-device-allowlist";
+import { withEdgeDeviceOfHeaders } from "../services/edge-device-auth.ts";
 import { anySharedDeviceActive } from "../services/shared-device.service";
 
 /**
@@ -50,10 +52,15 @@ export function enforceSharedDeviceAllowlist(
  * WebSocket upgrade): true when the cookie's session carries any mark, or the
  * validly signed device token names an active shared device. Reads only (no
  * stamp). No session and no token: false (the caller authenticates on its own).
+ * On an edge a token that is not verified counts as a shared device.
  */
-export async function isOnSharedDeviceByHeaders(
+export function isOnSharedDeviceByHeaders(
   headers: IncomingHttpHeaders,
 ): Promise<boolean> {
+  return withEdgeDeviceOfHeaders(headers, () => onSharedDevice(headers));
+}
+
+async function onSharedDevice(headers: IncomingHttpHeaders): Promise<boolean> {
   const session =
     headers.cookie || headers.authorization
       ? await auth.api.getSession({
@@ -71,7 +78,8 @@ export async function isOnSharedDeviceByHeaders(
   } catch {
     // A badly signed token adds nothing.
   }
-  return deviceId !== null && (await anySharedDeviceActive([deviceId]));
+  if (deviceId === null) return isEdgeNode();
+  return anySharedDeviceActive([deviceId]);
 }
 
 /** `isOnSharedDeviceByHeaders` for a WebSocket upgrade. */

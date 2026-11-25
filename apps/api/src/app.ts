@@ -19,6 +19,7 @@ import { developmentPublicSiteCredential } from "./lib/development-public-site";
 import { limitAuthBody } from "./middleware/body";
 import { guardImpersonatedAuthRoutes } from "./middleware/support-session";
 import { guardSharedDeviceAuthRoutes } from "./middleware/shared-device-auth";
+import { guardSessionOriginAuthRoutes } from "./middleware/session-origin";
 import {
   loginChallengeRateLimit,
   type LoginChallengeRateLimitOptions,
@@ -70,6 +71,7 @@ import { createEdgeBootstrapRateLimit } from "./routes/edge-bootstrap.routes";
 import { resolveHostname } from "./services/org-resolve.service";
 import { deviceTenantCredential } from "./services/platform-tenant.service";
 import { edgeRouteGuard } from "./edge/mode.ts";
+import { edgeDeviceAuth } from "./services/edge-device-auth.ts";
 import {
   setPosEdcTenderPort,
   setPosOrderPromoPort,
@@ -329,6 +331,9 @@ export function createApp({
   // edge-only /api/edge prefix answers 404. Before Better Auth's catch-all and
   // every /api router so no handler runs for a refused path.
   app.use(edgeRouteGuard({ edgeMode }));
+  // E2 (brief 1269): on an edge the request's device token is checked against
+  // the stored digest here, once, before anything reads it.
+  app.use(edgeDeviceAuth);
 
   // Tenant resolution shared by the public login path below and /api (TEN-02):
   // a registered, verified domain of an active tenant or a signed device
@@ -360,6 +365,9 @@ export function createApp({
     "/api/auth/login-challenges",
     loginChallengeRateLimit(loginChallengeRateLimitOptions),
   );
+  // E2 (brief 1269): a session of the other side (cloud session on an edge,
+  // edge PIN session on the cloud) never reaches the auth routes.
+  app.use("/api/auth", guardSessionOriginAuthRoutes);
   // An impersonated (support) session may only call the allowlisted
   // /api/auth paths. The guard covers the login-challenge router,
   // identityAuthRouter and Better Auth below, and reads headers only (never

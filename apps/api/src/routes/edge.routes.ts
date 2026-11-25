@@ -16,6 +16,8 @@
 //                           fail closed until it is wired), or
 //                         - a signed-in staff member holding one of
 //                           STATUS_READ_PERMISSIONS on this outlet.
+//   POST /api/edge/staff-session  device token + staff PIN open a session bound
+//                         to that device (E2, brief 1269).
 //   GET|POST /api/edge/catalog-override  owner only (legend-10nex): read or
 //                         grant the time-boxed override of the 24 h stale
 //                         catalog sales block. Works offline. The grant also
@@ -29,6 +31,7 @@ import {
 } from "@starter/shared/access";
 import { CoreError } from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
+import { edgeStaffSessionRequestSchema } from "@starter/shared/edge";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { env } from "../config/env.ts";
 import { checkDatabase, db } from "../db/index.ts";
@@ -50,18 +53,26 @@ import {
 import { getEdgeSelfieHealth } from "../edge/selfie-health.ts";
 import { getSelfieVolumeHealth } from "../edge/selfie-volume-health.ts";
 import { verifyDeviceToken } from "../lib/device-token.ts";
+import { setCustomerSessionCookie } from "../lib/identity-session.ts";
+import { getRequestEdgeDevice } from "../lib/request-context.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { sessionMfaVerifiedAt } from "../lib/mfa.ts";
 import { rejectActingStaff } from "../middleware/acting-staff.ts";
 import { getAuth, requireAuth } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
-import { findTenantContext } from "../middleware/tenant.ts";
+import {
+  findTenantContext,
+  getTenantContext,
+  requireTenantContext,
+} from "../middleware/tenant.ts";
 import {
   loadTenantAccess,
   resolveAccessSnapshot,
 } from "../services/permission-resolver.ts";
 import { findActiveDeviceForToken } from "../services/device-registry-check.ts";
+import { openEdgeStaffSession } from "../services/edge-staff-session.service.ts";
+import { registeredDeviceIdOf } from "./device-id.ts";
 import { loadSessionRow } from "../services/identity-session.service.ts";
 import { getEdgeStatus } from "../services/edge-status.service.ts";
 
@@ -250,6 +261,41 @@ const statusHandler: RequestHandler = async (req, res) => {
 };
 
 export const edgeRouter = Router();
+
+// E2 (brief 1269 decision 3): staff PIN login on a registered device of this
+// outlet. Edge only (edgeRouteGuard answers 404 on the cloud). The session is
+// an ordinary signed cookie, useless without the device's own token.
+edgeRouter.post(
+  "/staff-session",
+  requireNodeTenant,
+  requireTrustedOrigin,
+  requireTenantContext,
+  jsonBody,
+  async (req, res) => {
+    const { identity } = edgeIdentity();
+    const input = edgeStaffSessionRequestSchema.parse(req.body);
+    const device = getRequestEdgeDevice();
+    if (!device || (await registeredDeviceIdOf(req)) === null)
+      throw new CoreError(
+        "UNAUTHORIZED",
+        "Hanya perangkat outlet terdaftar yang dapat memakai PIN.",
+      );
+    const { session, view } = await openEdgeStaffSession(
+      getTenantContext(req),
+      {
+        device,
+        outletId: identity.scope.outletId,
+        userId: input.userId,
+        pin: input.pin,
+        ipAddress: req.ip ?? null,
+        userAgent: req.get("user-agent") ?? null,
+      },
+    );
+    setCustomerSessionCookie(res, session);
+    res.setHeader("Cache-Control", "private, no-store");
+    res.status(201).json({ data: view });
+  },
+);
 
 edgeRouter.get("/health", async (_req, res) => {
   const runtime = getEdgeRuntimeState();
