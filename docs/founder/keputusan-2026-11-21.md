@@ -59,3 +59,5 @@ Cara menjawab: cukup tulis nomor dan "setuju usulan" atau pilihan lain.
     Usulan baru: pemilik atau finance manager boleh menutup buku dengan alasan tertulis. Sistem menyimpan siapa yang menutup, alasannya, dan daftar batch yang tertahan. Batch itu dibukukan di bulan berikutnya begitu datanya lengkap. Tidak ada uang yang dibayarkan, jadi tidak ada risiko bayar lebih.
     Pilihan lain: tetap ditolak sampai jalur pemulihan outlet siap (sesudah rilis 1).
     **Jawaban founder (21 Nov): "Boleh dengan alasan tertulis."** Dikerjakan di kartu 1263.
+
+20. **Layar refund manual Duitku (1259) dan tutup buku dengan alasan tertulis (1263).** **Jawaban founder (25 Nov): "Setuju keduanya."** Bagian B butir lain tidak termasuk jawaban ini.

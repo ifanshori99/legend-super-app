@@ -5,7 +5,8 @@
 - Bead ditutup: tomda xhl5j gdjpu j7018 905j 29vw ecr16 ff393 17az7 mtbq9 ait0n. Tetap buka: k0i8, x73li, 0orff, 07eg/tkhkz. Cek go-live tomda di `docs/release/production-credentials-checklist.md` F.12.
 - Worktree legend-1263, int-batch105, int-batch106 dihapus. Basis kerja baru: milestone/m1.
 - CI GitHub tidak jalan sejak 17 Nov (tagihan GitHub Actions gagal); bukti test hanya lokal.
-- Menunggu founder: lihat screenshot refund manual (1259) dan tutup buku (1263) di `docs/review/img/` milestone/m1; bagian B `docs/founder/keputusan-2026-11-21.md`; VM, Cloudflare, kredensial, restore drill, review layar legend-5c0a.
+- Menunggu founder: bagian B `docs/founder/keputusan-2026-11-21.md`; VM, Cloudflare, kredensial, restore drill, review layar legend-5c0a.
+- Founder 25 Nov: layar 1259 dan 1263 disetujui ("Setuju keduanya").
 - Tim berikutnya: wxvt9 (dry-run PPh21 staging), `deploy.sh --dry-run`, review Caddyfile, bead P3 lanjutan 1263/1264. Pemblokir P1: 1nb85 (saklar refund DOIT tetap mati), 7tqe8 (cek sandbox Duitku).
 - Sesi cd45076f: 468 permintaan, compact 1x, 13 subagent, biaya* 9,7 jt token setara (Opus 65%).
 
