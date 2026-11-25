@@ -977,7 +977,8 @@ describe("legend-wxvt9: release rehearsal of the PPh 21 receivable backfill", ()
     Promise.all(
       runIds.map((runId) =>
         rewriteSlip(runId, emp, (calc) => {
-          const { pph21ReceivableOpenAfterIdr: _carry, ...rest } = calc;
+          const rest = { ...calc };
+          delete rest.pph21ReceivableOpenAfterIdr;
           return rest;
         }),
       ),

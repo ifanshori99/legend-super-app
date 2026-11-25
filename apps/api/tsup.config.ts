@@ -13,6 +13,10 @@ export default defineConfig({
     "predeploy-check": "src/predeploy-check.ts",
     "reset-preswitch-refunds": "src/reset-preswitch-refunds.ts",
     "set-gateway": "src/set-gateway.ts",
+    // Release gate: dry-run then apply inside the image, which has no tsx
+    // (docs/release/pph21-backfill-rehearsal.md).
+    "payroll-pph21-receivable-backfill":
+      "src/scripts/payroll-pph21-receivable-backfill.ts",
     worker: "src/worker-main.ts",
     // Loaded by services/pdf-safety.ts as `new Worker(dist/pdf-safety.worker.js)`;
     // it must sit beside the server chunks in dist/ (legend-851ef).

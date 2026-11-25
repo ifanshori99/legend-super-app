@@ -6,6 +6,8 @@
 // Prints counts and employee ids only, never names or amounts per person.
 //   pnpm --filter @starter/api payroll:backfill-pph21-receivable -- --dry-run
 //   pnpm --filter @starter/api payroll:backfill-pph21-receivable
+// Inside the production image (no pnpm, tsx or src; only dist/):
+//   node dist/payroll-pph21-receivable-backfill.js [--dry-run]
 import { pathToFileURL } from "node:url";
 import { sql } from "drizzle-orm";
 import { tenantIdSchema, type ScopedTenantContext } from "@starter/shared/core";
@@ -92,10 +94,14 @@ export async function cli(args: string[]): Promise<number> {
   }
 }
 
-const entry = process.argv[1];
-if (
-  entry &&
-  /payroll-pph21-receivable-backfill\.ts$/.test(entry) &&
-  import.meta.url === pathToFileURL(entry).href
-)
+/** True when this file is the process entry (source via tsx, or built dist/*.js). */
+export function isCliEntry(entry: string | undefined, metaUrl: string) {
+  return (
+    entry !== undefined &&
+    /payroll-pph21-receivable-backfill\.[cm]?[jt]s$/.test(entry) &&
+    metaUrl === pathToFileURL(entry).href
+  );
+}
+
+if (isCliEntry(process.argv[1], import.meta.url))
   process.exitCode = await cli(process.argv.slice(2));
