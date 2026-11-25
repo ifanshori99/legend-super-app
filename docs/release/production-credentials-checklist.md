@@ -86,6 +86,8 @@ EDGE_CLOUD_URL (wss://.../api/edge-link), EDGE_NODE_CREDENTIAL (muncul SEKALI sa
 10. Urutan rilis edge: **cloud dulu, baru edge** (pepper, selfie seal, restore-proof 854 butuh cloud lebih dulu). Registrasi node edge di cloud, simpan credential sekali tampil.
 11. Latihan restore backup, uji alert dan monitoring, verifikasi isolasi tenant dan penerbitan sertifikat domain kustom.
 
+12. Sebelum go-live, jalankan di DB produksi: `SELECT count(*) FROM stock_negative_revaluations WHERE unit_cost_idr = 0`. Hasil harus 0 (data lama sebelum aturan bonus supplier 1242; repair saldo tidak menghitung ulang revaluasi). Bukan 0: tahan go-live, lapor CTO.
+
 ## G. Checklist keamanan (ringkas)
 HTTPS + NODE_ENV=production; TRUST_PROXY sesuai hop; SSR_SHARED_SECRET sama di api/web atau sengaja kosong; rate limit sesuai venue; rate-limit bersama bila multi-instance; batas body di proxy; role `admin` dibatasi; keputusan verifikasi email dan reset password; tidak ada konten tak tepercaya di bawah COOKIE_DOMAIN.
 
