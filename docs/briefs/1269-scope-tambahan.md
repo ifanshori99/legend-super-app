@@ -101,3 +101,9 @@ Test wajib: replay event dua kali/acak/crash = satu sale, jurnal, stok, shift; l
 ### Koreksi CTO atas bagian E
 - PRD 637, 1523, FAC-03: tiket fasilitas WAJIB bisa dijual di POS saat offline (diterbitkan edge). Baris matriks "tiket ditolak" berlawanan dengan PRD; menunggu founder, jangan dikunci permanen.
 - PRD 204, 346, 453, EDG-04: 2 mini PC (utama + standby), pengalihan <= 15 menit. Anggaran sudah ada di PRD; kartu standby perlu disusun (legend-b3k).
+
+## F. Tiket, poin, voucher, DP, standby di edge (founder: wajib rilis 1)
+
+Dasar bagian E. Rancang: (1) online lewat edge: proksi ke cloud untuk poin (saldo, redeem), voucher/kode promo, lookup member, DP reservasi, dan tiket; gabung atau pakai ulang jalur E9 (`edge/payment-proxy.ts`), jangan proksi kedua; (2) tiket saat offline wajib menurut PRD 637, 1523, FAC-03: alokasi kuota/slot ke edge tanpa jual ganda dengan cloud/tamu, kredensial QR/PIN/lock, sinkron balik, refund; (3) edge standby (PRD 204, 346, EDG-04, legend-b3k, 49e8n). Poin/voucher/DP offline tetap ditolak kecuali aman. Juga iojd1.
+Uang paling membatasi; hasil tak diketahui = kunci, bukan ulang. Keluaran: keputusan, kartu (berkas, model, jam, urutan, tak bertumpuk dengan E dan 1268), test wajib, yang perlu founder.
+

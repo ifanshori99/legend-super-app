@@ -69,3 +69,5 @@ Cara menjawab: cukup tulis nomor dan "setuju usulan" atau pilihan lain.
 23. **POS saat internet putus.** **Jawaban founder (25 Nov malam): "Pos wajib bisa offline".** EDG-01 (4 jam) dan EDC-05 wajib di rilis 1.
 
 24. **Sandbox Duitku.** **Jawaban founder (25 Nov malam):** akun sandbox baru bisa dipakai sesudah ada domain dan deploy; kode dibangun dulu sesuai dokumentasi. Metode tetap terkunci sampai bukti sandbox (C1) di staging lulus.
+
+25. **Tiket, poin, voucher, dan DP di kasir.** **Jawaban founder (25 Nov malam): "Wajib rilis 1".** Tiket juga saat offline (PRD FAC-03).
