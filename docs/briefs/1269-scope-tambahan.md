@@ -107,3 +107,10 @@ Test wajib: replay event dua kali/acak/crash = satu sale, jurnal, stok, shift; l
 Dasar bagian E. Rancang: (1) online lewat edge: proksi ke cloud untuk poin (saldo, redeem), voucher/kode promo, lookup member, DP reservasi, dan tiket; gabung atau pakai ulang jalur E9 (`edge/payment-proxy.ts`), jangan proksi kedua; (2) tiket saat offline wajib menurut PRD 637, 1523, FAC-03: alokasi kuota/slot ke edge tanpa jual ganda dengan cloud/tamu, kredensial QR/PIN/lock, sinkron balik, refund; (3) edge standby (PRD 204, 346, EDG-04, legend-b3k, 49e8n). Poin/voucher/DP offline tetap ditolak kecuali aman. Juga iojd1.
 Uang paling membatasi; hasil tak diketahui = kunci, bukan ulang. Keluaran: keputusan, kartu (berkas, model, jam, urutan, tak bertumpuk dengan E dan 1268), test wajib, yang perlu founder.
 
+
+### Keputusan CTO untuk E2 (25 Nov)
+1. Token perangkat di edge: bukan rahasia cloud, bukan kunci per outlet. Cloud menyimpan `devices.token_hash` = SHA-256 token utuh saat terbit/terbit ulang (nullable; belum ada perangkat production, jadi terbit ulang gratis), ikut stream perangkat outlet itu saja. Edge menerima token hanya bila hash cocok (timing-safe), perangkat aktif, outlet/tenant sama, payload belum kedaluwarsa menurut jam tepercaya. Edge dicuri = hanya hash, tak bisa memalsukan. `BETTER_AUTH_SECRET` edge berbeda dari cloud.
+2. Migrasi 0524 milik E2 (token_hash + auth_method baru `edge_staff_pin`). 0525 milik E1. CTO membagi nomor berikutnya.
+3. Endpoint login khusus edge (404 di cloud): token perangkat + PIN staf membuat sesi staf terikat perangkat itu, maks 12 jam, berakhir bila perangkat dicabut. PIN memakai jalur pepper/lockout yang sudah ada. Cloud menolak sesi `edge_staff_pin`, edge menolak cookie cloud.
+4. Sesi ini lolos `requirePermission` hanya untuk izin operasional POS/captain/KDS/shift yang dilayani `EDGE_API_PREFIXES` dan memang dimiliki perannya; aksi yang butuh MFA ditolak (pakai approval/override PIN yang ada). Daftar izin eksplisit, bawaan tolak.
+5. 72 jam diukur dari sinkron sukses terakhir registry orang+perangkat dengan jam tepercaya; lewat itu login baru dan override ditolak, sesi berjalan sampai kedaluwarsa.
