@@ -1,26 +1,36 @@
+import { useState } from "react";
 import { RotateCw } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
-import type { useReplayPayment, UnresolvedPayment } from "../../hooks";
+import type {
+  useReplayPayment,
+  useResolvePayment,
+  UnresolvedPayment,
+} from "../../hooks";
 import { Notice, PosPanel, StateBlock, StatusPill } from "../shared";
+import { ResolveDialog } from "./resolve-dialog";
 
 // A payment request of this bill has no known answer (1268 W2): the customer
-// may already have paid, so every method is locked. The only way forward is to
-// send the very same request again; the server records it once.
+// may already have paid, so every method is locked. The ways forward: send the
+// very same request again (the server records it once), or a supervisor settles
+// it with a PIN (the sender left, or the request cannot be read).
 export function UnresolvedPanel({
   orderId,
   payment,
   replay,
+  resolve,
   onReload,
 }: {
   orderId: string;
   payment: UnresolvedPayment;
-  /** Owned by the screen: its answer outlives this panel. */
+  /** Owned by the screen: their answers outlive this panel. */
   replay: ReturnType<typeof useReplayPayment>;
+  resolve: ReturnType<typeof useResolvePayment>;
   onReload: () => void;
 }) {
   const t = useT();
   const sending = payment.status === "sending";
+  const [resolving, setResolving] = useState(false);
   const mine = payment.status === "pending" && payment.mine;
   return (
     <PosPanel
@@ -41,6 +51,16 @@ export function UnresolvedPanel({
             <RotateCw aria-hidden="true" />
             {t("posKasirPayment.unresolved.reload")}
           </Button>
+          {!sending && (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={replay.isPending}
+              onClick={() => setResolving(true)}
+            >
+              {t("posKasirPayment.unresolved.resolve")}
+            </Button>
+          )}
           {(mine || (sending && replay.isPending)) && (
             <Button
               type="button"
@@ -104,6 +124,21 @@ export function UnresolvedPanel({
           )}
         </div>
       </StateBlock>
+      {!sending && (
+        <ResolveDialog
+          orderId={orderId}
+          resolve={resolve}
+          kind={
+            payment.status === "corrupt"
+              ? "corrupt"
+              : payment.kind === "edc_standalone"
+                ? "edc"
+                : "other"
+          }
+          open={resolving}
+          onOpenChange={setResolving}
+        />
+      )}
     </PosPanel>
   );
 }

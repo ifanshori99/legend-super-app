@@ -623,6 +623,18 @@ export async function bumpPos(
 
 // ---- Idempotency --------------------------------------------------------------
 
+/** Requests with one key, and the resolve that closes it, serialize here. */
+export async function lockPosIdempotencyKey(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: OutletId,
+  key: string,
+): Promise<void> {
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`pos-order-idem:${context.tenant.tenantId}:${outletId}:${key}`}, 0))`,
+  );
+}
+
 /**
  * Runs `run` once per (outlet, key). The key is bound to the fingerprint of
  * actor, operation, target and request: the same request replays the stored
@@ -652,9 +664,7 @@ export async function posIdempotent<T>(
       request: input.request,
     }),
   );
-  await tx.execute(
-    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`pos-order-idem:${tenantId}:${input.outletId}:${input.key}`}, 0))`,
-  );
+  await lockPosIdempotencyKey(tx, context, input.outletId, input.key);
   const [existing] = await tx
     .select()
     .from(posOrderIdempotency)

@@ -52,6 +52,8 @@ vi.mock("@/features/ws04-pos-kasir/hooks", () => {
     usePrintReceipt: () => state.print,
     useStartPayment: start,
     useReplayPayment: idle,
+    useResolvePayment: idle,
+    useResolveApprovers: () => ({ data: [], isError: false }),
     useReceiptPdf: idle,
     useCancelAttempt: idle,
     useCheckPaymentStatus: idle,
@@ -180,6 +182,15 @@ describe("unresolved payment", () => {
     const html = screen();
     expect(visibleText(html)).toContain(text);
     expect(button(html, "Kirim ulang")).toBeUndefined();
+  });
+
+  test.each([
+    { status: "pending", kind: "qris", mine: true },
+    { status: "pending", kind: "cash", mine: false },
+    { status: "corrupt" },
+  ])("a supervisor can settle %j", (unresolved) => {
+    state.unresolved = unresolved;
+    expect(button(screen(), "Selesaikan dengan PIN")?.disabled).toBe(false);
   });
 
   test("a screen opened while the request is sent has no way to pay", () => {

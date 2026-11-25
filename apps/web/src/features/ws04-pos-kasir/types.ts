@@ -576,3 +576,13 @@ export type EngineState = {
     keys: string[];
   };
 };
+
+/** A supervisor settles a payment request without a known answer. */
+export type ResolvePaymentInput = {
+  orderId: string;
+  reason: string;
+  approverUserId: string;
+  pin: string;
+  /** EDC or unreadable request: what the supervisor states about the card. */
+  card?: "not_debited" | "recording";
+};

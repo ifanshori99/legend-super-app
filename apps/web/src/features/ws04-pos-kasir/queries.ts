@@ -5,6 +5,7 @@ import { queryOptions } from "@tanstack/react-query";
 import {
   fetchEdcApprovers,
   fetchEdcTerminals,
+  fetchResolveApprovers,
   fetchEwallets,
   fetchPaymentMethods,
   fetchPaymentSession,
@@ -111,6 +112,16 @@ export const edcApproversQuery = (outletId: string) =>
   queryOptions({
     queryKey: posKasirKeys.edcApprovers(outletId),
     queryFn: () => fetchEdcApprovers(outletId),
+    retry: false,
+  });
+
+export const resolveApproversQuery = (
+  outletId: string,
+  action: "void" | "edc_standalone",
+) =>
+  queryOptions({
+    queryKey: [...posKasirKeys.edcApprovers(outletId), "resolve", action],
+    queryFn: () => fetchResolveApprovers(outletId, action),
     retry: false,
   });
 

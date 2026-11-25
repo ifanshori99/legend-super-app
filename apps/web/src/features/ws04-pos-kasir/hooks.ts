@@ -35,6 +35,7 @@ import {
   redeemPointsValue,
   removeVoucherCode,
   replayPayment,
+  resolvePayment,
   requestEdcApproval,
   startPayment,
   validateVoucherCode,
@@ -53,6 +54,7 @@ import {
   paymentSessionQuery,
   pointsAccountQuery,
   posKasirKeys,
+  resolveApproversQuery,
   vaBanksQuery,
 } from "./queries";
 import {
@@ -66,6 +68,7 @@ import {
   type RecordEdcStandaloneInput,
   type StartPaymentInput,
   type VoucherCheck,
+  type ResolvePaymentInput,
 } from "./types";
 
 /** True when the server has no contract for the call yet (show "belum tersambung"). */
@@ -290,6 +293,26 @@ export function useReplayPayment() {
   const actorId = useActorId();
   return useSessionMutation<{ orderId: string }>(({ orderId }) =>
     replayPayment(outletId, orderId, actorId),
+  );
+}
+
+/** Supervisors for the request above; an EDC one needs the EDC approval. */
+export function useResolveApprovers(
+  action: "void" | "edc_standalone",
+  enabled: boolean,
+) {
+  return useQuery({
+    ...resolveApproversQuery(useOutletId(), action),
+    enabled,
+  });
+}
+
+/** Settle the unresolved request with a supervisor's PIN. */
+export function useResolvePayment() {
+  const outletId = useOutletId();
+  const actorId = useActorId();
+  return useSessionMutation<ResolvePaymentInput>((input) =>
+    resolvePayment(outletId, actorId, input),
   );
 }
 

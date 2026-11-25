@@ -44,6 +44,7 @@ import {
   releasePosQris,
   releasePosVa,
   removePosDiscount,
+  resolvePosPaymentIntent,
   submitPosOrder,
   voidPosOrder,
   voidPosOrderCorrection,
@@ -74,6 +75,7 @@ import * as discounts from "../services/pos-order-discounts.ts";
 import { addPosTender as addPosTenderService } from "../services/pos-order-payment.ts";
 import * as pos from "../services/pos-order.service.ts";
 import { getPosPaymentOptions as getPosPaymentOptionsService } from "../services/pos-payment-options.service.ts";
+import { resolvePosPaymentIntent as resolvePosPaymentIntentService } from "../services/pos-payment-intent-resolve.ts";
 import * as qrisHold from "../services/pos-qris-hold.ts";
 import * as vaRelease from "../services/payment-va-release.ts";
 import { listPosQrisReconciliations as listPosQrisReconciliationsService } from "../services/pos-qris-release-recon.ts";
@@ -489,6 +491,29 @@ posOrderRouter.post(
     const body = releasePosQris.body.parse(req.body);
     res.json({
       data: await qrisHold.releasePosQris(
+        getScopedTenantContext(req),
+        await caller(req),
+        outletId,
+        orderId,
+        body,
+      ),
+    });
+  },
+);
+
+// 1268 W2: a payment request without a known answer, settled by a supervisor's
+// PIN. The outlet is the caller's own (session and path, TEN-02).
+posOrderRouter.post(
+  "/orders/:orderId/payment-intents/resolve",
+  pay,
+  jsonBody,
+  async (req, res) => {
+    const { outletId, orderId } = resolvePosPaymentIntent.params.parse(
+      req.params,
+    );
+    const body = resolvePosPaymentIntent.body.parse(req.body);
+    res.json({
+      data: await resolvePosPaymentIntentService(
         getScopedTenantContext(req),
         await caller(req),
         outletId,

@@ -178,6 +178,24 @@ export function endIntent(
   storage.removeItem(intentStorageKey(scope));
 }
 
+/**
+ * Settled by a supervisor: the stored request goes, or `next` takes its place in
+ * one write so the lock never opens between them. Only what was resolved: a
+ * value that changed meanwhile is another request and stays.
+ */
+export function settleStored(
+  storage: StorageLike,
+  scope: IntentScope,
+  resolvedRaw: string,
+  next?: PaymentIntent,
+): boolean {
+  const id = intentStorageKey(scope);
+  if (storage.getItem(id) !== resolvedRaw) return false;
+  if (next) storage.setItem(id, JSON.stringify(next));
+  else storage.removeItem(id);
+  return true;
+}
+
 /** The server proves the bill paid: whatever was stored no longer matters. */
 export function clearPaidIntent(
   storage: StorageLike,
@@ -185,6 +203,13 @@ export function clearPaidIntent(
 ): void {
   storage.removeItem(intentStorageKey({ ...scope, slot: "payment" }));
 }
+
+const refused = new WeakSet<object>();
+
+/** The error ended a stored request: nothing was recorded under its key. */
+export const markRefused = (error: object): void => void refused.add(error);
+export const wasRefused = (error: unknown): boolean =>
+  typeof error === "object" && error !== null && refused.has(error);
 
 /**
  * True when the error proves the server recorded nothing for this key. The

@@ -52,11 +52,13 @@ import {
   recordEdcStandalone,
   redeemPointsValue,
   replayPayment,
+  resolvePayment,
   startPayment,
 } from "@/features/ws04-pos-kasir/api";
 import {
   isDefinitiveRefusal,
   readIntent,
+  wasRefused,
 } from "@/features/ws04-pos-kasir/payment-intent-store";
 import { isSendingIntent } from "@/features/ws04-pos-kasir/payment-intent-browser";
 import { edcApprovalKey } from "@/features/ws04-pos-kasir/components/payment/payment-helpers";
@@ -389,9 +391,11 @@ describe("review 1: an EDC repeat refused for its approval", () => {
     server.onTender = lost;
     await expect(edc()).rejects.toThrow();
     server.onTender = approval;
-    await expect(replayPayment(OUTLET, ORDER, CASHIER)).rejects.toMatchObject({
-      code: "EDC_STANDALONE_APPROVAL_REQUIRED",
-    });
+    const error: unknown = await replayPayment(OUTLET, ORDER, CASHIER).catch(
+      (caught: unknown) => caught,
+    );
+    expect(error).toMatchObject({ code: "EDC_STANDALONE_APPROVAL_REQUIRED" });
+    expect(wasRefused(error)).toBe(true);
     expect(state()).toBe("none");
   });
 
@@ -399,7 +403,9 @@ describe("review 1: an EDC repeat refused for its approval", () => {
     server.onTender = lost;
     await expect(edc()).rejects.toThrow();
     server.onTender = refuse(403, "FORBIDDEN");
-    await expect(edc()).rejects.toThrow();
+    const error: unknown = await edc().catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ code: "FORBIDDEN" });
+    expect(wasRefused(error)).toBe(false);
     expect(state()).toBe("pending");
   });
 
@@ -503,6 +509,228 @@ describe("review 4: every payment body states the version it was made for", () =
     await expect(cash()).rejects.toThrow();
     expect(money()[1]?.body?.expectedVersion).toBe(7);
     expect(state()).toBe("none");
+  });
+});
+
+describe("a supervisor resolves the request", () => {
+  const PIN = "582914";
+  const NEW_OVERRIDE = "01JCQ8Z5N0M3X4Y5Z6A7B8C9G1";
+  let outcome: string;
+  let onResolve: () => unknown;
+  const sent = (suffix: string) =>
+    posts().filter((c) => c.path.endsWith(suffix));
+  const resolve = (over: Record<string, unknown> = {}, actor = OTHER) =>
+    resolvePayment(OUTLET, actor, {
+      orderId: ORDER,
+      reason: "Kasir awal pulang",
+      approverUserId: CASHIER,
+      pin: PIN,
+      ...over,
+    });
+  const corrupt = () => {
+    for (const key of store.keys()) store.set(key, "{broken");
+  };
+
+  beforeEach(() => {
+    outcome = "closed";
+    onResolve = () => ({ data: { outcome, order: server.order } });
+    const respond = net.respond;
+    net.respond = (call) => {
+      if (call.path.endsWith("/payment-intents/resolve")) return onResolve();
+      if (call.path.endsWith("/pos-overrides"))
+        return { data: { id: NEW_OVERRIDE } };
+      return respond(call);
+    };
+  });
+
+  it("closed: the bill opens, also for another cashier", async () => {
+    server.onTender = lost;
+    await expect(cash()).rejects.toThrow();
+    const key = money()[0]?.body?.idempotencyKey;
+    await resolve();
+    expect(sent("/resolve")[0]?.body).toEqual({
+      key,
+      reason: "Kasir awal pulang",
+      approverUserId: CASHIER,
+      pin: PIN,
+    });
+    expect(state()).toBe("none");
+    expect(JSON.stringify([...store])).not.toContain(PIN);
+  });
+
+  it("recorded: loads the paid bill", async () => {
+    server.onTender = () => {
+      pay(tender({}));
+      return lost();
+    };
+    await expect(cash()).rejects.toThrow();
+    outcome = "recorded";
+    const session = await resolve();
+    expect(session.bill.paid).toBe(true);
+    expect(state()).toBe("none");
+    expect(money()).toHaveLength(1);
+  });
+
+  it.each([
+    [0, "NETWORK_ERROR"],
+    [401, "PIN_INVALID"],
+    [403, "PERMISSION_DENIED"],
+    [409, "QRIS_HOLD_ACTIVE"],
+    [503, "HTTP_ERROR"],
+  ])("stays locked when the server answers %i %s", async (status, code) => {
+    server.onTender = lost;
+    await expect(cash()).rejects.toThrow();
+    onResolve = refuse(status, code);
+    await expect(resolve()).rejects.toMatchObject({ code });
+    expect(state()).toBe("pending");
+    corrupt();
+    await expect(resolve()).rejects.toMatchObject({ code });
+    expect(state()).toBe("corrupt");
+  });
+
+  it("unreadable: no key is sent, and the fenced bill opens", async () => {
+    server.onTender = lost;
+    await expect(cash()).rejects.toThrow();
+    corrupt();
+    outcome = "fenced";
+    await resolve({ card: "not_debited" });
+    expect(sent("/resolve")[0]?.body).toMatchObject({
+      key: null,
+      card: "not_debited",
+    });
+    expect(state()).toBe("none");
+  });
+
+  it("another request stored meanwhile is left alone", async () => {
+    server.onTender = lost;
+    await expect(cash()).rejects.toThrow();
+    onResolve = () => {
+      for (const [key, value] of store)
+        store.set(key, value.replaceAll("cash:", "cash:other-"));
+      return { data: { outcome, order: server.order } };
+    };
+    await resolve();
+    expect(state()).toBe("pending");
+  });
+
+  it("a charged card is recorded again without the lock ever opening", async () => {
+    server.onTender = lost;
+    await expect(edc({ approvalCode: "A1B2" })).rejects.toThrow();
+    const first = money()[0]?.body;
+    const states: string[] = [];
+    onResolve = () => {
+      states.push(state());
+      return { data: { outcome, order: { ...server.order, version: 8 } } };
+    };
+    server.onTender = () => {
+      states.push(state());
+      return pay(tender({ method: "edc_card" }));
+    };
+    const session = await resolve({ card: "recording" });
+    expect(session.bill.paid).toBe(true);
+    expect(states).toEqual(["pending", "pending"]);
+    expect(sent("/pos-overrides")[0]?.body).toMatchObject({
+      action: "edc_standalone",
+      valueIdr: 100_000,
+    });
+    const again = money()[1]?.body;
+    expect(again).toMatchObject({
+      method: "edc_card",
+      expectedVersion: 8,
+      standalone: {
+        terminalId: TERMINAL,
+        bankRef: "736214805192",
+        approvalCode: "A1B2",
+        overrideId: NEW_OVERRIDE,
+      },
+    });
+    expect(again?.idempotencyKey).not.toBe(first?.idempotencyKey);
+    expect(state()).toBe("none");
+  });
+
+  it("a lost answer of that record locks again under its own key", async () => {
+    server.onTender = lost;
+    await expect(edc()).rejects.toThrow();
+    const first = readIntent(storage(), scope);
+    await expect(resolve({ card: "recording" })).rejects.toThrow();
+    const second = readIntent(storage(), scope);
+    expect(second).toMatchObject({
+      status: "pending",
+      intent: { actorId: OTHER, kind: "edc_standalone" },
+    });
+    expect(second).not.toEqual(first);
+  });
+
+  it("records nothing again when the first send had been recorded", async () => {
+    server.onTender = () => {
+      pay(tender({ method: "edc_card" }));
+      return lost();
+    };
+    await expect(edc()).rejects.toThrow();
+    server.order = { ...server.order, totalIdr: 100_000 };
+    outcome = "recorded";
+    await resolve({ card: "recording" });
+    expect(money()).toHaveLength(1);
+    expect(state()).toBe("none");
+  });
+
+  it("an unreadable request has no slip to record", async () => {
+    server.onTender = lost;
+    await expect(edc()).rejects.toThrow();
+    corrupt();
+    await expect(resolve({ card: "recording" })).rejects.toMatchObject({
+      code: "PAYMENT_UNRESOLVED",
+    });
+    expect(sent("/resolve")).toHaveLength(0);
+    expect(state()).toBe("corrupt");
+  });
+});
+
+describe("two separate pages (own modules, one localStorage)", () => {
+  const otherPage = async () => {
+    vi.resetModules();
+    const api = await import("@/features/ws04-pos-kasir/api");
+    expect(api.confirmCash).not.toBe(confirmCash);
+    return api;
+  };
+
+  it("the second page is locked while the first sends, and after it is lost", async () => {
+    const page = await otherPage();
+    let fail: () => void = () => undefined;
+    server.onTender = () =>
+      new Promise((_resolve, reject) => {
+        fail = () => reject(new ApiError(0, "NETWORK_ERROR", "lost"));
+      });
+    const first = cash();
+    await vi.waitFor(() => expect(money()).toHaveLength(1));
+    const ask = { orderId: ORDER, method: "qris", amountIdr: 100_000 } as const;
+    await expect(page.startPayment(OUTLET, CASHIER, ask)).rejects.toMatchObject(
+      { code: "PAYMENT_UNRESOLVED" },
+    );
+    fail();
+    await expect(first).rejects.toThrow();
+    await expect(page.startPayment(OUTLET, CASHIER, ask)).rejects.toMatchObject(
+      { code: "PAYMENT_UNRESOLVED" },
+    );
+    expect(money()).toHaveLength(1);
+    server.onTender = () => pay(tender({}));
+    await page.replayPayment(OUTLET, ORDER, CASHIER);
+    expect(money()[1]?.body).toEqual(money()[0]?.body);
+    expect(state()).toBe("none");
+  });
+
+  it("both pages tapping cash together send one key", async () => {
+    const page = await otherPage();
+    await Promise.allSettled([
+      cash(),
+      page.confirmCash(OUTLET, CASHIER, {
+        orderId: ORDER,
+        amountIdr: 100_000,
+        receivedIdr: 150_000,
+      }),
+    ]);
+    const keys = new Set(money().map((c) => c.body?.idempotencyKey));
+    expect(keys.size).toBe(1);
   });
 });
 

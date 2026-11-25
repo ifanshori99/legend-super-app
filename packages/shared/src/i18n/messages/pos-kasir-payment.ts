@@ -57,6 +57,18 @@ export const posKasirPaymentMessages = {
     resending: "Mengirim ulang…",
     reload: "Muat ulang tagihan",
     errorTitle: "Hasil masih belum pasti",
+    resolve: "Selesaikan dengan PIN supervisor",
+    resolveTitle: "Selesaikan pembayaran yang belum pasti",
+    resolveSummary:
+      "Server memeriksa permintaan ini. Bila sudah tercatat, hasilnya dimuat. Bila belum, permintaan ditutup dan tidak bisa tercatat lagi.",
+    cardLabel: "Keadaan kartu pelanggan",
+    cardHint: "Periksa slip dan mesin EDC sebelum memilih.",
+    cardPlaceholder: "Pilih keadaan kartu",
+    cardNotDebited: "Kartu tidak terdebit",
+    cardRecording: "Kartu sudah terdebit, catat pembayarannya",
+    cardRequired: "Pilih keadaan kartu lebih dulu.",
+    cardCorruptHint:
+      "Bila kartu sudah terdebit, jangan lanjutkan: tagihan tetap terkunci sampai ditangani manajer.",
     sendingTitle: "Pembayaran sedang dikirim",
     sendingBody:
       "Tunggu jawaban server. Semua cara bayar tagihan ini terkunci sampai hasilnya diketahui.",

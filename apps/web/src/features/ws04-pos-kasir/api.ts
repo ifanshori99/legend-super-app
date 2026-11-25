@@ -14,6 +14,7 @@ import {
   getPosQris,
   issuePosReceipt,
   removePosDiscount,
+  resolvePosPaymentIntent,
   type PosOrderDetail,
   type PosQrisStatus,
 } from "@starter/shared/pos";
@@ -46,7 +47,9 @@ import {
   clearPaidIntent,
   endIntent,
   isDefinitiveRefusal,
+  markRefused,
   parseIntent,
+  settleStored,
   type IntentKind,
   type IntentScope,
   type PaymentIntent,
@@ -68,6 +71,7 @@ import {
   type PointsQuote,
   type ReceiptResult,
   type RecordEdcStandaloneInput,
+  type ResolvePaymentInput,
   type StartPaymentInput,
   type SupervisorOption,
   type VaBank,
@@ -627,8 +631,10 @@ async function settleIntent<T>(
       endIntent(storage, scope, intent.key);
       return result;
     } catch (error) {
-      if (isDefinitiveRefusal(error, replay))
+      if (isDefinitiveRefusal(error, replay)) {
         endIntent(storage, scope, intent.key);
+        markRefused(error as ApiError);
+      }
       throw error;
     }
   });
@@ -737,6 +743,107 @@ export async function replayPayment(
     now: () => new Date(),
   });
   return sessionAfterWrite(outletId, await sendPayment(scope, begun));
+}
+
+/** Supervisors who may settle a payment request without a known answer. */
+export async function fetchResolveApprovers(
+  outletId: string,
+  action: "void" | "edc_standalone",
+): Promise<SupervisorOption[]> {
+  if (API_MOCK) return runPosKasirMock((engine) => engine.supervisors());
+  const { data } = await callEndpoint(listPosOverrideApprovers, {
+    query: { outletId, action },
+  });
+  return data.map((row) => ({ userId: row.userId, name: row.displayName }));
+}
+
+/**
+ * A supervisor settles the unresolved request with their PIN. The server reads
+ * what it recorded or makes sure it never can be; until it answers, the bill
+ * stays locked. `recording`: the card was charged, so the slip of the stored
+ * request is recorded again under a new key and a new approval, and that
+ * request takes the stored one's place without opening the bill.
+ */
+export async function resolvePayment(
+  outletId: string,
+  actorId: string,
+  input: ResolvePaymentInput,
+): Promise<PaymentSession> {
+  if (API_MOCK) throw contractPending("penyelesaian pembayaran");
+  const { orderId, card, ...approval } = input;
+  const scope = scopeOf(outletId, orderId, "payment");
+  const raw = rawIntent(scope);
+  const state = parseIntent(raw);
+  if (raw === null || state.status === "none")
+    return fetchPaymentSession(outletId, orderId);
+  const stored = state.status === "pending" ? state.intent : null;
+  const slip =
+    card === "recording" ? await newSlipRequest(scope, stored, input) : null;
+  const { data } = await callEndpoint(resolvePosPaymentIntent, {
+    params: { outletId, orderId },
+    body: {
+      key: stored?.key ?? null,
+      ...(card ? { card } : {}),
+      ...approval,
+    },
+  });
+  const storage = intentStorage();
+  if (slip === null || data.outcome === "recorded") {
+    settleStored(storage, scope, raw);
+    return sessionAfterWrite(outletId, data.order);
+  }
+  const key = `edc_standalone:${globalThis.crypto.randomUUID()}`;
+  const intent: PaymentIntent = {
+    ...slip,
+    key,
+    body: tenderBody({
+      ...slip.body,
+      expectedStatus: data.order.status,
+      expectedVersion: data.order.version,
+      idempotencyKey: key,
+    }),
+    actorId,
+    startedAt: new Date().toISOString(),
+  };
+  if (!settleStored(storage, scope, raw, intent))
+    return fetchPaymentSession(outletId, orderId);
+  return sessionAfterWrite(
+    outletId,
+    await sendPayment(scope, { intent, replay: false }),
+  );
+}
+
+/** The charged slip of the stored request, with a new supervisor approval. */
+async function newSlipRequest(
+  { outletId, orderId }: IntentScope,
+  stored: PaymentIntent | null,
+  input: ResolvePaymentInput,
+): Promise<Pick<PaymentIntent, "kind" | "signature" | "body">> {
+  const method = stored?.body.method;
+  const standalone = stored?.body.standalone;
+  if (
+    stored?.kind !== "edc_standalone" ||
+    typeof standalone !== "object" ||
+    standalone === null
+  )
+    throw new ApiError(
+      409,
+      PAYMENT_UNRESOLVED,
+      "Data slip EDC tidak bisa dibaca, jadi pembayarannya tidak bisa dicatat dari sini.",
+    );
+  const order = await fetchPosOrder(outletId, orderId);
+  const { overrideId } = await requestEdcApproval(outletId, {
+    orderId,
+    amountIdr: sessionFromOrder(order).bill.remainingIdr,
+    reason: input.reason,
+    approverUserId: input.approverUserId,
+    pin: input.pin,
+  });
+  return {
+    kind: "edc_standalone",
+    signature: `resolved:${overrideId}`,
+    body: { method, standalone: { ...standalone, overrideId } },
+  };
 }
 
 /** Complete a paid order; held items or an unsent order are never forced. */

@@ -126,7 +126,7 @@ function toView(row: Row, viewerId?: string): PosOverrideView {
 }
 
 /** Fail closed: true only when `userId` holds the action's approve permission on the outlet. */
-async function holdsOverridePermission(
+export async function holdsOverridePermission(
   tx: Tx,
   tenant: TenantContext,
   context: ScopedTenantContext,

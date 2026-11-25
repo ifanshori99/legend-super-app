@@ -23,9 +23,11 @@ import {
   usePaymentSession,
   useRemoveVoucher,
   useReplayPayment,
+  useResolvePayment,
   useStartPayment,
   useUnresolvedPayment,
 } from "../../hooks";
+import { wasRefused } from "../../payment-intent-store";
 import { trackSender, type SenderLock } from "../../sender-lock";
 import type { PaymentAttempt, PaymentMethodCode } from "../../types";
 import { CardOnlinePanel } from "./card-online-panel";
@@ -127,6 +129,7 @@ export function PaymentScreen({ orderId }: { orderId: string }) {
   const startQris = useStartPayment();
   const unresolvedPayment = useUnresolvedPayment(orderId);
   const replay = useReplayPayment();
+  const resolve = useResolvePayment();
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [step, setStep] = useState<Step>({ kind: "methods", selected: null });
   // "Pilih metode lain" on an expired or failed attempt: hide that attempt
@@ -230,13 +233,15 @@ export function PaymentScreen({ orderId }: { orderId: string }) {
       : unresolvedPayment;
 
   // The repeat was refused for good: say so, the stored request is gone.
+  // Any other error left it stored, and a later answer may have recorded it.
+  const refusal = [resolve.error, replay.error].find(wasRefused);
   const refused =
-    replay.error != null && !bill.paid && !unresolved ? (
+    refusal && !attempt && !bill.paid && !unresolved ? (
       <Notice
         tone="danger"
         title={t("posKasirPayment.unresolved.refusedTitle")}
       >
-        {replay.error.message} {t("posKasirPayment.unresolved.refusedBody")}
+        {refusal.message} {t("posKasirPayment.unresolved.refusedBody")}
       </Notice>
     ) : null;
 
@@ -319,6 +324,7 @@ export function PaymentScreen({ orderId }: { orderId: string }) {
         orderId={orderId}
         payment={unresolved}
         replay={replay}
+        resolve={resolve}
         onReload={() => void session.refetch()}
       />
     );
@@ -347,6 +353,8 @@ export function PaymentScreen({ orderId }: { orderId: string }) {
           });
           // This tap is the one that makes the QRIS; the panel never does.
           startQris.reset();
+          replay.reset();
+          resolve.reset();
           if (method === "qris" && !split)
             startQris.mutate({
               orderId,
