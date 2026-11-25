@@ -37,6 +37,12 @@ const registeredFiles = new Set<string>(sources.map(([, s]) => s.file));
 // Files whose name looks like an importer but that never write imported data.
 // Each entry needs a reason; adding a real writer here defeats the guard.
 const NOT_A_WRITER: Record<string, string> = {
+  "apps/api/src/cli/backfill-employee-managers.ts":
+    "operator wrapper (legend-1265): only calls the cli() of db/backfill-employee-managers.ts listed here; no database write of its own",
+  "apps/api/src/cli/metrics-daily-backfill.ts":
+    "operator wrapper (legend-1265): only calls the cli() of scripts/metrics-daily-backfill.ts listed here; no database write of its own",
+  "apps/api/src/cli/payroll-pph21-receivable-backfill.ts":
+    "operator wrapper (legend-1265): only calls the cli() of scripts/payroll-pph21-receivable-backfill.ts listed here; no database write of its own",
   "apps/api/src/worker/payout-evidence-backfill.job.ts":
     "worker sweep (legend-8vcsg): fills the missing SHA-256 hashes of payout proofs that already exist, read from their own stored objects, into the tenant's own evidence-file and return-claim rows (NULL to a value only); imports no data from outside",
   "apps/api/src/services/payroll-payout-proof-backfill.service.ts":
