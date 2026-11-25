@@ -28,6 +28,7 @@ import {
   createUlid,
   DEFAULT_TIME_ZONE,
   type ScopedTenantContext,
+  type TenantId,
 } from "@starter/shared/core";
 import { eventEnvelopeSchema } from "@starter/shared/events";
 import { settlementReconciledPayloadSchema } from "@starter/shared/payment";
@@ -129,7 +130,7 @@ const todayOf = (now: Date) =>
  */
 async function assertFeesWithinCap(
   tx: TenantTransaction,
-  tenantId: string,
+  tenantId: TenantId,
   report: { id: string; outletId: string; provider: string },
 ) {
   const integrations = await tx

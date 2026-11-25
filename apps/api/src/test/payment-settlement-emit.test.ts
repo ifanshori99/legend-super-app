@@ -175,7 +175,12 @@ async function makeWorld(tenant: string = tenantId): Promise<World> {
   return w;
 }
 
-async function seedIntent(outlet: string, ref: string, amountIdr: number) {
+async function seedIntent(
+  outlet: string,
+  ref: string,
+  amountIdr: number,
+  provider = "doit",
+) {
   const linkId = randomUUID();
   const id = randomUUID();
   await asTenant(async (c) => {
@@ -195,7 +200,7 @@ async function seedIntent(outlet: string, ref: string, amountIdr: number) {
       `INSERT INTO payment_intents
          (id, tenant_id, outlet_id, payment_link_id, method, provider, provider_ref, amount_idr,
           idempotency_key, status, paid_at, instructions, expires_at)
-       VALUES ($1, $2, $3, $4, 'qris', 'doit', $5, $6, $7, 'paid', $8::timestamptz,
+       VALUES ($1, $2, $3, $4, 'qris', $9, $5, $6, $7, 'paid', $8::timestamptz,
                '{"method":"qris","qrPayload":"test","issuer":null}', now())`,
       [
         id,
@@ -206,6 +211,7 @@ async function seedIntent(outlet: string, ref: string, amountIdr: number) {
         amountIdr,
         `emit-${id}`,
         `${SOLD_ON} 12:00:00+07`,
+        provider,
       ],
     );
   });
@@ -226,7 +232,8 @@ async function seedSettlement(
   const amountIdr = o.amountIdr ?? 100_000;
   const feeIdr = o.feeIdr ?? 700;
   const ref = `PR-${uid()}`;
-  if (o.posIdr !== null) await seedIntent(outlet, ref, o.posIdr ?? amountIdr);
+  if (o.posIdr !== null)
+    await seedIntent(outlet, ref, o.posIdr ?? amountIdr, o.provider);
   const res = await finance
     .post(IMPORT)
     .set(originHeader)
@@ -1084,7 +1091,8 @@ describe("settlement.reconciled emitter: fee cap per method (osqou.42)", () => {
       );
       const ok = await seedSettlement({ provider: "duitku", feeIdr: 1_000 });
       const okLine = await seedBankLine(99_000);
-      expect((await reconcile(okLine, [ok])).status).toBe(200);
+      const okRes = await reconcile(okLine, [ok]);
+      expect(okRes.status, JSON.stringify(okRes.body)).toBe(200);
       // The outlet's own number is tighter than the tenant's.
       await setConfig(
         { maxFeeBps_qris: 50 },

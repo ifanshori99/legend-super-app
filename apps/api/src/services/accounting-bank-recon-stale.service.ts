@@ -22,6 +22,7 @@ import { and, eq, isNull, or } from "drizzle-orm";
 import {
   outletIdSchema,
   type ScopedTenantContext,
+  type TenantId,
   type UserId,
 } from "@starter/shared/core";
 import {
@@ -48,7 +49,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
  */
 export async function assertSettlementJournalReversibleByHand(
   tx: TenantTransaction,
-  tenantId: string,
+  tenantId: TenantId,
   journal: { sourceType: string; sourceId: string | null },
 ): Promise<void> {
   if (journal.sourceType !== SETTLEMENT_SOURCE) return;
@@ -154,7 +155,7 @@ export async function markMatchStaleForReversedJournal(
         dueAt: new Date(now.getTime() + caseDueDays * DAY_MS),
         refs: [
           ...(match.refType === SETTLEMENT_SOURCE
-            ? [{ type: SETTLEMENT_SOURCE as const, id: match.refId }]
+            ? [{ type: "gateway_settlement" as const, id: match.refId }]
             : []),
           { type: "journal_entry", id: input.journalEntryId },
         ],
