@@ -278,6 +278,16 @@ const schema = z
       .enum(["true", "false", "1", "0"])
       .optional()
       .transform((value) => value === "true" || value === "1"),
+    // Gate for paid WFC sales (brief 1270, decision 28). Off by default and fail
+    // closed: every WFC sale door answers 403 WFC_SALES_DISABLED, writes nothing
+    // and takes no money. On, an outlet still sells only with a complete settings
+    // version in force, active seats and a quota (409 WFC_CONFIG_INCOMPLETE).
+    // Seat, quota and product configuration is not gated. Turn on only after the
+    // founder's numbers and the tax answers are in.
+    WFC_SALES_ENABLED: z
+      .enum(["true", "false", "1", "0"])
+      .optional()
+      .transform((value) => value === "true" || value === "1"),
     // Gate for the DOIT recurring billing back office, /api/payments/recurring
     // (legend-6c6). Off by default: the adapter calls /v1/recurring/*, but the
     // DOIT docs publish /v1/billing/*, so a live call would hit a path DOIT does

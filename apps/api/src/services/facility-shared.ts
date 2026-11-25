@@ -237,6 +237,9 @@ export const FACILITY_AUDIT_SAFE_FIELDS: readonly string[] = [
   // Price and quota values: an admin's change must stay readable as old and
   // new (bead legend-6jms). Money amounts and counts, never personal data.
   "priceIdr",
+  // Split of a WFC product (brief 1270 W1).
+  "seatFeeIdr",
+  "creditIdr",
   "quotaPerPeriod",
   // `sessions` itself is on the audit deny list ("session"); `quota` is the
   // sessions a purchase or rule grants.
