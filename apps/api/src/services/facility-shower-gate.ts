@@ -8,11 +8,17 @@
 // row and takes no money. The flag is read at call time and anything but
 // exactly `true` is off (fail closed). Refunds and cancellations of old
 // transactions and the staff emergency unit button do not call these guards.
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import type { TenantId } from "@starter/shared/core";
 import { FacilityError } from "@starter/shared/facility";
 import { env } from "../config/env.ts";
-import { facilities, facilityProducts } from "../db/schema/facility.ts";
+import { eqId } from "../db/branded-ids.ts";
+import {
+  entitlementRules,
+  facilities,
+  facilityProducts,
+  facilitySubscriptionPlans,
+} from "../db/schema/facility.ts";
 import type { Tx } from "./inventory-ops.shared.ts";
 
 export function facilityShowerEnabled(): boolean {
@@ -95,4 +101,92 @@ export async function assertFacilityProductOpen(
 ): Promise<void> {
   if ((await closedShowerProductIds(tx, tenantId, [productId])).size > 0)
     throw new FacilityError("FACILITY_SHOWER_DISABLED");
+}
+
+/**
+ * The menu items among `menuItemIds` that may not be sold at the outlet while
+ * the shower is closed (empty when the switch is on): the item of a shower's
+ * facility product, and a menu package whose enabled rule gives a shower right.
+ * Sold, they would take money for a right nobody can use.
+ */
+export async function closedShowerMenuItemIds(
+  tx: Tx,
+  tenantId: TenantId,
+  outletId: string,
+  menuItemIds: readonly string[],
+): Promise<Set<string>> {
+  if (facilityShowerEnabled() || menuItemIds.length === 0) return new Set();
+  const ids = [...new Set(menuItemIds)];
+  const products = await tx
+    .select({ menuItemId: facilityProducts.menuItemId })
+    .from(facilityProducts)
+    .innerJoin(
+      facilities,
+      and(
+        eq(facilities.tenantId, facilityProducts.tenantId),
+        eq(facilities.id, facilityProducts.facilityId),
+      ),
+    )
+    .where(
+      and(
+        eq(facilityProducts.tenantId, tenantId),
+        eqId(facilityProducts.outletId, outletId),
+        eq(facilities.type, "shower"),
+        inArray(facilityProducts.menuItemId, ids),
+      ),
+    );
+  const packageItem = sql<string>`${entitlementRules.condition}->>'menuItemId'`;
+  const packages = await tx
+    .select({ menuItemId: packageItem })
+    .from(entitlementRules)
+    .innerJoin(
+      facilities,
+      and(
+        eq(facilities.tenantId, entitlementRules.tenantId),
+        eq(facilities.id, entitlementRules.facilityId),
+      ),
+    )
+    .where(
+      and(
+        eq(entitlementRules.tenantId, tenantId),
+        eqId(entitlementRules.outletId, outletId),
+        eq(entitlementRules.type, "package"),
+        eq(entitlementRules.isEnabled, true),
+        eq(facilities.type, "shower"),
+        inArray(packageItem, ids),
+      ),
+    );
+  return new Set(
+    [...products, ...packages].flatMap((row) =>
+      row.menuItemId === null ? [] : [row.menuItemId],
+    ),
+  );
+}
+
+/**
+ * Throws FACILITY_SHOWER_DISABLED when the recurring plan (by its provider plan
+ * id) pays for a plan of a closed shower: the guest would be charged every
+ * month for a quota that is never granted.
+ */
+export async function assertRecurringPlanOpen(
+  tx: Tx,
+  tenantId: TenantId,
+  plan: { outletId: string; providerPlanId: string },
+): Promise<void> {
+  if (facilityShowerEnabled()) return;
+  const rows = await tx
+    .select({ facilityId: facilitySubscriptionPlans.facilityId })
+    .from(facilitySubscriptionPlans)
+    .where(
+      and(
+        eq(facilitySubscriptionPlans.tenantId, tenantId),
+        eqId(facilitySubscriptionPlans.outletId, plan.outletId),
+        eq(facilitySubscriptionPlans.providerPlanId, plan.providerPlanId),
+      ),
+    );
+  await assertFacilityIdsOpen(
+    tx,
+    tenantId,
+    rows.map((row) => row.facilityId),
+  );
 }

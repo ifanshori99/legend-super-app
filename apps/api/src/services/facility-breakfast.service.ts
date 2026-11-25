@@ -723,8 +723,6 @@ export async function payBreakfastOrderForMember(
         ticketId,
         orderId,
       );
-      // 1269 F0: no new payment for a shower ticket's breakfast (cancel stays).
-      await assertFacilityIdsOpen(tx, tenantId, [ticket.facilityId]);
       const dto = await toBreakfastOrder(tx, context, linked);
       if (linked.status === "cancelled")
         throw new FacilityError("BREAKFAST_ORDER_CANCELLED");
@@ -755,6 +753,9 @@ export async function payBreakfastOrderForMember(
         );
         return null;
       }
+      // 1269 F0: no new payment for a shower ticket's breakfast. After the dead
+      // ticket branch, so the pay link of a dead ticket is still closed.
+      await assertFacilityIdsOpen(tx, tenantId, [ticket.facilityId]);
       if (order.status !== "awaiting_payment")
         throw new CoreError(
           "CONFLICT",

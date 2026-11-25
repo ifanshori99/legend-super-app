@@ -58,6 +58,7 @@ import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { logger } from "../lib/logger.ts";
 import type { EdgeTx } from "../services/edge-queue.service.ts";
 import { recordAudit } from "../services/core-audit.ts";
+import { closedShowerMenuItemIds } from "../services/facility-shower-gate.ts";
 import { deliverAutoJournalEvent } from "../services/accounting-auto-journal-consumer.ts";
 import { sourceIdToDb } from "../services/inventory.service.ts";
 import { liveRouteManualRefundWhere } from "../services/order-issue-route-refund.ts";
@@ -367,6 +368,17 @@ async function applyPaid(
   }
   if (linesTotal !== Number(subtotalIdr))
     throw new IngestRefusal("lines_mismatch");
+  // 1269 F0: the edge has no facility replica, so it cannot refuse a closed
+  // shower's menu item; the sale stays parked for finance to settle.
+  const closedShower = await closedShowerMenuItemIds(
+    tx,
+    tenantId,
+    outletId,
+    lines.flatMap((line) =>
+      line.status === "voided" ? [] : [line.menuItemId],
+    ),
+  );
+  if (closedShower.size > 0) throw new IngestRefusal("shower_closed");
   // 5. Money invariant: tenders plus the deposit settle the total exactly.
   const tendered = payload.tenders.reduce(
     (sum, tender) => sum + Number(tender.amountIdr),

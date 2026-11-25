@@ -203,6 +203,23 @@ export async function seedRule(
   return id;
 }
 
+/** A single-ticket product of `facilityId` that sells through `menuItemId`. */
+export async function seedTicketProduct(
+  tenantId: string,
+  seed: { facilityId: string; outletId: string; menuItemId: string },
+): Promise<string> {
+  const id = randomUUID();
+  await asTenant(tenantId, (client) =>
+    client.query(
+      `INSERT INTO facility_products
+         (id, tenant_id, outlet_id, facility_id, name, type, price_idr, sessions, is_active, menu_item_id)
+       VALUES ($1, $2, $3, $4, 'Tiket Uji', 'single', 25000, 1, true, $5)`,
+      [id, tenantId, seed.outletId, seed.facilityId, seed.menuItemId],
+    ),
+  );
+  return id;
+}
+
 /** Menu items of the world's brand. */
 export async function seedMenuItems(
   world: Pick<World, "tenantId" | "brandId">,

@@ -29,6 +29,7 @@ import {
   type DeliveryOrderLine,
   type DeliveryPlatform,
 } from "@starter/shared/delivery";
+import { FacilityError } from "@starter/shared/facility";
 import {
   domainEventOutbox,
   kitchenTicketItems,
@@ -44,6 +45,7 @@ import {
   findByExternalId,
   type DeliveryChannelOrderRow,
 } from "./delivery-store.ts";
+import { closedShowerMenuItemIds } from "./facility-shower-gate.ts";
 import {
   cancelKitchenItemsForVoidedLines,
   routeFiredItemsToKitchen,
@@ -317,6 +319,15 @@ async function injectOrLink(
   const menuById = new Map(menu.map((item) => [item.id, item]));
   if (lines.some((line) => !menuById.has(line.menuItemId)))
     throw new DeliveryError("DELIVERY_MAPPING_INCOMPLETE");
+  // 1269 F0: last door for a line stored as matched before the shower closed.
+  const closedShower = await closedShowerMenuItemIds(
+    tx,
+    tenantId,
+    outletId,
+    lines.map((line) => line.menuItemId),
+  );
+  if (closedShower.size > 0)
+    throw new FacilityError("FACILITY_SHOWER_DISABLED");
 
   // The platform already took the customer's money, so a daily limit reached
   // here cannot refuse the order: the sale is counted (a denied reservation

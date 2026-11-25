@@ -1587,4 +1587,114 @@ describe("1269 F0 shower off: nothing is sold, no money is taken, old bills can 
     flag.FACILITY_SHOWER_ENABLED = true;
     await expectSlotFree(bought.unitId);
   });
+
+  it("F0-03 the shower's menu item cannot be rung up as a plain menu line: no order, no tender", async () => {
+    const counts = () =>
+      asOwnerTenant(tenant.tenantId, async (db) => {
+        const { rows } = await db.query<{ orders: number; tenders: number }>(
+          `SELECT (SELECT count(*) FROM orders WHERE tenant_id = $1)::int AS orders,
+                  (SELECT count(*) FROM pos_order_tenders WHERE tenant_id = $1)::int AS tenders`,
+          [tenant.tenantId],
+        );
+        return rows[0]!;
+      });
+    const ring = () =>
+      authed(
+        cashier.client.post(
+          `/api/outlets/${encodeURIComponent(tenant.outletId)}/pos/orders`,
+        ),
+      ).send({
+        channel: "pos",
+        serviceType: "takeaway",
+        items: [{ menuItemId: ids.ticketItem, quantity: 1, modifierIds: [] }],
+        idempotencyKey: randomUUID(),
+      });
+    const before = await counts();
+    flag.FACILITY_SHOWER_ENABLED = false;
+    const refused = await ring();
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(await counts()).toEqual(before);
+
+    // Control: the same body sells once the shower is open.
+    flag.FACILITY_SHOWER_ENABLED = true;
+    const sold = await ring();
+    expect(sold.status, JSON.stringify(sold.body)).toBe(201);
+  });
+
+  it("F0-04 a menu package that gives a shower right is refused, a coworking package still sells", async () => {
+    const coworking = randomUUID();
+    const setRule = (facilityId: string) =>
+      asOwnerTenant(tenant.tenantId, async (db) => {
+        await db.query("DELETE FROM entitlement_rules WHERE tenant_id = $1", [
+          tenant.tenantId,
+        ]);
+        await db.query(
+          `INSERT INTO entitlement_rules (id, tenant_id, outlet_id, facility_id, type, condition, sessions, validity, is_enabled)
+           VALUES (gen_random_uuid(), $1, $2, $3, 'package', $4, 1, '{"kind":"duration_hours","hours":24}', true)`,
+          [
+            tenant.tenantId,
+            tenant.outletId,
+            facilityId,
+            JSON.stringify({ menuItemId: packageItem }),
+          ],
+        );
+      });
+    const packageItem = randomUUID();
+    await asOwnerTenant(tenant.tenantId, async (db) => {
+      await db.query(
+        `INSERT INTO facilities (id, tenant_id, outlet_id, name, type, session_minutes, cleaning_minutes,
+                                 arrival_grace_minutes, operating_hours, overtime_policy, cancellation_policy)
+         SELECT $2, tenant_id, outlet_id, 'Coworking Paket', 'coworking', session_minutes, cleaning_minutes,
+                arrival_grace_minutes, operating_hours, overtime_policy, cancellation_policy
+           FROM facilities WHERE id = $1`,
+        [ids.facility, coworking],
+      );
+      await db.query(
+        `INSERT INTO menu_items (id, tenant_id, brand_id, category_id, name, is_active, media_id)
+         VALUES ($1, $2, $3, $4, 'Paket Uji', true, $5)`,
+        [
+          packageItem,
+          tenant.tenantId,
+          tenant.brandId,
+          ids.category,
+          randomUUID(),
+        ],
+      );
+      await db.query(
+        `INSERT INTO price_list_items (id, tenant_id, price_list_id, item_id, price_idr)
+         SELECT gen_random_uuid(), $1, id, $2, 90000 FROM price_lists WHERE tenant_id = $1`,
+        [tenant.tenantId, packageItem],
+      );
+    });
+    const ring = () =>
+      authed(
+        cashier.client.post(
+          `/api/outlets/${encodeURIComponent(tenant.outletId)}/pos/orders`,
+        ),
+      ).send({
+        channel: "pos",
+        serviceType: "takeaway",
+        items: [{ menuItemId: packageItem, quantity: 1, modifierIds: [] }],
+        idempotencyKey: randomUUID(),
+      });
+    const orderCount = () =>
+      asOwnerTenant(tenant.tenantId, async (db) => {
+        const { rows } = await db.query<{ n: number }>(
+          "SELECT count(*)::int AS n FROM orders WHERE tenant_id = $1",
+          [tenant.tenantId],
+        );
+        return rows[0]!.n;
+      });
+
+    flag.FACILITY_SHOWER_ENABLED = false;
+    await setRule(ids.facility);
+    const before = await orderCount();
+    const refused = await ring();
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(await orderCount()).toBe(before);
+
+    await setRule(coworking);
+    const sold = await ring();
+    expect(sold.status, JSON.stringify(sold.body)).toBe(201);
+  });
 });

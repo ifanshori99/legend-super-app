@@ -17,12 +17,15 @@ import {
   closedShowerFacilityIds,
   facilityShowerEnabled,
 } from "../services/facility-shower-gate.ts";
+import { updateFacility } from "../services/facility-config.service.ts";
 import {
+  asTenant,
   createWorld,
   orderPaidEvent,
   owner,
   seedMember,
   seedOrder,
+  type World,
 } from "./member-loyalty-helpers.ts";
 import {
   PAID_AT,
@@ -51,6 +54,27 @@ afterEach(() => {
 });
 
 const DISABLED = "FACILITY_SHOWER_DISABLED";
+
+/** A user whose role may change the facility configuration of the tenant. */
+async function seedConfigManager(world: World): Promise<string> {
+  const userId = randomUUID();
+  const roleId = randomUUID();
+  await owner.query(
+    `INSERT INTO "user" (id, name, email, email_verified) VALUES ($1, 'Admin Uji', $2, true)`,
+    [userId, `${userId}@example.test`],
+  );
+  await owner.query(
+    `INSERT INTO roles (id, tenant_id, name, is_template, permissions, allowed_scope_types)
+     VALUES ($1, $2, 'Admin Fasilitas', false, '["facility.config.manage"]', '["tenant","outlet"]')`,
+    [roleId, world.tenantId],
+  );
+  await owner.query(
+    `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, valid_from, assigned_by)
+     VALUES ($1, $2, $3, 'tenant', now() - interval '1 minute', $2)`,
+    [world.tenantId, userId, roleId],
+  );
+  return userId;
+}
 
 async function setup() {
   const world = await createWorld();
@@ -236,5 +260,38 @@ describe("1269 F0 hold and queue", () => {
       });
     expect(await rejectionCode(join(shower))).toBe(DISABLED);
     expect(await rejectionCode(join(wfc))).not.toBe(DISABLED);
+  });
+});
+
+describe("1269 F0 the facility type is frozen around the shower", () => {
+  it("a shower cannot become another type (nor the reverse) while off; coworking still can", async () => {
+    const { world, shower, wfc } = await setup();
+    const actor = await seedConfigManager(world);
+    const locker = await seedFacility(world, world.outletA, "locker");
+    const typeOf = (id: string) =>
+      asTenant(world.tenantId, async (client) => {
+        const { rows } = await client.query<{ type: string; at: Date }>(
+          "SELECT type, updated_at AS at FROM facilities WHERE id = $1",
+          [id],
+        );
+        return rows[0]!;
+      });
+    const patch = async (id: string, changes: Record<string, unknown>) =>
+      updateFacility(world.context, actor, id, {
+        expectedUpdatedAt: (await typeOf(id)).at.toISOString(),
+        ...changes,
+      } as never);
+
+    expect(await rejectionCode(patch(shower, { type: "coworking" }))).toBe(
+      DISABLED,
+    );
+    expect(await rejectionCode(patch(wfc, { type: "shower" }))).toBe(DISABLED);
+    expect((await typeOf(shower)).type).toBe("shower");
+    expect((await typeOf(wfc)).type).toBe("coworking");
+
+    // Other changes of a shower, and other type changes, are not frozen.
+    await patch(shower, { name: "Shower Baru", type: "shower" });
+    await patch(locker, { type: "meeting_room" });
+    expect((await typeOf(locker)).type).toBe("meeting_room");
   });
 });
