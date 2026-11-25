@@ -1,0 +1,212 @@
+// The method pieces of the charge screen (legend-t93l8). They only draw what
+// the server's charge says; what may be collected is decided in
+// ../charge-method-logic.ts. Same patterns as the cashier payment panels.
+import { useId, type ReactNode } from "react";
+import { cn } from "cn";
+import {
+  Banknote,
+  Circle,
+  CircleDot,
+  CreditCard,
+  QrCode as QrGlyph,
+  type LucideIcon,
+} from "lucide-react";
+import { useT } from "@/components/i18n";
+import { Money } from "@/components/ui/money";
+import { QrCode } from "@/components/ui/qr-code";
+import {
+  CountdownPill,
+  remainingMsOf,
+  useNow,
+} from "@/features/ws04-pos-kasir/components/payment/gateway-parts";
+import {
+  Notice,
+  StatusPill,
+  type StatusPillTone,
+} from "@/features/ws04-pos-kasir/components/shared";
+import type { ChargeEdcSale, IssueChargeDetail } from "../charge-endpoints";
+import { edcSaleMatches, type ChargeMethod } from "../charge-method-logic";
+
+const METHODS: readonly { code: ChargeMethod; icon: LucideIcon }[] = [
+  { code: "cash", icon: Banknote },
+  { code: "qris", icon: QrGlyph },
+  { code: "edc_card", icon: CreditCard },
+];
+
+// One option of a radio group. The native radio stays in the page (screen
+// reader and arrow keys work); the choice shows with ink and a filled glyph.
+function Choice({
+  name,
+  checked,
+  disabled,
+  onChange,
+  children,
+}: {
+  name: string;
+  checked: boolean;
+  disabled?: boolean;
+  onChange: () => void;
+  children: ReactNode;
+}) {
+  const Glyph = checked ? CircleDot : Circle;
+  return (
+    <label
+      className={cn(
+        "flex min-h-control items-center gap-3 rounded-control border-(length:--border-w) border-border bg-card px-4 py-3 text-(length:--density-text) has-checked:border-2 has-checked:border-foreground has-checked:bg-surface-2 has-checked:font-semibold has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-ring has-disabled:opacity-60",
+        !disabled && "cursor-pointer",
+      )}
+    >
+      <input
+        type="radio"
+        className="sr-only"
+        name={name}
+        checked={checked}
+        disabled={disabled}
+        onChange={onChange}
+      />
+      <Glyph className="size-5 shrink-0" aria-hidden="true" />
+      {children}
+    </label>
+  );
+}
+
+export function MethodPicker({
+  value,
+  onChange,
+}: {
+  value: ChargeMethod;
+  onChange: (method: ChargeMethod) => void;
+}) {
+  const t = useT();
+  const name = useId();
+  return (
+    <fieldset className="grid gap-2">
+      <legend className="type-heading mb-2">
+        {t("posIssueCharge.method.legend")}
+      </legend>
+      {METHODS.map(({ code, icon: Icon }) => (
+        <Choice
+          key={code}
+          name={name}
+          checked={value === code}
+          onChange={() => onChange(code)}
+        >
+          <Icon className="size-5 shrink-0" aria-hidden="true" />
+          {t(`posIssueCharge.method.${code}`)}
+        </Choice>
+      ))}
+    </fieldset>
+  );
+}
+
+/** A code is out. Past its deadline the code is hidden, the lock stays. */
+export function GatewayWaiting({
+  payment,
+}: {
+  payment: NonNullable<IssueChargeDetail["payment"]>;
+}) {
+  const t = useT();
+  const now = useNow(true);
+  const remainingMs = remainingMsOf(payment.expiresAt, now);
+  const payload = payment.method === "qris" ? payment.qrisPayload : null;
+  const timeUp = remainingMs === 0;
+  let title = t("posIssueCharge.qris.waitingTitle");
+  if (payload === null) title = t("posIssueCharge.qris.otherTitle");
+  if (timeUp) title = t("posIssueCharge.qris.timeUpTitle");
+  return (
+    <>
+      {payload !== null && remainingMs !== null && !timeUp && (
+        <div className="grid justify-items-center gap-3">
+          <QrCode
+            value={payload}
+            label={t("posIssueCharge.qris.codeLabel")}
+            size={220}
+            className="rounded-container border-(length:--border-w) border-border p-3"
+          />
+          <CountdownPill remainingMs={remainingMs} />
+        </div>
+      )}
+      <Notice tone={timeUp ? "warning" : "info"} role="status" title={title}>
+        <p>
+          {timeUp && `${t("posIssueCharge.qris.timeUp")} `}
+          {t("posIssueCharge.waiting.locked")}
+        </p>
+      </Notice>
+    </>
+  );
+}
+
+const SALE_TONE: Record<ChargeEdcSale["status"], StatusPillTone> = {
+  approved: "success",
+  pending: "warning",
+  unknown: "warning",
+  declined: "danger",
+  cancelled: "neutral",
+  failed: "danger",
+};
+
+/** The server's EDC sales; only one that pays the charge exactly is selectable. */
+export function EdcSales({
+  charge,
+  selectedId,
+  onSelect,
+}: {
+  charge: IssueChargeDetail;
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  const t = useT();
+  const name = useId();
+  if (charge.edcSales.length === 0) return null;
+  return (
+    <fieldset className="grid gap-2">
+      <legend className="type-heading mb-2">
+        {t("posIssueCharge.edc.legend")}
+      </legend>
+      {charge.edcSales.map((sale) => (
+        <Choice
+          key={sale.id}
+          name={name}
+          checked={selectedId === sale.id}
+          disabled={!edcSaleMatches(sale, charge.amountIdr)}
+          onChange={() => onSelect(sale.id)}
+        >
+          <span className="grid min-w-0 flex-1 justify-items-start gap-1">
+            <span>
+              {sale.terminalLabel ?? t("posIssueCharge.edc.terminal")}
+            </span>
+            <StatusPill tone={SALE_TONE[sale.status]}>
+              {t(`posIssueCharge.edc.status.${sale.status}`)}
+            </StatusPill>
+            {sale.declineReason && (
+              <span className="text-base font-normal text-muted-foreground">
+                {sale.declineReason}
+              </span>
+            )}
+          </span>
+          <Money amount={sale.amountIdr} className="font-semibold" />
+        </Choice>
+      ))}
+    </fieldset>
+  );
+}
+
+/** Why the last code is gone, before the cashier makes another. */
+export function EndedCodeNotice({
+  payment,
+}: {
+  payment: IssueChargeDetail["payment"];
+}) {
+  const t = useT();
+  if (payment?.method !== "qris") return null;
+  if (payment.status !== "expired" && payment.status !== "failed") return null;
+  const key = payment.status;
+  return (
+    <Notice
+      tone={key === "failed" ? "danger" : "warning"}
+      title={t(`posIssueCharge.qris.${key}Title`)}
+    >
+      <p>{t(`posIssueCharge.qris.${key}`)}</p>
+    </Notice>
+  );
+}

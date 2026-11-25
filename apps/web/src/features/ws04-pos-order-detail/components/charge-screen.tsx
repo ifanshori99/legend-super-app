@@ -23,6 +23,13 @@ import {
 } from "../charge-hooks";
 import type { IssueChargeDetail } from "../charge-endpoints";
 import { chargeDiffIdr, chargeSurchargeIdr } from "../charge-logic";
+import { chargePhase, type ChargeMethod } from "../charge-method-logic";
+import {
+  EdcSales,
+  EndedCodeNotice,
+  GatewayWaiting,
+  MethodPicker,
+} from "./charge-method-panels";
 
 function BackLink({ orderId }: { orderId: string | null }) {
   const t = useT();
@@ -162,10 +169,10 @@ function DetailPanel({
 }
 
 // /pos/tagih-selisih/$chargeId: the cashier takes the price difference of a
-// dearer menu swap in cash (legend-shabi). Cash only; the amount is the
-// server's charge, never typed. One click records once: the button is disabled
-// while the call runs, and after an answer that never arrived the cashier
-// checks the status before anything else, so the cash is never recorded twice.
+// dearer menu swap in cash, by QRIS or by EDC card (legend-shabi, legend-t93l8).
+// The amount is the server's charge, never typed. While a code or an EDC sale
+// is out, or an answer never arrived, the method is locked and only the status
+// can be checked, so the charge is never paid twice.
 export function ChargeScreen({ chargeId }: { chargeId: string }) {
   return (
     <div data-density="kontras" className="grid gap-4">
@@ -180,10 +187,14 @@ function ChargeBody({ chargeId }: { chargeId: string }) {
   const collector = useCollectIssueCharge(chargeId);
   const [checking, setChecking] = useState(false);
   const [notRecorded, setNotRecorded] = useState(false);
+  const [method, setMethod] = useState<ChargeMethod>("cash");
+  const [saleId, setSaleId] = useState<string | null>(null);
 
   if (query.isLoading) return <LoadingShape />;
 
-  if (query.error) {
+  // A failed re-read keeps the last charge on screen (the code stays visible),
+  // but nothing can be collected until the server answers again.
+  if (query.error && !query.data) {
     const pending = isChargeContractPending(query.error);
     const missing =
       query.error instanceof ApiError && query.error.status === 404;
@@ -236,9 +247,10 @@ function ChargeBody({ chargeId }: { chargeId: string }) {
       />
     );
 
-  // A known success counts at once; the refetch only confirms it.
-  const paid = charge.status === "paid" || collector.succeeded;
-  const closed = charge.status === "waived" || charge.status === "expired";
+  // A known success counts at once; the refetch only confirms it. A QRIS code
+  // is not a success: the swap stays unpaid until the server says paid.
+  const phase = collector.settled ? "paid" : chargePhase(charge);
+  const paid = phase === "paid";
   const diffIdr = chargeDiffIdr({
     originalIdr: charge.original.lineTotalIdr,
     replacementIdr: charge.replacement.lineTotalIdr,
@@ -257,16 +269,53 @@ function ChargeBody({ chargeId }: { chargeId: string }) {
     const result = await query.refetch();
     setChecking(false);
     if (result.isError || !result.data) return;
-    if (result.data.status !== "paid") {
-      collector.reset();
-      setNotRecorded(true);
-    }
+    const read = chargePhase(result.data);
+    // Still out or under review: the lock below stays.
+    if (read !== "choose" && read !== "edc_approved") return;
+    collector.resolve();
+    setNotRecorded(read === "choose");
   };
+
+  const collect = (request: Parameters<typeof collector.collect>[0]) => {
+    setNotRecorded(false);
+    collector.collect(request);
+  };
+
+  const due = (
+    <AmountBox
+      label={t("posIssueCharge.collect.difference")}
+      amountIdr={charge.amountIdr}
+    />
+  );
+  const checkButton = (
+    <Button
+      size="lg"
+      variant="outline"
+      className="w-full"
+      loading={checking}
+      onClick={() => void checkStatus()}
+    >
+      {checking
+        ? t("posIssueCharge.unknown.checking")
+        : t("posIssueCharge.unknown.check")}
+    </Button>
+  );
+  const stale = query.isError && (
+    <Notice tone="danger" title={t("posIssueCharge.waiting.staleTitle")}>
+      <p>{t("posIssueCharge.waiting.stale")}</p>
+    </Notice>
+  );
+  const waitingPill = (
+    <StatusPill tone="warning">{t("posIssueCharge.waiting.pill")}</StatusPill>
+  );
 
   let pill = (
     <StatusPill tone="warning">{t("posIssueCharge.status.unpaid")}</StatusPill>
   );
   let body;
+  // The form's one action stays in reach when the panel is taller than the
+  // viewport (sticky panel footer).
+  let footer;
   if (paid) {
     pill = (
       <StatusPill tone="success">{t("posIssueCharge.status.paid")}</StatusPill>
@@ -278,7 +327,12 @@ function ChargeBody({ chargeId }: { chargeId: string }) {
           amountIdr={charge.amountIdr}
         />
         <SuccessNotice title={t("posIssueCharge.success.title")}>
-          {t("posIssueCharge.success.hint", { amount })}
+          {t(
+            collector.settledMethod === "cash"
+              ? "posIssueCharge.success.hint"
+              : "posIssueCharge.success.settledHint",
+            { amount },
+          )}
         </SuccessNotice>
         <Button asChild size="lg" className="w-full">
           <Link to="/pos/pesanan/$orderId" params={{ orderId: charge.orderId }}>
@@ -287,7 +341,7 @@ function ChargeBody({ chargeId }: { chargeId: string }) {
         </Button>
       </>
     );
-  } else if (closed) {
+  } else if (phase === "closed") {
     pill = (
       <StatusPill tone="neutral">
         {t(`posIssueCharge.status.${charge.status as "waived" | "expired"}`)}
@@ -301,10 +355,7 @@ function ChargeBody({ chargeId }: { chargeId: string }) {
   } else if (pending) {
     body = (
       <>
-        <AmountBox
-          label={t("posIssueCharge.collect.difference")}
-          amountIdr={charge.amountIdr}
-        />
+        {due}
         <Notice
           tone="info"
           role="status"
@@ -317,59 +368,130 @@ function ChargeBody({ chargeId }: { chargeId: string }) {
         </Button>
       </>
     );
-  } else if (failure) {
-    const unknown = failure.kind === "unknown";
+  } else if (phase === "review") {
+    pill = (
+      <StatusPill tone="danger">{t("posIssueCharge.review.pill")}</StatusPill>
+    );
+    body = (
+      <>
+        {due}
+        <EdcSales charge={charge} selectedId={null} onSelect={setSaleId} />
+        <Notice tone="danger" title={t("posIssueCharge.review.title")}>
+          <p>{t("posIssueCharge.review.hint")}</p>
+        </Notice>
+        {stale}
+        {checkButton}
+      </>
+    );
+  } else if (phase === "gateway_waiting" && charge.payment) {
+    pill = waitingPill;
+    body = (
+      <>
+        {due}
+        <GatewayWaiting payment={charge.payment} />
+        {stale}
+        {checkButton}
+      </>
+    );
+  } else if (phase === "gateway_confirming") {
+    pill = waitingPill;
+    body = (
+      <>
+        {due}
+        <Notice
+          tone="info"
+          role="status"
+          title={t("posIssueCharge.qris.confirmingTitle")}
+        >
+          <p>{t("posIssueCharge.qris.confirming")}</p>
+        </Notice>
+        {stale}
+        {checkButton}
+      </>
+    );
+  } else if (phase === "edc_waiting") {
+    pill = waitingPill;
+    body = (
+      <>
+        {due}
+        <EdcSales charge={charge} selectedId={null} onSelect={setSaleId} />
+        <Notice
+          tone="warning"
+          role="status"
+          title={t("posIssueCharge.edc.waitingTitle")}
+        >
+          <p>
+            {t("posIssueCharge.edc.waiting")}{" "}
+            {t("posIssueCharge.waiting.locked")}
+          </p>
+        </Notice>
+        {stale}
+        {checkButton}
+      </>
+    );
+  } else if (failure || query.isError) {
+    const unknown = failure?.kind !== "failed";
     pill = (
       <StatusPill tone="danger">{t("posIssueCharge.status.failed")}</StatusPill>
     );
     body = (
       <>
-        <AmountBox
-          label={t("posIssueCharge.collect.difference")}
-          amountIdr={charge.amountIdr}
-        />
-        <Notice
-          tone="danger"
-          title={t(
-            unknown
-              ? "posIssueCharge.unknown.title"
-              : "posIssueCharge.failed.title",
-          )}
-        >
-          <p>
-            {unknown
-              ? t("posIssueCharge.unknown.hint")
-              : `${t("posIssueCharge.failed.hint")} ${failure.message}`}
-          </p>
-        </Notice>
+        {due}
+        {failure && (
+          <Notice
+            tone="danger"
+            title={t(
+              unknown
+                ? "posIssueCharge.unknown.title"
+                : "posIssueCharge.failed.title",
+            )}
+          >
+            <p>
+              {unknown
+                ? t("posIssueCharge.unknown.hint")
+                : `${t("posIssueCharge.failed.hint")} ${failure.message}`}
+            </p>
+          </Notice>
+        )}
+        {stale}
         {unknown ? (
-          <Button
-            size="lg"
-            className="w-full"
-            loading={checking}
-            onClick={() => void checkStatus()}
-          >
-            {checking
-              ? t("posIssueCharge.unknown.checking")
-              : t("posIssueCharge.unknown.check")}
-          </Button>
+          checkButton
         ) : (
-          <Button
-            size="lg"
-            className="w-full"
-            onClick={() => {
-              setNotRecorded(false);
-              collector.collect({
-                method: "cash",
-                receivedIdr: idr(charge.amountIdr),
-              });
-            }}
-          >
+          <Button size="lg" className="w-full" onClick={collector.resolve}>
             <RotateCw aria-hidden="true" />
             {t("common.retry")}
           </Button>
         )}
       </>
+    );
+  } else if (phase === "edc_approved") {
+    const sale = charge.edcSales.find((item) => item.id === saleId);
+    pill = (
+      <StatusPill tone="info">
+        {t("posIssueCharge.edc.approvedPill")}
+      </StatusPill>
+    );
+    body = (
+      <>
+        {due}
+        <p className="text-base text-muted-foreground">
+          {t("posIssueCharge.edc.pick")}
+        </p>
+        <EdcSales charge={charge} selectedId={saleId} onSelect={setSaleId} />
+      </>
+    );
+    footer = (
+      <Button
+        size="lg"
+        className="w-full"
+        disabled={!sale}
+        onClick={() =>
+          sale && collect({ method: "edc_card", edcTransactionId: sale.id })
+        }
+      >
+        {t("posIssueCharge.edc.record", { amount })}
+        <ArrowRight aria-hidden="true" />
+      </Button>
     );
   } else {
     body = (
@@ -377,10 +499,7 @@ function ChargeBody({ chargeId }: { chargeId: string }) {
         <p className="text-base text-muted-foreground">
           {t("posIssueCharge.collect.hint")}
         </p>
-        <AmountBox
-          label={t("posIssueCharge.collect.difference")}
-          amountIdr={charge.amountIdr}
-        />
+        {due}
         {notRecorded && (
           <Notice
             tone="info"
@@ -390,28 +509,73 @@ function ChargeBody({ chargeId }: { chargeId: string }) {
             <p>{t("posIssueCharge.unknown.notRecorded")}</p>
           </Notice>
         )}
-        <Notice
-          tone="warning"
-          title={t("posIssueCharge.collect.receive", { amount })}
-        >
-          <p>{t("posIssueCharge.collect.receiveHint")}</p>
-        </Notice>
+        <EndedCodeNotice payment={charge.payment} />
+        <MethodPicker value={method} onChange={setMethod} />
+        {method === "cash" && (
+          <Notice
+            tone="warning"
+            title={t("posIssueCharge.collect.receive", { amount })}
+          >
+            <p>{t("posIssueCharge.collect.receiveHint")}</p>
+          </Notice>
+        )}
+        {method === "qris" && (
+          <p className="text-base text-muted-foreground">
+            {t("posIssueCharge.qris.startHint")}
+          </p>
+        )}
+        {method === "edc_card" && (
+          <>
+            <EdcSales charge={charge} selectedId={null} onSelect={setSaleId} />
+            <Notice tone="info" title={t("posIssueCharge.edc.emptyTitle")}>
+              <p>{t("posIssueCharge.edc.empty")}</p>
+            </Notice>
+          </>
+        )}
+      </>
+    );
+    if (method === "cash")
+      footer = (
         <Button
           size="lg"
           className="w-full"
-          onClick={() => {
-            setNotRecorded(false);
-            collector.collect({
-              method: "cash",
-              receivedIdr: idr(charge.amountIdr),
-            });
-          }}
+          onClick={() =>
+            collect({ method: "cash", receivedIdr: idr(charge.amountIdr) })
+          }
         >
           {t("posIssueCharge.collect.action", { amount })}
           <ArrowRight aria-hidden="true" />
         </Button>
-      </>
-    );
+      );
+    if (method === "qris")
+      footer = (
+        <Button
+          size="lg"
+          className="w-full"
+          onClick={() => collect({ method: "qris" })}
+        >
+          {t(
+            charge.payment?.method === "qris"
+              ? "posIssueCharge.qris.renew"
+              : "posIssueCharge.qris.start",
+            { amount },
+          )}
+          <ArrowRight aria-hidden="true" />
+        </Button>
+      );
+    if (method === "edc_card")
+      footer = (
+        <Button
+          size="lg"
+          variant="outline"
+          className="w-full"
+          loading={query.isFetching}
+          onClick={() => void query.refetch()}
+        >
+          <RotateCw aria-hidden="true" />
+          {t("posIssueCharge.edc.reload")}
+        </Button>
+      );
   }
 
   return (
@@ -424,7 +588,11 @@ function ChargeBody({ chargeId }: { chargeId: string }) {
       <PosTwoPane
         sidePosition="end"
         side={
-          <PosPanel title={t("posIssueCharge.collect.title")} aside={pill}>
+          <PosPanel
+            title={t("posIssueCharge.collect.title")}
+            aside={pill}
+            footer={footer}
+          >
             <div className="grid gap-4">{body}</div>
           </PosPanel>
         }

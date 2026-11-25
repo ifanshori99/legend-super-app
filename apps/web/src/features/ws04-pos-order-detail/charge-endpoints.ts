@@ -6,6 +6,7 @@
 // yet (contract gap, mock mode only).
 import { defineEndpoint } from "@starter/shared/api";
 import { uuidSchema, z } from "@starter/shared/core";
+import { posEdcAttemptSchema } from "@starter/shared/pos";
 import {
   collectChargeAtPosInputSchema,
   guestPaymentSchema,
@@ -34,14 +35,27 @@ const swapLineSchema = z.object({
 });
 
 /**
+ * One EDC sale whose reference is this charge: the server's list, never typed
+ * by the cashier. Every status is listed (a pending or unknown one locks the
+ * charge, legend-t93l8).
+ */
+const chargeEdcSaleSchema = posEdcAttemptSchema.extend({
+  needsReconciliation: z.boolean(),
+});
+export type ChargeEdcSale = z.infer<typeof chargeEdcSaleSchema>;
+
+/**
  * GAP: what the cashier needs to check before taking the money (both dishes,
- * the order). No API route yet; mock mode only.
+ * the order) and what is already out for the charge: its latest code and its
+ * EDC sales. No API route yet; mock mode only.
  */
 export const issueChargeDetailSchema = issueChargeViewSchema.extend({
   orderNumber: z.string(),
   tableLabel: z.string().nullable(),
   original: swapLineSchema,
   replacement: swapLineSchema,
+  payment: guestPaymentSchema.nullable(),
+  edcSales: z.array(chargeEdcSaleSchema),
 });
 export type IssueChargeDetail = z.infer<typeof issueChargeDetailSchema>;
 

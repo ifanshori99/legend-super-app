@@ -1,0 +1,157 @@
+// Pure rules of the charge method picker (legend-t93l8): what the cashier may
+// do with a dearer-swap charge, read from the server's charge only. Plain
+// TypeScript with no imports: Node tests load it directly.
+//
+// Money rule: while money may be on its way (a live code, an EDC request
+// without an answer, a paid code not yet on the charge) nothing else can be
+// collected and the method cannot change. A status this file does not know
+// locks the charge instead of freeing it.
+
+export type ChargeMethod = "cash" | "qris" | "edc_card";
+
+export type ChargePhase =
+  | "paid"
+  | "closed"
+  /** Nothing is out: cash and QRIS may start. */
+  | "choose"
+  /** A gateway code can still be paid. */
+  | "gateway_waiting"
+  /** The gateway has the money; the charge is not marked paid yet. */
+  | "gateway_confirming"
+  /** The terminal has not answered, or its answer was lost. */
+  | "edc_waiting"
+  /** The bank approved the sale: only recording it is left. */
+  | "edc_approved"
+  /** Possible double money or a sale that does not match: supervisor. */
+  | "review";
+
+type PaymentFacts = {
+  id: string;
+  method: string;
+  status: string;
+  amountIdr: number;
+};
+
+export type EdcSaleFacts = {
+  id: string;
+  status: string;
+  amountIdr: number;
+  method: string | null;
+  mode: string | null;
+  needsReconciliation: boolean;
+};
+
+export type ChargeFacts = {
+  status: string;
+  amountIdr: number;
+  payment: PaymentFacts | null;
+  edcSales: readonly EdcSaleFacts[];
+};
+
+export type ChargeRequestFacts =
+  | { method: "cash"; receivedIdr: number }
+  | { method: "qris" }
+  | { method: "edc_card"; edcTransactionId: string };
+
+/** Poll gap while the charge waits for the gateway or the terminal. */
+export const CHARGE_POLL_MS = 3000;
+
+const EDC_REFUSED = ["declined", "cancelled", "failed"];
+const CODE_ENDED = ["expired", "failed"];
+
+/** The sale pays this charge exactly: same rules as the collect route. */
+export function edcSaleMatches(
+  sale: EdcSaleFacts,
+  chargeAmountIdr: number,
+): boolean {
+  return (
+    sale.status === "approved" &&
+    sale.method === "card" &&
+    sale.mode === "ecr" &&
+    sale.amountIdr === chargeAmountIdr &&
+    !sale.needsReconciliation
+  );
+}
+
+export function chargePhase(charge: ChargeFacts): ChargePhase {
+  if (charge.status === "paid") return "paid";
+  if (charge.status !== "open" && charge.status !== "routed_pos")
+    return "closed";
+  const { payment, edcSales, amountIdr } = charge;
+
+  if (
+    edcSales.some(
+      (sale) =>
+        sale.status !== "approved" && !EDC_REFUSED.includes(sale.status),
+    )
+  )
+    return "edc_waiting";
+  if (edcSales.some((sale) => sale.needsReconciliation)) return "review";
+
+  const approved = edcSales.filter((sale) => sale.status === "approved");
+  const codeEnded = payment === null || CODE_ENDED.includes(payment.status);
+  if (approved.length > 0) {
+    const onlySale = approved.length === 1 ? approved[0] : undefined;
+    if (!onlySale || !edcSaleMatches(onlySale, amountIdr)) return "review";
+    return codeEnded || payment.status === "pending"
+      ? "edc_approved"
+      : "review";
+  }
+
+  if (codeEnded) return "choose";
+  if (payment.amountIdr !== amountIdr) return "review";
+  if (payment.status === "pending") return "gateway_waiting";
+  if (payment.status === "paid") return "gateway_confirming";
+  return "review";
+}
+
+/** Whether this request may be sent for the charge as the server reads now. */
+export function canCollect(
+  charge: ChargeFacts,
+  request: ChargeRequestFacts,
+): boolean {
+  const phase = chargePhase(charge);
+  if (request.method === "edc_card")
+    return (
+      phase === "edc_approved" &&
+      charge.edcSales.some(
+        (sale) =>
+          sale.id === request.edcTransactionId &&
+          edcSaleMatches(sale, charge.amountIdr),
+      )
+    );
+  if (phase !== "choose") return false;
+  return request.method === "qris" || request.receivedIdr === charge.amountIdr;
+}
+
+/** How often to re-read the charge; false when nothing is out. */
+export function chargePollMs(charge: ChargeFacts | undefined): number | false {
+  if (!charge) return false;
+  const phase = chargePhase(charge);
+  return phase === "gateway_waiting" ||
+    phase === "gateway_confirming" ||
+    phase === "edc_waiting"
+    ? CHARGE_POLL_MS
+    : false;
+}
+
+/** A collect answer settles the charge only when the server marks it paid. */
+export function answerSettles(
+  answer: { charge: { status: string } } | undefined,
+): boolean {
+  return answer?.charge.status === "paid";
+}
+
+/**
+ * Names one intent of the cashier. Same signature, same idempotency key. A QRIS
+ * asked after an ended code is a new intent, so it carries that code's id.
+ */
+export function requestSignature(
+  charge: ChargeFacts,
+  request: ChargeRequestFacts,
+): string {
+  if (request.method === "cash") return `cash:${request.receivedIdr}`;
+  if (request.method === "edc_card")
+    return `edc_card:${request.edcTransactionId}`;
+  return `qris:${charge.payment?.id ?? "none"}`;
+}
