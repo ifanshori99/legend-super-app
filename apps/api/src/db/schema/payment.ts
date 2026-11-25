@@ -89,6 +89,11 @@ export const paymentLinks = pgTable(
   (table) => [
     unique("payment_links_token_hash_key").on(table.tokenHash),
     unique("payment_links_tenant_id_id_key").on(table.tenantId, table.id),
+    unique("payment_links_tenant_outlet_id_key").on(
+      table.tenantId,
+      table.outletId,
+      table.id,
+    ),
     foreignKey({
       name: "payment_links_outlet_fk",
       columns: [table.tenantId, table.outletId],

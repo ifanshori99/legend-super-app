@@ -9,6 +9,13 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { env } from "../config/env.ts";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
+import {
+  assertPromoBenefitNotWfc,
+  wfcProductIds,
+} from "../services/wfc-product-guard.ts";
+import { lockWfcClaim } from "../services/wfc-claim-lock.ts";
+import { cancelPaymentLinkInTx } from "../services/payment.service.ts";
+import { deleteFloorZone, updateFloorZone } from "../services/floor.service.ts";
 import { listPosTicketProducts } from "../services/facility-pos-ticket-catalog.ts";
 import { updateFacilityProduct } from "../services/facility-products.service.ts";
 import {
@@ -148,9 +155,59 @@ const SETTINGS = {
   reason: "Uji",
 };
 
+type Actors = { proposer: string; approver: string };
+
+/** One decided approval request of a settings change (final level by default). */
+async function seedApproval(
+  world: World,
+  actors: Actors,
+  overrides: Record<string, unknown> = {},
+): Promise<string> {
+  const id = randomUUID();
+  const row: Record<string, unknown> = {
+    id,
+    tenant_id: world.tenantId,
+    outlet_id: world.outletA,
+    chain_id: id,
+    source_module: "wfc",
+    action_type: "price_change",
+    object_type: "wfc_business_settings",
+    object_id: randomUUID(),
+    requested_by: actors.proposer,
+    source: "user",
+    level: 1,
+    required_levels: 1,
+    required_steps: "[]",
+    request_reason: "Uji",
+    deadline_at: new Date(Date.now() + 3_600_000),
+    status: "approved",
+    decided_by: actors.approver,
+    decided_at: new Date(),
+    reason: "Setuju",
+    ...overrides,
+  };
+  await asTenant(world.tenantId, (client) =>
+    insertInto(client, "approval_requests", row),
+  );
+  return id;
+}
+
+async function insertInto(
+  client: { query: (text: string, values: unknown[]) => Promise<unknown> },
+  table: string,
+  row: Record<string, unknown>,
+) {
+  const names = Object.keys(row);
+  await client.query(
+    `INSERT INTO ${table} (${names.join(", ")})
+     VALUES (${names.map((_, i) => `$${i + 1}`).join(", ")})`,
+    Object.values(row),
+  );
+}
+
 async function seedSettings(
   world: World,
-  actors: { proposer: string; approver: string },
+  actors: Actors,
   overrides: Record<string, unknown> = {},
 ): Promise<string> {
   const row: Record<string, unknown> = {
@@ -162,13 +219,10 @@ async function seedSettings(
     approved_by: actors.approver,
     ...overrides,
   };
-  const names = Object.keys(row);
+  if (!("approval_request_id" in overrides))
+    row.approval_request_id = await seedApproval(world, actors);
   await asTenant(world.tenantId, (client) =>
-    client.query(
-      `INSERT INTO wfc_business_settings (${names.join(", ")})
-       VALUES (${names.map((_, i) => `$${i + 1}`).join(", ")})`,
-      Object.values(row),
-    ),
+    insertInto(client, "wfc_business_settings", row),
   );
   return row.id as string;
 }
@@ -216,9 +270,19 @@ async function stampOf(s: Setup, productId: string): Promise<string> {
   });
 }
 
+/** The product as W1b will leave it: switched on past the price floor. */
+const switchOn = (s: Setup, productId: string) =>
+  asTenant(s.world.tenantId, (client) =>
+    client.query(
+      "UPDATE facility_products SET is_active = true WHERE id = $1",
+      [productId],
+    ),
+  );
+
 async function claimRow(s: Setup) {
   const seat = await newSeat(s);
   const product = await asDayPass(s);
+  await switchOn(s, product.productId);
   const settingsId = await seedSettings(s.world, {
     proposer: s.actor,
     approver: s.approver,
@@ -245,16 +309,73 @@ async function claimRow(s: Setup) {
     ...overrides,
   });
 }
+type ClaimRow = ReturnType<Awaited<ReturnType<typeof claimRow>>>;
 
-async function insertClaim(s: Setup, row: Record<string, unknown>) {
-  const names = Object.keys(row);
-  await asTenant(s.world.tenantId, (client) =>
+const insertClaim = (s: Setup, row: Record<string, unknown>) =>
+  asTenant(s.world.tenantId, (client) =>
+    insertInto(client, "wfc_seat_reservations", row),
+  );
+
+const updateClaim = (s: Setup, id: unknown, assignments: string) =>
+  asTenant(s.world.tenantId, (client) =>
     client.query(
-      `INSERT INTO wfc_seat_reservations (${names.join(", ")})
-       VALUES (${names.map((_, i) => `$${i + 1}`).join(", ")})`,
-      Object.values(row),
+      `UPDATE wfc_seat_reservations SET ${assignments} WHERE id = $1`,
+      [id],
     ),
   );
+
+/** An open payment link of the claim's price; overrides win. */
+async function seedLink(
+  s: Setup,
+  overrides: Record<string, unknown> = {},
+): Promise<string> {
+  const id = randomUUID();
+  await asTenant(s.world.tenantId, (client) =>
+    insertInto(client, "payment_links", {
+      id,
+      tenant_id: s.world.tenantId,
+      outlet_id: s.world.outletA,
+      token_hash: randomUUID().replaceAll("-", "").repeat(2),
+      reference: `wfc-${short()}`,
+      subtotal_idr: 70_000,
+      total_idr: 70_000,
+      paid_idr: 0,
+      expires_at: new Date(Date.now() + 1_800_000),
+      created_by: "wfc-schema-test",
+      ...overrides,
+    }),
+  );
+  return id;
+}
+
+const settleLink = (s: Setup, linkId: string) =>
+  asTenant(s.world.tenantId, (client) =>
+    client.query(
+      "UPDATE payment_links SET paid_idr = total_idr, updated_at = now() WHERE id = $1",
+      [linkId],
+    ),
+  );
+
+const CONFIRM =
+  "status = 'confirmed', paid_idr = price_idr, hold_expires_at = NULL";
+
+/** A pending claim on its own open link. */
+async function pendingOnLink(
+  s: Setup,
+  row: ClaimRow,
+  link: Record<string, unknown> = {},
+) {
+  await insertClaim(s, row);
+  const linkId = await seedLink(s, link);
+  await updateClaim(s, row.id, `payment_link_id = '${linkId}'`);
+  return linkId;
+}
+
+async function confirmedClaim(s: Setup, row: ClaimRow) {
+  const linkId = await pendingOnLink(s, row);
+  await settleLink(s, linkId);
+  await updateClaim(s, row.id, CONFIRM);
+  return linkId;
 }
 
 describe("WFC tables are tenant and outlet isolated", () => {
@@ -288,6 +409,49 @@ describe("WFC tables are tenant and outlet isolated", () => {
     );
     expect(seen.rows).toHaveLength(0);
   });
+
+  it.each(TABLES)(
+    "%s hides its rows from another tenant and outlet",
+    async (table) => {
+      const s = await setup();
+      const build = await claimRow(s);
+      await putWfcHourlyQuotas(s.world.context, s.actor, {
+        outletId: s.world.outletA,
+        quotas: [{ dayOfWeek: 1, hour: 9, seats: 1 }],
+      });
+      await insertClaim(s, build());
+      const other = await setup();
+      const count = async (context: typeof s.world.context) =>
+        (
+          await withTenant(db, context, (tx) =>
+            tx.execute(sql`SELECT id FROM ${sql.identifier(table)}`),
+          )
+        ).rows.length;
+      expect(await count(s.world.context)).toBe(1);
+      expect(
+        await count(outletContext(s.world.tenantId, s.world.outletA)),
+      ).toBe(1);
+      expect(
+        await count(outletContext(s.world.tenantId, s.world.outletB)),
+      ).toBe(0);
+      expect(await count(other.world.context)).toBe(0);
+      // Nor can it be written into: the row keeps its tenant and outlet.
+      const touched = await withTenant(
+        db,
+        outletContext(s.world.tenantId, s.world.outletB),
+        (tx) =>
+          tx.execute(
+            table === "wfc_business_settings"
+              ? sql`SELECT id FROM wfc_business_settings FOR KEY SHARE`
+              : sql`UPDATE ${sql.identifier(table)} SET tenant_id = tenant_id`,
+          ),
+      ).then(
+        (r) => r.rowCount ?? 0,
+        () => 0,
+      );
+      expect(touched).toBe(0);
+    },
+  );
 
   it("the app role cannot delete a claim or touch a settings version", async () => {
     const s = await setup();
@@ -326,6 +490,21 @@ describe("seats", () => {
         createWfcSeat(s.world.context, s.actor, {
           outletId: s.world.outletA,
           zoneId: plain,
+          code: "B1",
+        }),
+      ),
+    ).toMatchObject({ status: 409, code: "ZONE_NOT_WFC" });
+    const closed = await seedZone(s.world);
+    await asTenant(s.world.tenantId, (client) =>
+      client.query("UPDATE floor_zones SET status = 'inactive' WHERE id = $1", [
+        closed,
+      ]),
+    );
+    expect(
+      await failure(
+        createWfcSeat(s.world.context, s.actor, {
+          outletId: s.world.outletA,
+          zoneId: closed,
           code: "B1",
         }),
       ),
@@ -379,6 +558,7 @@ describe("seats", () => {
 describe("hourly quota", () => {
   it("is capped by the active WFC seats and replaces per cell", async () => {
     const s = await setup();
+    await seedSettings(s.world, { proposer: s.actor, approver: s.approver });
     await newSeat(s);
     const second = await newSeat(s);
     const put = (seats: number) =>
@@ -413,6 +593,7 @@ describe("hourly quota", () => {
 
   it("a quota raised while a seat is switched off never exceeds the seats", async () => {
     const s = await setup();
+    await seedSettings(s.world, { proposer: s.actor, approver: s.approver });
     await newSeat(s);
     const second = await newSeat(s);
     await Promise.allSettled([
@@ -434,6 +615,46 @@ describe("hourly quota", () => {
     expect(quotas[0]?.seats ?? 0).toBeLessThanOrEqual(active);
     // Exactly one of the two won.
     expect(quotas.length === 1).toBe(active === 2);
+  });
+
+  it("never exceeds the approved wfc_seats, now or in a coming version", async () => {
+    const s = await setup();
+    const actors = { proposer: s.actor, approver: s.approver };
+    await newSeat(s);
+    await newSeat(s);
+    const put = (seats: number) =>
+      putWfcHourlyQuotas(
+        s.world.context,
+        s.actor,
+        {
+          outletId: s.world.outletA,
+          quotas: [{ dayOfWeek: 1, hour: 9, seats }],
+        },
+        NOW,
+      );
+    // No approved number yet: only zero.
+    expect(await failure(put(1))).toMatchObject({
+      status: 409,
+      code: "WFC_CONFIG_INCOMPLETE",
+    });
+    await put(0);
+    await seedSettings(s.world, actors);
+    await put(2);
+    await seedSettings(s.world, actors, {
+      version: 2,
+      effective_from: "2027-01-01",
+      wfc_seats: 1,
+    });
+    expect(await failure(put(2))).toMatchObject({
+      status: 409,
+      code: "QUOTA_EXCEEDS_SEATS",
+    });
+    await put(1);
+    // A newer version of the same day replaces the older one.
+    await seedSettings(s.world, actors, { version: 3, wfc_seats: 1 });
+    expect(await failure(put(2))).toMatchObject({
+      code: "QUOTA_EXCEEDS_SEATS",
+    });
   });
 
   it("the database refuses a duplicate cell, a negative and a wild hour", async () => {
@@ -585,6 +806,19 @@ describe("product", () => {
       ).toMatchObject({ status: 400 });
   });
 
+  it("clearing an ordinary product leaves it untouched", async () => {
+    const s = await setup();
+    const productId = await seedProduct(s.world, s.facilityId);
+    const stamp = await stampOf(s, productId);
+    const result = await setWfcProduct(s.world.context, s.actor, {
+      productId,
+      wfc: null,
+      expectedUpdatedAt: stamp,
+    });
+    expect(result).toMatchObject({ isActive: true, wfc: null });
+    expect(await stampOf(s, productId)).toBe(stamp);
+  });
+
   it("cannot lose its WFC kind once a claim references it", async () => {
     const s = await setup();
     const build = await claimRow(s);
@@ -603,12 +837,14 @@ describe("product", () => {
   });
 });
 
+const refused = { code: "23514" };
+
 describe("seat claims", () => {
   it("one seat is never held twice; a released claim frees it", async () => {
     const s = await setup();
     const build = await claimRow(s);
     const first = build();
-    await insertClaim(s, first);
+    await confirmedClaim(s, first);
     await expect(insertClaim(s, build())).rejects.toMatchObject({
       code: "23P01",
     });
@@ -617,39 +853,30 @@ describe("seat claims", () => {
       s,
       build({ slot: "[2026-11-08T05:00:00Z,2026-11-08T06:00:00Z)" }),
     );
-    for (const status of ["cancelled", "no_show"]) {
-      const paid = status === "no_show";
-      const linkId = paid ? await seedLink(s) : null;
-      await asTenant(s.world.tenantId, (client) =>
-        client.query(
-          `UPDATE wfc_seat_reservations
-              SET status = $2::text, paid_idr = $3, payment_link_id = $4, hold_expires_at = NULL
-            WHERE id = $1`,
-          [first.id, status, paid ? 70_000 : 0, linkId],
-        ),
-      );
-      const next = build();
-      await insertClaim(s, next);
-      first.id = next.id;
-    }
+    await updateClaim(s, first.id, "status = 'no_show'");
+    const second = build();
+    await insertClaim(s, second);
+    await updateClaim(
+      s,
+      second.id,
+      "status = 'cancelled', hold_expires_at = NULL",
+    );
+    await insertClaim(s, build());
   });
 
-  it("is issued only when fully paid, and the split always adds up", async () => {
+  it("starts pending and unpaid, and the split always adds up", async () => {
     const s = await setup();
     const build = await claimRow(s);
-    const linkId = await seedLink(s);
     const paid = {
       status: "confirmed",
       paid_idr: 70_000,
-      payment_link_id: linkId,
       hold_expires_at: null,
     };
     for (const bad of [
-      { ...paid, paid_idr: 69_999 },
-      { ...paid, payment_link_id: null },
-      { ...paid, paid_idr: 70_001 },
-      { ...paid, refunded_idr: 70_001 },
-      { ...paid, status: "refunded", refunded_idr: 69_999 },
+      paid,
+      { ...paid, payment_link_id: await seedLink(s, { paid_idr: 70_000 }) },
+      { status: "cancelled", hold_expires_at: null },
+      { paid_idr: 70_000 },
       { price_idr: 70_001 },
       { hold_expires_at: null },
       { credit_idr: 0, price_idr: 50_000 },
@@ -661,23 +888,12 @@ describe("seat claims", () => {
       await expect(
         insertClaim(s, build(bad)),
         JSON.stringify(bad),
-      ).rejects.toMatchObject({ code: "23514" });
+      ).rejects.toMatchObject(refused);
     // No start or no end: the generated NOT NULL instants refuse it.
     for (const slot of ["empty", "[2026-11-08T03:00:00Z,)"])
       await expect(insertClaim(s, build({ slot }))).rejects.toMatchObject({
         code: "23502",
       });
-    await insertClaim(s, build(paid));
-    // One payment link funds one claim.
-    await expect(
-      insertClaim(
-        s,
-        build({
-          ...paid,
-          slot: "[2026-11-08T07:00:00Z,2026-11-08T08:00:00Z)",
-        }),
-      ),
-    ).rejects.toMatchObject({ code: "23505" });
   });
 
   it("never points at a seat of another outlet", async () => {
@@ -685,34 +901,609 @@ describe("seat claims", () => {
     const build = await claimRow(s);
     await expect(
       insertClaim(s, build({ outlet_id: s.world.outletB })),
-    ).rejects.toMatchObject({ code: "23503" });
+    ).rejects.toMatchObject({ code: expect.stringMatching(/^235(03|14)$/) });
   });
 });
 
-async function seedLink(s: Setup): Promise<string> {
-  const id = randomUUID();
-  await asTenant(s.world.tenantId, (client) =>
-    client.query(
-      `INSERT INTO payment_links (id, tenant_id, outlet_id, token_hash, reference, subtotal_idr, total_idr, paid_idr, created_by)
-       VALUES ($1, $2, $3, $4, $5, 70000, 70000, 70000, 'wfc-schema-test')`,
+describe("review 1: paid is proven by the payment link", () => {
+  it("takes only an open link of the same outlet, price and no discount", async () => {
+    const s = await setup();
+    const build = await claimRow(s);
+    const row = build();
+    await insertClaim(s, row);
+    const other = await setup();
+    const bad: [string, string][] = [
       [
-        id,
-        s.world.tenantId,
-        s.world.outletA,
-        randomUUID().replaceAll("-", "").repeat(2),
-        `wfc-${short()}`,
+        "amount",
+        await seedLink(s, { subtotal_idr: 69_999, total_idr: 69_999 }),
       ],
-    ),
-  );
-  return id;
-}
+      [
+        "discount",
+        await seedLink(s, {
+          subtotal_idr: 70_000,
+          discount_idr: 1,
+          total_idr: 69_999,
+        }),
+      ],
+      [
+        "discount hidden by tax",
+        await seedLink(s, {
+          subtotal_idr: 70_000,
+          discount_idr: 1_000,
+          tax_idr: 1_000,
+        }),
+      ],
+      ["outlet", await seedLink(s, { outlet_id: s.world.outletB })],
+      ["tenant", await seedLink(other)],
+      [
+        "cancelled",
+        await seedLink(s, { expires_at: new Date(Date.now() - 1) }),
+      ],
+      ["no expiry", await seedLink(s, { expires_at: null })],
+    ];
+    for (const [label, linkId] of bad)
+      await expect(
+        updateClaim(s, row.id, `payment_link_id = '${linkId}'`),
+        label,
+      ).rejects.toMatchObject({ code: expect.stringMatching(/^235(03|14)$/) });
+  });
+
+  it("confirms only on a link paid in full (the total, tax included)", async () => {
+    const s = await setup();
+    const build = await claimRow(s);
+    const row = build();
+    const linkId = await pendingOnLink(s, row, {
+      tax_idr: 7_000,
+      total_idr: 77_000,
+    });
+    const setPaid = (amount: number) =>
+      asTenant(s.world.tenantId, (client) =>
+        client.query("UPDATE payment_links SET paid_idr = $2 WHERE id = $1", [
+          linkId,
+          amount,
+        ]),
+      );
+    for (const amount of [0, 70_000, 76_999]) {
+      await setPaid(amount);
+      await expect(
+        updateClaim(s, row.id, CONFIRM),
+        String(amount),
+      ).rejects.toMatchObject(refused);
+    }
+    await setPaid(77_000);
+    await expect(
+      updateClaim(s, row.id, "status = 'confirmed', hold_expires_at = NULL"),
+    ).rejects.toMatchObject(refused);
+    await expect(
+      updateClaim(
+        s,
+        row.id,
+        `${CONFIRM}, paid_idr = 69999`.replace("paid_idr = price_idr, ", ""),
+      ),
+    ).rejects.toMatchObject(refused);
+    await updateClaim(s, row.id, CONFIRM);
+  });
+
+  it("does not confirm a cancelled link that is paid later, but records the money", async () => {
+    const s = await setup();
+    const build = await claimRow(s);
+    const row = build();
+    const linkId = await pendingOnLink(s, row);
+    await withTenant(db, s.world.context, (tx) =>
+      cancelPaymentLinkInTx(tx, s.world.context, {
+        linkId,
+        now: new Date(),
+        reason: "uji",
+      }),
+    );
+    await settleLink(s, linkId);
+    await expect(updateClaim(s, row.id, CONFIRM)).rejects.toMatchObject(
+      refused,
+    );
+    await updateClaim(
+      s,
+      row.id,
+      "status = 'cancelled', hold_expires_at = NULL",
+    );
+    await updateClaim(s, row.id, "paid_idr = price_idr");
+    await expect(updateClaim(s, row.id, CONFIRM)).rejects.toMatchObject(
+      refused,
+    );
+    await updateClaim(
+      s,
+      row.id,
+      "status = 'refunded', refunded_idr = paid_idr",
+    );
+  });
+
+  it("a link the gateway paid just after its own expiry still confirms", async () => {
+    const s = await setup();
+    const build = await claimRow(s);
+    const row = build();
+    const linkId = await pendingOnLink(s, row, {
+      expires_at: new Date(Date.now() + 400),
+    });
+    await settleLink(s, linkId);
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    await updateClaim(s, row.id, CONFIRM);
+  });
+
+  it("one link funds one claim and never moves", async () => {
+    const s = await setup();
+    const build = await claimRow(s);
+    const row = build();
+    const linkId = await pendingOnLink(s, row);
+    const second = build({
+      slot: "[2026-11-08T07:00:00Z,2026-11-08T08:00:00Z)",
+    });
+    await insertClaim(s, second);
+    await expect(
+      updateClaim(s, second.id, `payment_link_id = '${linkId}'`),
+    ).rejects.toMatchObject({ code: "23505" });
+    const otherLink = await seedLink(s);
+    for (const value of ["NULL", `'${otherLink}'`])
+      await expect(
+        updateClaim(s, row.id, `payment_link_id = ${value}`),
+      ).rejects.toMatchObject(refused);
+  });
+
+  it("locks link first, then claim: settlement and confirm never deadlock", async () => {
+    const s = await setup();
+    const build = await claimRow(s);
+    const row = build();
+    const linkId = await pendingOnLink(s, row);
+    const confirmInOrder = () =>
+      withTenant(db, s.world.context, async (tx) => {
+        const claim = await lockWfcClaim(tx, s.world.context, row.id);
+        if (claim.status !== "pending_payment") return "already";
+        await tx.execute(
+          sql`UPDATE wfc_seat_reservations SET status = 'confirmed', paid_idr = price_idr, hold_expires_at = NULL WHERE id = ${row.id}`,
+        );
+        return "confirmed";
+      });
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [s.world.tenantId],
+      );
+      // Settlement holds the bill row, as applyConfirmation does.
+      await client.query(
+        "SELECT 1 FROM payment_links WHERE id = $1 FOR UPDATE",
+        [linkId],
+      );
+      // A caller that takes the claim first fails at once instead of waiting
+      // on the link with the claim locked.
+      await expect(updateClaim(s, row.id, CONFIRM)).rejects.toMatchObject({
+        code: "55P03",
+      });
+      const racers = Promise.all([confirmInOrder(), confirmInOrder()]);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      // The waiters hold nothing: the claim row is free for the settlement.
+      await client.query(
+        "SELECT 1 FROM wfc_seat_reservations WHERE id = $1 FOR UPDATE NOWAIT",
+        [row.id],
+      );
+      await client.query(
+        "UPDATE payment_links SET paid_idr = total_idr WHERE id = $1",
+        [linkId],
+      );
+      await client.query("COMMIT");
+      expect((await racers).sort()).toEqual(["already", "confirmed"]);
+    } finally {
+      await client.query("ROLLBACK");
+      client.release();
+    }
+  });
+});
+
+describe("review 2: a claim is a frozen snapshot on legal steps", () => {
+  it("no sale value ever changes", async () => {
+    const s = await setup();
+    const build = await claimRow(s);
+    const row = build();
+    await insertClaim(s, row);
+    const seat = await newSeat(s);
+    const settings = await seedSettings(
+      s.world,
+      { proposer: s.actor, approver: s.approver },
+      { version: 2 },
+    );
+    const other = await asDayPass(s);
+    const profile = (await seedProfile(s.world.tenantId)).id;
+    for (const change of [
+      "seat_fee_idr = 40000, credit_idr = 30000",
+      "seat_fee_idr = 50001, price_idr = 70001",
+      "slot = '[2026-11-08T03:00:00Z,2026-11-08T06:00:00Z)'",
+      `seat_id = '${seat.id}'`,
+      `settings_version_id = '${settings}'`,
+      "floor_per_hour_idr = 1",
+      `product_id = '${other.productId}'`,
+      `customer_profile_id = '${profile}'`,
+      "kind = 'seat_reservation'",
+      "access = 'off_peak'",
+      "business_date = '2026-11-09'",
+      `outlet_id = '${s.world.outletB}'`,
+      "created_at = now() + interval '1 day'",
+    ])
+      await expect(
+        updateClaim(s, row.id, change),
+        change,
+      ).rejects.toMatchObject(refused);
+  });
+
+  it("paid and refund never go down, refund never past paid", async () => {
+    const s = await setup();
+    const build = await claimRow(s);
+    const row = build();
+    await confirmedClaim(s, row);
+    await updateClaim(s, row.id, "status = 'checked_in'");
+    await updateClaim(s, row.id, "status = 'completed'");
+    await updateClaim(s, row.id, "refunded_idr = 10000");
+    for (const change of [
+      "paid_idr = 0",
+      "paid_idr = 69999",
+      "refunded_idr = 9999",
+      "refunded_idr = 70001",
+      "status = 'refunded'",
+    ])
+      await expect(
+        updateClaim(s, row.id, change),
+        change,
+      ).rejects.toMatchObject(refused);
+    await updateClaim(s, row.id, "status = 'refunded', refunded_idr = 70000");
+  });
+
+  it("only legal status steps; a closed claim never comes back", async () => {
+    const s = await setup();
+    const build = await claimRow(s);
+    let hour = 0;
+    const next = () => {
+      hour += 1;
+      const at = (h: number) => `2026-11-${String(10 + h)}T01:00:00Z`;
+      return build({
+        slot: `[${at(hour)},${at(hour).replace("T01", "T02")})`,
+      });
+    };
+    const reach: Record<string, string[]> = {
+      pending_payment: [],
+      cancelled: ["status = 'cancelled', hold_expires_at = NULL"],
+      confirmed: [CONFIRM],
+      checked_in: [CONFIRM, "status = 'checked_in'"],
+      no_show: [CONFIRM, "status = 'no_show'"],
+      completed: [CONFIRM, "status = 'checked_in'", "status = 'completed'"],
+      refunded: [CONFIRM, "status = 'refunded', refunded_idr = paid_idr"],
+    };
+    const illegal: Record<string, string[]> = {
+      pending_payment: ["checked_in", "completed", "no_show", "refunded"],
+      cancelled: ["pending_payment", "confirmed", "checked_in", "no_show"],
+      confirmed: ["pending_payment", "completed"],
+      checked_in: ["pending_payment", "confirmed", "no_show", "cancelled"],
+      no_show: ["pending_payment", "confirmed", "checked_in", "completed"],
+      completed: ["pending_payment", "confirmed", "checked_in", "cancelled"],
+      refunded: ["confirmed", "checked_in", "cancelled", "completed"],
+    };
+    for (const [from, targets] of Object.entries(illegal)) {
+      const row = next();
+      const linkId = await pendingOnLink(s, row);
+      await settleLink(s, linkId);
+      for (const step of reach[from]!) await updateClaim(s, row.id, step);
+      for (const to of targets)
+        await expect(
+          updateClaim(
+            s,
+            row.id,
+            `status = '${to}', paid_idr = price_idr, hold_expires_at = ${to === "pending_payment" ? "now()" : "NULL"}`,
+          ),
+          `${from} -> ${to}`,
+        ).rejects.toMatchObject(refused);
+    }
+  });
+});
+
+describe("review 4: a claim copies its live product, seat and zone", () => {
+  it("refuses another split, kind, access, length or a dead product", async () => {
+    const s = await setup();
+    const build = await claimRow(s);
+    for (const bad of [
+      { seat_fee_idr: 40_000, credit_idr: 30_000 },
+      { seat_fee_idr: 10_000, credit_idr: 10_000, price_idr: 20_000 },
+      { kind: "seat_reservation" },
+      { access: "off_peak" },
+    ])
+      await expect(
+        insertClaim(s, build(bad)),
+        JSON.stringify(bad),
+      ).rejects.toMatchObject(refused);
+    const plain = await seedProduct(s.world, s.facilityId);
+    await expect(
+      insertClaim(s, build({ product_id: plain })),
+    ).rejects.toMatchObject(refused);
+    const row = build();
+    await asTenant(s.world.tenantId, (client) =>
+      client.query(
+        "UPDATE facility_products SET is_active = false WHERE id = $1",
+        [row.product_id],
+      ),
+    );
+    await expect(insertClaim(s, row)).rejects.toMatchObject(refused);
+  });
+
+  it("a seat reservation lasts exactly the product duration", async () => {
+    const s = await setup();
+    const build = await claimRow(s);
+    const productId = await seedProduct(s.world, s.facilityId);
+    await setWfcProduct(s.world.context, s.actor, {
+      productId,
+      wfc: {
+        kind: "seat_reservation",
+        access: "all_day",
+        seatFeeIdr: 50_000,
+        creditIdr: 20_000,
+        durationMinutes: 60,
+      },
+      expectedUpdatedAt: await stampOf(s, productId),
+    });
+    await switchOn(s, productId);
+    const row = (end: string) =>
+      build({
+        product_id: productId,
+        kind: "seat_reservation",
+        slot: `[2026-11-08T03:00:00Z,2026-11-08T${end}Z)`,
+      });
+    for (const end of ["03:59:00", "04:01:00", "05:00:00"])
+      await expect(insertClaim(s, row(end)), end).rejects.toMatchObject(
+        refused,
+      );
+    await insertClaim(s, row("04:00:00"));
+  });
+
+  it("refuses a switched-off seat and a zone that is not open WFC", async () => {
+    const s = await setup();
+    const build = await claimRow(s);
+    const row = build();
+    await setWfcSeatStatus(s.world.context, s.actor, {
+      seatId: row.seat_id,
+      status: "inactive",
+    });
+    await expect(insertClaim(s, row)).rejects.toMatchObject(refused);
+    await setWfcSeatStatus(s.world.context, s.actor, {
+      seatId: row.seat_id,
+      status: "active",
+    });
+    for (const change of ["is_wfc = false", "status = 'inactive'"]) {
+      await asTenant(s.world.tenantId, (client) =>
+        client.query(`UPDATE floor_zones SET ${change} WHERE id = $1`, [
+          s.zoneId,
+        ]),
+      );
+      await expect(insertClaim(s, row), change).rejects.toMatchObject(refused);
+      await asTenant(s.world.tenantId, (client) =>
+        client.query(
+          "UPDATE floor_zones SET is_wfc = true, status = 'active' WHERE id = $1",
+          [s.zoneId],
+        ),
+      );
+    }
+    await insertClaim(s, row);
+  });
+
+  it("claim and seat switch race: never a live claim on a dead seat", async () => {
+    for (let round = 0; round < 8; round++) {
+      const s = await setup();
+      const build = await claimRow(s);
+      const row = build({
+        slot: "[2099-01-01T03:00:00Z,2099-01-01T05:00:00Z)",
+        hold_expires_at: "2099-01-01T03:00:00Z",
+      });
+      const [claim, off] = await Promise.allSettled([
+        insertClaim(s, row),
+        setWfcSeatStatus(s.world.context, s.actor, {
+          seatId: row.seat_id,
+          status: "inactive",
+        }),
+      ]);
+      expect([claim.status, off.status].sort()).toEqual([
+        "fulfilled",
+        "rejected",
+      ]);
+    }
+  });
+
+  it("a claim in flight blocks the seat switch, a switch in flight the claim", async () => {
+    const s = await setup();
+    const build = await claimRow(s);
+    const row = build();
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [s.world.tenantId],
+      );
+      await client.query(
+        "UPDATE wfc_seats SET status = 'inactive' WHERE id = $1",
+        [row.seat_id],
+      );
+      const claim = insertClaim(s, row).then(
+        () => "inserted",
+        (error: { code?: string }) => error.code,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      await client.query("COMMIT");
+      expect(await claim).toBe("23514");
+    } finally {
+      await client.query("ROLLBACK");
+      client.release();
+    }
+  });
+});
+
+describe("review 4: a WFC product is never a promo reward", () => {
+  const benefitOf = (productId: string) => ({
+    kind: "facility_entitlement" as const,
+    facilityProductId: productId,
+    quantity: 1,
+  });
+
+  it("the guard names only WFC products of the tenant", async () => {
+    const s = await setup();
+    const other = await setup();
+    const { productId } = await asDayPass(s);
+    const plain = await seedProduct(s.world, s.facilityId);
+    const ids = (setupOf: Setup, list: string[]) =>
+      withTenant(db, setupOf.world.context, (tx) =>
+        wfcProductIds(tx, setupOf.world.context.tenant.tenantId, list),
+      );
+    expect([...(await ids(s, [productId, plain]))]).toEqual([productId]);
+    expect((await ids(other, [productId])).size).toBe(0);
+    expect((await ids(s, [])).size).toBe(0);
+  });
+
+  it("cannot be saved as a reward, draft included", async () => {
+    const s = await setup();
+    const { productId } = await asDayPass(s);
+    await expect(
+      withTenant(db, s.world.context, (tx) =>
+        assertPromoBenefitNotWfc(
+          tx,
+          s.world.context.tenant.tenantId,
+          benefitOf(productId),
+        ),
+      ),
+    ).rejects.toMatchObject({ status: 409, code: "WFC_PRODUCT_NOT_REWARD" });
+  });
+});
+
+describe("review 5: a zone keeps its WFC seats", () => {
+  async function held() {
+    const s = await setup();
+    const build = await claimRow(s);
+    const row = build({
+      slot: "[2099-01-01T03:00:00Z,2099-01-01T05:00:00Z)",
+      hold_expires_at: "2099-01-01T03:00:00Z",
+    });
+    await insertClaim(s, row);
+    return { s, row };
+  }
+  const change = (s: Setup, patch: Record<string, unknown>) =>
+    updateFloorZone(s.world.context, s.zoneId, patch as never, s.actor);
+
+  it("a live claim blocks is_wfc off and inactive, not a rename", async () => {
+    const { s, row } = await held();
+    for (const patch of [{ isWfc: false }, { status: "inactive" }])
+      expect(await failure(change(s, patch))).toMatchObject({
+        status: 409,
+        code: "WFC_ZONE_IN_USE",
+      });
+    await change(s, { name: "Nama baru", isWfc: true, status: "active" });
+    await updateClaim(
+      s,
+      row.id,
+      "status = 'cancelled', hold_expires_at = NULL",
+    );
+    await change(s, { isWfc: false });
+  });
+
+  it("a quota above the seats left blocks it too", async () => {
+    const s = await setup();
+    await seedSettings(s.world, { proposer: s.actor, approver: s.approver });
+    await newSeat(s);
+    const put = (seats: number) =>
+      putWfcHourlyQuotas(s.world.context, s.actor, {
+        outletId: s.world.outletA,
+        quotas: [{ dayOfWeek: 1, hour: 9, seats }],
+      });
+    await put(1);
+    for (const patch of [{ isWfc: false }, { status: "inactive" }])
+      expect(await failure(change(s, patch))).toMatchObject({
+        status: 409,
+        code: "WFC_ZONE_IN_USE",
+      });
+    await put(0);
+    await change(s, { status: "inactive" });
+  });
+
+  it("a zone with a seat cannot be deleted; a bare zone can", async () => {
+    const s = await setup();
+    const bare = await seedZone(s.world);
+    await newSeat(s);
+    expect(
+      await failure(deleteFloorZone(s.world.context, s.zoneId, s.actor)),
+    ).toMatchObject({ status: 409, code: "WFC_ZONE_IN_USE" });
+    await deleteFloorZone(s.world.context, bare, s.actor);
+  });
+
+  it("quota and zone switch race: the quota never exceeds the seats", async () => {
+    for (let round = 0; round < 5; round++) {
+      const s = await setup();
+      await seedSettings(s.world, { proposer: s.actor, approver: s.approver });
+      await newSeat(s);
+      const results = await Promise.allSettled([
+        putWfcHourlyQuotas(s.world.context, s.actor, {
+          outletId: s.world.outletA,
+          quotas: [{ dayOfWeek: 1, hour: 9, seats: 1 }],
+        }),
+        change(s, { isWfc: false }),
+      ]);
+      expect(results.map((r) => r.status).sort()).toEqual([
+        "fulfilled",
+        "rejected",
+      ]);
+    }
+  });
+
+  it("a zone switch waits for a claim in flight, then refuses", async () => {
+    const s = await setup();
+    const build = await claimRow(s);
+    const row = build({
+      slot: "[2099-01-01T03:00:00Z,2099-01-01T05:00:00Z)",
+      hold_expires_at: "2099-01-01T03:00:00Z",
+    });
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [s.world.tenantId],
+      );
+      await insertInto(client, "wfc_seat_reservations", row);
+      const off = failure(change(s, { isWfc: false }));
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      await client.query("COMMIT");
+      expect(await off).toMatchObject({ status: 409, code: "WFC_ZONE_IN_USE" });
+    } finally {
+      await client.query("ROLLBACK");
+      client.release();
+    }
+  });
+
+  it("claim and zone switch race: exactly one wins", async () => {
+    for (let round = 0; round < 8; round++) {
+      const s = await setup();
+      const build = await claimRow(s);
+      const row = build({
+        slot: "[2099-01-01T03:00:00Z,2099-01-01T05:00:00Z)",
+        hold_expires_at: "2099-01-01T03:00:00Z",
+      });
+      const results = await Promise.allSettled([
+        insertClaim(s, row),
+        change(s, { isWfc: false }),
+      ]);
+      expect(results.map((r) => r.status).sort()).toEqual([
+        "fulfilled",
+        "rejected",
+      ]);
+    }
+  });
+});
 
 describe("settings versions", () => {
   it("need a second person, every number, and a sane range", async () => {
     const s = await setup();
     const actors = { proposer: s.actor, approver: s.approver };
     for (const bad of [
-      { approved_by: s.actor },
       { wfc_seats: 61 },
       { wfc_seats: 0 },
       { fixed_cost_idr: 0 },
@@ -736,15 +1527,69 @@ describe("settings versions", () => {
       "cogs_bp",
       "wfc_seats",
       "approved_by",
+      "approval_request_id",
     ])
       await expect(
         seedSettings(s.world, actors, { [column]: null }),
         column,
-      ).rejects.toMatchObject({ code: "23502" });
+      ).rejects.toMatchObject({ code: expect.stringMatching(/^235(02|14)$/) });
     await seedSettings(s.world, actors);
     await expect(seedSettings(s.world, actors)).rejects.toMatchObject({
       code: "23505",
     });
+  });
+});
+
+describe("review 3: a settings version carries its own approval", () => {
+  it("must match proposer, approver, outlet, purpose and a final approval", async () => {
+    const s = await setup();
+    const actors = { proposer: s.actor, approver: s.approver };
+    const third = await seedActor(s.world.tenantId);
+    const pending = {
+      status: "pending",
+      decided_by: null,
+      decided_at: null,
+      reason: null,
+    };
+    const bad: Record<string, Record<string, unknown>> = {
+      proposer: { requested_by: third },
+      approver: { decided_by: third },
+      rejected: { status: "rejected" },
+      pending,
+      "first of two levels": { required_levels: 2 },
+      outlet: { outlet_id: s.world.outletB },
+      "tenant-wide": { outlet_id: null },
+      purpose: { object_type: "order" },
+    };
+    for (const [label, overrides] of Object.entries(bad))
+      await expect(
+        seedSettings(s.world, actors, {
+          approval_request_id: await seedApproval(s.world, actors, overrides),
+        }),
+        label,
+      ).rejects.toMatchObject(refused);
+    await expect(
+      seedSettings(s.world, actors, { approval_request_id: randomUUID() }),
+    ).rejects.toMatchObject({ code: expect.stringMatching(/^235(03|14)$/) });
+    // One person on both sides.
+    await expect(
+      seedSettings(
+        s.world,
+        { proposer: s.actor, approver: s.actor },
+        {
+          approval_request_id: await seedApproval(s.world, actors),
+        },
+      ),
+    ).rejects.toMatchObject(refused);
+    const approval = await seedApproval(s.world, actors);
+    await seedSettings(s.world, actors, { approval_request_id: approval });
+    // One approval, one version.
+    await expect(
+      seedSettings(s.world, actors, {
+        version: 2,
+        approval_request_id: approval,
+      }),
+    ).rejects.toMatchObject({ code: "23505" });
   });
 });
 
@@ -756,6 +1601,10 @@ describe("sales gate", () => {
 
   it("is off by default and stays off for anything but true", async () => {
     const s = await setup();
+    // The value the process started with, before this suite touched it.
+    expect(process.env.WFC_SALES_ENABLED).toBeUndefined();
+    expect(was).toBe(false);
+    flag.WFC_SALES_ENABLED = was;
     expect(wfcSalesEnabled()).toBe(false);
     for (const value of [undefined, "true", 1]) {
       flag.WFC_SALES_ENABLED = value as never;
@@ -792,6 +1641,17 @@ describe("sales gate", () => {
     expect((await gate(s)).id).toBe(first);
     const newer = await seedSettings(s.world, actors, { version: 3 });
     expect((await gate(s)).id).toBe(newer);
+    // 02:00 on the 9th is still the business day of the 8th (cutoff 04:00): the
+    // version of the 9th is not in force yet.
+    const night = await withTenant(db, s.world.context, (tx) =>
+      assertWfcSalesOpen(
+        tx,
+        s.world.context,
+        s.world.outletA,
+        new Date("2026-11-08T19:00:00Z"),
+      ),
+    );
+    expect(night.id).toBe(newer);
     // Another outlet of the same tenant is not opened by this one.
     expect(await failure(gate(s, s.world.outletB))).toMatchObject(incomplete);
     flag.WFC_SALES_ENABLED = false;

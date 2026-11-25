@@ -11,8 +11,11 @@
 //   `wfc_seat_reservations_no_overlap` makes a second active claim of one seat
 //   impossible even if a service forgot its check. Seat fee, credit, price,
 //   price floor and settings version are a snapshot of the sale. Money columns
-//   obey price = seat fee + credit, `paid <= price` and `refunded <= paid`, and
+//   obey price = seat fee + credit, `paid` is 0 or the price and `refunded <= paid`, and
 //   a claim past `pending_payment` is fully paid through its own payment link.
+//   The trigger `app.wfc_claim_guard` proves it against the link, copies the
+//   live product, freezes the snapshot and allows only legal status steps. It
+//   locks the link: lock a claim with `lockWfcClaim` (link first, then claim).
 import { sql } from "drizzle-orm";
 import {
   check,
@@ -126,6 +129,10 @@ export const wfcSeatReservations = pgTable(
     refundedIdr: idrColumn("refunded_idr").notNull().default(idr(0)),
     /** The payment link that funds this claim; one link, one claim. */
     paymentLinkId: uuid("payment_link_id"),
+    /** The link's expiry when attached, set by the trigger: a later value means cancelled. */
+    paymentLinkExpiresAt: timestamp("payment_link_expires_at", {
+      withTimezone: true,
+    }),
     /** Set while `pending_payment`: the sweep releases the seat after it. */
     holdExpiresAt: timestamp("hold_expires_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -174,8 +181,12 @@ export const wfcSeatReservations = pgTable(
     }),
     foreignKey({
       name: "wfc_seat_reservations_link_fk",
-      columns: [table.tenantId, table.paymentLinkId],
-      foreignColumns: [paymentLinks.tenantId, paymentLinks.id],
+      columns: [table.tenantId, table.outletId, table.paymentLinkId],
+      foreignColumns: [
+        paymentLinks.tenantId,
+        paymentLinks.outletId,
+        paymentLinks.id,
+      ],
     }),
     index("wfc_seat_reservations_customer_idx").on(
       table.tenantId,
@@ -204,7 +215,11 @@ export const wfcSeatReservations = pgTable(
     ),
     check(
       "wfc_seat_reservations_amount_check",
-      sql`${table.seatFeeIdr} > 0 AND ${table.creditIdr} > 0 AND ${table.priceIdr} = ${table.seatFeeIdr} + ${table.creditIdr} AND ${table.floorPerHourIdr} > 0 AND ${table.paidIdr} >= 0 AND ${table.paidIdr} <= ${table.priceIdr} AND ${table.refundedIdr} >= 0 AND ${table.refundedIdr} <= ${table.paidIdr}`,
+      sql`${table.seatFeeIdr} > 0 AND ${table.creditIdr} > 0 AND ${table.priceIdr} = ${table.seatFeeIdr} + ${table.creditIdr} AND ${table.floorPerHourIdr} > 0 AND ${table.paidIdr} IN (0, ${table.priceIdr}) AND ${table.refundedIdr} >= 0 AND ${table.refundedIdr} <= ${table.paidIdr}`,
+    ),
+    check(
+      "wfc_seat_reservations_link_check",
+      sql`(${table.paymentLinkId} IS NULL) = (${table.paymentLinkExpiresAt} IS NULL) AND (${table.paidIdr} = 0 OR ${table.paymentLinkId} IS NOT NULL)`,
     ),
     // The seat is issued only after full payment through a link.
     check(

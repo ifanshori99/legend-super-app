@@ -1,5 +1,5 @@
 {
-  "id": "38c3b4c0-fe98-4fdf-94bf-0fa120fe9b80",
+  "id": "2d5683be-3839-40a2-afd6-d9f868e21549",
   "prevId": "0073e6d7-0962-4db2-a220-29f8e49aa02c",
   "version": "7",
   "dialect": "postgresql",
@@ -12433,6 +12433,15 @@
           "nullsNotDistinct": false,
           "columns": [
             "tenant_id",
+            "id"
+          ]
+        },
+        "payment_links_tenant_outlet_id_key": {
+          "name": "payment_links_tenant_outlet_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "outlet_id",
             "id"
           ]
         }
@@ -100313,6 +100322,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "payment_link_expires_at": {
+          "name": "payment_link_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "hold_expires_at": {
           "name": "hold_expires_at",
           "type": "timestamp with time zone",
@@ -100533,10 +100548,12 @@
           "tableTo": "payment_links",
           "columnsFrom": [
             "tenant_id",
+            "outlet_id",
             "payment_link_id"
           ],
           "columnsTo": [
             "tenant_id",
+            "outlet_id",
             "id"
           ],
           "onDelete": "no action",
@@ -100571,7 +100588,11 @@
         },
         "wfc_seat_reservations_amount_check": {
           "name": "wfc_seat_reservations_amount_check",
-          "value": "\"wfc_seat_reservations\".\"seat_fee_idr\" > 0 AND \"wfc_seat_reservations\".\"credit_idr\" > 0 AND \"wfc_seat_reservations\".\"price_idr\" = \"wfc_seat_reservations\".\"seat_fee_idr\" + \"wfc_seat_reservations\".\"credit_idr\" AND \"wfc_seat_reservations\".\"floor_per_hour_idr\" > 0 AND \"wfc_seat_reservations\".\"paid_idr\" >= 0 AND \"wfc_seat_reservations\".\"paid_idr\" <= \"wfc_seat_reservations\".\"price_idr\" AND \"wfc_seat_reservations\".\"refunded_idr\" >= 0 AND \"wfc_seat_reservations\".\"refunded_idr\" <= \"wfc_seat_reservations\".\"paid_idr\""
+          "value": "\"wfc_seat_reservations\".\"seat_fee_idr\" > 0 AND \"wfc_seat_reservations\".\"credit_idr\" > 0 AND \"wfc_seat_reservations\".\"price_idr\" = \"wfc_seat_reservations\".\"seat_fee_idr\" + \"wfc_seat_reservations\".\"credit_idr\" AND \"wfc_seat_reservations\".\"floor_per_hour_idr\" > 0 AND \"wfc_seat_reservations\".\"paid_idr\" IN (0, \"wfc_seat_reservations\".\"price_idr\") AND \"wfc_seat_reservations\".\"refunded_idr\" >= 0 AND \"wfc_seat_reservations\".\"refunded_idr\" <= \"wfc_seat_reservations\".\"paid_idr\""
+        },
+        "wfc_seat_reservations_link_check": {
+          "name": "wfc_seat_reservations_link_check",
+          "value": "(\"wfc_seat_reservations\".\"payment_link_id\" IS NULL) = (\"wfc_seat_reservations\".\"payment_link_expires_at\" IS NULL) AND (\"wfc_seat_reservations\".\"paid_idr\" = 0 OR \"wfc_seat_reservations\".\"payment_link_id\" IS NOT NULL)"
         },
         "wfc_seat_reservations_paid_check": {
           "name": "wfc_seat_reservations_paid_check",
@@ -100850,6 +100871,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "approval_request_id": {
+          "name": "approval_request_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -100946,6 +100973,21 @@
           "onDelete": "no action",
           "onUpdate": "no action"
         },
+        "wfc_business_settings_approval_fk": {
+          "name": "wfc_business_settings_approval_fk",
+          "tableFrom": "wfc_business_settings",
+          "tableTo": "approval_requests",
+          "columnsFrom": [
+            "tenant_id",
+            "approval_request_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
         "wfc_business_settings_outlet_fk": {
           "name": "wfc_business_settings_outlet_fk",
           "tableFrom": "wfc_business_settings",
@@ -100980,6 +101022,14 @@
             "tenant_id",
             "outlet_id",
             "version"
+          ]
+        },
+        "wfc_business_settings_approval_key": {
+          "name": "wfc_business_settings_approval_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "approval_request_id"
           ]
         }
       },

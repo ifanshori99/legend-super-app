@@ -4,9 +4,10 @@
 //
 // - A seat sits in a floor zone marked `is_wfc`; till and reservation tables are
 //   never WFC seats.
-// - Quota: no cell may exceed the active WFC seats of the outlet. Quota writes
-//   and seat switches take one advisory lock per outlet, so neither can slip
-//   past the other.
+// - Quota: no cell may exceed the active WFC seats of the outlet, nor the
+//   approved `wfc_seats` of a settings version in force or still to come. Quota
+//   writes, seat switches and zone switches take one advisory lock per outlet,
+//   so none can slip past the other.
 // - Product: price = seat fee + credit, computed here, never sent by a client.
 //   Every change leaves the product switched off; switching it on belongs to the
 //   price floor (W1b).
@@ -14,7 +15,7 @@
 // Writes run inside `withTenant` (RLS scopes rows to the tenant and the
 // caller's outlets), re-check the permission on the row's outlet (TEN-03) and
 // land an audit entry.
-import { and, asc, count, eq, gt, inArray, max, sql } from "drizzle-orm";
+import { and, asc, count, eq, gt, inArray, max, min, sql } from "drizzle-orm";
 import {
   idr,
   userIdSchema,
@@ -46,7 +47,10 @@ import { db } from "../db/index.ts";
 import { facilityProducts } from "../db/schema/facility.ts";
 import { floorZones } from "../db/schema/floor.ts";
 import { wfcSeatReservations, wfcSeats } from "../db/schema/wfc-seat.ts";
-import { wfcHourlyQuotas } from "../db/schema/wfc-settings.ts";
+import {
+  wfcBusinessSettings,
+  wfcHourlyQuotas,
+} from "../db/schema/wfc-settings.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { assertConfigFresh, lockConfigRow } from "./facility-config-guard.ts";
@@ -61,6 +65,11 @@ import {
   pgErrorCode,
   type Tx,
 } from "./facility-shared.ts";
+import {
+  findWfcSettings,
+  wfcBusinessDate,
+  wfcConfigIncomplete,
+} from "./wfc-settings.ts";
 
 type SeatRow = typeof wfcSeats.$inferSelect;
 type ProductRow = typeof facilityProducts.$inferSelect;
@@ -128,8 +137,8 @@ async function loadProductRow(
   return row;
 }
 
-/** Serialises quota writes and seat switches of one outlet. */
-async function lockOutletSeats(
+/** Serialises quota writes, seat switches and zone switches of one outlet. */
+export async function lockOutletSeats(
   tx: Tx,
   context: ScopedTenantContext,
   outletId: string,
@@ -168,6 +177,122 @@ export async function countActiveWfcSeats(
   return row?.seats ?? 0;
 }
 
+/** The highest quota cell of the outlet (0 without one). */
+async function maxWfcQuota(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: string,
+): Promise<number> {
+  const [row] = await tx
+    .select({ seats: max(wfcHourlyQuotas.seats) })
+    .from(wfcHourlyQuotas)
+    .where(
+      and(
+        eq(wfcHourlyQuotas.tenantId, context.tenant.tenantId),
+        eqId(wfcHourlyQuotas.outletId, outletId),
+      ),
+    );
+  return row?.seats ?? 0;
+}
+
+/**
+ * The approved seats no quota may exceed: the smallest `wfc_seats` of the
+ * version in force and of every later one; null without any version.
+ */
+async function approvedWfcSeats(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: string,
+  now: Date,
+): Promise<number | null> {
+  const today = await wfcBusinessDate(tx, context, outletId, now);
+  const inForce = await findWfcSettings(tx, context, outletId, today);
+  const [coming] = await tx
+    .select({ seats: min(wfcBusinessSettings.wfcSeats) })
+    .from(wfcBusinessSettings)
+    .where(
+      and(
+        eq(wfcBusinessSettings.tenantId, context.tenant.tenantId),
+        eqId(wfcBusinessSettings.outletId, outletId),
+        gt(wfcBusinessSettings.effectiveFrom, today),
+      ),
+    );
+  if (!inForce) return coming?.seats ?? null;
+  return Math.min(inForce.wfcSeats, coming?.seats ?? inForce.wfcSeats);
+}
+
+/**
+ * Refuses (409 WFC_ZONE_IN_USE) to take a zone out of sale while a live claim
+ * needs one of its seats or a quota cell would exceed the seats left. The
+ * caller holds `lockOutletSeats` and the zone row, which waits for a claim
+ * being inserted (its trigger holds the zone).
+ */
+export async function assertWfcZoneReleasable(
+  tx: Tx,
+  context: ScopedTenantContext,
+  zone: { id: string; outletId: string },
+  now: Date,
+): Promise<void> {
+  const zoneSeats = await tx
+    .select({ id: wfcSeats.id, status: wfcSeats.status })
+    .from(wfcSeats)
+    .where(
+      and(
+        eq(wfcSeats.tenantId, context.tenant.tenantId),
+        eq(wfcSeats.zoneId, zone.id),
+      ),
+    );
+  if (zoneSeats.length === 0) return;
+  const [claim] = await tx
+    .select({ id: wfcSeatReservations.id })
+    .from(wfcSeatReservations)
+    .where(
+      and(
+        eq(wfcSeatReservations.tenantId, context.tenant.tenantId),
+        inArray(
+          wfcSeatReservations.seatId,
+          zoneSeats.map((seat) => seat.id),
+        ),
+        inArray(wfcSeatReservations.status, [
+          ...WFC_ACTIVE_RESERVATION_STATUSES,
+        ]),
+        gt(wfcSeatReservations.endsAt, now),
+      ),
+    )
+    .limit(1);
+  const left =
+    (await countActiveWfcSeats(tx, context, zone.outletId)) -
+    zoneSeats.filter((seat) => seat.status === "active").length;
+  if (claim || (await maxWfcQuota(tx, context, zone.outletId)) > left)
+    throw wfcZoneInUse();
+}
+
+/** A seat is never deleted, so a zone that ever had one stays. */
+export async function assertZoneWithoutWfcSeat(
+  tx: Tx,
+  context: ScopedTenantContext,
+  zoneId: string,
+): Promise<void> {
+  const [seat] = await tx
+    .select({ id: wfcSeats.id })
+    .from(wfcSeats)
+    .where(
+      and(
+        eq(wfcSeats.tenantId, context.tenant.tenantId),
+        eq(wfcSeats.zoneId, zoneId),
+      ),
+    )
+    .limit(1);
+  if (seat) throw wfcZoneInUse();
+}
+
+const wfcZoneInUse = () =>
+  new HttpError(
+    409,
+    "WFC_ZONE_IN_USE",
+    "Zona ini masih dipakai kursi, pesanan, atau kuota WFC.",
+  );
+
 const quotaExceedsSeats = () =>
   new HttpError(
     409,
@@ -193,11 +318,13 @@ export async function createWfcSeat(
       CONFIG_PERMISSION,
       parsed.outletId,
     );
+    await lockOutletSeats(tx, context, parsed.outletId);
     const [zone] = await tx
       .select({
         id: floorZones.id,
         outletId: floorZones.outletId,
         isWfc: floorZones.isWfc,
+        status: floorZones.status,
       })
       .from(floorZones)
       .where(
@@ -210,11 +337,11 @@ export async function createWfcSeat(
       .limit(1);
     // A zone of another outlet is as good as unknown to this outlet's admin.
     if (!zone) throw notFound("Zona");
-    if (!zone.isWfc)
+    if (!zone.isWfc || zone.status !== "active")
       throw new HttpError(
         409,
         "ZONE_NOT_WFC",
-        "Kursi WFC hanya bisa dibuat di zona WFC.",
+        "Kursi WFC hanya bisa dibuat di zona WFC yang aktif.",
       );
     let row: SeatRow;
     try {
@@ -254,7 +381,7 @@ export async function createWfcSeat(
 /**
  * Switches a seat on or off. Off is refused while a live claim still needs the
  * seat (409 SEAT_IN_USE) or a quota cell would exceed the seats left. The row
- * lock waits for a claim being inserted (its FK holds the seat row).
+ * lock waits for a claim being inserted (its trigger holds the seat row).
  */
 export async function setWfcSeatStatus(
   context: ScopedTenantContext,
@@ -318,17 +445,9 @@ export async function setWfcSeatStatus(
       .where(seatWhere)
       .returning();
     if (parsed.status === "inactive") {
-      const [quota] = await tx
-        .select({ seats: max(wfcHourlyQuotas.seats) })
-        .from(wfcHourlyQuotas)
-        .where(
-          and(
-            eq(wfcHourlyQuotas.tenantId, context.tenant.tenantId),
-            eq(wfcHourlyQuotas.outletId, existing.outletId),
-          ),
-        );
+      const quota = await maxWfcQuota(tx, context, existing.outletId);
       const seats = await countActiveWfcSeats(tx, context, existing.outletId);
-      if ((quota?.seats ?? 0) > seats) throw quotaExceedsSeats();
+      if (quota > seats) throw quotaExceedsSeats();
     }
     await auditFacility(tx, context, actor, now, {
       action: "wfc_seat.status_set",
@@ -450,8 +569,17 @@ export async function putWfcHourlyQuotas(
     );
     await lockOutletSeats(tx, context, parsed.outletId);
     const seats = await countActiveWfcSeats(tx, context, parsed.outletId);
-    if (parsed.quotas.some((cell) => cell.seats > seats))
-      throw quotaExceedsSeats();
+    const wanted = Math.max(0, ...parsed.quotas.map((cell) => cell.seats));
+    if (wanted > 0) {
+      const approved = await approvedWfcSeats(
+        tx,
+        context,
+        parsed.outletId,
+        now,
+      );
+      if (approved === null) throw wfcConfigIncomplete();
+      if (wanted > Math.min(seats, approved)) throw quotaExceedsSeats();
+    }
     const before = await readQuotas(tx, context, parsed.outletId);
     await tx
       .insert(wfcHourlyQuotas)
@@ -520,6 +648,9 @@ export async function setWfcProduct(
     assertConfigFresh(existing.updatedAt, parsed.expectedUpdatedAt);
     const facility = await loadFacility(tx, context, existing.facilityId);
     const { wfc } = parsed;
+    // Nothing to clear: an ordinary product is not this editor's to touch.
+    if (wfc === null && existing.wfcKind === null)
+      return toWfcProduct(existing);
     if (
       wfc !== null &&
       (facility.type !== "coworking" ||

@@ -2,8 +2,11 @@
 -- claims, product split). Nothing sells yet (WFC_SALES_ENABLED is off).
 -- FKs are defined while the new tables are empty: a later ADD CONSTRAINT would
 -- scan the FORCE-RLS parents as a plain owner without a tenant context (0519).
--- The composite floor_zones key comes first: wfc_seats references it.
+-- The composite floor_zones and payment_links keys come first: the new tables
+-- reference them.
 ALTER TABLE "floor_zones" ADD CONSTRAINT "floor_zones_tenant_outlet_id_key" UNIQUE("tenant_id","outlet_id","id");
+--> statement-breakpoint
+ALTER TABLE "payment_links" ADD CONSTRAINT "payment_links_tenant_outlet_id_key" UNIQUE("tenant_id","outlet_id","id");
 --> statement-breakpoint
 ALTER TABLE "facility_products" ADD COLUMN "wfc_kind" varchar(20);
 --> statement-breakpoint
@@ -54,9 +57,11 @@ CREATE TABLE "wfc_business_settings" (
 	"reason" varchar(500) NOT NULL,
 	"proposed_by" text NOT NULL,
 	"approved_by" text NOT NULL,
+	"approval_request_id" uuid NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "wfc_business_settings_tenant_outlet_id_key" UNIQUE("tenant_id","outlet_id","id"),
 	CONSTRAINT "wfc_business_settings_version_key" UNIQUE("tenant_id","outlet_id","version"),
+	CONSTRAINT "wfc_business_settings_approval_key" UNIQUE("tenant_id","approval_request_id"),
 	CONSTRAINT "wfc_business_settings_two_person_check" CHECK ("wfc_business_settings"."proposed_by" <> "wfc_business_settings"."approved_by"),
 	CONSTRAINT "wfc_business_settings_seats_check" CHECK ("wfc_business_settings"."wfc_seats" BETWEEN 1 AND "wfc_business_settings"."total_seats"),
 	CONSTRAINT "wfc_business_settings_amount_check" CHECK ("wfc_business_settings"."fixed_cost_idr" > 0 AND "wfc_business_settings"."target_revenue_idr" > 0 AND "wfc_business_settings"."target_profit_idr" >= 0 AND "wfc_business_settings"."spend_per_person_idr" > 0),
@@ -65,6 +70,7 @@ CREATE TABLE "wfc_business_settings" (
 	CONSTRAINT "wfc_business_settings_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action,
 	CONSTRAINT "wfc_business_settings_proposed_by_user_id_fk" FOREIGN KEY ("proposed_by") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action,
 	CONSTRAINT "wfc_business_settings_approved_by_user_id_fk" FOREIGN KEY ("approved_by") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "wfc_business_settings_approval_fk" FOREIGN KEY ("tenant_id","approval_request_id") REFERENCES "public"."approval_requests"("tenant_id","id") ON DELETE no action ON UPDATE no action,
 	CONSTRAINT "wfc_business_settings_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
@@ -108,6 +114,7 @@ CREATE TABLE "wfc_seat_reservations" (
 	"paid_idr" bigint DEFAULT 0 NOT NULL,
 	"refunded_idr" bigint DEFAULT 0 NOT NULL,
 	"payment_link_id" uuid,
+	"payment_link_expires_at" timestamp with time zone,
 	"hold_expires_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -115,7 +122,8 @@ CREATE TABLE "wfc_seat_reservations" (
 	CONSTRAINT "wfc_seat_reservations_kind_check" CHECK ("wfc_seat_reservations"."kind" IN ('day_pass', 'seat_reservation') AND "wfc_seat_reservations"."access" IN ('off_peak', 'all_day')),
 	CONSTRAINT "wfc_seat_reservations_status_check" CHECK ("wfc_seat_reservations"."status" IN ('pending_payment', 'confirmed', 'checked_in', 'completed', 'no_show', 'cancelled', 'refunded')),
 	CONSTRAINT "wfc_seat_reservations_slot_check" CHECK (NOT isempty("wfc_seat_reservations"."slot") AND NOT lower_inf("wfc_seat_reservations"."slot") AND NOT upper_inf("wfc_seat_reservations"."slot") AND lower_inc("wfc_seat_reservations"."slot") AND NOT upper_inc("wfc_seat_reservations"."slot")),
-	CONSTRAINT "wfc_seat_reservations_amount_check" CHECK ("wfc_seat_reservations"."seat_fee_idr" > 0 AND "wfc_seat_reservations"."credit_idr" > 0 AND "wfc_seat_reservations"."price_idr" = "wfc_seat_reservations"."seat_fee_idr" + "wfc_seat_reservations"."credit_idr" AND "wfc_seat_reservations"."floor_per_hour_idr" > 0 AND "wfc_seat_reservations"."paid_idr" >= 0 AND "wfc_seat_reservations"."paid_idr" <= "wfc_seat_reservations"."price_idr" AND "wfc_seat_reservations"."refunded_idr" >= 0 AND "wfc_seat_reservations"."refunded_idr" <= "wfc_seat_reservations"."paid_idr"),
+	CONSTRAINT "wfc_seat_reservations_amount_check" CHECK ("wfc_seat_reservations"."seat_fee_idr" > 0 AND "wfc_seat_reservations"."credit_idr" > 0 AND "wfc_seat_reservations"."price_idr" = "wfc_seat_reservations"."seat_fee_idr" + "wfc_seat_reservations"."credit_idr" AND "wfc_seat_reservations"."floor_per_hour_idr" > 0 AND "wfc_seat_reservations"."paid_idr" IN (0, "wfc_seat_reservations"."price_idr") AND "wfc_seat_reservations"."refunded_idr" >= 0 AND "wfc_seat_reservations"."refunded_idr" <= "wfc_seat_reservations"."paid_idr"),
+	CONSTRAINT "wfc_seat_reservations_link_check" CHECK (("wfc_seat_reservations"."payment_link_id" IS NULL) = ("wfc_seat_reservations"."payment_link_expires_at" IS NULL) AND ("wfc_seat_reservations"."paid_idr" = 0 OR "wfc_seat_reservations"."payment_link_id" IS NOT NULL)),
 	CONSTRAINT "wfc_seat_reservations_paid_check" CHECK ("wfc_seat_reservations"."status" NOT IN ('confirmed', 'checked_in', 'completed', 'no_show', 'refunded') OR ("wfc_seat_reservations"."paid_idr" = "wfc_seat_reservations"."price_idr" AND "wfc_seat_reservations"."payment_link_id" IS NOT NULL)),
 	CONSTRAINT "wfc_seat_reservations_refund_check" CHECK (("wfc_seat_reservations"."status" <> 'refunded' OR "wfc_seat_reservations"."refunded_idr" = "wfc_seat_reservations"."paid_idr") AND ("wfc_seat_reservations"."status" NOT IN ('pending_payment', 'confirmed', 'checked_in') OR "wfc_seat_reservations"."refunded_idr" = 0)),
 	CONSTRAINT "wfc_seat_reservations_hold_check" CHECK (("wfc_seat_reservations"."status" = 'pending_payment') = ("wfc_seat_reservations"."hold_expires_at" IS NOT NULL)),
@@ -125,7 +133,7 @@ CREATE TABLE "wfc_seat_reservations" (
 	CONSTRAINT "wfc_seat_reservations_product_fk" FOREIGN KEY ("tenant_id","outlet_id","product_id") REFERENCES "public"."facility_products"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action,
 	CONSTRAINT "wfc_seat_reservations_customer_fk" FOREIGN KEY ("tenant_id","customer_profile_id") REFERENCES "public"."customer_profiles"("tenant_id","id") ON DELETE no action ON UPDATE no action,
 	CONSTRAINT "wfc_seat_reservations_settings_fk" FOREIGN KEY ("tenant_id","outlet_id","settings_version_id") REFERENCES "public"."wfc_business_settings"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action,
-	CONSTRAINT "wfc_seat_reservations_link_fk" FOREIGN KEY ("tenant_id","payment_link_id") REFERENCES "public"."payment_links"("tenant_id","id") ON DELETE no action ON UPDATE no action
+	CONSTRAINT "wfc_seat_reservations_link_fk" FOREIGN KEY ("tenant_id","outlet_id","payment_link_id") REFERENCES "public"."payment_links"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 CREATE UNIQUE INDEX "wfc_seat_reservations_payment_link_key" ON "wfc_seat_reservations" USING btree ("tenant_id","payment_link_id") WHERE "wfc_seat_reservations"."payment_link_id" IS NOT NULL;
@@ -179,3 +187,175 @@ REVOKE DELETE, TRUNCATE ON TABLE public.wfc_seats FROM legend_app;
 CREATE TRIGGER "wfc_business_settings_append_only_trg"
   BEFORE UPDATE OR DELETE ON "wfc_business_settings"
   FOR EACH ROW EXECUTE FUNCTION app.pos_append_only();
+--> statement-breakpoint
+-- A settings version carries its own final approval: same outlet, same two
+-- people, decided as approved for this purpose. RLS applies (invoker rights):
+-- a request the caller cannot see is refused.
+CREATE FUNCTION app.wfc_settings_approval_guard() RETURNS trigger
+LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+DECLARE
+  request public.approval_requests%ROWTYPE;
+BEGIN
+  SELECT * INTO request FROM public.approval_requests
+    WHERE tenant_id = NEW.tenant_id AND id = NEW.approval_request_id
+    FOR SHARE;
+  IF NOT FOUND
+     OR request.status <> 'approved'
+     OR request.level <> request.required_levels
+     OR request.object_type <> 'wfc_business_settings'
+     OR request.outlet_id IS DISTINCT FROM NEW.outlet_id
+     OR request.requested_by IS DISTINCT FROM NEW.proposed_by
+     OR request.decided_by IS DISTINCT FROM NEW.approved_by THEN
+    RAISE EXCEPTION 'wfc settings % need a matching final approval', NEW.id
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END
+$$;
+--> statement-breakpoint
+CREATE TRIGGER "wfc_business_settings_approval_trg"
+  BEFORE INSERT ON "wfc_business_settings"
+  FOR EACH ROW EXECUTE FUNCTION app.wfc_settings_approval_guard();
+--> statement-breakpoint
+-- The life of a seat claim. A claim is born pending and unpaid as a copy of its
+-- live product on an open seat; the sale values never change; money never goes
+-- back; only legal status steps. Paid is proven by the payment link: same
+-- outlet, no discount, subtotal = price, paid = total (the total is read, tax is
+-- never computed here). A link is never cancelled by a status: cancelling moves
+-- `expires_at`, so a link whose expiry is not the one it was attached with
+-- cannot confirm the seat; its money may still be recorded, to be refunded.
+--
+-- Lock order: payment link first, then claim (settlement holds the link). An
+-- UPDATE already holds the claim, so the link is taken NOWAIT: a caller in the
+-- wrong order fails at once (55P03) instead of deadlocking with a settlement.
+CREATE FUNCTION app.wfc_claim_guard() RETURNS trigger
+LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+DECLARE
+  product public.facility_products%ROWTYPE;
+  link public.payment_links%ROWTYPE;
+  attached boolean;
+  paying boolean;
+  confirming boolean;
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.status <> 'pending_payment' OR NEW.paid_idr <> 0 OR NEW.refunded_idr <> 0 THEN
+      RAISE EXCEPTION 'wfc claim % must start pending and unpaid', NEW.id
+        USING ERRCODE = '23514';
+    END IF;
+    SELECT * INTO product FROM public.facility_products
+      WHERE tenant_id = NEW.tenant_id AND outlet_id = NEW.outlet_id
+        AND id = NEW.product_id
+      FOR SHARE;
+    IF NOT FOUND
+       OR NOT product.is_active
+       OR product.wfc_kind IS DISTINCT FROM NEW.kind
+       OR product.wfc_access IS DISTINCT FROM NEW.access
+       OR product.seat_fee_idr IS DISTINCT FROM NEW.seat_fee_idr
+       OR product.credit_idr IS DISTINCT FROM NEW.credit_idr
+       OR product.price_idr IS DISTINCT FROM NEW.price_idr
+       OR (product.duration_minutes IS NOT NULL
+           AND extract(epoch FROM upper(NEW.slot) - lower(NEW.slot))
+             IS DISTINCT FROM (product.duration_minutes * 60)::numeric) THEN
+      RAISE EXCEPTION 'wfc claim % does not match its product', NEW.id
+        USING ERRCODE = '23514';
+    END IF;
+    PERFORM 1 FROM public.wfc_seats
+      WHERE tenant_id = NEW.tenant_id AND outlet_id = NEW.outlet_id
+        AND id = NEW.seat_id AND status = 'active'
+      FOR SHARE;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'wfc claim % needs an active seat', NEW.id
+        USING ERRCODE = '23514';
+    END IF;
+    PERFORM 1 FROM public.floor_zones z
+      JOIN public.wfc_seats s
+        ON s.tenant_id = z.tenant_id AND s.outlet_id = z.outlet_id
+        AND s.zone_id = z.id
+      WHERE s.tenant_id = NEW.tenant_id AND s.id = NEW.seat_id
+        AND z.is_wfc AND z.status = 'active'
+      FOR SHARE OF z;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'wfc claim % needs an open WFC zone', NEW.id
+        USING ERRCODE = '23514';
+    END IF;
+    NEW.payment_link_expires_at := NULL;
+    attached := NEW.payment_link_id IS NOT NULL;
+    paying := false;
+    confirming := false;
+  ELSE
+    IF (NEW.id, NEW.tenant_id, NEW.outlet_id, NEW.seat_id, NEW.product_id,
+        NEW.customer_profile_id, NEW.kind, NEW.access, NEW.business_date,
+        NEW.slot, NEW.seat_fee_idr, NEW.credit_idr, NEW.price_idr,
+        NEW.settings_version_id, NEW.floor_per_hour_idr, NEW.created_at)
+       IS DISTINCT FROM
+       (OLD.id, OLD.tenant_id, OLD.outlet_id, OLD.seat_id, OLD.product_id,
+        OLD.customer_profile_id, OLD.kind, OLD.access, OLD.business_date,
+        OLD.slot, OLD.seat_fee_idr, OLD.credit_idr, OLD.price_idr,
+        OLD.settings_version_id, OLD.floor_per_hour_idr, OLD.created_at)
+       OR (OLD.payment_link_id IS NOT NULL
+           AND NEW.payment_link_id IS DISTINCT FROM OLD.payment_link_id) THEN
+      RAISE EXCEPTION 'wfc claim % is a frozen snapshot', OLD.id
+        USING ERRCODE = '23514';
+    END IF;
+    IF NEW.paid_idr < OLD.paid_idr OR NEW.refunded_idr < OLD.refunded_idr THEN
+      RAISE EXCEPTION 'wfc claim % money never goes back', OLD.id
+        USING ERRCODE = '23514';
+    END IF;
+    IF NEW.status <> OLD.status AND NOT (CASE OLD.status
+         WHEN 'pending_payment' THEN NEW.status IN ('confirmed', 'cancelled')
+         WHEN 'confirmed' THEN NEW.status IN ('checked_in', 'no_show', 'cancelled', 'refunded')
+         WHEN 'checked_in' THEN NEW.status IN ('completed', 'refunded')
+         WHEN 'completed' THEN NEW.status = 'refunded'
+         WHEN 'no_show' THEN NEW.status = 'refunded'
+         WHEN 'cancelled' THEN NEW.status = 'refunded'
+         ELSE false
+       END) THEN
+      RAISE EXCEPTION 'wfc claim % cannot go from % to %', OLD.id, OLD.status, NEW.status
+        USING ERRCODE = '23514';
+    END IF;
+    attached := OLD.payment_link_id IS NULL AND NEW.payment_link_id IS NOT NULL;
+    paying := NEW.paid_idr > OLD.paid_idr;
+    confirming := NEW.status = 'confirmed' AND OLD.status <> 'confirmed';
+    IF attached AND NEW.status <> 'pending_payment' THEN
+      RAISE EXCEPTION 'wfc claim % takes a link only while pending', OLD.id
+        USING ERRCODE = '23514';
+    END IF;
+    NEW.payment_link_expires_at := OLD.payment_link_expires_at;
+  END IF;
+
+  IF attached OR paying OR confirming THEN
+    SELECT * INTO link FROM public.payment_links
+      WHERE tenant_id = NEW.tenant_id AND outlet_id = NEW.outlet_id
+        AND id = NEW.payment_link_id
+      FOR UPDATE NOWAIT;
+    IF NOT FOUND
+       OR link.discount_idr <> 0
+       OR link.subtotal_idr <> NEW.price_idr
+       OR link.total_idr <= 0 THEN
+      RAISE EXCEPTION 'wfc claim % needs its own link at the full price', NEW.id
+        USING ERRCODE = '23514';
+    END IF;
+    IF attached THEN
+      IF link.expires_at IS NULL OR link.expires_at <= clock_timestamp() THEN
+        RAISE EXCEPTION 'wfc claim % needs an open link', NEW.id
+          USING ERRCODE = '23514';
+      END IF;
+      NEW.payment_link_expires_at := link.expires_at;
+    END IF;
+    IF (paying OR confirming) AND link.paid_idr <> link.total_idr THEN
+      RAISE EXCEPTION 'wfc claim % is not paid in full', NEW.id
+        USING ERRCODE = '23514';
+    END IF;
+    IF confirming
+       AND link.expires_at IS DISTINCT FROM NEW.payment_link_expires_at THEN
+      RAISE EXCEPTION 'wfc claim % link was cancelled', NEW.id
+        USING ERRCODE = '23514';
+    END IF;
+  END IF;
+  RETURN NEW;
+END
+$$;
+--> statement-breakpoint
+CREATE TRIGGER "wfc_seat_reservations_guard_trg"
+  BEFORE INSERT OR UPDATE ON "wfc_seat_reservations"
+  FOR EACH ROW EXECUTE FUNCTION app.wfc_claim_guard();

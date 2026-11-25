@@ -77,6 +77,7 @@ import {
 } from "./crm-promo-engine";
 import { promoIdempotentCommand } from "./crm-promo-idempotency";
 import { assertFacilityProductOpen } from "./facility-shower-gate";
+import { assertPromoBenefitNotWfc } from "./wfc-product-guard";
 import { promotionDisabledAtOutlet } from "./crm-promo-outlets";
 import {
   loadTenantAccessInTransaction,
@@ -371,6 +372,11 @@ async function insertPromotion(
       updatedAt: now.toISOString(),
     });
     await assertNoShowerPromoActive(tx, context, promotion);
+    await assertPromoBenefitNotWfc(
+      tx,
+      context.tenant.tenantId,
+      promotion.benefit,
+    );
     if (promotion.codeHash !== null)
       await assertCodeFree(tx, context, promotion.codeHash);
     let row: PromotionRow | undefined;
@@ -464,6 +470,7 @@ export async function updatePromotion(
     });
     assertStatusChange(current.status, next.status);
     await assertNoShowerPromoActive(tx, context, next);
+    await assertPromoBenefitNotWfc(tx, context.tenant.tenantId, next.benefit);
     if (next.quotaTotal !== null && next.quotaTotal < row.usesTotal)
       throw new HttpError(
         422,

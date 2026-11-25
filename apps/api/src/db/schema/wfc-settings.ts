@@ -4,7 +4,8 @@
 //
 // - `wfc_business_settings` (T, E): append-only, one row per approved version.
 //   A row is written only after a second person approved it, so `proposed_by`
-//   and `approved_by` are both required and differ. Every number is NOT NULL
+//   and `approved_by` are both required and differ, and the approved request
+//   itself is required, used once and checked by a trigger. Every number is NOT NULL
 //   without a default (except the no-show grace): an outlet with no version in
 //   force cannot sell (409 WFC_CONFIG_INCOMPLETE). The version of a business
 //   date is the one with the latest `effective_from` on or before it, then the
@@ -28,6 +29,7 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 import { idrColumn, outletIdColumn, tenantIdColumn } from "../columns.ts";
+import { approvalRequests } from "./platform-approval.ts";
 import { outlets, tenants } from "./platform-org.ts";
 import { user } from "./user.ts";
 
@@ -58,6 +60,8 @@ export const wfcBusinessSettings = pgTable(
     approvedBy: text("approved_by")
       .notNull()
       .references(() => user.id),
+    /** The approved request (object type `wfc_business_settings`); one version each. */
+    approvalRequestId: uuid("approval_request_id").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -73,6 +77,15 @@ export const wfcBusinessSettings = pgTable(
       table.outletId,
       table.version,
     ),
+    unique("wfc_business_settings_approval_key").on(
+      table.tenantId,
+      table.approvalRequestId,
+    ),
+    foreignKey({
+      name: "wfc_business_settings_approval_fk",
+      columns: [table.tenantId, table.approvalRequestId],
+      foreignColumns: [approvalRequests.tenantId, approvalRequests.id],
+    }),
     foreignKey({
       name: "wfc_business_settings_outlet_fk",
       columns: [table.tenantId, table.outletId],
