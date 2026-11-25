@@ -4,7 +4,6 @@
 import type { LucideIcon } from "lucide-react";
 import type { PermissionCode } from "@starter/shared/access";
 import { isSharedDeviceScreenAllowed } from "@starter/shared/access/shared-device-screens";
-import { SHOWER_FACILITIES_RELEASED } from "@starter/shared/facility";
 import type { MessageKey, Translate } from "@starter/shared/i18n";
 import type { AreaAccess } from "./access.ts";
 import { AREAS, type AreaKey } from "./definitions.ts";
@@ -29,8 +28,6 @@ export type AreaNavEntry = {
   readonly anyPermission?: readonly PermissionCode[];
   /** Sidebar group in the management shell; other shells ignore it. */
   readonly group?: NavGroup;
-  /** Shower-room screen: hidden while SHOWER_FACILITIES_RELEASED is false (1269 F0). */
-  readonly showerOnly?: boolean;
   /**
    * Kelola paths of this screen (the `to` itself or sub-screens) that read the
    * selected outlet from the tenant context. The management shell shows the
@@ -100,7 +97,6 @@ export function buildAreaNav(input: {
     ...entries.filter((entry) => entry.area === area),
   ];
   const visible = all
-    .filter((entry) => !entry.showerOnly || SHOWER_FACILITIES_RELEASED)
     .filter(
       (entry) => !entry.anyPermission || holdsAny(access, entry.anyPermission),
     )

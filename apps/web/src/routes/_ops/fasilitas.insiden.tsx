@@ -3,7 +3,6 @@ import { z } from "zod";
 import { createTranslator } from "@starter/shared/i18n";
 import { IncidentScreen } from "@/features/facility-staff/components/incident-screen";
 import { evaluateGuard } from "@/lib/areas/guard";
-import { showerGate } from "@/lib/areas/shower-gate";
 
 // /fasilitas/insiden — the incident log plus raise/respond (bead legend-1oi9;
 // PRD v1.7 §3 F25 "Keselamatan", FAC-08).
@@ -14,7 +13,6 @@ const searchSchema = z.object({
 export const Route = createFileRoute("/_ops/fasilitas/insiden")({
   validateSearch: searchSchema,
   beforeLoad: ({ context }) => {
-    showerGate();
     const gate = evaluateGuard(
       {
         kind: "permission",

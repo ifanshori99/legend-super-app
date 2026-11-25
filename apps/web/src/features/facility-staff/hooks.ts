@@ -11,27 +11,23 @@ import {
   staffKeys,
   unitBoardQuery,
 } from "./queries.ts";
+import { pickStaffFacility } from "./staff-facility.ts";
 
 export function useFacilities() {
   return useQuery(facilitiesQuery());
 }
 
 /**
- * Resolve the facility the staff screens work on. The contract has no
- * "current facility" read; the caller may name one with `?facilityId=`, else
- * the shower facility (the Legend booth board, PRD §3 F22) and then the first
- * configured facility. With no facility the screens show an honest empty state.
+ * Resolve the facility the staff screens work on (see `pickStaffFacility`).
+ * With no facility the screens show an honest empty state.
  */
-export function useStaffFacility(requestedFacilityId?: string) {
+export function useStaffFacility(
+  requestedFacilityId?: string,
+  options?: { releasedOnly?: boolean },
+) {
   const facilities = useFacilities();
   const list = facilities.data?.data ?? [];
-  const facility =
-    (requestedFacilityId
-      ? list.find((item) => item.id === requestedFacilityId)
-      : undefined) ??
-    list.find((item) => item.type === "shower") ??
-    list[0] ??
-    null;
+  const facility = pickStaffFacility(list, requestedFacilityId, options);
   const config = useQuery({
     ...facilityConfigQuery(facility?.id ?? ""),
     enabled: facility !== null,

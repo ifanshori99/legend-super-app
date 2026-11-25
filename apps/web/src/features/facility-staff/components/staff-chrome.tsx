@@ -61,9 +61,15 @@ const SUBNAV_TRIGGER = cn(
 export function StaffSubNav({
   current,
   facilityId,
+  boardFacilityId = facilityId,
+  boardsOpen = true,
 }: {
   current: StaffScreenKey;
   facilityId?: string;
+  /** The facility of the board, cleaning and incident tabs when it differs. */
+  boardFacilityId?: string;
+  /** False when the outlet has only deferred showers: those tabs are hidden. */
+  boardsOpen?: boolean;
 }) {
   const t = useT();
   const link = (key: StaffScreenKey) => (current === key ? "page" : undefined);
@@ -76,10 +82,12 @@ export function StaffSubNav({
           "grid w-full list-none grid-cols-2 sm:inline-flex sm:w-fit",
         )}
       >
+        {boardsOpen && (
+<>
         <li>
           <Link
             to="/fasilitas"
-            search={{ facilityId }}
+            search={{ facilityId: boardFacilityId }}
             aria-current={link("board")}
             className={SUBNAV_TRIGGER}
           >
@@ -89,7 +97,7 @@ export function StaffSubNav({
         <li>
           <Link
             to="/fasilitas/kebersihan"
-            search={{ facilityId }}
+            search={{ facilityId: boardFacilityId }}
             aria-current={link("cleaning")}
             className={SUBNAV_TRIGGER}
           >
@@ -99,13 +107,15 @@ export function StaffSubNav({
         <li>
           <Link
             to="/fasilitas/insiden"
-            search={{ facilityId }}
+            search={{ facilityId: boardFacilityId }}
             aria-current={link("incidents")}
             className={SUBNAV_TRIGGER}
           >
             {t("facilityStaff.subnav.incidents")}
           </Link>
         </li>
+</>
+)}
         <li>
           <Link
             to="/fasilitas/darurat"
