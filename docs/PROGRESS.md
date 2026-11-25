@@ -1,11 +1,13 @@
 # PROGRESS — Legend Super App
 
-## CTO 25 Nov (sesi lanjutan sesudah jeda kuota)
-- int/batch106 16572fb44 (pushed): 1260, 1256, 1255, 1261, 1259, 1263 sudah masuk, konflik nol. Lint, typecheck, build hijau. Full test run 1 merah 7 (teks owner dashboard di chunk salah dari 1249; harness media tanpa stub bonus dari 1242), dibetulkan di 16572fb44. Run 2 berjalan: root 3726 lulus, API belum selesai (+-97 menit).
-- 1263: architect xhigh LOLOS, reviewer delta LOLOS, payload dibekukan bbaf222e6.
-- Second opinion uang batch106: LAYAK. 1264 `ws/1264-second-opinion-batch106` 8f5727298 (worktree ../legend-1263): cek refund terparkir di refund per item dan voucher, runbook refund B1/B2/D, kredensial storage. Kode LOLOS architect. Belum digabung; tsc + e2e berjalan di worktree itu.
-- Langkah berikut: run 2 hijau -> merge 1264 + test terarah -> ff milestone/m1, push, docs/merge-queue.md -> tutup bead tomda xhl5j gdjpu j7018 905j 29vw ecr16 ff393 17az7 mtbq9 ait0n. Tetap buka: k0i8 (sync offline), x73li (tunggu qlirp/ay6e6/y3huu), 0orff (UI platform), 07eg (PDF slip).
-- Worktree 1242-1261 dihapus (16, +5 GB).
+## CTO 25 Nov (batch106 mendarat)
+- `milestone/m1` = int/batch106 = 9fcac9be1 (pushed, migrasi 0523). Rincian test: baris terakhir `docs/merge-queue.md`. Suite penuh TIDAK diulang di 9fcac9be1; delta sesudah 16572fb44 = 1264 (refund, runbook, fixture) yang diuji terarah.
+- Bead ditutup: tomda xhl5j gdjpu j7018 905j 29vw ecr16 ff393 17az7 mtbq9 ait0n. Tetap buka: k0i8, x73li, 0orff, 07eg/tkhkz. Cek go-live tomda di `docs/release/production-credentials-checklist.md` F.12.
+- Worktree legend-1263, int-batch105, int-batch106 dihapus. Basis kerja baru: milestone/m1.
+- CI GitHub tidak jalan sejak 17 Nov (tagihan GitHub Actions gagal); bukti test hanya lokal.
+- Menunggu founder: lihat screenshot refund manual (1259) dan tutup buku (1263) di `docs/review/img/` milestone/m1; bagian B `docs/founder/keputusan-2026-11-21.md`; VM, Cloudflare, kredensial, restore drill, review layar legend-5c0a.
+- Tim berikutnya: wxvt9 (dry-run PPh21 staging), `deploy.sh --dry-run`, review Caddyfile, bead P3 lanjutan 1263/1264. Pemblokir P1: 1nb85 (saklar refund DOIT tetap mati), 7tqe8 (cek sandbox Duitku).
+- Sesi cd45076f: 468 permintaan, compact 1x, 13 subagent, biaya* 9,7 jt token setara (Opus 65%).
 
 ## JEDA KUOTA 21 Nov (kuota Claude mingguan 2%, reset Selasa 24 Nov 18:00)
 Semua agent diminta commit + push lalu berhenti. Lanjut sesudah reset dari sini:
