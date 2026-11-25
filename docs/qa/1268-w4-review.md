@@ -23,3 +23,9 @@ Izin menjadi tingkat K: review architect sesudah perbaikan.
 
 1. **P2 dapur dobel** `ws04-pos-order/api.ts:675`, `captain-flow.ts` `continueDraft`: balasan create hilang -> "Lanjutkan" memakai kunci baru `draft:<id>` padahal intent create masih tersimpan dan keranjang tidak dihapus; "Kirim ulang" lalu mengulang create, submit 409 final, keranjang terbuka lagi, kirim berikutnya = pesanan kedua. Perbaikan: bila sesi masih punya intent create tertunda, "Lanjutkan" lewat `resendCaptainOrder` dengan kunci sama (atau tombol disembunyikan); di `placeOrder`, 409 transisi submit sesudah create diulang = terkirim, keranjang dihapus. Test web urutan ini.
 2. **P3** `pos-order.service.ts:254-263`: `captainSessionOf` pada fire mengunci sesi `for("share")` sesudah kunci pesanan (urutan terbalik, bisa deadlock -> 500). Baca tanpa kunci; paling buruk 409.
+
+## Re-review delta 26 Nov (8968ed722): LULUS
+1. Dapur dobel via Lanjutkan: beres; sesi yang masih punya kiriman belum jelas memakai kunci dan isi yang sama (captain-flow.ts continueDraft), test "create lost, then Continue, then Resend".
+2. captainSessionOf tanpa kunci (pos-order.service.ts:249-271): urutan kunci benar, submit tetap mengunci sesi lebih dulu.
+3. Merge rc2: hanya penguncian zona WFC di floor.service.ts, penanda hold dan akses captain tidak tersentuh.
+Catatan: Lanjutkan pada draft A bisa mengirim keranjang tertunda sesi itu, tidak dobel. Test dan typecheck dijalankan CTO saat gabung.
