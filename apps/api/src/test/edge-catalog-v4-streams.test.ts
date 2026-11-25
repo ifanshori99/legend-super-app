@@ -469,7 +469,8 @@ describe("tax: edge = cloud to the rupiah", () => {
           records: good.records.map((r) => ({ ...r, outletId: outletB })),
         }),
     });
-    expect(result.streams.tax_rules?.error).toBeDefined();
+    // By the outlet check itself, not by a foreign key.
+    expect(result.streams.tax_rules?.error?.code).toBe("VALIDATION_ERROR");
     expect(await edge.rows("SELECT id FROM tax_rules")).toEqual([]);
   });
 });
