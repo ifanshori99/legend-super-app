@@ -23,7 +23,6 @@ import {
   openStaffSession,
   resolveServiceRequest,
 } from "@starter/shared/qr-order";
-import { listReservations } from "@starter/shared/reservation";
 import { callEndpoint } from "@/lib/api/endpoint";
 import { ApiError } from "@/lib/api/errors";
 import { API_MOCK } from "@/lib/api/mock-flag";
@@ -44,8 +43,6 @@ import {
   captainMeta,
   mapServiceRequest,
   mapTableOrders,
-  type ReservationHold,
-  holdFor,
 } from "./captain-wire";
 import {
   closeOrderIntent,
@@ -488,23 +485,6 @@ export function closePendingOpen(
   tableId: string,
 ): void {
   closeOpenIntent(window.sessionStorage, { outletId, actorId }, tableId);
-}
-
-/**
- * A reservation that holds this table and has not seated yet (the hold does
- * not change the table status, so the captain is warned before seating).
- */
-export async function fetchReservationHold(
-  outletId: string,
-  tableId: string,
-  date: string,
-): Promise<ReservationHold | null> {
-  if (API_MOCK) return null;
-  const { data } = await callEndpoint(listReservations, {
-    params: { outletId },
-    query: { date, limit: 100 } as never,
-  });
-  return holdFor(data, tableId, Date.now());
 }
 
 /**

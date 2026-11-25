@@ -23,7 +23,6 @@ import {
   canResolveCall,
   captainDraftKey,
   captainInput,
-  holdFor,
   mapServiceRequest,
   mapTableOrders,
   NO_TABLE_SESSION,
@@ -34,7 +33,7 @@ import {
   ORDER_INTENT_PENDING,
   type FlowDeps,
 } from "@/features/ws04-pos-order/order-flow";
-import { createBodyOf } from "@/features/ws04-pos-order/order-wire";
+import { createBodyOf, mapFloor } from "@/features/ws04-pos-order/order-wire";
 import type {
   CaptainTable,
   CartLine,
@@ -546,27 +545,28 @@ test("a bill request needs acknowledgement before it can be resolved", () => {
 
 // ---- Reservation hold --------------------------------------------------------
 
-test("a reservation not yet seated that holds the table is a warning", () => {
-  const now = Date.parse("2026-11-26T05:00:00.000Z");
-  const hold = (over: Record<string, unknown> = {}) =>
+test("the floor board hold marker reaches the table, without a name", () => {
+  const row = (reservationHold?: unknown) => ({
+    table: { id: "t1", code: "A1", zoneId: "z1", capacity: 4 },
+    session: null,
+    openServiceRequestCount: 0,
+    outstandingIdr: 0,
+    ...(reservationHold === undefined ? {} : { reservationHold }),
+  });
+  const board = (...rows: unknown[]) =>
     ({
-      id: uuid(),
-      guestName: "Budi",
-      pax: 4,
-      reservedFor: "2026-11-26T06:00:00.000Z",
-      durationMinutes: 90,
-      tableIds: ["t1"],
-      status: "confirmed",
-      tableSessionId: null,
-      ...over,
+      outletId: "o1",
+      zones: [{ id: "z1", name: "Indoor" }],
+      tables: rows,
+      generatedAt: "2026-11-26T05:00:00.000Z",
     }) as never;
-  assert.equal(holdFor([hold()], "t1", now)?.guestName, "Budi");
-  assert.equal(holdFor([hold()], "t2", now), null);
-  assert.equal(holdFor([hold({ status: "seated" })], "t1", now), null);
-  assert.equal(holdFor([hold({ status: "cancelled" })], "t1", now), null);
-  assert.equal(holdFor([hold({ tableSessionId: uuid() })], "t1", now), null);
-  assert.equal(
-    holdFor([hold({ reservedFor: "2026-11-26T01:00:00.000Z" })], "t1", now),
-    null,
-  );
+  const marker = {
+    startsAt: "2026-11-26T06:00:00.000Z",
+    endsAt: "2026-11-26T07:30:00.000Z",
+    pax: 4,
+  };
+  assert.deepEqual(mapFloor(board(row(marker)))[0]!.hold, marker);
+  // None means none; a server that did not say stays unknown (soft warning).
+  assert.equal(mapFloor(board(row(null)))[0]!.hold, null);
+  assert.equal(mapFloor(board(row()))[0]!.hold, undefined);
 });

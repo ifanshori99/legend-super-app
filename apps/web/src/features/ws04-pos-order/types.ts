@@ -136,6 +136,17 @@ export interface CaptainTable {
   qrSessionActive: boolean;
   sessionId: string | null;
   hasOpenCall: boolean;
+  /**
+   * A reservation still holds this unseated table (time and party size only).
+   * `null` = none; undefined = the server did not say (soft warning).
+   */
+  hold?: TableHold | null;
+}
+
+export interface TableHold {
+  startsAt: string;
+  endsAt: string;
+  pax: number;
 }
 
 export interface TableOrderView {

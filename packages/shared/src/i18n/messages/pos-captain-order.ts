@@ -75,7 +75,7 @@ export const posCaptainOrderMessages = {
     failed: "Tamu belum bisa didudukkan.",
     holdTitle: "Meja ini ditahan reservasi",
     holdBody:
-      "{name} ({pax} tamu) dijadwalkan pukul {time}. Bila walk-in didudukkan, reservasi itu bisa ditolak saat tamunya datang.",
+      "Reservasi {pax} tamu dijadwalkan pukul {time}. Bila walk-in didudukkan, reservasi itu bisa ditolak saat tamunya datang.",
     holdUnknown:
       "Reservasi meja ini tidak bisa diperiksa. Tanyakan ke host sebelum mendudukkan.",
     pendingTitle: "Dudukkan sebelumnya belum jelas",

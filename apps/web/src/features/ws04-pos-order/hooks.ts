@@ -22,8 +22,7 @@ import { readActingStaffUserId } from "@/lib/api/acting-staff";
 import { ApiError } from "@/lib/api/errors";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { useRouteContext } from "@tanstack/react-router";
-import { useOutletClock, useTenantContext } from "@/lib/tenant-context";
-import { businessDateOf } from "@starter/shared/core";
+import { useTenantContext } from "@/lib/tenant-context";
 import { useCloudConnection } from "@/features/ws02-edge/hooks";
 import { useActiveStaff } from "@/features/ws01-device-pin/storage";
 import {
@@ -48,11 +47,7 @@ import {
   resumeDraft,
   submitOrder,
 } from "./api";
-import {
-  captainDraftKey,
-  removeSentLines,
-  type ReservationHold,
-} from "./captain-wire";
+import { captainDraftKey, removeSentLines } from "./captain-wire";
 import { cashierDraftKey, readDraft, writeDraft } from "./draft-store";
 import { parseOrderSnapshot, replayAll } from "./order-flow";
 import {
@@ -61,7 +56,6 @@ import {
   catalogQuery,
   parkedDraftsQuery,
   posOrderKeys,
-  reservationHoldQuery,
   serviceCallsQuery,
   tableOrderQuery,
 } from "./queries";
@@ -510,21 +504,6 @@ export function usePendingOpen(tableId: string): {
     notifyPending();
   }, [outletId, actorId, tableId]);
   return { pax, close };
-}
-
-/** A reservation holding this table that has not seated yet (to warn first). */
-export function useReservationHold(
-  tableId: string,
-  enabled: boolean,
-): UseQueryResult<ReservationHold | null> {
-  const outletId = useOutletId();
-  const ready = useReady();
-  const { clock } = useOutletClock();
-  const date = businessDateOf(new Date(), clock);
-  return useQuery({
-    ...reservationHoldQuery(outletId, tableId, date),
-    enabled: enabled && ready && tableId !== "",
-  });
 }
 
 export function useFireTableLines(): UseMutationResult<

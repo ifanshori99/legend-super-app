@@ -6,7 +6,6 @@
 // Plain TypeScript with relative `.ts` imports: Node tests load it directly.
 import type { PosOrderDetail } from "@starter/shared/pos";
 import type { ServiceRequest } from "@starter/shared/qr-order";
-import type { Reservation } from "@starter/shared/reservation";
 import { ApiError } from "@/lib/api/errors";
 import { mapOrder } from "./order-wire.ts";
 import {
@@ -122,44 +121,4 @@ export function mapServiceRequest(request: ServiceRequest): ServiceCall | null {
 export function canResolveCall(call: Pick<ServiceCall, "type" | "status">) {
   if (call.status === "resolved") return false;
   return call.type !== "request_bill" || call.status === "acknowledged";
-}
-
-export type ReservationHold = {
-  id: string;
-  guestName: string;
-  pax: number;
-  reservedFor: string;
-};
-
-/**
- * A reservation that holds the table and has not seated yet. The hold does not
- * change the table's status, so a walk-in could take the seat: the captain is
- * told first. Earliest one wins; one that ended already does not count.
- */
-export function holdFor(
-  reservations: readonly Reservation[],
-  tableId: string,
-  nowMs: number,
-): ReservationHold | null {
-  const holds = reservations
-    .filter(
-      (reservation) =>
-        (reservation.status === "confirmed" ||
-          reservation.status === "pending_deposit") &&
-        reservation.tableSessionId === null &&
-        reservation.tableIds.includes(tableId as never) &&
-        Date.parse(reservation.reservedFor) +
-          reservation.durationMinutes * 60_000 >
-          nowMs,
-    )
-    .sort((a, b) => a.reservedFor.localeCompare(b.reservedFor));
-  const first = holds[0];
-  return first
-    ? {
-        id: first.id,
-        guestName: first.guestName,
-        pax: first.pax,
-        reservedFor: first.reservedFor,
-      }
-    : null;
 }

@@ -298,6 +298,7 @@ export function mapFloor(board: FloorBoard): CaptainTable[] {
     qrSessionActive: row.session !== null,
     sessionId: row.session?.id ?? null,
     hasOpenCall: row.openServiceRequestCount > 0,
+    hold: row.reservationHold,
   }));
 }
 

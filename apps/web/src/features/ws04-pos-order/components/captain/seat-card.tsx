@@ -10,11 +10,7 @@ import {
   OPEN_INTENT_PENDING,
   SESSION_CLOSED,
 } from "@/features/ws04-pos-order/captain-flow";
-import {
-  useOpenTable,
-  usePendingOpen,
-  useReservationHold,
-} from "@/features/ws04-pos-order/hooks";
+import { useOpenTable, usePendingOpen } from "@/features/ws04-pos-order/hooks";
 import { needsCashierClose } from "@/features/ws04-pos-order/order-flow";
 import type { CaptainTable } from "@/features/ws04-pos-order/types";
 
@@ -46,7 +42,7 @@ export function SeatCard({
   const paxId = useId();
   const open = useOpenTable(tableId);
   const unclear = usePendingOpen(tableId);
-  const hold = useReservationHold(tableId, true);
+  const hold = table.hold;
   const [paxText, setPaxText] = useState("");
   const typed = Number.parseInt(paxText, 10);
   // An unclear seat is repeated with the same guest count (same bytes).
@@ -72,16 +68,15 @@ export function SeatCard({
         {t("posCaptainOrder.seat.hint")}
       </p>
 
-      {hold.data && (
+      {hold && (
         <Notice tone="warning" title={t("posCaptainOrder.seat.holdTitle")}>
           {t("posCaptainOrder.seat.holdBody", {
-            name: hold.data.guestName,
-            pax: hold.data.pax,
-            time: clock(hold.data.reservedFor),
+            pax: hold.pax,
+            time: clock(hold.startsAt),
           })}
         </Notice>
       )}
-      {hold.isError && (
+      {hold === undefined && (
         <Notice tone="info" title={t("posCaptainOrder.seat.holdUnknown")} />
       )}
 
@@ -118,13 +113,13 @@ export function SeatCard({
         <Button
           className="flex-1"
           loading={open.isPending}
-          disabled={!valid || hold.isPending}
+          disabled={!valid}
           onClick={() => open.mutate({ pax })}
         >
           <Armchair aria-hidden="true" />
           {unclear.pax !== null
             ? t("posCaptainOrder.seat.resend")
-            : hold.data
+            : hold
               ? t("posCaptainOrder.seat.confirmHold")
               : t("posCaptainOrder.seat.submit")}
         </Button>
