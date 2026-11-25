@@ -139,6 +139,12 @@ export type LoadAccessOptions = {
    * passes that instant as `now`. Never for a current permission check.
    */
   readonly includeInactive?: boolean;
+  /**
+   * E2 (brief 1269): `userId` is judged as the approver of somebody else's
+   * request, not as the caller, so their edge PIN session does not cut the
+   * role. Only `holdsOverridePermission` (staff-override.service.ts) sets it.
+   */
+  readonly approver?: boolean;
 };
 
 /**
@@ -231,7 +237,8 @@ export async function loadTenantAccessInTransaction(
                   ),
             ),
           );
-  const edgePinOnly = requestIsEdgeStaffPin(userId);
+  const edgePinOnly =
+    options.approver !== true && requestIsEdgeStaffPin(userId);
   const rawClock = assignmentRows[0]?.dbClock;
   return {
     assignments: assignmentRows.map(toAssignment),

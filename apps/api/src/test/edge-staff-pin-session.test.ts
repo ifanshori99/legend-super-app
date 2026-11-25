@@ -36,6 +36,7 @@ import {
   EDGE_STAFF_SESSION_PERMISSIONS,
 } from "@starter/shared/edge";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
+import { ACTING_STAFF_HEADER } from "@starter/shared/pos/acting-staff";
 import { createApp } from "../app.ts";
 import { setCatalogOverrideClock } from "../edge/catalog-override.ts";
 import {
@@ -107,6 +108,7 @@ let node: { id: string; credential: string };
 let outletPepper: { version: number; pepper: Buffer };
 const actor = randomUUID();
 const roleId = randomUUID();
+const approverRoleId = randomUUID();
 const cloudState = getEdgeRuntimeState();
 const edgeApp = createApp({ edgeMode: true });
 const cloudApp = createApp();
@@ -114,6 +116,8 @@ const cloudApp = createApp();
 type Member = { userId: string; cookie: string };
 let cashier: Member;
 let supervisor: Member;
+/** Holds `pos.void.approve`; `supervisor` does not. */
+let approver: Member;
 
 const tenantOf = (source: "session" | "device") =>
   establishTenantContext({
@@ -149,7 +153,7 @@ async function asOwner(text: string, params: unknown[] = []) {
 }
 
 /** A real account with the test role, its PIN at the outlet and a password cookie. */
-async function member(label: string): Promise<Member> {
+async function member(label: string, role = roleId): Promise<Member> {
   const response = await request(cloudApp)
     .post("/api/auth/sign-up/email")
     .set(originHeader)
@@ -165,7 +169,7 @@ async function member(label: string): Promise<Member> {
     `INSERT INTO role_assignments
        (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
      VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 minute', $2)`,
-    [tenant.tenantId, userId, roleId],
+    [tenant.tenantId, userId, role],
   );
   await resetPin(userId, PIN);
   return { userId, cookie: cookieOf(response) };
@@ -348,12 +352,27 @@ beforeAll(async () => {
       ]),
     ],
   );
+  await owner.query(
+    `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
+     VALUES ($1, $2, 'E2 Penyetuju', false, NULL, $3, false, '["tenant"]')`,
+    [
+      approverRoleId,
+      tenant.tenantId,
+      JSON.stringify([
+        "order.view",
+        "pos.sale.create",
+        "floor.table.view",
+        "pos.void.approve",
+      ]),
+    ],
+  );
   outletPepper = {
     version: currentStaffPinPepperVersion(),
     pepper: staffPinPepper(tenant.tenantId, tenant.outletId),
   };
   cashier = await member("E2 Kasir");
   supervisor = await member("E2 Supervisor");
+  approver = await member("E2 Penyetuju", approverRoleId);
   const registered = await registerEdgeNode(scoped("session"), actor, {
     outletId: tenant.outletId,
     role: "primary",
@@ -365,6 +384,7 @@ beforeAll(async () => {
 beforeEach(async () => {
   asCloud();
   await resetPin(cashier.userId, PIN);
+  await resetPin(approver.userId, PIN);
   await syncedNow();
 });
 
@@ -922,7 +942,7 @@ describe("sessions do not cross between edge and cloud (decision 3)", () => {
       .set({ Host: tenant.hostname })
       .set(originHeader)
       .send({ email: rows[0]!.email, password: PASSWORD });
-    expect(response.status).toBeGreaterThanOrEqual(400);
+    expectRefused(response, 404, "CLOUD_ONLY_ROUTE");
     expect(response.headers["set-cookie"] ?? []).toEqual([]);
     expect(await count()).toBe(before);
   });
@@ -1024,6 +1044,95 @@ describe("operational permissions only (decision 4)", () => {
       .set(DEVICE_TOKEN_HEADER, device.token)
       .send({ minutes: 30, reason: "uji tanpa faktor kedua" });
     expect(response.status).toBe(403);
+  });
+});
+
+describe("override approved with the PIN of the session's own user", () => {
+  async function actingCashier(session: Member) {
+    const device = await newDevice();
+    const cookie = await loggedIn(device, session);
+    const issued = await request(edgeApp)
+      .post("/api/staff-pins/pos-session")
+      .set({ Host: tenant.hostname, Cookie: cookie })
+      .set(originHeader)
+      .set(DEVICE_TOKEN_HEADER, device.token)
+      .send({ userId: cashier.userId, pin: PIN });
+    expect(issued.status, JSON.stringify(issued.body)).toBe(201);
+    return { device, cookie, acting: issued.body.data.token as string };
+  }
+
+  function override(
+    on: { device: TestDevice; cookie: string; acting: string | null },
+    approverUserId: string,
+    pin: string,
+    objectId: string = randomUUID(),
+  ) {
+    const call = request(edgeApp)
+      .post("/api/pos-overrides")
+      .set({ Host: tenant.hostname, Cookie: on.cookie })
+      .set(originHeader)
+      .set(DEVICE_TOKEN_HEADER, on.device.token)
+      .set("Idempotency-Key", randomUUID());
+    if (on.acting) call.set(ACTING_STAFF_HEADER, on.acting);
+    return call.send({
+      outletId: tenant.outletId,
+      action: "void",
+      valueIdr: 10_000,
+      reason: "salah pesan",
+      objectType: "pos_order",
+      objectId,
+      approval: { method: "supervisor_pin", approverUserId, pin },
+    });
+  }
+
+  const recorded = async (objectId: string) =>
+    (
+      await asOwner("SELECT 1 FROM pos_overrides WHERE object_id = $1", [
+        objectId,
+      ])
+    ).rowCount;
+
+  it("the supervisor who opened the session approves the acting cashier", async () => {
+    const on = await actingCashier(approver);
+    const response = await override(on, approver.userId, PIN);
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    expect(response.body.data).toMatchObject({
+      status: "approved",
+      requestedBy: cashier.userId,
+      approvedBy: approver.userId,
+    });
+  });
+
+  it("a wrong PIN is refused", async () => {
+    const on = await actingCashier(approver);
+    const objectId = randomUUID();
+    const response = await override(on, approver.userId, "000001", objectId);
+    expectRefused(response, 401, "PIN_INVALID");
+    expect(await recorded(objectId)).toBe(0);
+  });
+
+  it("a session user whose role does not hold the approval is refused", async () => {
+    const on = await actingCashier(supervisor);
+    const objectId = randomUUID();
+    const response = await override(on, supervisor.userId, PIN, objectId);
+    expectRefused(response, 403, "PERMISSION_DENIED");
+    expect(await recorded(objectId)).toBe(0);
+  });
+
+  it("the approver is never the requester, acting or not", async () => {
+    const on = await actingCashier(approver);
+    const objectId = randomUUID();
+    expectRefused(
+      await override(on, cashier.userId, PIN, objectId),
+      403,
+      "APPROVER_IS_REQUESTER",
+    );
+    expectRefused(
+      await override({ ...on, acting: null }, approver.userId, PIN, objectId),
+      403,
+      "APPROVER_IS_REQUESTER",
+    );
+    expect(await recorded(objectId)).toBe(0);
   });
 });
 

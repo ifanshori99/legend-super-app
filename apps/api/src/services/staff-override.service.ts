@@ -137,7 +137,9 @@ async function holdsOverridePermission(
 ): Promise<boolean> {
   const permission = POS_OVERRIDE_APPROVE_PERMISSION[action];
   if (permission === undefined) return false;
-  const data = await loadTenantAccessInTransaction(tx, context, userId);
+  const data = await loadTenantAccessInTransaction(tx, context, userId, {
+    approver: true,
+  });
   return resolveAccessSnapshot({
     tenant,
     userId,
