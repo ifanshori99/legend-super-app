@@ -70,3 +70,8 @@ Urutan: F6a -> (F1, F7, F11a, F11c) -> F2 + F11b -> E9 -> F3 -> F8 -> F9 -> E6; 
 - Nomor migrasi dibagi CTO saat kartu mulai. `edge/mode.ts` dan `pos-order-payment.ts`: satu agent pada satu waktu.
 - Tiap kartu Opus xhigh direview satu architect. F6a boleh mulai sekarang, tidak bergantung kartu lain.
 - Bead: lihat anak legend-osqou.33.
+
+## Perubahan 25 Nov malam (keputusan founder 26)
+
+- Kamar mandi berbayar ditunda sesudah rilis 1: F6a (WIP diparkir di `ws/1269-f6a`), F6b, F7, F8, F9 deferred; bagian tiket di F2, F10, F12 dan penolakan tiket di E6 gugur (cukup: edge dan cloud menolak tiket).
+- Kartu baru **F0** (legend-osqou.33.18, Sonnet, 4 jam, mulai sekarang dari int/rc1 b61b245db): `FACILITY_TICKETS_ENABLED` default false di `config/env.ts` + `.env.example` + `deploy/single-vm/runtime.env.example`; server menolak (gagal tertutup, kode error jelas) jual tiket POS, hold slot, langganan, klaim/penukaran hak dan penerbitan hak dari paket/minimum belanja/tier/promo, sarapan tiket, antrean bilik; perangkat edge juga. Promo berhadiah shower tidak boleh aktif. Refund/pembatalan transaksi lama dan tombol darurat staf tetap jalan. Test lama mengaktifkan flag; test baru membuktikan mati = tak ada baris tertulis dan tak ada uang diterima. Web: satu konstanta bersama menyembunyikan menu dan menjadikan rute shower notFound (POS tiket, member fasilitas, /f, website fasilitas, papan bilik, kebersihan, insiden, laporan dan pengaturan fasilitas shower). Wi-Fi tamu dan kebijakan WFC jangan tersentuh.

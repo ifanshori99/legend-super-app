@@ -71,3 +71,5 @@ Cara menjawab: cukup tulis nomor dan "setuju usulan" atau pilihan lain.
 24. **Sandbox Duitku.** **Jawaban founder (25 Nov malam):** akun sandbox baru bisa dipakai sesudah ada domain dan deploy; kode dibangun dulu sesuai dokumentasi. Metode tetap terkunci sampai bukti sandbox (C1) di staging lulus.
 
 25. **Tiket, poin, voucher, dan DP di kasir.** **Jawaban founder (25 Nov malam): "Wajib rilis 1".** Tiket juga saat offline (PRD FAC-03).
+
+26. **Kamar mandi berbayar (shower room) ditunda.** **Jawaban founder (25 Nov malam):** "tidak dibuka pada saat awal rilis". Membatalkan bagian tiket di keputusan 25 untuk rilis 1; poin, voucher, dan DP di kasir tetap wajib. Pertanyaan tiket offline tanpa member, paket/langganan shower, dan smart lock ikut ditunda. Server wajib menolak penjualannya (kartu F0), bukan hanya menu disembunyikan. Wi-Fi tamu dan kebijakan WFC tetap.
