@@ -31,8 +31,8 @@ export function QueueDecisionForm({
     mode === "reject"
       ? {
           title: t("hrisRequestsQueue.rejectForm.title"),
-          label: "Alasan penolakan",
-          hint: "Jelaskan alasan penolakan (minimal 3 karakter).",
+          label: t("hrisRequestsQueue.rejectForm.reasonLabel"),
+          hint: t("hrisRequestsQueue.rejectForm.reasonHint"),
           cancel: t("hrisRequestsQueue.rejectForm.cancel"),
           submit: t("hrisRequestsQueue.rejectForm.submit"),
           submitting: t("hrisRequestsQueue.rejectForm.submitting"),

@@ -15,6 +15,7 @@ export const supportAccessOwnerMessages = {
     cardTitle: "Permintaan akses dukungan",
     received: "Diterima {time}",
     requestedBy: "Diminta oleh",
+    requesterFallback: "Tim dukungan",
     requester: "Tim dukungan · {id}",
     reason: "Alasan",
     scope: "Cakupan akses",
@@ -34,6 +35,10 @@ export const supportAccessOwnerMessages = {
     confirmAction: "Ya, setujui akses",
     cancel: "Batal",
     reject: "Tolak",
+    rejectConfirmTitle: "Tolak akses?",
+    rejectConfirmBody:
+      "Tim dukungan tidak akan memperoleh akses dari permintaan ini. Keputusan tercatat di log audit dan tidak dapat dibatalkan.",
+    rejectConfirmAction: "Ya, tolak akses",
     rejecting: "Menolak...",
     ownerOnly:
       "Hanya owner yang dapat memutuskan, setelah verifikasi dua langkah dan tanpa sesi penyamaran.",

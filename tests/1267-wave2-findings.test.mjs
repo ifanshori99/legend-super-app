@@ -19,3 +19,18 @@ test("F3 the PTKP dialog shows the day the server saves (today), not 1 January",
   // The server accepts only the anchor day or today; keep both choices sending those.
   assert.match(source, /effectiveFrom: day === "anchor" \? anchor : today/);
 });
+
+test("F9 queue decision form and owner card take their text from the catalog", () => {
+  const form = read(web + "hris-requests/components/queue-decision-form.tsx");
+  assert.doesNotMatch(form, /Alasan penolakan|Jelaskan alasan/);
+  const card = read(web + "hris-owner-support/owner-request-card.tsx");
+  assert.doesNotMatch(card, /"Tim dukungan"/);
+});
+
+test("F10 rejecting a support access request asks for a confirmation first", () => {
+  const card = read(web + "hris-owner-support/owner-request-card.tsx");
+  // The reject button only opens the confirmation; onReject runs from its action.
+  assert.doesNotMatch(card, /onClick=\{\(\) => onReject\(request\.id\)\}/);
+  assert.match(card, /setConfirmingReject\(true\)/);
+  assert.match(card, /rejectConfirmAction/);
+});

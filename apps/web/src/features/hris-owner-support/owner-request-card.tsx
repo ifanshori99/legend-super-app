@@ -56,6 +56,7 @@ export function OwnerPendingCard({
   const t = useT();
   const disabled = blockedText !== null || busy !== null;
   const [confirming, setConfirming] = React.useState(false);
+  const [confirmingReject, setConfirmingReject] = React.useState(false);
   const noteId = `owner-request-note-${request.id}`;
   return (
     <Card aria-busy={busy !== null || undefined}>
@@ -78,7 +79,8 @@ export function OwnerPendingCard({
 
       <dl className="grid">
         <OwnerDetail label={t("supportAccessOwner.pending.requestedBy")}>
-          {request.requesterName?.trim() || "Tim dukungan"}
+          {request.requesterName?.trim() ||
+            t("supportAccessOwner.pending.requesterFallback")}
         </OwnerDetail>
         <OwnerDetail label={t("supportAccessOwner.pending.reason")}>
           {request.reason}
@@ -113,7 +115,7 @@ export function OwnerPendingCard({
           className="flex-1 text-danger sm:flex-none"
           disabled={disabled}
           aria-describedby={blockedText ? noteId : undefined}
-          onClick={() => onReject(request.id)}
+          onClick={() => setConfirmingReject(true)}
         >
           {busy === "reject"
             ? t("supportAccessOwner.pending.rejecting")
@@ -164,6 +166,38 @@ export function OwnerPendingCard({
               }}
             >
               {t("supportAccessOwner.pending.confirmAction")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={confirmingReject} onOpenChange={setConfirmingReject}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {t("supportAccessOwner.pending.rejectConfirmTitle")}
+            </DialogTitle>
+            <DialogDescription>
+              {t("supportAccessOwner.pending.rejectConfirmBody")}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setConfirmingReject(false)}
+            >
+              {t("supportAccessOwner.pending.cancel")}
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={disabled}
+              onClick={() => {
+                setConfirmingReject(false);
+                onReject(request.id);
+              }}
+            >
+              {t("supportAccessOwner.pending.rejectConfirmAction")}
             </Button>
           </DialogFooter>
         </DialogContent>

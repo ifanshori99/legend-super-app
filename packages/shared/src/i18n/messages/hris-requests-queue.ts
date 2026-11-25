@@ -84,6 +84,8 @@ export const hrisRequestsQueueMessages = {
   },
   rejectForm: {
     title: "Tolak pengajuan",
+    reasonLabel: "Alasan penolakan",
+    reasonHint: "Jelaskan alasan penolakan (minimal 3 karakter).",
     note: "Alasan penolakan belum disimpan. Karyawan hanya melihat status Ditolak.",
     cancel: "Batal",
     submit: "Kirim penolakan",
