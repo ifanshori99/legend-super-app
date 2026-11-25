@@ -125,7 +125,8 @@ export const employeeMasterMessages = {
         "Pilih awal tahun pajak untuk membetulkan salah input tahun ini, atau tahun pajak berikutnya untuk perubahan biasa. Dicatat di jejak audit.",
       effectiveAnchor: "Awal tahun pajak ({date})",
       effectiveAnchorJoin: "Tanggal masuk ({date})",
-      effectiveNextYear: "Mulai tahun pajak berikutnya ({date})",
+      effectiveNextYear:
+        "Dicatat hari ini ({date}), dipakai mulai tahun pajak berikutnya",
       reasonLabel: "Alasan",
       reasonHint: "Wajib, 5 sampai 500 karakter.",
       reasonError: "Tulis alasan koreksi, 5 sampai 500 karakter.",

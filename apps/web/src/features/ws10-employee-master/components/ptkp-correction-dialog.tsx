@@ -105,7 +105,6 @@ function PtkpForm({
 }) {
   const t = useT();
   const today = businessDateToday();
-  const nextYearStart = `${Number(today.slice(0, 4)) + 1}-01-01`;
   const yearStart = `${today.slice(0, 4)}-01-01`;
   const joinedThisYear = employee.joinDate > yearStart;
   const anchor = joinedThisYear ? employee.joinDate : yearStart;
@@ -239,7 +238,7 @@ function PtkpForm({
                 {anchor !== today && (
                   <SelectItem value="today">
                     {t("employeeMaster.profile.ptkp.effectiveNextYear", {
-                      date: formatBusinessDate(nextYearStart),
+                      date: formatBusinessDate(today),
                     })}
                   </SelectItem>
                 )}
