@@ -98,7 +98,7 @@ function seat(
     client?: Member;
     token?: string;
     outletId?: string;
-    deviceId?: string;
+    deviceId?: typeof device;
   } = {},
 ) {
   // A cashier token is bound to the login session of the till it was issued on.

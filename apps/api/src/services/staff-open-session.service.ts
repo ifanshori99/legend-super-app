@@ -44,7 +44,8 @@ export async function openWalkInSession(
   actorUserId: string,
   now = new Date(),
 ): Promise<TableSession> {
-  assertOutletInScope(context.outletScope, outletId);
+  const outlet = outletIdSchema.parse(outletId);
+  assertOutletInScope(context.outletScope, outlet);
   const tenantId = context.tenant.tenantId;
   const deviceHash = staffOpenDeviceHash(input.idempotencyKey);
   return withTenant(db, context, async (tx) => {
@@ -59,7 +60,7 @@ export async function openWalkInSession(
       .where(
         and(
           eq(sessionParticipants.tenantId, tenantId),
-          eq(sessionParticipants.outletId, outletId),
+          eq(sessionParticipants.outletId, outlet),
           eq(sessionParticipants.deviceHash, deviceHash),
         ),
       );
@@ -74,7 +75,7 @@ export async function openWalkInSession(
     }
     await lockTableLiveState(tx, tenantId, tableId);
     const opened = await openStaffSeatedSession(tx, context, {
-      outletId: outletIdSchema.parse(outletId),
+      outletId: outlet,
       tableIds: [tableId],
       pax: input.pax,
       confirmedBy: actorUserId,
