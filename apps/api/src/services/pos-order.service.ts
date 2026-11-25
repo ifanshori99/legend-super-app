@@ -213,7 +213,11 @@ function assertSessionPaysLater(session: { paymentMode: string }): void {
 async function assertCaptainWithinOpenBill(
   tx: Tx,
   context: ScopedTenantContext,
-  order: { outletId: string; tableSessionId: string | null; totalIdr: unknown },
+  order: {
+    outletId: OutletId;
+    tableSessionId: string | null;
+    totalIdr: unknown;
+  },
   now: Date,
 ): Promise<void> {
   const session = await captainSessionOf(tx, context, order);
@@ -246,7 +250,7 @@ async function assertCaptainWithinOpenBill(
 async function captainSessionOf(
   tx: Tx,
   context: ScopedTenantContext,
-  order: { outletId: string; tableSessionId: string | null },
+  order: { outletId: OutletId; tableSessionId: string | null },
 ) {
   if (order.tableSessionId === null) return null;
   const [session] = await tx
