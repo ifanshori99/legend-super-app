@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Legend · WFC berbayar (mockup W7)</title>
+<style>
+@font-face{font-family:Jakarta;src:url('../assets/plus-jakarta-sans-latin.woff2');font-weight:200 800;font-display:swap}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+h1,h2,h3,p,ul,ol,dl,dd,figure,fieldset{margin:0;padding:0}ul,ol{list-style:none}fieldset{border:0;min-width:0}legend{padding:0}
+body{margin:0;font-family:Jakarta,sans-serif;font-variant-numeric:tabular-nums}
+button,input,textarea{font:inherit;color:inherit}
+svg{width:20px;height:20px;flex:none;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+h1{font-size:26px;line-height:32px;letter-spacing:-.02em}h2{font-size:21px;line-height:28px;letter-spacing:-.015em}h3{font-size:17px;line-height:24px;letter-spacing:-.01em}
+.nw{white-space:nowrap}.strong{font-weight:700}.small{font-size:14px;line-height:20px}
+.ex{display:inline-block;margin-left:4px;padding:0 6px;border-radius:6px;background:#fff0cc;color:#6b4800;font:600 12px/18px Jakarta,sans-serif;letter-spacing:0;vertical-align:middle;white-space:nowrap}
+.pill{display:inline-flex;align-items:center;gap:6px;width:fit-content;padding:4px 10px;border-radius:999px;background:var(--tint);color:var(--muted);font-size:14px;line-height:20px;font-weight:600;white-space:nowrap}
+.pill svg{width:16px;height:16px}
+.pill.success{background:var(--success-bg);color:var(--success)}.pill.warning{background:var(--warning-bg);color:var(--warning)}.pill.danger{background:var(--danger-bg);color:var(--danger)}.pill.info{background:var(--info-bg);color:var(--info)}
+.notice{border:var(--bw) solid;border-radius:12px;padding:12px 16px}
+.notice b{display:flex;gap:8px;line-height:24px}.notice b svg{margin-top:2px}
+.notice div{margin-top:4px;color:var(--ink);font-size:16px;line-height:24px}.notice .btn{margin-top:12px}
+.notice.warning{background:var(--warning-bg);color:var(--warning)}.notice.danger{background:var(--danger-bg);color:var(--danger)}.notice.success{background:var(--success-bg);color:var(--success)}.notice.info{background:var(--info-bg);color:var(--info)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:var(--ctl);padding:8px 20px;border:var(--bw) solid var(--edge);border-radius:var(--rb);background:var(--card);color:var(--ink);font-weight:700;text-align:center;cursor:pointer}
+.btn:hover{background:var(--tint)}.btn.primary{background:var(--action);border-color:var(--action);color:#fff}.btn.primary:hover{filter:brightness(.9)}
+.btn.danger{background:var(--danger);border-color:var(--danger);color:#fff}
+.btn[disabled]{background:var(--tint);border-color:var(--line);color:var(--muted);cursor:not-allowed}
+.btn:focus-visible,.seat:focus-visible,.chip:focus-visible,.prod:focus-within,a:focus-visible,.inp:focus-within,textarea:focus-visible{outline:3px solid var(--action);outline-offset:2px}
+.full{width:100%}
+.stack{display:grid;gap:16px;min-width:0}.stack.s{gap:8px}.stack.l{gap:24px}
+.between{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}.wrap{flex-wrap:wrap}.row{display:flex;gap:8px;align-items:center}
+.muted{color:var(--muted)}
+.panel{display:grid;gap:16px;padding:20px;border:var(--bw) solid var(--line);border-radius:16px;background:var(--card);min-width:0;align-content:start}
+.kv>div{display:flex;justify-content:space-between;gap:16px;padding:6px 0}.kv dt{color:var(--muted)}.kv dd{font-weight:600;text-align:right}
+.kv .total{margin-top:8px;padding-top:12px;border-top:var(--bw) solid var(--line);font-size:20px}.kv .total dt{color:var(--ink)}
+.state{display:grid;justify-items:center;gap:12px;padding:40px 20px;border:var(--bw) solid var(--line);border-radius:16px;background:var(--card);text-align:center}
+.state .ic{display:grid;place-items:center;width:48px;height:48px;border-radius:12px;background:var(--tint)}.state .ic svg{width:24px;height:24px}.state.err .ic{background:var(--danger-bg);color:var(--danger)}
+.state .tx{display:grid;gap:4px;max-width:460px}.state .acts{display:flex;flex-wrap:wrap;justify-content:center;gap:12px;margin-top:8px}
+.sk{border-radius:12px;background:var(--skel);height:96px}
+ul.rules{display:grid;gap:12px}.rules li{display:flex;gap:10px;line-height:24px}.rules svg{margin-top:2px;color:var(--muted)}
+dialog{width:calc(100% - 32px);max-width:520px;max-height:90dvh;padding:24px;border:1px solid var(--line);border-radius:18px;background:var(--card);color:var(--ink);box-shadow:0 16px 48px rgb(28 27 25/.22);overflow:auto}
+dialog::backdrop{background:rgb(28 27 25/.48)}dialog:focus{outline:none}
+dialog .in{display:grid;gap:16px}dialog .foot{display:flex;justify-content:flex-end;gap:12px}
+.field{display:grid;gap:6px;min-width:0}.field label{font-weight:600}.field .inp{display:flex;align-items:center;min-height:var(--ctl);border:var(--bw) solid var(--edge);border-radius:8px;background:var(--card);padding:0 12px;gap:8px;min-width:0}
+.field input{border:0;background:none;width:100%;min-width:0;min-height:40px;outline:none}.field textarea{width:100%;min-height:88px;border:var(--bw) solid var(--edge);border-radius:8px;padding:10px 12px;background:var(--card)}
+.field .hint{font-size:14px;line-height:20px;color:var(--muted)}.field.bad .inp{border-color:var(--danger);border-width:2px}.field.bad .hint{display:flex;gap:6px;color:var(--danger);font-weight:600}.field.bad .hint svg{width:16px;height:16px;margin-top:2px}
+
+/* Member: token final-a-mobile. */
+body.m{--canvas:#faf6f0;--card:#fffcf7;--ink:#2b211b;--muted:#67584e;--action:#a83a17;--line:#e5d8ca;--edge:#8b7765;--tint:#f3e9dd;--skel:#e5d8ca;--success:#246443;--success-bg:#e8f3eb;--warning:#765000;--warning-bg:#fff0cc;--danger:#a51d2d;--danger-bg:#fff0f0;--info:#2c4f7c;--info-bg:#eaf1fa;--bw:1px;--ctl:48px;--rb:14px;background:var(--canvas);color:var(--ink);font-size:16px;line-height:24px}
+.m .photo{height:96px;background:url('../assets/cafe-table-final.png') center 48%/cover}.m .photo.tall{height:148px}
+.m .glass{position:sticky;top:12px;z-index:5;margin:-84px 16px 40px;padding:0 8px;border-radius:24px;background:rgba(255,252,247,.9);border:1px solid rgba(255,255,255,.7);backdrop-filter:blur(18px) saturate(1.15);box-shadow:0 8px 28px rgba(28,27,25,.12)}
+.m .photo.tall+.glass{margin-top:-136px;margin-bottom:36px}.m .photo.tall~main{min-height:calc(100dvh - 166px)}.m .dh{display:none}
+.m .bar{display:flex;align-items:center;justify-content:space-between;min-height:56px;gap:8px}.m .bar .name{font-size:21px;font-weight:700;letter-spacing:-.8px;padding-left:8px}.m .bar .name small{display:block;font-size:12px;line-height:18px;letter-spacing:0;font-weight:500;color:#4b3b30}
+.m .bar h1{font-size:17px;line-height:24px}.m .ib{width:44px;height:44px;display:grid;place-items:center;border:0;border-radius:50%;background:none}
+.m nav.tabs{display:flex;gap:4px;padding:6px 0;border-top:1px solid #2b211b20}.m nav.tabs a{flex:1;display:grid;place-items:center;min-height:44px;padding:0 8px;border-radius:99px;font-size:14px;font-weight:600;color:var(--ink);text-decoration:none;white-space:nowrap}.m nav.tabs a[aria-current]{background:var(--ink);color:#fff}
+.m nav.desk{display:none}
+.m main{display:flex;flex-direction:column;gap:20px;padding:0 20px 16px;min-height:calc(100dvh - 112px)}
+.m aside{display:contents}
+.m .cta{margin-top:auto;position:sticky;bottom:16px;margin-inline:-4px;display:grid;gap:8px;padding:12px;border-radius:24px;background:rgba(255,252,247,.93);border:1px solid var(--line);backdrop-filter:blur(18px);box-shadow:0 8px 28px rgba(28,27,25,.12);z-index:4}
+.m .cta .sumline{display:flex;align-items:baseline;justify-content:space-between;gap:8px;padding:0 4px}.m .cta .sumline b{font-size:21px;line-height:28px;white-space:nowrap}
+.m .lnk{display:inline-flex;align-items:center;justify-content:center;min-height:44px;border:0;background:none;font-weight:600;text-decoration:underline;text-underline-offset:3px;cursor:pointer}
+.prods{display:grid;gap:12px}
+.prod{display:grid;grid-template-columns:24px minmax(0,1fr);gap:4px 12px;padding:16px;border:1px solid var(--line);border-radius:16px;background:var(--card)}
+.prod.on{border:2px solid var(--ink);padding:15px}.prod.off{background:var(--canvas)}
+.prod .rd{grid-row:1/9;width:20px;height:20px;margin:2px 0 0;accent-color:var(--action)}
+.prod .price{font-size:21px;line-height:28px;font-weight:700}
+.prod ul{display:grid;gap:4px;margin-top:8px}.prod li{display:flex;gap:8px;line-height:24px}.prod li svg{width:18px;height:18px;margin-top:3px;color:var(--muted)}.prod .pill{margin-top:8px;justify-self:start}
+.chips{display:flex;gap:8px;flex-wrap:wrap}.chip{min-height:56px;min-width:76px;padding:6px 12px;border:1px solid var(--edge);border-radius:12px;background:var(--card);display:grid;align-content:center;justify-items:center;font-weight:700;line-height:20px;cursor:pointer}
+.chip small{font-size:12px;line-height:18px;font-weight:500;color:var(--muted);white-space:nowrap}.chip[aria-pressed=true]{background:var(--ink);border-color:var(--ink);color:#fff}.chip[aria-pressed=true] small{color:#fff}.chip[disabled]{background:var(--tint);border-color:var(--line);color:var(--muted);cursor:not-allowed}
+.seats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.seat{min-height:56px;padding:4px;border:1px solid var(--edge);border-radius:12px;background:var(--card);display:grid;align-content:center;justify-items:center;font-weight:700;line-height:20px;cursor:pointer}
+.seat small{display:flex;align-items:center;gap:3px;font-size:12px;line-height:18px;font-weight:500;color:var(--muted)}.seat small svg{width:12px;height:12px}
+.seat[aria-pressed=true]{background:var(--ink);border-color:var(--ink);color:#fff}.seat[aria-pressed=true] small{color:#fff}.seat[disabled]{background:var(--tint);border-style:dashed;color:var(--muted);cursor:not-allowed}
+.big{font-size:40px;line-height:48px;font-weight:700;letter-spacing:-1.4px}
+.qr{display:grid;justify-items:center;gap:4px;text-align:center}.qr img{width:200px;height:200px;image-rendering:pixelated}.qr .code{font-size:26px;line-height:32px;font-weight:700;letter-spacing:2px}
+.meter{height:10px;border-radius:99px;background:var(--tint);overflow:hidden;border:1px solid var(--edge)}.meter i{display:block;height:100%;background:var(--ink)}
+.credit{display:grid;gap:8px;padding:12px 16px;border-radius:12px;background:var(--tint)}
+.acts2{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+@media(max-width:767px){dialog{position:fixed;inset:auto 0 0 0;width:100%;max-width:none;margin:0;border-radius:24px 24px 0 0}dialog .foot{flex-direction:column-reverse}.state .acts,.state .acts .btn{width:100%}}
+@media(max-width:359px){.stats{grid-template-columns:1fr}.kv>div{flex-wrap:wrap;gap:0 12px}.kv dd{margin-left:auto}.m .bar.sub>span{min-width:0;flex-shrink:1}.seats{grid-template-columns:repeat(3,minmax(0,1fr))}.m nav.tabs a{padding:0 4px;font-size:13px}}
+@media(min-width:1024px){
+ .m .photo,.m .photo.tall{height:112px}.m .glass,.m .photo.tall+.glass{margin:-92px auto 32px;max-width:1176px;width:calc(100% - 64px);padding:0 24px}
+ .m .bar{min-height:72px}.m .bar .name{padding:0}.m .bar.sub{display:none}.m .bar.home{display:flex!important}.m nav.tabs{display:none}.m nav.desk{display:flex;gap:28px}.m nav.desk a{display:grid;place-items:center;min-height:44px;font-weight:500;color:#4b3b30;text-decoration:none;border-bottom:2px solid transparent}.m nav.desk a[aria-current]{font-weight:700;color:var(--ink);border-color:var(--ink)}
+ .m main{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:20px 40px;max-width:1176px;width:calc(100% - 64px);margin:0 auto;padding:0 0 48px;min-height:0;align-items:start}
+ .m main.one{grid-template-columns:minmax(0,760px);justify-content:center}
+ .m .title{grid-column:1/-1}.m aside{display:grid;gap:16px;position:sticky;top:104px}
+ .m .cta{position:static;margin:0;padding:20px;border-radius:16px;background:var(--card);backdrop-filter:none;box-shadow:none}
+ .m .one .cta{grid-auto-flow:column;justify-content:end;background:none;border:0;padding:0;align-items:center}.m .one .cta .sumline{display:none}
+ .m .desk2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+ .seats{grid-template-columns:repeat(6,minmax(0,1fr))}
+ .m .dh{display:block}.m .photo.tall~main,.m main{min-height:0}
+ .m .title h1{font-size:40px;line-height:48px;letter-spacing:-1.4px}
+}
+@media(prefers-reduced-transparency:reduce){.m .glass,.m .cta{background:#fffcf7;backdrop-filter:none}}
+@supports not (backdrop-filter:blur(1px)){.m .glass,.m .cta{background:#fffcf7}}
+@media(prefers-contrast:more){.m .glass,.m .cta{background:#fffcf7;border:2px solid #4b3b30;backdrop-filter:none}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* Staf (1268): token kontras. Kelola: token sama, lebih padat. */
+body.s{--canvas:#fff;--card:#fff;--ink:#000;--muted:#3d3a35;--action:#0f5e68;--line:#8a857d;--edge:#8a857d;--tint:#f1efec;--skel:#c9c4bc;--success:#147a41;--success-bg:#e4f5eb;--warning:#8f5800;--warning-bg:#fcf1dc;--danger:#c02c31;--danger-bg:#fdebeb;--info:#245bd1;--info-bg:#e9f0fd;--bw:2px;--ctl:60px;--rb:8px;background:#fff;color:#000;font-size:18px;line-height:27px}
+body.k{--ctl:44px;--bw:1px;--ink:#1c1b19;--muted:#5f5b55;--line:#d8d3cc;--edge:#8a857d;font-size:16px;line-height:24px;background:#f7f6f4}
+.s header.ops{display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:64px;padding:8px 16px;background:#fbfaf9;border-bottom:var(--bw) solid var(--line)}
+.s header.ops strong{display:block;font-size:21px;line-height:28px}.s header.ops small{display:block;font-size:14px;line-height:20px;color:var(--muted)}.s header.ops time{font-size:20px;font-weight:700}
+.s main{display:grid;gap:16px;padding:16px;min-width:0}
+.k main{max-width:1200px;margin:0 auto;padding:24px 16px}
+.s .two{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,400px);gap:16px;align-items:start}
+.s .seg{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.s .seg .btn{padding:8px}.s .seg .btn[aria-current]{border-color:#000;background:var(--tint)}
+.s .seg .n{min-width:28px;padding:0 8px;border-radius:999px;background:var(--tint);font-size:16px;line-height:26px}.s .seg .btn[aria-current] .n{background:#000;color:#fff}
+.guest{display:grid;grid-template-columns:72px minmax(0,1fr) auto;gap:8px 16px;align-items:center;padding:16px 20px;border:2px solid var(--line);border-radius:12px;background:#fff}
+.guest .kursi{display:grid;place-items:center;width:72px;height:56px;border-radius:8px;background:var(--tint);font-size:21px;font-weight:700}.guest h3{font-size:18px;line-height:26px}.guest .sub{font-size:16px;line-height:24px;color:var(--muted)}
+.hours{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:12px}.guest .pills{grid-column:2/-1;display:flex;flex-wrap:wrap;gap:8px}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:16px}.stats dt{font-size:14px;line-height:20px;color:var(--muted)}.stats dd{font-size:26px;line-height:34px;font-weight:700}.stats small{display:block;font-size:14px;line-height:20px;color:var(--muted);font-weight:500}
+table{width:100%;border-collapse:collapse;font-size:16px;line-height:24px}th{font-size:14px;line-height:20px;font-weight:600;text-align:left;color:var(--muted)}th,td{padding:10px 8px;border-bottom:1px solid var(--line);vertical-align:middle}th:first-child,td:first-child{padding-left:0}th:last-child,td:last-child{padding-right:0}.r{text-align:right}tr:last-child td{border-bottom:0}tr.now td{font-weight:700}
+.s .seats{grid-template-columns:repeat(6,minmax(0,1fr))}
+.ktabs{display:flex;gap:4px;padding:8px 16px;background:#fff;border-bottom:1px solid var(--line);overflow-x:auto}
+.ktabs a{flex:none;display:flex;align-items:center;gap:6px;min-height:44px;padding:0 14px;border-radius:8px;color:var(--muted);font-weight:600;text-decoration:none;white-space:nowrap}.ktabs a[aria-current]{background:var(--tint);color:var(--ink)}.ktabs .n{padding:0 8px;border-radius:99px;background:#1c1b19;color:#fff;font-size:12px;line-height:20px}
+.form{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.check{display:grid;gap:8px}.check li{display:flex;gap:8px;align-items:flex-start}.check .y{color:var(--success)}.check .n{color:var(--danger)}.check svg{margin-top:2px}
+.ab{display:grid;grid-template-columns:1fr 24px 1fr;gap:12px;align-items:center}.ab>div{padding:12px 16px;border-radius:12px;background:var(--tint)}.ab>div:last-child{background:var(--info-bg)}.ab small{display:block;font-size:14px;line-height:20px;color:var(--muted)}.ab b{font-size:21px;line-height:28px}
+.foot2{display:flex;gap:12px;justify-content:flex-end;flex-wrap:wrap}
+.steps{display:grid;gap:12px}.steps li{display:flex;gap:10px}.steps svg{margin-top:2px}.only-m{display:none}
+@media(max-width:767px){
+ .s header.ops{min-height:56px}.s header.ops time{font-size:16px}body.s:not(.k) header.ops .pill span{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+ .s .two{grid-template-columns:minmax(0,1fr)}.s .two>.side{order:-1}.s.k .two>.side.late{order:0}.s .seg .btn{flex-direction:column;gap:2px;font-size:16px;line-height:20px}
+ .guest{grid-template-columns:72px minmax(0,1fr);padding:16px}.guest .pills{grid-column:1/-1}.guest>.btn{grid-column:1/-1}
+ .s .seats{grid-template-columns:repeat(4,minmax(0,1fr))}.form{grid-template-columns:minmax(0,1fr)}.foot2 .btn{flex:1 1 100%}.head .btn{width:100%}
+ table.stackm thead{position:absolute;clip-path:inset(50%);width:1px;height:1px;overflow:hidden}table.stackm,table.stackm tbody{display:block}table.stackm tr{display:grid;grid-template-columns:1fr auto;gap:4px 12px;padding:12px 0;border-bottom:1px solid var(--line)}table.stackm tr:last-child{border:0}table.stackm td{border:0;padding:0}table.stackm td.r{text-align:left}table.stackm td:nth-child(even){justify-self:end;text-align:right}
+ table.stackm td[data-l]::before{content:attr(data-l) ': ';color:var(--muted);font-weight:500;font-size:14px}
+ .ab{grid-template-columns:minmax(0,1fr)}.ab>svg{transform:rotate(90deg);justify-self:center}.notice .btn{width:100%}.ktabs{overflow:visible;display:grid;grid-template-columns:1fr 1fr}.ktabs a{padding:0 10px}
+}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+// Mockup statis W7. Layar dipilih lewat ?screen=. Semua angka adalah contoh.
+const I={back:'<path d="m15 18-6-6 6-6"/>',right:'<path d="m9 5 7 7-7 7"/>',arrow:'<path d="M5 12h14m-7-7 7 7-7 7"/>',check:'<path d="m5 12 4 4L19 6"/>',ok:'<circle cx="12" cy="12" r="10"/><path d="m8 12 3 3 5-6"/>',x:'<path d="M6 6l12 12M18 6 6 18"/>',clock:'<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',warn:'<path d="m12 3 10 18H2L12 3M12 10v4M12 17.5h.01"/>',info:'<circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/>',cup:'<path d="M4 8h13v7a5 5 0 0 1-5 5H9a5 5 0 0 1-5-5V8m13 1h2a2 2 0 0 1 0 6h-2M8 2v3M13 2v3"/>',seat:'<path d="M6 3v10h12V3M4 13h16v4H4zM6 17v4M18 17v4"/>',cal:'<path d="M4 5h16v16H4zM4 10h16M8 2v5M16 2v5"/>',wifi:'<path d="M12 20h.01M2 8.8a15 15 0 0 1 20 0M5 12.9a10 10 0 0 1 14 0M8.5 16.4a5 5 0 0 1 7 0"/>',off:'<path d="m2 2 20 20M8.5 16.4a5 5 0 0 1 7 0M5 12.9a10 10 0 0 1 5-2.7M12 20h.01M2 8.8A15 15 0 0 1 6 6.2M11 5a15 15 0 0 1 11 3.8"/>',qr:'<path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h3v3h4v4h-7z"/>',reload:'<path d="M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5"/>',lock:'<path d="M5 11h14v10H5zM8 11V7a4 4 0 0 1 8 0v4"/>',back2:'<path d="M9 14 4 9l5-5M4 9h10a6 6 0 0 1 0 12h-3"/>',plus:'<path d="M12 5v14M5 12h14"/>',stop:'<path d="M7 7h10v10H7z"/>',doc:'<path d="M6 2h9l4 4v16H6zM9 12h7M9 16h7"/>'};
+const ic=n=>`<svg viewBox="0 0 24 24" aria-hidden="true">${I[n]}</svg>`;
+const ex='<em class="ex">contoh</em>';
+const rpn=n=>'Rp '+n.toLocaleString('id-ID');
+const rp=n=>`<span class="nw">${rpn(n)}${ex}</span>`;
+const pill=(t,i,x)=>`<span class="pill ${t}">${ic(i)}<span>${x}</span></span>`;
+const btn=(x,c='',i='',a='')=>`<button type="button" class="btn ${c}" ${a}>${i?ic(i):''}${x}</button>`;
+const notice=(t,i,h,b,a='')=>`<div class="notice ${t}" role="${t==='danger'?'alert':'status'}"><b>${ic(i)}<span>${h}</span></b><div>${b}</div>${a}</div>`;
+const state=(err,i,h,b,a='')=>`<div class="state ${err?'err':''}" ${err?'role="alert"':''}><span class="ic">${ic(i)}</span><div class="tx"><h2>${h}</h2><p class="muted">${b}</p></div>${a?`<div class="acts">${a}</div>`:''}</div>`;
+const kv=r=>`<dl class="kv">${r.map(([a,b,c])=>`<div class="${c||''}"><dt>${a}</dt><dd>${b}</dd></div>`).join('')}</dl>`;
+const rules=r=>`<ul class="rules">${r.map(([i,t])=>`<li>${ic(i)}<span>${t}</span></li>`).join('')}</ul>`;
+const sk=(...h)=>`<div class="stack" aria-busy="true" aria-label="Memuat">${h.map(x=>`<div class="sk" style="height:${x}px"></div>`).join('')}</div>`;
+const dialog=(h,b,f)=>`<dialog aria-labelledby="dh"><div class="in"><h2 id="dh">${h}</h2>${b}<div class="foot">${f}</div></div></dialog>`;
+
+/* ---------- Member ---------- */
+const TABS=[['katalog','Kerja di cafe'],['pass','Pass saya'],['bulanan','Bulanan']];
+const tabs=(cur,cls)=>`<nav class="${cls}" aria-label="WFC">${TABS.map(([k,t])=>`<a href="?screen=${k}" ${k===cur?'aria-current="page"':''}>${t}</a>`).join('')}</nav>`;
+function member({tab,title,lead='',back,body,aside='',cta='',one,extra=''}){
+  const home=`<div class="bar home" ${back?'style="display:none"':''}><span class="name">Cafe Legend<small>Bandung · data contoh</small></span>${tabs(tab,'desk')}</div>`;
+  const sub=back?`<div class="bar sub"><button class="ib" style="flex:none" aria-label="Kembali">${ic('back')}</button><h1>${title}</h1><span style="width:44px"></span></div>`:tabs(tab,'tabs');
+  const t=`<div class="title"><h1 class="${back?'dh':''}">${title}</h1>${lead?`<p class="muted">${lead}</p>`:''}</div>`;
+  return ['m',`<div class="photo ${back?'':'tall'}"></div><header class="glass">${home}${sub}</header><main class="${one||(!aside&&!cta)?'one':''}">${t}<div class="stack l">${body}</div>${one?(cta?`<div class="cta">${cta}</div>`:''):(aside||cta?`<aside>${aside}${cta?`<div class="cta">${cta}</div>`:''}</aside>`:'')}</main>${extra}`];
+}
+const sumline=(l,v)=>`<div class="sumline"><span>${l}</span><b>${v}</b></div>`;
+const RULES=rules([
+ ['cup','Kredit aktif setelah check-in, hanya untuk makanan dan minuman di hari yang sama. Boleh beberapa pesanan, sisanya hangus saat cafe tutup dan tidak bisa diuangkan.'],
+ ['clock','Datang paling lambat 30 menit setelah jam mulai. Lewat dari itu kursi dilepas dan uang tidak kembali. Kredit tetap bisa dipakai hari itu.'],
+ ['back2','Batal sampai 24 jam sebelum mulai: uang kembali penuh. Sesudahnya hangus.'],
+ ['wifi','Wi-Fi mengikuti kuota outlet. Poin, voucher, dan promo tidak berlaku untuk pembelian ini.'],
+]);
+const prod=(id,name,seat,kredit,when,items,{on,off,tag}={})=>`<label class="prod ${on?'on':''} ${off?'off':''}"><input class="rd" type="radio" name="p" ${on?'checked':''} ${off?'disabled':''}><h3>${name}</h3><span class="price">${rp(seat+kredit)}</span><span class="small">Kursi ${rpn(seat)} + kredit ${rpn(kredit)}</span><span class="muted">${when}</span><ul>${items.map(([i,t])=>`<li>${ic(i)}<span>${t}</span></li>`).join('')}</ul>${tag||''}</label>`;
+function products({full}={}){
+  const hab=pill('','x','Habis hari ini');
+  return `<fieldset class="stack s"><legend class="strong" style="margin-bottom:8px">Pilih jenis pass</legend><div class="prods desk2">${
+   prod('s','Jam sepi',20000,35000,'3 jam, Senin–Jumat di luar jam ramai'+ex,[['cup','Kredit untuk makan dan minum'],['seat','Kursi terjamin di Zona WFC']],full?{off:1,tag:hab}:{on:1,tag:pill('success','ok','Sisa 12 kursi hari ini')})}${
+   prod('h','Sepanjang hari',95000,120000,'Dari jam datang sampai tutup 22.00'+ex,[['cup','Kredit untuk makan dan minum'],['seat','Termasuk jam ramai, kuota lebih sedikit']],full?{off:1,tag:hab}:{tag:pill('warning','clock','Sisa 2 kursi hari ini')})}${
+   prod('r','Reservasi kursi 3 jam',35000,30000,'Jam bebas, termasuk jam ramai'+ex,[['seat','Harga per slot, tidak dikali durasi']],full?{off:1,tag:hab}:{})}${
+   prod('b','Bulanan',240000,180000,'12 kunjungan 3 jam, hanya jam sepi'+ex,[['cup',`Kredit ${rpn(15000)} per kunjungan, hangus hari itu`]],{})}</div></fieldset>`;
+}
+const catalog=(b,cta,aside='')=>member({tab:'katalog',title:'Kerja di Legend',lead:'Kursi terjamin, kopi dan makan sudah masuk hitungan.',body:b,cta,aside});
+const aturan=`<section class="panel"><h2>Aturan singkat</h2>${RULES}</section>`;
+
+const DAYS=[['Jum','27 Nov'],['Sab','28 Nov'],['Min','29 Nov'],['Sen','30 Nov'],['Sel','1 Des'],['Rab','2 Des']];
+const days=(sel,off=[])=>`<section class="stack s"><h2>Tanggal</h2><div class="chips">${DAYS.map(([a,b],i)=>`<button class="chip" aria-pressed="${i===sel}" ${off.includes(i)?'disabled':''}>${a}<small>${off.includes(i)?'Jam ramai':b}</small></button>`).join('')}</div></section>`;
+const times=(list,sel,note='')=>`<section class="stack s"><h2>Jam mulai</h2><div class="chips">${list.map(([t,n],i)=>`<button class="chip" aria-pressed="${i===sel}" ${n?'':'disabled'}>${t}<small>${n?`Sisa ${n}`:'Penuh'}</small></button>`).join('')}</div>${note?`<p class="muted">${note}</p>`:''}</section>`;
+const TAKEN=['A01','A02','A03','A06','A07','A08','A11','A12','B01','B02','B04','B05','B08','B09','B12'];
+const codes=z=>Array.from({length:12},(_,i)=>z+String(i+1).padStart(2,'0'));
+function seatmap(sel,taken=TAKEN,word='Terisi'){
+  const z=(k,n)=>`<div class="stack s"><h3>${n}</h3><div class="seats">${codes(k).map(c=>{const t=taken.includes(c),s=c===sel;return `<button class="seat" aria-label="Kursi ${c}, ${t?word:s?'dipilih':'kosong'}" aria-pressed="${s}" ${t?'disabled':''}>${c}<small>${s?ic('check'):t?ic('x'):''}${s?'Dipilih':t?word:'Kosong'}</small></button>`}).join('')}</div></div>`;
+  return `<section class="stack"><h2>Kursi</h2>${z('A','Zona WFC · Dalam')}${z('B','Zona WFC · Teras')}</section>`;
+}
+const kursi=(o)=>member({tab:'katalog',back:1,title:o.title||'Pilih kursi',lead:o.lead||'Pass jam sepi · 3 jam',body:o.body,aside:o.aside||'',cta:o.cta||''});
+const SEPI=[['08.00',11],['14.00',9],['15.00',10]];
+const pilih=(p,rows,c)=>[`<section class="panel"><h2>Pilihan Anda</h2>${kv(rows)}</section>`,c];
+
+const beli=[['Jenis','Pass jam sepi'],['Tanggal','Selasa, 1 Des 2026'],['Jam','14.00–17.00'],['Kursi','A05 · Dalam']];
+const rincian=`<section class="panel"><h2>Rincian</h2>${kv([...beli,['Kredit makan dan minum',rp(35000)]])}</section>`;
+const tagihan=`<section class="panel"><h2>Tagihan</h2>${kv([['Biaya kursi',rp(20000)],['Kredit makan dan minum',rp(35000)],['Pajak','Belum ditetapkan'],['Total',rp(55000),'total']])}<p class="muted">Ketentuan pajak diisi sebelum penjualan dibuka. Pajak makanan dihitung saat kredit dipakai.</p></section>`;
+const bayar=o=>member({tab:'katalog',back:1,...o});
+
+const passCard=(h,sub,tag,rows,acts)=>`<article class="panel"><div class="between wrap"><div><h3>${h}</h3><p class="muted">${sub}</p></div>${tag}</div>${rows}${acts?`<div class="acts2">${acts}</div>`:''}</article>`;
+const credit=(sisa,dari)=>`<div class="credit"><div class="between wrap"><span class="strong">Sisa kredit makan dan minum</span><b>${rp(sisa)}</b></div><div class="meter" role="img" aria-label="Sisa ${rpn(sisa)} dari ${rpn(dari)}"><i style="width:${Math.round(sisa/dari*100)}%"></i></div><p class="small">Dari ${rpn(dari)}. Hangus hari ini pukul 22.00.</p></div>`;
+const upcoming=passCard('Jam sepi · Selasa, 1 Des','14.00–17.00 · Kursi A05 · WFC-7K2P',pill('success','ok','Lunas'),`<p class="muted">Kredit ${rp(35000)} aktif setelah check-in. Batal dengan uang kembali sampai Senin, 30 Nov 14.00.</p>`,btn('Lihat QR masuk','','qr')+btn('Batalkan pass'));
+const passPage=(body,extra='')=>member({tab:'pass',title:'Pass saya',lead:'Tunjukkan QR ini saat datang.',body,extra});
+const passBody=`<section class="stack"><h2>Hari ini</h2>${passCard('Sepanjang hari','Kamis, 26 Nov · Kursi B03 · Masuk 09.10',pill('success','ok','Sedang dipakai'),credit(72000,120000),btn('Pakai kredit di kasir','primary','qr'))}</section><section class="stack"><h2>Akan datang</h2>${upcoming}</section>`;
+const riwayat=`<section class="stack"><h2>Riwayat</h2>${passCard('Jam sepi · Senin, 23 Nov','14.00–17.00 · Kursi A09',pill('','clock','Tidak datang'),'<p class="muted">Kursi dilepas 14.30. Uang tidak kembali, kredit hangus di akhir hari.</p>','')}${passCard('Jam sepi · Jumat, 20 Nov','Outlet membatalkan',pill('info','back2','Uang dikembalikan'),`<p class="muted">Pengembalian penuh ${rp(55000)} tercatat selesai.</p>`,'')}</section>`;
+const batalRows=kv([['Pass','Jam sepi · 1 Des, 14.00'],['Kursi','A05'],['Dibayar',rp(55000)]]);
+
+const planPanel=`<section class="panel"><div class="between wrap"><div><h2>WFC bulanan</h2><p class="muted">12 kunjungan${ex} · 3 jam, Senin–Jumat, jam sepi</p></div><span class="price strong" style="font-size:26px;line-height:32px">${rp(420000)}</span></div>${rules([['cal','Prabayar satu periode 30 hari'+ex+', perpanjang manual.'],['seat','Satu kunjungan per hari. Tiap kunjungan memesan kursi.'],['cup','Kredit '+rp(15000)+' per kunjungan, aktif setelah check-in dan hangus hari itu.'],['clock','Sisa kunjungan hangus di akhir periode.'],['back2','Uang kembali penuh sebelum kunjungan pertama. Setelah itu tidak ada pengembalian.']])}</section>`;
+const quota=(used,total)=>`<div class="stack s"><div class="between"><span>Sisa kunjungan</span><b>${total-used} dari ${total}${ex}</b></div><div class="meter" role="img" aria-label="Sisa ${total-used} dari ${total}"><i style="width:${(total-used)/total*100}%"></i></div></div>`;
+const aktif=used=>`<section class="panel"><div class="between wrap"><div><h2>WFC bulanan</h2><p class="muted">Periode 1–30 November 2026</p></div>${used<12?pill('success','ok','Aktif'):pill('warning','warn','Kunjungan habis')}</div>${quota(used,12)}<p class="muted">Sisa kunjungan hangus 30 November. Tidak pindah ke periode baru.</p></section>`;
+const bulanan=o=>member({tab:'bulanan',title:'Bulanan',lead:'Untuk yang rutin kerja di jam sepi.',...o});
+const perpanjangPanel=`<section class="panel"><h2>Perpanjang</h2><p>Periode baru 1–30 Desember 2026, mulai setelah periode sekarang selesai.</p>${btn('Perpanjang periode','full','reload')}</section>`;
+
+const M={
+ 'katalog':()=>catalog(products(),sumline('Jam sepi',rp(55000))+btn('Pilih kursi','primary full'),aturan),
+ 'katalog-kosong':()=>catalog(state(0,'lock','Penjualan WFC belum dibuka','Harga dan jumlah kursi sedang disiapkan. Anda tetap bisa datang dan duduk seperti biasa.',btn('Lihat menu'))),
+ 'katalog-galat':()=>catalog(state(1,'warn','Pilihan pass gagal dimuat','Periksa internet, lalu coba lagi. Belum ada yang dibayar.',btn('Coba lagi','primary','reload'))),
+ 'katalog-penuh':()=>catalog(notice('warning','seat','Kursi WFC hari ini penuh','Kuota kursi untuk Kamis, 26 Nov sudah terjual. Pilih tanggal lain.')+products({full:1}),sumline('Tanggal terdekat','Jum, 27 Nov')+btn('Lihat tanggal lain','primary full'),aturan),
+ 'katalog-memuat':()=>catalog(sk(220,220,120)),
+ 'kursi':()=>kursi({body:days(4,[1,2])+times(SEPI,1,'Kuota kursi mengikuti jam: jam ramai lebih sedikit.')+seatmap('A05'),aside:`<section class="panel"><h2>Pilihan Anda</h2>${kv([...beli,['Kredit makan dan minum',rp(35000)]])}<p class="muted">Datang paling lambat 14.30. Setelah itu kursi dilepas. Kredit aktif setelah check-in.</p></section>`,cta:sumline('Kursi A05',rp(55000))+btn('Lihat ringkasan','primary full')}),
+ 'kursi-sepanjang-hari':()=>kursi({lead:'Pass sepanjang hari · sampai 22.00',body:days(4)+times([['08.00',2],['09.00',2],['10.00',2]],1)+notice('info','info','Sisa 2 dari kuota jam ramai 8 kursi','Pass ini melewati jam ramai 11.30–14.00 dan 18.00–21.00, jadi mengikuti kuota yang lebih kecil. Semua angka contoh.')+seatmap('B03'),aside:`<section class="panel"><h2>Pilihan Anda</h2>${kv([['Jenis','Sepanjang hari'],['Tanggal','Selasa, 1 Des 2026'],['Jam','09.00–22.00'],['Kursi','B03 · Teras'],['Kredit makan dan minum',rp(120000)]])}<p class="muted">Datang paling lambat 09.30.</p></section>`,cta:sumline('Kursi B03',rp(215000))+btn('Lihat ringkasan','primary full')}),
+ 'kursi-kunjungan':()=>kursi({title:'Pesan kunjungan',lead:'Bulanan · sisa 4 kunjungan',body:days(3,[1,2])+times(SEPI,1)+seatmap('A05'),aside:`<section class="panel"><h2>Kunjungan ini</h2>${kv([['Tanggal','Senin, 30 Nov 2026'],['Jam','14.00–17.00'],['Kursi','A05 · Dalam'],['Memakai','1 kunjungan'],['Sisa sesudahnya','3 kunjungan']])}<p class="muted">Lewat 30 menit tanpa datang, kursi dilepas dan kunjungan terpakai. Kredit ${rp(15000)} tetap bisa dipakai hari itu.</p></section>`,cta:sumline('Tanpa bayar lagi','1 kunjungan')+btn('Pesan kursi A05','primary full')}),
+ 'kursi-kosong':()=>kursi({body:days(1)+state(0,'cal','Tidak ada jam sepi hari Sabtu','Sabtu dan Minggu termasuk jam ramai. Pilih hari kerja atau pass sepanjang hari.',btn('Pilih Senin, 30 Nov','primary')+btn('Lihat sepanjang hari'))}),
+ 'kursi-galat':()=>kursi({body:days(4,[1,2])+state(1,'warn','Daftar kursi gagal dimuat','Tanggal Anda tetap tersimpan. Belum ada kursi yang ditahan.',btn('Coba lagi','primary','reload'))}),
+ 'kursi-penuh':()=>kursi({body:days(4,[1,2])+times([['08.00',0],['14.00',0],['15.00',0]],-1)+state(0,'seat','Kuota kursi WFC hari ini penuh','Kursi lain di cafe tetap untuk tamu makan. Coba Rabu, 2 Des, masih ada 14 kursi.',btn('Pilih Rabu, 2 Des','primary'))}),
+ 'kursi-bentrok':()=>kursi({body:notice('danger','warn','Kursi A05 baru saja diambil tamu lain','Anda belum membayar. Pilih kursi lain yang masih kosong.')+days(4,[1,2])+times([['08.00',11],['14.00',8],['15.00',9]],1)+seatmap('',[...TAKEN,'A05']),cta:sumline('Belum ada kursi','Sisa 8')+btn('Pilih kursi dulu','full','','disabled')}),
+ 'kursi-memuat':()=>kursi({body:sk(96,96,300)}),
+ 'bayar':()=>bayar({title:'Ringkasan',lead:'Periksa sebelum membayar.',body:rincian+tagihan+RULES,aside:'',cta:sumline('Total',rp(55000))+btn('Lanjut ke pembayaran','primary full')+'<p class="small muted">Kursi ditahan setelah Anda menekan tombol ini. Bayar dalam 30 menit.</p>'}),
+ 'bayar-menunggu':()=>bayar({one:1,title:'Menunggu pembayaran',lead:'Kursi A05 ditahan untuk Anda.',body:`<section class="stack s"><p class="muted">Total pembayaran</p><p class="big">${rp(55000)}</p>${pill('warning','clock','Bayar sebelum 10.32 · sisa 24.10')}</section><section class="panel"><h2>Cara bayar</h2><ul class="steps"><li>${ic('right')}<span>Buka halaman bayar, pilih QRIS, e-wallet, atau virtual account.</span></li><li>${ic('right')}<span>Selesaikan pembayaran di aplikasi Anda.</span></li><li>${ic('right')}<span>Kembali ke sini. Pass terbit setelah pembayaran terkonfirmasi.</span></li></ul></section>${rincian}`,cta:btn('Periksa status','full','reload')+btn('Buka halaman bayar','primary full')}),
+ 'bayar-lunas':()=>bayar({one:1,title:'Pass terbit',lead:'Pembayaran diterima 10.14.',body:notice('success','ok','Kursi A05 milik Anda','Selasa, 1 Des, 14.00–17.00. Datang paling lambat 14.30.')+`<section class="panel"><div class="qr"><img src="../assets/qris-contoh.svg" alt="QR masuk contoh"><span class="code">WFC-7K2P</span><span class="muted">QR contoh. Tunjukkan ke staf saat datang.</span></div></section>`+`<section class="panel">${kv([['Dibayar',rp(55000)],['Kredit makan dan minum',rp(35000)],['Kredit aktif','Setelah check-in, 1 Des']])}</section>`,cta:btn('Lihat pass saya','primary full')}),
+ 'bayar-habis':()=>bayar({one:1,title:'Waktu bayar habis',lead:'Batas bayar 10.32 sudah lewat.',body:state(0,'clock','Pesanan ini tidak bisa dibayar lagi','Kursi segera dilepas. Sudah terlanjur bayar? Tunggu sebentar, status diperbarui otomatis.',btn('Pilih kursi lagi','primary')+btn('Periksa status','','reload'))}),
+ 'bayar-telat':()=>bayar({one:1,title:'Pembayaran terlambat',lead:'Pesanan WFC-7K2P',body:notice('warning','back2','Uang Anda dikembalikan penuh','Pembayaran masuk 10.49, sedangkan kursi A05 sudah dilepas 10.47. Pass tidak terbit.')+`<section class="panel"><div class="between wrap"><h2>Pengembalian dana</h2>${pill('warning','clock','Diproses')}</div>${kv([['Diterima',rp(55000)],['Dikembalikan',rp(55000),'total']])}<p class="muted">Tim keuangan memproses pengembalian ini secara manual. Statusnya ada di Pass saya.</p></section>`,cta:btn('Lihat Pass saya','full')+btn('Pilih kursi lagi','primary full')}),
+ 'bayar-galat':()=>bayar({title:'Ringkasan',lead:'Periksa sebelum membayar.',body:notice('danger','warn','Halaman bayar gagal dibuat','Anda belum membayar. Kursi A05 masih ditahan sampai 10.47, coba lagi sekarang.')+rincian+tagihan,cta:sumline('Total',rp(55000))+btn('Coba lagi','primary full','reload')}),
+ 'bayar-kosong':()=>bayar({one:1,title:'Pembayaran',body:state(0,'doc','Tidak ada pembayaran yang menunggu','Pesanan ini sudah selesai atau dibatalkan. Cek statusnya di Pass saya.',btn('Lihat Pass saya','primary')+btn('Beli pass'))}),
+ 'bayar-penuh':()=>bayar({one:1,title:'Kursi habis',lead:'Pesanan belum dibuat.',body:state(0,'seat','Kursi terakhir baru saja terjual','Anda belum membayar. Pilih jam atau tanggal lain.',btn('Pilih kursi lagi','primary'))}),
+ 'bayar-memuat':()=>bayar({one:1,title:'Ringkasan',body:sk(200,160)}),
+ 'pass':()=>passPage(passBody+riwayat),
+ 'pass-kosong':()=>passPage(state(0,'seat','Belum ada pass','Pass yang sudah lunas muncul di sini, lengkap dengan QR masuk dan sisa kredit.',btn('Beli pass','primary'))),
+ 'pass-galat':()=>passPage(notice('warning','off','Tersimpan dari 09.40','Status terbaru gagal dimuat. QR di bawah tetap bisa ditunjukkan ke staf.',btn('Coba lagi','','reload'))+upcoming),
+ 'pass-penuh':()=>passPage(passBody+[['Rabu, 2 Des','A09','WFC-3M8T'],['Kamis, 3 Des','B06','WFC-9QX4'],['Jumat, 4 Des','B07','WFC-5RDN'],['Senin, 7 Des','A04','WFC-8HLC']].map(([d,k,c])=>passCard('Jam sepi · '+d,`14.00–17.00 · Kursi ${k} · ${c}`,pill('success','ok','Lunas'),'',btn('Lihat QR masuk','','qr')+btn('Batalkan pass'))).join('')+riwayat),
+ 'pass-memuat':()=>passPage(sk(240,160,160)),
+ 'batal':()=>passPage(upcoming,dialog('Batalkan pass ini?',batalRows+notice('success','back2','Uang kembali penuh '+rp(55000),'Masih lebih dari 24 jam sebelum mulai. Pengembalian diproses manual oleh tim keuangan.')+'<p class="muted">Kursi dan kredit makan dan minum langsung dilepas.</p>',btn('Tetap simpan pass')+btn('Batalkan dan minta uang kembali','danger'))),
+ 'batal-hangus':()=>passPage(upcoming,dialog('Batalkan tanpa uang kembali?',batalRows+notice('danger','warn','Uang tidak kembali','Kurang dari 24 jam sebelum mulai. Pass dan kreditnya hangus, kursi bisa dipakai tamu lain.'),btn('Tetap simpan pass')+btn('Batalkan tanpa uang kembali','danger'))),
+ 'batal-terkirim':()=>passPage(notice('success','ok','Pass dibatalkan','Kursi A05 sudah dilepas.')+passCard('Jam sepi · Selasa, 1 Des','14.00–17.00 · WFC-7K2P',pill('warning','clock','Pengembalian diproses'),kv([['Dikembalikan',rp(55000)],['Diajukan','26 Nov, 10.20']]),'')),
+ 'batal-galat':()=>passPage(notice('danger','warn','Pembatalan belum tercatat','Internet terputus. Pass dan kursi Anda masih aktif. Coba batalkan lagi.',btn('Coba lagi','','reload'))+upcoming),
+ 'bulanan':()=>bulanan({body:planPanel,cta:sumline('Per periode',rp(420000))+btn('Beli bulanan','primary full')}),
+ 'bulanan-aktif':()=>bulanan({body:aktif(8)+`<section class="stack"><h2>Kunjungan berikutnya</h2>${passCard('Senin, 30 Nov','14.00–17.00 · Kursi A05',pill('success','ok','Dipesan'),'',btn('Lihat QR masuk','','qr'))}</section>`,aside:perpanjangPanel,cta:sumline('Sisa','4 kunjungan')+btn('Pesan kunjungan','primary full')}),
+ 'bulanan-perpanjang':()=>bulanan({body:aktif(8),aside:`<section class="panel"><h2>Periode baru</h2>${kv([['Mulai','1 Des 2026'],['Selesai','30 Des 2026'],['Kunjungan','12'+ex],['Pajak','Belum ditetapkan'],['Total',rp(420000),'total']])}<p class="muted">Sisa 4 kunjungan bulan ini tetap hangus 30 Nov.</p></section>`,cta:sumline('Total',rp(420000))+btn('Lanjut ke pembayaran','primary full')}),
+ 'bulanan-kosong':()=>bulanan({body:state(0,'cal','Bulanan belum dijual','Harga dan jumlah kunjungan belum ditetapkan. Pass harian tetap bisa dilihat di Kerja di cafe.',btn('Lihat pass harian','primary'))}),
+ 'bulanan-galat':()=>bulanan({body:state(1,'warn','Data bulanan gagal dimuat','Kunjungan Anda tidak berubah. Coba muat lagi.',btn('Coba lagi','primary','reload'))}),
+ 'bulanan-penuh':()=>bulanan({body:aktif(12)+notice('warning','warn','Semua kunjungan periode ini terpakai','Anda bisa memesan lagi mulai 1 Desember setelah perpanjang, atau beli pass harian.'),cta:sumline('Periode baru 1 Des',rp(420000))+btn('Beli pass harian','full')+btn('Perpanjang periode','primary full')}),
+ 'bulanan-memuat':()=>bulanan({body:sk(200,120)}),
+};
+
+/* ---------- Staf ---------- */
+const ops=(t,sub,right)=>`<header class="ops"><div><strong>${t}</strong><small>${sub}</small></div><div class="row">${right}</div></header>`;
+const staff=(body,{off,extra='',jam='14.22'}={})=>['s',ops('Kasir &amp; operasional','Cafe Legend Bandung · Contoh data',(off?pill('warning','off','Internet putus'):pill('success','wifi','Terhubung'))+`<time>${jam}</time>`)+`<main><div class="between wrap head"><div><h1>Tamu WFC hari ini</h1><p class="muted">Kamis, 26 November · jam sepi sampai 18.00</p></div>${btn('Pindai QR pass','primary','qr',off?'disabled':'')}</div>${body}</main>${extra}`];
+const seg=(a,b,c,cur=0)=>`<div class="seg">${[['Belum datang',a],['Sudah masuk',b],['Selesai',c]].map(([t,n],i)=>`<button class="btn" ${i===cur?'aria-current="true"':''}>${t}<span class="n">${n}</span></button>`).join('')}</div>`;
+const guest=(k,n,s,p,act)=>`<li class="guest"><span class="kursi">${k}</span><div><h3>${n}</h3><p class="sub">${s}</p></div>${act||''}${p?`<div class="pills">${p}</div>`:''}</li>`;
+const inb=(d)=>btn('Check-in','','',d?'disabled':'');
+const coming=(d,m)=>`<ul class="stack s">${guest('B03','Dimas Prasetyo','Kursi 3 jam · mulai 14.00 · WFC-4TQ8',pill('warning','clock',m?'Lewat 30 menit, belum dilepas':'Dilepas 14.30 bila tidak datang'),m?btn('Lepas kursi','','',d?'disabled':''):inb(d))}${guest('A05','Rani Kusuma','Jam sepi · mulai 14.00 · WFC-7K2P',m?pill('warning','clock','Lewat 30 menit, belum dilepas'):pill('warning','clock','Dilepas 14.30, 8 menit lagi'),m?btn('Lepas kursi'):inb(d))}${guest('B06','Yoga Saputra','Bulanan · mulai 15.00 · WFC-2NWE','',inb(d))}${guest('A10','Sinta Maharani','Kursi 3 jam · mulai 13.00 · WFC-6PZK',pill('danger','x','Tidak datang, dilepas 13.30')+pill('info','cup','Kredit masih bisa dipakai hari ini'),'')}</ul>`;
+const occ=(n,q)=>`<section class="panel side"><div class="between wrap"><h2>Okupansi WFC</h2>${n>=q?pill('danger','x','Penuh'):pill('success','ok',`${q-n} kosong`)}</div><dl class="stats"><div><dt>Kursi terisi</dt><dd>${n} / ${q}</dd><small>${Math.round(n/q*100)}% · target 55%${ex}</small></div><div><dt>Belanja per kursi per jam</dt><dd class="nw">${rpn(24000)}</dd><small>Rata-rata 08.00–14.00${ex}</small></div></dl><div class="meter" role="img" aria-label="${n} dari ${q} kursi"><i style="width:${n/q*100}%"></i></div></section>`;
+const hourly=(n)=>`<section class="panel"><h2>Kuota dan belanja per jam</h2><table><thead><tr><th>Jam</th><th class="r">Kursi</th><th class="r">Belanja per kursi per jam</th></tr></thead><tbody>${[['08.00–11.30','Sepi','6 / 24','Rp 22.400'],['11.30–14.00','Ramai','8 / 8','Rp 25.680'],['14.00–18.00','Sepi, sekarang',n+' / 24','Berjalan'],['18.00–21.00','Ramai','6 / 8','Dipesan'],['21.00–22.00','Sepi','2 / 24','Dipesan']].map((r,i)=>`<tr class="${i===2?'now':''}"><td>${r[0]}<br><span class="small muted">${r[1]}</span></td><td class="r nw">${r[2]}</td><td class="r nw">${r[3]}</td></tr>`).join('')}</tbody></table><p class="small muted">Belanja makan dan minum dibagi jam kursi terpakai. Semua angka contoh.</p></section>`;
+const side=(n)=>`<div class="stack side">${occ(n,24)}${hourly(n)}</div>`;
+const S={
+ 'checkin':()=>staff(`<div class="two"><div class="stack">${seg(3,9,4)}${coming()}</div>${side(9)}</div>`),
+ 'checkin-konfirmasi':()=>staff(`<div class="two"><div class="stack">${seg(3,9,4)}${coming()}</div>${side(9)}</div>`,{extra:dialog('Check-in kursi A05?',kv([['Tamu','Rani Kusuma'],['Pass','Jam sepi · WFC-7K2P'],['Jam','14.00–17.00'],['Kredit makan dan minum',rp(35000)],['Status','Lunas, dikonfirmasi']])+'<p class="muted">Check-in mengaktifkan kredit makan dan minum sampai 22.00 hari ini.</p>',btn('Kembali')+btn('Check-in Rani','primary'))}),
+ 'checkin-kosong':()=>staff(`<div class="two"><div class="stack">${seg(0,0,0)}${state(0,'seat','Belum ada tamu WFC hari ini','Pass yang lunas untuk hari ini muncul otomatis di daftar ini.')}</div><div class="stack side">${occ(0,24).replace('Rp 24.000','Rp 0').replace('Rata-rata 08.00–14.00'+ex,'Belum ada belanja')}</div></div>`),
+ 'checkin-galat':()=>staff(state(1,'warn','Daftar tamu gagal dimuat','Belum ada daftar tersimpan di perangkat ini. Minta tamu menunjukkan QR, lalu coba muat lagi.',btn('Coba lagi','primary','reload'))),
+ 'checkin-offline':()=>staff(notice('warning','off','Internet putus, daftar terakhir 14.10','Pakai daftar ini untuk mengantar tamu ke kursinya. Check-in dicatat setelah internet kembali. Kredit belum bisa dipakai, tamu bayar biasa.')+`<div class="two"><div class="stack">${seg(3,9,4)}${coming(1)}</div>${side(9)}</div>`,{off:1}),
+ 'checkin-penuh':()=>staff(`<div class="two"><div class="stack">${seg(0,24,4,1)}${notice('danger','seat','24 dari 24 kursi WFC terisi','Tamu tanpa pass bisa memakai kursi cafe biasa dengan minimum belanja.')}${['A','B'].map(z=>`<div class="stack s"><h3>${z==='A'?'Dalam':'Teras'}</h3><div class="seats">${codes(z).map(c=>`<button class="seat">${c}<small>${ic('check')}Terisi</small></button>`).join('')}</div></div>`).join('')}</div>${side(24)}</div>`),
+ 'checkin-lepas':()=>staff(notice('warning','off','Internet outlet sempat putus','Kursi tidak dilepas otomatis. Pastikan tamu benar-benar tidak ada, lalu lepas sendiri.')+`<div class="two"><div class="stack">${seg(3,9,4)}${coming(0,1)}</div>${side(9)}</div>`,{jam:'14.32',extra:dialog('Lepas kursi A05?',kv([['Tamu','Rani Kusuma'],['Pass','Jam sepi · mulai 14.00'],['Lewat','32 menit']])+'<p class="muted">Uang tidak kembali. Bila datang terlambat, kursi tidak dijamin tetapi kreditnya masih aktif hari ini. Kursi dijual lagi hanya bila sisa waktunya cukup.</p>',btn('Kembali')+btn('Lepas kursi A05','primary'))}),
+ 'checkin-memuat':()=>staff(`<div class="two">${sk(60,112,112,112)}${sk(200,300)}</div>`),
+};
+
+/* ---------- Kelola ---------- */
+const KT=[['konfig','Kursi dan kuota'],['angka','Angka bisnis'],['usulan','Usulan AI']];
+const kelola=(cur,h,lead,body,{act='',extra='',n=3}={})=>['s k',ops('Manajemen · WFC','Cafe Legend Bandung · Contoh data',pill('danger','lock','Penjualan mati'))+`<nav class="ktabs" aria-label="Pengaturan WFC">${KT.map(([k,t])=>`<a href="?screen=${k}" ${k===cur?'aria-current="page"':''}>${t}${k==='usulan'?`<span class="n">menyusul</span>`:''}</a>`).join('')}</nav><main><div class="between wrap head"><div><h1>${h}</h1><p class="muted">${lead}</p></div>${act}</div>${body}</main>${extra}`];
+const ready=(list)=>`<section class="panel"><h2>Syarat membuka penjualan</h2><ul class="check">${list.map(([y,t])=>`<li><span class="${y?'y':'n'}">${ic(y?'ok':'x')}</span><span>${t}<span class="small muted"> · ${y?'sudah':'belum'}</span></span></li>`).join('')}</ul><p class="small muted">Penjualan tetap mati sampai semua terisi dan tim Legend membukanya.</p></section>`;
+const READY=ready([[1,'Kursi dan kuota per jam'],[1,'Angka bisnis disetujui orang kedua'],[1,'Harga di atas harga terendah'],[0,'Kredit bisa dipakai di kasir'],[0,'Ketentuan pajak dari konsultan']]);
+const seatRow=(c,z,st,b,blocked)=>`<tr><td class="strong">${c}</td><td>${z}</td><td>${st?pill('success','ok','Dijual'):pill('','x','Tidak dijual')}</td><td data-l="Pesanan mendatang">${b}</td><td class="r">${btn(st?'Nonaktifkan':'Aktifkan','','',blocked?'disabled':'')}</td></tr>`;
+const seatTable=(rows,full)=>`<section class="panel"><h2>Daftar kursi</h2><table class="stackm"><thead><tr><th>Kode</th><th>Zona</th><th>Status</th><th>Pesanan mendatang</th><th class="r">Aksi</th></tr></thead><tbody>${rows.map(r=>seatRow(...r)).join('')}</tbody></table>${full?btn('Tampilkan 18 kursi lainnya','full'):''}</section>`;
+const kuota=`<section class="panel"><h2>Kuota kursi per jam</h2><p class="muted">Hari kerja · kosong berarti 0, paling banyak 24 kursi.${ex}</p><div class="hours">${Array.from({length:14},(_,i)=>i+8).map(h=>fld(String(h).padStart(2,'0')+'.00',[11,12,13,18,19,20].includes(h)?'8':'24','',[11,12,13,18,19,20].includes(h)?'Ramai':'Sepi')).join('')}</div><p class="small muted">Sabtu dan Minggu: 8 kursi sepanjang hari. Di luar kuota, kursi dipakai tamu makan.</p>${btn('Ajukan kuota','full')}</section>`;
+function fld(l,v,unit='',hint=ex,bad=''){const id='f'+l.replace(/\W/g,'');return `<div class="field ${bad?'bad':''}"><label for="${id}">${l}</label><div class="inp">${unit==='Rp'?'<span>Rp</span>':''}<input id="${id}" value="${v}" inputmode="numeric" autocomplete="off" ${bad?'aria-invalid="true"':''} aria-describedby="${id}h">${unit&&unit!=='Rp'?`<span class="muted nw">${unit}</span>`:''}</div><span class="hint" id="${id}h">${bad?ic('warn')+`<span>${bad}</span>`:hint||'Belum diisi'}</span></div>`}
+const ROWS=[['A01','Dalam',1,'4'],['A02','Dalam',1,'2'],['A03','Dalam',1,'Tidak ada'],['A04','Dalam',0,'Tidak ada'],['B01','Teras',1,'1'],['B02','Teras',1,'Tidak ada']];
+const konfig=(b,o)=>kelola('konfig','Kursi dan kuota','Hanya kursi yang khusus untuk WFC.',b,{act:btn('Tambah kursi','','plus'),...o});
+const konfigBody=`<div class="two">${seatTable(ROWS,1)}<div class="stack side late">${kuota}${READY}</div></div>`;
+
+function numbers(empty,bad){const v=x=>empty?'':x,h=(t='')=>empty?(t?'Belum diisi. Saran dari data: '+t+ex:''):ex;
+ return `<section class="panel"><h2>Kursi dan jam buka</h2><div class="form">${fld('Kursi total',v('260'),'kursi',h('260'))}${fld('Kursi khusus WFC',v('24'),'kursi',h())}${fld('Jam buka',v('08.00'),'',h())}${fld('Jam tutup',v('22.00'),'',h())}</div></section><section class="panel"><h2>Biaya dan target per bulan</h2><div class="form">${fld('Biaya tetap',v('240.000.000'),'Rp',h())}${fld('Target omset',v('465.000.000'),'Rp',h())}${fld('Target laba',v('60.000.000'),'Rp',h())}${fld('Target okupansi',v(bad?'155':'55'),'%',h(),bad?'Isi antara 1 dan 100.':'')}</div></section><section class="panel"><h2>Makan dan minum</h2><div class="form">${fld('Belanja per orang',v('48.000'),'Rp',h('Rp 48.000'))}${fld('Modal bahan',v('35'),'%',h('35%'))}${fld('Lama duduk rata-rata',v('2'),'jam',h('1,9 jam'))}</div></section>`}
+const floors=`<section class="panel"><h2>Harga terendah</h2>${kv([['Batas per jam-kursi, sepi',rp(9000)],['Batas per jam-kursi, ramai',rp(16000)]])}<table class="stackm"><thead><tr><th>Produk</th><th class="r">Terendah</th><th class="r">Harga</th></tr></thead><tbody>${[['Jam sepi',43250,55000],['Sepanjang hari',210500,215000],['Reservasi 3 jam',62500,65000],['Bulanan',391000,420000]].map(([n,a,b])=>`<tr><td class="strong">${n}</td><td class="r nw" data-l="Terendah">${rpn(a)}</td><td class="r nw" data-l="Harga">${rpn(b)}</td></tr>`).join('')}</tbody></table><p class="small muted">Harga = biaya kursi + kredit. Dihitung untuk keadaan terburuk: semua kredit dan jam terpakai, biaya pembayaran Rp 4.000, pajak belum dihitung. Semua angka contoh.</p></section>`;
+const angka=(b,o={})=>kelola('angka','Angka bisnis','Dasar harga terendah. Perubahan perlu persetujuan orang kedua.',b,{act:o.empty?'':btn('Ubah harga produk'),...o});
+const save=(d)=>`<div class="foot2">${btn('Batalkan perubahan')}${btn('Ajukan perubahan','primary','',d?'disabled':'')}</div>`;
+const ubahan=kv([['Target okupansi','50% ke 55%'+ex],['Lama duduk rata-rata','1,5 ke 2 jam'+ex],['Diajukan','GM, 26 Nov 13.10'],['Mulai berlaku','1 Des 2026, 08.00']]);
+
+const ab=(a,b)=>`<div class="ab"><div><small>Sekarang</small><b>${a}</b></div>${ic('arrow')}<div><small>Usulan AI</small><b>${b}</b></div></div>`;
+const prop=(h,tag,a,b,why,rows,src,acts)=>`<article class="panel"><div class="between wrap"><h2>${h}</h2>${tag}</div>${ab(a,b)}<p>${why}</p>${kv(rows)}<p class="small muted row" style="align-items:flex-start">${ic('doc')}<span>Sumber: ${src}</span></p><div class="foot2">${acts}</div></article>`;
+const wait=pill('warning','clock','Menunggu keputusan');
+const P1=prop('Turunkan harga jam sepi',wait,rp(55000),rp(50000),'Okupansi jam sepi 31%, di bawah target 55%. Harga baru masih di atas harga terendah.',[['Harga terendah',rp(43250)],['Selisih di atas batas',rp(6750)]],'okupansi dan struk 9–22 Nov, angka contoh.',btn('Tolak')+btn('Setujui','primary'));
+const P2=prop('Kecilkan kuota jam ramai',wait,'8 kursi'+ex,'6 kursi'+ex,'Kursi reguler menghasilkan belanja lebih besar di jam ramai daripada kursi WFC.',[['Belanja WFC per kursi per jam',rp(25680)],['Belanja reguler per kursi per jam',rp(31200)]],'laporan per zona 9–22 Nov, angka contoh.',btn('Tolak')+btn('Setujui','primary'));
+const P3=prop('Turunkan harga sepanjang hari',pill('danger','lock','Tidak bisa disetujui'),rp(215000),rp(205000),'Ditahan otomatis. Harga usulan lebih rendah dari harga terendah.',[['Harga terendah',rp(210500)],['Kurang dari batas',rp(5500)]],'penjualan pass 9–22 Nov, angka contoh.',btn('Tolak')+btn('Setujui','','','disabled'));
+const guard=`<section class="panel"><h2>Cara kerja</h2>${rules([['lock','AI hanya mengusulkan harga dan skema, bukan angka bisnis. Harga dan skema tidak berubah sebelum Anda menyetujui.'],['ok','Yang meminta usulan tidak bisa menyetujuinya. Owner menyetujui usulan GM, dan sebaliknya.'],['doc','Pass yang sudah terjual memakai harga dan aturan lama.'],['warn','Usulan di bawah harga terendah tidak bisa disetujui.']])}</section>`;
+const usulan=(b,o={})=>kelola('usulan','Usulan AI','Anda masuk sebagai Owner. Usulan ini diminta GM.',notice('info','clock','Menyusul sesudah rilis 1','Di rilis 1, harga dan skema diajukan manual di Angka bisnis.')+b,{act:btn('Minta usulan baru'),...o});
+const uBody=(l)=>`<div class="two"><div class="stack">${l}</div><div class="stack side late">${guard}</div></div>`;
+const K={
+ 'konfig':()=>konfig(konfigBody),
+ 'konfig-tambah':()=>konfig(konfigBody,{extra:dialog('Tambah kursi WFC',fld('Kode kursi','A01','','','Kode A01 sudah dipakai. Coba A13.')+fld('Zona WFC','Dalam','','Hanya zona yang ditandai WFC.')+'<p class="muted">Kursi tidak boleh dipakai meja kasir atau reservasi makan.</p>',btn('Kembali')+btn('Tambah kursi','primary'))}),
+ 'konfig-kosong':()=>konfig(`<div class="two">${state(0,'seat','Belum ada kursi WFC','Tambah kursi dari zona yang ditandai WFC. Selama kosong, penjualan tetap mati.',btn('Tambah kursi pertama','primary','plus'))}<div class="stack side late">${ready([[0,'Kursi dan kuota per jam'],[0,'Angka bisnis disetujui orang kedua'],[0,'Harga di atas harga terendah'],[0,'Kredit bisa dipakai di kasir'],[0,'Ketentuan pajak dari konsultan']])}</div></div>`,{act:'',n:0}),
+ 'konfig-galat':()=>konfig(state(1,'warn','Daftar kursi gagal dimuat','Pengaturan terakhir tidak berubah. Coba muat lagi.',btn('Coba lagi','primary','reload')),{act:''}),
+ 'konfig-penuh':()=>konfig(notice('warning','seat','Semua kursi sudah punya pesanan','Kursi dengan pesanan mendatang tidak bisa dinonaktifkan. Batalkan atau pindahkan pesanannya dulu.')+`<div class="two">${seatTable([['A01','Dalam',1,'4',1],['A02','Dalam',1,'2',1],['A03','Dalam',1,'3',1],['A04','Dalam',1,'1',1],['B01','Teras',1,'1',1],['B02','Teras',1,'5',1]],1)}<div class="stack side late">${kuota}${READY}</div></div>`),
+ 'konfig-memuat':()=>konfig(`<div class="two">${sk(420)}${sk(200,180)}</div>`,{act:''}),
+ 'angka':()=>angka(`<div class="two"><div class="stack">${numbers()}${save()}</div><div class="stack side late">${floors}${READY}</div></div>`),
+ 'angka-kosong':()=>angka(notice('warning','lock','Penjualan WFC mati','Harga terendah dihitung setelah semua angka diisi. Saran dari data hanya acuan, tetap perlu diajukan dan disetujui orang kedua.')+`<div class="two"><div class="stack">${numbers(1)}${save(1)}</div><div class="stack side late">${ready([[1,'Kursi dan kuota per jam'],[0,'Angka bisnis disetujui orang kedua'],[0,'Harga di atas harga terendah'],[0,'Kredit bisa dipakai di kasir'],[0,'Ketentuan pajak dari konsultan']])}</div></div>`,{empty:1,n:0}),
+ 'angka-menunggu':()=>angka(notice('info','clock','Perubahan Anda menunggu Owner','Pengusul tidak bisa menyetujui sendiri. Angka versi 3 tetap dipakai sampai disetujui.',btn('Tarik pengajuan'))+`<div class="two"><div class="stack"><section class="panel"><h2>Perubahan yang diajukan</h2>${ubahan}</section>${numbers()}</div><div class="stack side late">${floors}${READY}</div></div>`,{act:''}),
+ 'angka-setujui':()=>angka(`<div class="two"><div class="stack">${numbers()}</div><div class="stack side late">${floors}${READY}</div></div>`,{act:'',extra:dialog('Setujui angka versi 4?',ubahan+rules([['ok','Anda masuk sebagai Owner, bukan pengusul.'],['doc','Pass yang sudah terjual memakai angka dan harga lama.']]),btn('Tolak')+btn('Setujui versi 4','primary'))}),
+ 'angka-galat':()=>angka(notice('danger','warn','Perubahan belum diajukan','Betulkan 1 isian yang ditandai, lalu ajukan lagi. Angka lama masih berlaku.')+`<div class="two"><div class="stack">${numbers(0,1)}${save()}</div><div class="stack side late">${floors}${READY}</div></div>`),
+ 'angka-harga-ditolak':()=>angka(`<div class="two"><div class="stack">${numbers()}${save()}</div><div class="stack side late">${floors}${READY}</div></div>`,{extra:dialog('Ubah harga sepanjang hari',fld('Biaya kursi','85.000','Rp')+fld('Kredit makan dan minum','120.000','Rp')+kv([['Harga baru',rp(205000)],['Harga terendah',rp(210500)],['Kurang',rp(5500),'total']])+notice('danger','warn','Di bawah harga terendah','Naikkan biaya kursi paling sedikit jadi '+rp(90500)+'.'),btn('Kembali')+btn('Ajukan harga','primary','','disabled'))}),
+ 'angka-memuat':()=>angka(`<div class="two">${sk(180,180,120)}${sk(260)}</div>`,{act:'',empty:1}),
+ 'usulan':()=>usulan(uBody(P1+P2+P3)),
+ 'usulan-setujui':()=>usulan(uBody(P1+P2+P3),{extra:dialog('Setujui harga baru?',ab(rp(55000),rp(50000))+rules([['cal','Berlaku untuk pembelian baru mulai Jumat, 27 Nov 08.00.'],['doc','14 pass jam sepi yang sudah terjual tidak berubah.'],['ok','Diminta GM lewat AI, disetujui Anda sebagai Owner.']]),btn('Kembali')+btn('Setujui harga baru','primary'))}),
+ 'usulan-tolak':()=>usulan(uBody(P1+P2+P3),{extra:dialog('Tolak usulan ini?','<p>Harga jam sepi tetap <b>'+rp(55000)+'</b>.</p><div class="field"><label for="al">Alasan (opsional)</label><textarea id="al">Tunggu data Desember.</textarea><span class="hint">Alasan ini dipakai saat AI menyusun usulan berikutnya.</span></div>',btn('Kembali')+btn('Tolak usulan','primary'))}),
+ 'usulan-berlaku':()=>usulan(notice('success','ok','Harga jam sepi disetujui '+rp(50000),'Berlaku untuk pembelian baru mulai Jumat, 27 Nov 08.00. Diminta GM, disetujui Owner 26 Nov 14.35. Pass yang sudah terjual tidak berubah.')+uBody(P2+P3),{n:2}),
+ 'usulan-proses':()=>usulan(uBody(`<section class="panel" aria-live="polite"><div class="between wrap"><h2>AI sedang menyusun usulan</h2>${pill('info','clock','Langkah 3 dari 4')}</div><ul class="steps"><li>${ic('ok')}<span>Membaca okupansi per jam 9–22 Nov</span></li><li>${ic('ok')}<span>Membaca belanja per kursi per jam</span></li><li>${ic('clock')}<span class="strong">Membandingkan dengan harga terendah</span></li><li class="muted">${ic('right')}<span>Menulis usulan</span></li></ul><div class="foot2">${btn('Hentikan','','stop')}</div></section>`),{act:'',n:0}),
+ 'usulan-kosong':()=>usulan(uBody(state(0,'doc','Belum ada usulan','AI menyusun usulan dari okupansi dan belanja per kursi. Tidak ada yang berubah tanpa persetujuan Anda.',btn('Minta usulan','primary'))),{act:'',n:0}),
+ 'usulan-galat':()=>usulan(uBody(state(1,'warn','Usulan gagal disusun','Data penjualan minggu ini belum lengkap. Harga dan kuota tidak berubah.',btn('Coba lagi','primary','reload')+btn('Ajukan manual'))),{act:'',n:0}),
+ 'usulan-penuh':()=>usulan(notice('info','info','3 usulan menunggu keputusan','Usulan baru bisa diminta setelah salah satu disetujui atau ditolak.')+uBody(P1+P2+P3),{act:btn('Minta usulan baru','','','disabled')}),
+ 'usulan-memuat':()=>usulan(`<div class="two">${sk(300,300)}${sk(240)}</div>`,{act:'',n:0}),
+};
+const SCREENS={...M,...S,...K};
+window.SCREENS=SCREENS;
+const screen=new URLSearchParams(location.search).get('screen')||'katalog';
+const [cls,html]=SCREENS[screen]();
+document.body.className=cls;document.getElementById('app').innerHTML=html;
+document.querySelector('dialog')?.showModal();
+</script>
+</body>
+</html>
