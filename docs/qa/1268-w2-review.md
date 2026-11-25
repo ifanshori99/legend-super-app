@@ -37,3 +37,14 @@ Urutan: 1, 3, 4, 6; lalu endpoint dan UI resolve + test konkurensi (kiriman terl
 5. Catatan rusak: diganti catatan EDC baru dalam satu tulisan (pola `settleStored`); ditolak = tetap terkunci; nominal slip diketik = sisa, selain itu (c). Izin `pos.edc_standalone.approve`, bukan `void`.
 6. P3 kartu: pagar versi dengan tender menunggu lock (test); catatan rusak + QR hidup + provider diam perlu jalan ke release manajer.
 7. Tes wajib: 412/409/423 di tiga jalur tetap terkunci; nominal berubah; lunas cara lain dengan catatan EDC; keluar (c). Lalu review delta.
+
+## Re-review 26 Nov (93c1e6f05): TIDAK LULUS tipis, 0 P1, 1 P2 menahan
+
+Terpenuhi: no. 1, 2 (jalur `recording`), 3 (catatan terbaca), 4, 5, 7. Menahan:
+
+1. **P2** catatan rusak + tagihan lunas: `paidCardBody` selalu menyuruh void di mesin, dan `fenceOrder` (`pos-payment-intent-resolve.ts`) mengembalikan "recorded" tanpa memeriksa `card`. Bila tagihan lunas oleh slip itu, supervisor mem-void uang sah (pembukuan lunas, uang hilang).
+   Perbaikan: rusak + lunas wajib isi `bankRef` slip. Cocok tender EDC captured (bankRef, dan terminal + nominal bila ada) = tutup sebagai "sudah tercatat", `voided` ditolak 409 di server. Tidak cocok = `voided` seperti sekarang. Teks: "Cocokkan slip dulu; jangan void bila sudah tercatat". Test dua arah (server dan web).
+2. Ikut sekalian (P3 no. 6): `hasCapturedSlip` mencocokkan juga terminal dan nominal bila keduanya ada. Kosong atau beda = anggap TIDAK cocok di web (peringatan bertahan), tetapi di server `voided` tetap ditolak bila `bankRef` cocok tender captured order itu (ragu = jangan void).
+3. Berkas: resolve service, `packages/shared/src/pos/payment-intent.ts`, web `ws04-pos-kasir/api.ts`, `components/payment/{resolve-dialog,unresolved-panel}.tsx`, i18n `pos-kasir-payment.ts`, test.
+
+Kartu lanjutan (tidak menahan W2): nominal/validasi EDC ditolak sebelum catatan ditulis + nominal slip dikunci (P2 lama); `voided` diterima bila tender kunci itu sudah tidak captured (P3); rusak + lunas + QR hidup (P3, legend-9yw78.16).
