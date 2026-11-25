@@ -65,7 +65,11 @@ import {
   cafeLegendPlatformFixtures,
 } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
-import { signDeviceToken, verifyDeviceToken } from "../lib/device-token.ts";
+import {
+  hashDeviceToken,
+  signDeviceToken,
+  verifyDeviceToken,
+} from "../lib/device-token.ts";
 import { requestContext } from "../lib/request-context.ts";
 import { errorHandler } from "../middleware/error-handler.ts";
 import { tenantContext as resolveTenantContext } from "../middleware/tenant.ts";
@@ -187,7 +191,19 @@ const tokenOf = (deviceId: string, issuedAt: number) =>
     deviceId,
   });
 
-/** An enrolled device whose registry generation is three minutes old. */
+/** The registry row of the device's newest token: generation and digest (E2). */
+async function issuedAs(deviceId: string, issuedAt: number): Promise<string> {
+  const token = tokenOf(deviceId, issuedAt);
+  await asTenant((c) =>
+    c.query(
+      "UPDATE devices SET token_issued_at = $3, token_hash = $4 WHERE id = $1 AND tenant_id = $2",
+      [deviceId, tenant.id, new Date(issuedAt * 1000), hashDeviceToken(token)],
+    ),
+  );
+  return token;
+}
+
+/** An enrolled device whose newest token is two minutes old. */
 async function registeredDevice(label: string) {
   const enrolled = await enrollDevice(outletScope(outletId), actor, {
     outletId,
@@ -198,24 +214,12 @@ async function registeredDevice(label: string) {
   });
   const id = enrolled.device.id;
   createdDevices.push(id);
-  await asTenant((c) =>
-    c.query(
-      "UPDATE devices SET token_issued_at = now() - interval '3 minutes' WHERE id = $1 AND tenant_id = $2",
-      [id, tenant.id],
-    ),
-  );
-  return { id, oldToken: tokenOf(id, nowSeconds() - 120) };
+  return { id, oldToken: await issuedAs(id, nowSeconds() - 120) };
 }
 
 /** Reissue: the registry generation moves on, every older token is replaced. */
 async function rotate(deviceId: string): Promise<string> {
-  await asTenant((c) =>
-    c.query(
-      "UPDATE devices SET token_issued_at = now() - interval '30 seconds' WHERE id = $1 AND tenant_id = $2",
-      [deviceId, tenant.id],
-    ),
-  );
-  return tokenOf(deviceId, nowSeconds());
+  return issuedAs(deviceId, nowSeconds());
 }
 
 async function newStaff(name: string) {

@@ -87,6 +87,7 @@ import { createApp } from "../app.ts";
 import { db } from "../db/index.ts";
 import { resetEdgeApplierRegistryForTests } from "../edge/applier-registry.ts";
 import { registerAccessEdgeApplier } from "../edge/access-applier.ts";
+import { setCatalogOverrideClock } from "../edge/catalog-override.ts";
 import { createDbLinkStore } from "../edge/db-link-store.ts";
 import {
   getEdgeRuntimeState,
@@ -162,6 +163,7 @@ async function asEdge<T>(run: () => Promise<T>): Promise<T> {
   return withEdgeModeEnv(async () => {
     const saved = getEdgeRuntimeState();
     setDeviceRegistryReadyForTests({});
+    setCatalogOverrideClock(() => new Date());
     setEdgeRuntimeStateForTests({
       edgeMode: true,
       identity: { context: node.context, scope: node.scope },
@@ -176,6 +178,7 @@ async function asEdge<T>(run: () => Promise<T>): Promise<T> {
     } finally {
       setEdgeRuntimeStateForTests(saved);
       setDeviceRegistryReadyForTests(null);
+      setCatalogOverrideClock(null);
     }
   });
 }
@@ -183,15 +186,14 @@ async function asEdge<T>(run: () => Promise<T>): Promise<T> {
 type Device = { id: string; token: string };
 
 async function enrollEdgeDevice(label: string): Promise<Device> {
-  const enrolled = await asEdge(() =>
-    enrollDevice(scopeA(), actor, {
-      outletId: outletA,
-      type: "pos",
-      label: `${label} ${randomUUID().slice(0, 6)}`,
-      stationId: null,
-      idempotencyKey: randomUUID(),
-    }),
-  );
+  // E2: devices are enrolled on the cloud, which stores the token digest.
+  const enrolled = await enrollDevice(scopeA(), actor, {
+    outletId: outletA,
+    type: "pos",
+    label: `${label} ${randomUUID().slice(0, 6)}`,
+    stationId: null,
+    idempotencyKey: randomUUID(),
+  });
   return { id: enrolled.device.id, token: enrolled.token };
 }
 

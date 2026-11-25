@@ -15,8 +15,16 @@ import { user } from "./user";
 // method gate"). Only a `password` session may open a management surface;
 // `legacy` is every session that existed before migration 0204 (customer rows)
 // and the safe default for any path that does not set the column.
+// `edge_staff_pin` (E2, brief 1269) is a staff PIN login on an outlet edge: only
+// services/edge-staff-session.service.ts inserts it, only an edge accepts it
+// (lib/edge-session.ts) and the cloud refuses it.
 export type SessionAuthMethod =
-  "password" | "whatsapp" | "email_magic_link" | "google" | "legacy";
+  | "password"
+  | "whatsapp"
+  | "email_magic_link"
+  | "google"
+  | "legacy"
+  | "edge_staff_pin";
 
 // Better Auth owns the session cookie and the `token` lookup column. PRD v1.7
 // §6 B lists `sessions` (global) with token_hash, device_label, tenant_id,
@@ -90,12 +98,25 @@ export const session = pgTable(
       .array()
       .notNull()
       .default(sql`'{}'::uuid[]`),
+    // E2 (brief 1269): the registered device an `edge_staff_pin` session is
+    // bound to; NULL for every other session. No FK: `devices` is tenant owned
+    // (RLS) and this table is global. A revoked device ends its sessions.
+    edgeDeviceId: uuid("edge_device_id"),
   },
   (table) => [
     index("session_user_id_idx").on(table.userId),
+    index("session_edge_device_id_idx")
+      .on(table.edgeDeviceId)
+      .where(sql`${table.edgeDeviceId} IS NOT NULL`),
     check(
       "session_auth_method_check",
-      sql`${table.authMethod} IN ('password', 'whatsapp', 'email_magic_link', 'google', 'legacy')`,
+      sql`${table.authMethod} IN ('password', 'whatsapp', 'email_magic_link', 'google', 'legacy', 'edge_staff_pin')`,
+    ),
+    // E2: an edge PIN session is always bound to a device, never a management
+    // session and never carries a second factor.
+    check(
+      "session_edge_staff_pin_check",
+      sql`(${table.authMethod} = 'edge_staff_pin') = (${table.edgeDeviceId} IS NOT NULL) AND (${table.authMethod} <> 'edge_staff_pin' OR (${table.kind} = 'customer' AND ${table.mfaVerifiedAt} IS NULL AND ${table.mfaChallengeVerifiedAt} IS NULL AND ${table.impersonatedBy} IS NULL))`,
     ),
   ],
 );

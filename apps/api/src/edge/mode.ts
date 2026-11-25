@@ -73,17 +73,14 @@ export const EDGE_WEB_PREFIXES = [
 export const EDGE_API_PREFIXES = [
   "/api/health",
   "/api/edge",
-  // Staff sign-in and device sessions against the local replica (AUTH-06).
-  // Only sign-in, sign-out, the session read, the caller's identity, device
-  // sessions and the MFA step of sign-in. Sign-up, the Better Auth admin
-  // plugin (/api/auth/admin/*), magic links, Google, WhatsApp/email login
-  // challenges and MFA enrolment need the cloud (legend-zinn).
-  "/api/auth/sign-in/email",
+  // Staff sign in with a PIN (`/api/edge/staff-session`, E2 brief 1269). Only
+  // sign-out, the session read and the caller's identity: password sign-in,
+  // sign-up, device sessions, the Better Auth admin plugin (/api/auth/admin/*),
+  // magic links, Google, WhatsApp/email login challenges and MFA need the cloud
+  // (legend-zinn).
   "/api/auth/sign-out",
   "/api/auth/get-session",
   "/api/auth/me",
-  "/api/auth/sessions",
-  "/api/auth/mfa/verify",
   "/api/me",
   "/api/staff-pins",
   "/api/pos-overrides",

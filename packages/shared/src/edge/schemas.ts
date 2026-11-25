@@ -113,6 +113,15 @@ export const deviceSyncRecordSchema = z
     updatedAt: isoDateTimeSchema,
     /** Token floor: the edge refuses tokens issued before it (reissue rotates). */
     tokenIssuedAt: isoDateTimeSchema.nullable(),
+    /**
+     * E2 (brief 1269): SHA-256 (hex) of the device's current token; the edge
+     * accepts a token only by it. Absent = not asked for, or an older cloud.
+     */
+    tokenHash: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .nullable()
+      .optional(),
   })
   .refine(revocationAgrees, revocationAgreesIssue);
 export type DeviceSyncRecord = z.infer<typeof deviceSyncRecordSchema>;

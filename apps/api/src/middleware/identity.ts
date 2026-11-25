@@ -33,6 +33,7 @@ import {
 } from "@starter/shared/access";
 import { getAuth } from "./auth";
 import { HttpError } from "../lib/http-error";
+import { EDGE_STAFF_PIN } from "../lib/request-context";
 import {
   assertPayoutReauth,
   type PayoutReauthMethod,
@@ -87,6 +88,9 @@ export function requireIdentitySurface(
     const now = clock();
     const row = await loadSessionRow(auth.session.id);
     if (!row) throw unauthorized();
+    // E2 (brief 1269): an edge PIN session never opens a guarded surface.
+    if (row.authMethod === EDGE_STAFF_PIN)
+      throw new AccessError("MFA_REQUIRED");
 
     const facts = await resolveFacts({
       userId: auth.user.id,

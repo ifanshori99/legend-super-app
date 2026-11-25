@@ -98,15 +98,11 @@ async function listen(server: Server) {
 }
 
 describe("legend-zinn edge allowlist for /api/auth and /api/outlets", () => {
-  it("serves only sign-in, session and device-session auth paths on the edge", () => {
+  it("serves only sign-out, the session read and the caller's identity on the edge (E2: staff sign in with a PIN)", () => {
     for (const path of [
-      "/api/auth/sign-in/email",
       "/api/auth/sign-out",
       "/api/auth/get-session",
       "/api/auth/me",
-      "/api/auth/sessions",
-      "/api/auth/sessions/current/activity",
-      "/api/auth/mfa/verify",
     ])
       expect(classifyApiPath(path), path).toBe("edge_and_cloud");
     for (const path of [
@@ -120,6 +116,10 @@ describe("legend-zinn edge allowlist for /api/auth and /api/outlets", () => {
       "/api/auth/login-challenges/whatsapp",
       "/api/auth/mfa/factors",
       "/api/auth/sign-in",
+      "/api/auth/sign-in/email",
+      "/api/auth/sessions",
+      "/api/auth/sessions/current/activity",
+      "/api/auth/mfa/verify",
       "/api/auth/sign-in/email-otp",
     ])
       expect(classifyApiPath(path), path).toBe("cloud_only");
@@ -286,6 +286,9 @@ describe("legend-zinn edge allowlist for /api/auth and /api/outlets", () => {
   it("the edge refuses sign-up, the admin plugin and outlet back office over HTTP", async () => {
     const edge = app(true);
     for (const path of [
+      "/api/auth/sign-in/email",
+      "/api/auth/sessions",
+      "/api/auth/mfa/verify",
       "/api/auth/sign-up/email",
       "/api/auth/admin/list-users",
       "/API/Auth/Admin/list-users",
@@ -296,9 +299,6 @@ describe("legend-zinn edge allowlist for /api/auth and /api/outlets", () => {
       expect(res.status, path).toBe(404);
       expect(res.body.code, path).toBe("CLOUD_ONLY_ROUTE");
     }
-    expect((await request(edge).post("/api/auth/sign-in/email")).status).toBe(
-      200,
-    );
     expect((await request(edge).get("/api/auth/get-session")).status).toBe(200);
     expect(
       (await request(edge).get(`/api/outlets/${OUTLET}/pos/orders`)).status,

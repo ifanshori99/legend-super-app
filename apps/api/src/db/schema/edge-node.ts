@@ -509,6 +509,9 @@ export const edgePullCheckpoints = pgTable(
         // A rewound stream whose full replay has not finished: absent items are
         // deactivated when it does (legend-7r7q6, max 40 chars).
         | `catalog:replay:${CatalogSyncStream}`
+        // Trusted-clock time of the last identity pull, for the 72 h limit of
+        // staff logins (E2, brief 1269); `catalog:` is the check's prefix.
+        | `catalog:identity:${"device_registry" | "staff_pins" | "people"}`
       >()
       .notNull(),
     watermark: text("watermark"),

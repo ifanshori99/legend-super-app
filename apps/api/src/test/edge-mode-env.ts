@@ -6,17 +6,27 @@
 // registry. A test that registers its edge node with `setEdgeNodeForEnvTests`
 // gets both installed for the duration of each `withEdgeModeEnv` run (device
 // credentials are refused on an edge process without an identity).
+//
+// E2 (brief 1269): a real edge also has a trusted clock, installed with the
+// node. A file that starts with EDGE_MODE on keeps it in the parsed env; there
+// `isEdgeNode()` follows the live process.env, so deleting EDGE_MODE really
+// gives a cloud process (an edge opens no password session).
 import { outletIdSchema } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
 import { randomUUID } from "node:crypto";
+import { env } from "../config/env.ts";
+import { setCatalogOverrideClock } from "../edge/catalog-override.ts";
+import { setEdgeNodeForTests } from "../edge/mode.ts";
 import {
   getEdgeRuntimeState,
   setDeviceRegistryReadyForTests,
   setEdgeRuntimeStateForTests,
 } from "../edge/runtime.ts";
+
+if (env.EDGE_MODE) setEdgeNodeForTests(() => process.env.EDGE_MODE === "true");
 
 let node: { readonly tenantId: string; readonly outletId: string } | null =
   null;
@@ -47,6 +57,7 @@ export function installEdgeNodeForTests(next: {
 export function removeEdgeNodeForTests(): void {
   setEdgeRuntimeStateForTests(cloudRuntime);
   setDeviceRegistryReadyForTests(null);
+  setCatalogOverrideClock(null);
 }
 
 const cloudRuntime = getEdgeRuntimeState();
@@ -67,6 +78,7 @@ function installNodeState(node: {
     source: "session",
   });
   setDeviceRegistryReadyForTests({});
+  setCatalogOverrideClock(() => new Date());
   setEdgeRuntimeStateForTests({
     edgeMode: true,
     identity: {
@@ -97,9 +109,21 @@ export async function withEdgeModeEnv<T>(run: () => Promise<T>): Promise<T> {
     if (--depth === 0 && saved) {
       setEdgeRuntimeStateForTests(saved);
       setDeviceRegistryReadyForTests(null);
+      setCatalogOverrideClock(null);
       saved = null;
     }
     if (previous === undefined) delete process.env.EDGE_MODE;
     else process.env.EDGE_MODE = previous;
+  }
+}
+
+/** The reverse, for a file whose whole process runs with EDGE_MODE on. */
+export async function withCloudModeEnv<T>(run: () => Promise<T>): Promise<T> {
+  const previous = process.env.EDGE_MODE;
+  delete process.env.EDGE_MODE;
+  try {
+    return await run();
+  } finally {
+    if (previous !== undefined) process.env.EDGE_MODE = previous;
   }
 }

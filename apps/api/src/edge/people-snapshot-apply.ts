@@ -40,8 +40,11 @@
 import {
   and,
   eq,
+  gt,
   inArray,
   isNull,
+  lte,
+  notExists,
   notInArray,
   or,
   sql,
@@ -78,6 +81,7 @@ import {
 import { session } from "../db/schema/session.ts";
 import { user } from "../db/schema/user.ts";
 import { withTenant } from "../db/tenant.ts";
+import { EDGE_STAFF_PIN } from "../lib/request-context.ts";
 import { edgeNodeContext } from "../services/edge-node.service.ts";
 import type { parseEdgeCredential } from "./credential.ts";
 
@@ -203,6 +207,39 @@ async function freeRoleAssignments(
         keep.length > 0 ? notInArray(roleAssignments.id, keep) : undefined,
       ),
     );
+}
+
+/**
+ * E2 (brief 1269): a staff member with no assignment in force any more loses
+ * the edge PIN session at once. Banned and absent users lost theirs in
+ * `freeUsers`.
+ */
+async function endUnassignedEdgeSessions(
+  tx: Tx,
+  claims: Claims,
+): Promise<void> {
+  await tx.delete(session).where(
+    and(
+      eq(session.authMethod, EDGE_STAFF_PIN),
+      eq(session.tenantId, claims.tenantId),
+      notExists(
+        tx
+          .select({ one: sql`1` })
+          .from(roleAssignments)
+          .where(
+            and(
+              eq(roleAssignments.tenantId, claims.tenantId),
+              eq(roleAssignments.userId, session.userId),
+              lte(roleAssignments.validFrom, sql`statement_timestamp()`),
+              or(
+                isNull(roleAssignments.validUntil),
+                gt(roleAssignments.validUntil, sql`statement_timestamp()`),
+              ),
+            ),
+          ),
+      ),
+    ),
+  );
 }
 
 /** Returns the ids of absent roles: deleted at the end when nothing uses them. */
@@ -760,6 +797,7 @@ export async function applyEdgePeopleSnapshot(args: {
         // Pass 2: upsert by id in FK order, then the sync state.
         await upsertPeople(tx, claims, snapshot);
         await dropUnusedRoles(tx, claims, absentRoleIds);
+        await endUnassignedEdgeSessions(tx, claims);
         const seal = snapshot.selfieSealKey;
         const state = {
           snapshotEtag: etag,

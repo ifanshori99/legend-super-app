@@ -125,7 +125,12 @@ function toView(row: Row, viewerId?: string): PosOverrideView {
   });
 }
 
-/** Fail closed: true only when `userId` holds the action's approve permission on the outlet. */
+/**
+ * Fail closed: true only when `userId` holds the action's approve permission on
+ * the outlet. `pinProven`: the override is recorded only with this approver's
+ * own PIN; otherwise the edge PIN session of the caller cuts their role as on
+ * any other request (E2, brief 1269).
+ */
 async function holdsOverridePermission(
   tx: Tx,
   tenant: TenantContext,
@@ -134,10 +139,13 @@ async function holdsOverridePermission(
   action: PosOverrideAction,
   outletId: string,
   now: Date,
+  pinProven: boolean,
 ): Promise<boolean> {
   const permission = POS_OVERRIDE_APPROVE_PERMISSION[action];
   if (permission === undefined) return false;
-  const data = await loadTenantAccessInTransaction(tx, context, userId);
+  const data = await loadTenantAccessInTransaction(tx, context, userId, {
+    approver: pinProven,
+  });
   return resolveAccessSnapshot({
     tenant,
     userId,
@@ -610,6 +618,7 @@ export async function createPosOverride(
         input.action,
         outletId,
         now,
+        true,
       ))
     )
       throw new AccessError(
@@ -653,6 +662,7 @@ export async function createPosOverride(
         input.action,
         outletId,
         now,
+        true,
       ))
     )
       throw new AccessError("PERMISSION_DENIED");
@@ -746,6 +756,7 @@ async function settlePending(
         row.action,
         row.outletId,
         now,
+        false,
       ))
     ) {
       // The inbox approver lacks the POS override permission here: no override.

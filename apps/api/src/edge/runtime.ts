@@ -57,6 +57,8 @@ import {
   loadStaffPinCheckpoint,
   saveDeviceRegistryCheckpoint,
   saveStaffPinCheckpoint,
+  clearPendingEdgeIdentityStamps,
+  flushEdgeIdentityStamps,
 } from "../services/edge-device-sync-store.ts";
 import {
   EDGE_LINK_WAKE_CHANNEL,
@@ -172,6 +174,7 @@ import {
   type DeviceRegistryPuller,
   type DeviceRegistrySyncState,
 } from "./device-registry-puller.ts";
+import { withTokenHashRepull } from "./device-token-hash-repull.ts";
 
 /**
  * Fast path only: episodes this process already alerted. The durable dedupe is
@@ -1185,53 +1188,57 @@ export async function startEdgeRuntime(
       );
   };
   const puller = createDeviceRegistryPuller({
-    pull: (since, signal) =>
-      pullWithCursorRecovery(
-        async (from) => {
-          let first = true;
-          const result = await pullDeviceRegistry({
-            context: local.context,
-            // S-K1 (legend-3yqy): a standby never applies receipt sequences.
-            role: config.role,
-            // legend-zsdd: the sequences this database may number.
-            binding: {
-              edgeNodeId: local.scope.edgeNodeId,
-              edgeInstanceId: local.instanceId,
-            },
-            since: from,
-            refusals: receiptRunRefusals,
-            fetchPage: async (cursor, receiptRuns, refusals, reportSeq) => {
-              const isFirst = first;
-              first = false;
-              try {
-                return await fetchDeviceRecords(
-                  cursor,
-                  signal,
-                  receiptRuns,
-                  refusals,
-                  reportSeq,
-                );
-              } catch (error) {
-                if (
-                  isFirst &&
-                  error instanceof EdgeCloudHttpError &&
-                  error.code === "HTTP_400"
-                )
-                  throw new StoredCursorRefusedError();
-                throw error;
-              }
-            },
-          });
-          receiptRunRefusals = result.receiptRunRefusals;
-          return result;
-        },
-        since,
-        isRejectedCursor,
-        () =>
-          logger.warn(
-            "Edge device registry cursor refused; pulling from the start",
-          ),
-      ),
+    pull: withTokenHashRepull(
+      local.context,
+      local.scope.outletId,
+      (since, signal) =>
+        pullWithCursorRecovery(
+          async (from) => {
+            let first = true;
+            const result = await pullDeviceRegistry({
+              context: local.context,
+              // S-K1 (legend-3yqy): a standby never applies receipt sequences.
+              role: config.role,
+              // legend-zsdd: the sequences this database may number.
+              binding: {
+                edgeNodeId: local.scope.edgeNodeId,
+                edgeInstanceId: local.instanceId,
+              },
+              since: from,
+              refusals: receiptRunRefusals,
+              fetchPage: async (cursor, receiptRuns, refusals, reportSeq) => {
+                const isFirst = first;
+                first = false;
+                try {
+                  return await fetchDeviceRecords(
+                    cursor,
+                    signal,
+                    receiptRuns,
+                    refusals,
+                    reportSeq,
+                  );
+                } catch (error) {
+                  if (
+                    isFirst &&
+                    error instanceof EdgeCloudHttpError &&
+                    error.code === "HTTP_400"
+                  )
+                    throw new StoredCursorRefusedError();
+                  throw error;
+                }
+              },
+            });
+            receiptRunRefusals = result.receiptRunRefusals;
+            return result;
+          },
+          since,
+          isRejectedCursor,
+          () =>
+            logger.warn(
+              "Edge device registry cursor refused; pulling from the start",
+            ),
+        ),
+    ),
     load: () =>
       loadDeviceRegistryCheckpoint(local.context, local.scope.edgeNodeId),
     save: (input) =>
@@ -1485,6 +1492,11 @@ export async function startEdgeRuntime(
   applyServerTime();
   // The owner grants an override on the edge API: the provider must see it now.
   setCatalogOverrideClock(() => catalogGate.clock.now());
+  // E2: the boot pulls may have finished before this clock. A failed write is
+  // made up by the next pull.
+  await flushEdgeIdentityStamps().catch((error: unknown) =>
+    logger.warn(safeError(error), "Edge identity stamp failed"),
+  );
   setCatalogOverrideListener((change) =>
     catalogGate.applyOverrideChange(
       change.kind === "granted" ? change.override : null,
@@ -1620,6 +1632,7 @@ export async function startEdgeRuntime(
       ]);
       setCatalogOverrideListener(null);
       setCatalogOverrideClock(null);
+      clearPendingEdgeIdentityStamps();
       promoGate.stop();
       await catalogGate.stop();
       await catalogAlarmQueue.flush().catch(reportCatalogAlarmError);

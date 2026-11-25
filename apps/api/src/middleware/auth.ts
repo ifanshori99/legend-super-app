@@ -5,6 +5,7 @@ import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { ACTING_STAFF_ERROR_CODES } from "@starter/shared/pos/acting-staff";
 import { auth } from "../lib/auth";
 import { verifyDeviceToken } from "../lib/device-token.ts";
+import { sessionAcceptedHere } from "../lib/edge-session";
 import { HttpError } from "../lib/http-error";
 import { setRequestAuthMethod, setRequestUser } from "../lib/request-context";
 import {
@@ -71,7 +72,9 @@ function createRequireAuth(options: {
       headers: fromNodeHeaders(req.headers),
       query: { disableCookieCache: true },
     });
-    if (!session)
+    // E2 (brief 1269): the cloud refuses an edge PIN session; an edge accepts
+    // nothing else, and only with its own device's verified token.
+    if (!session || !sessionAcceptedHere(session.session))
       throw new HttpError(401, "UNAUTHORIZED", "Sign in to continue.");
     req.auth = session;
     setRequestUser(session.user.id);
