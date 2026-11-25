@@ -58,68 +58,88 @@ FORCE RLS, role aplikasi hanya SELECT. Tidak ada temuan.
 
 Perintah backfill hanya ada sebagai sumber `tsx`. Image produksi hanya berisi `dist/` (tanpa
 pnpm, tsx, src), jadi dry-run gerbang rilis tidak bisa dijalankan di staging/VM. Perbaikan:
-skrip jadi entry `tsup` (`dist/payroll-pph21-receivable-backfill.js`) dan penjaga "apakah ini
-berkas entry" menerima `.js`. Terverifikasi: `pnpm build` lalu `node dist/...js --foo` memberi
+skrip jadi entry `tsup` (`dist/payroll-pph21-receivable-backfill.js`, wrapper `src/cli/` yang selalu
+menjalankan; penjaga "apakah ini berkas entry" dihapus karena memberi exit 0 tanpa keluaran bila dipanggil
+lewat path atau symlink, legend-1265 G1). Terverifikasi: `pnpm build` lalu `node dist/...js --foo` memberi
 usage dan exit 2.
 
 ## Langkah staging, lalu production
 
 Jalankan di staging dulu, lalu ulangi persis di production setelah hasil staging ditinjau.
-Jangan jalankan saat ada run payroll sedang dikunci (skrip menunggu kunci badan hukum itu).
+Bekukan payroll (tidak ada run dibuat, disetujui, dikunci, atau di-reverse) dari dry-run sampai
+verifikasi akhir selesai. Skrip menunggu kunci badan hukum bila ada run sedang dikunci, tetapi
+pembekuan menjaga angka dry-run tetap sama dengan hasil nyata.
 
-1. Cadangan. Salin dua tabel (baca-saja, di VM):
-   `pg_dump --data-only -t accounting_open_items -t accounting_open_item_settlements <db> > pra-backfill.sql`
-   (atau snapshot VM). Simpan di tempat aman, jangan ke chat.
-2. Prasyarat: migrasi sudah sampai head dan build memuat skrip (`ls dist/payroll-pph21-receivable-backfill.js`
-   di image API). Skrip memakai `APP_DATABASE_URL` (role aplikasi, kena RLS); bukan role migrasi.
+1. Cadangan. Di container postgres, sebagai superuser atau role migrator (role aplikasi kena RLS dan
+   hanya melihat sebagian), dengan `umask 077`, simpan salinan di tempat aman (bukan chat):
+   `umask 077; pg_dump --data-only -t accounting_open_items -t accounting_open_item_settlements <db> > pra-backfill.sql`
+   (atau snapshot VM). Salinan ini untuk bukti dan rujukan, bukan untuk dipulihkan (lihat "Cara mundur").
+2. Prasyarat: migrasi sudah sampai head dan image API memuat skrip (`ls dist/payroll-pph21-receivable-backfill.js`).
+   Skrip memakai `APP_DATABASE_URL` (role aplikasi, kena RLS); bukan role migrasi.
 3. Dry-run (tidak menulis apa pun):
-   `docker compose --env-file <compose.env> -f deploy/single-vm/compose.yaml exec api node dist/payroll-pph21-receivable-backfill.js --dry-run`
+   `docker compose --env-file <compose.env> -f deploy/single-vm/compose.yaml run --rm --no-deps -T api node dist/payroll-pph21-receivable-backfill.js --dry-run`
    Dari source checkout: `pnpm --filter @starter/api payroll:backfill-pph21-receivable --dry-run`.
    Simpan keluarannya ke berkas kerja aman (hanya hitungan dan id karyawan, tanpa nama atau jumlah per orang).
 4. Baca hasil. Satu baris JSON per tenant: `created` (jumlah item yang akan dibuat), `createdIdr`
-   (total rupiah), `held` (daftar `{legalEntityId, employeeId, reason}`), `dryRun: 1`. Baris terakhir
-   `{"summary":{tenants,created,held}}`. Exit 0 berarti selesai, BUKAN berarti `held` kosong.
-5. Ambang berhenti (usulan tim, putuskan bersama CTO): STOP dan jangan jalankan tanpa `--dry-run` bila
-   - exit bukan 0 (1 = gagal, tidak ada yang tertulis untuk tenant yang gagal; 2 = salah argumen);
+   (total rupiah), `held` (daftar `{legalEntityId, employeeId, reason}`), `entities` (per badan hukum:
+   `legalEntityId`, `created`, `createdIdr`, `existingIdr` = sisa item piutang karyawan yang sudah ada),
+   `dryRun: 1`. Baris terakhir `{"summary":{tenants,created,held}}`. Exit 0 berarti selesai, BUKAN berarti
+   `held` kosong.
+5. Ambang berhenti (putusan tim). STOP dan jangan jalankan tanpa `--dry-run` bila:
+   - tidak ada baris `summary` (keluaran terpotong atau perintah mati diam-diam), atau exit bukan 0
+     (1 = gagal, tidak ada yang tertulis untuk tenant yang gagal; 2 = salah argumen);
+   - `summary.tenants` berbeda dari jumlah tenant (`SELECT count(*) FROM tenants`);
    - ada `held` berisi `employee_missing` atau `id_taken` (tidak boleh terjadi);
-   - ada `payslip_unreadable`: periksa tiap karyawan (slip rusak atau pungutan melebihi piutang); sampai
-     jelas, karyawan itu tidak mendapat item dan tidak ada yang dipotong atau dibayar;
-   - ada `item_exceeds_balance`: finance menentukan mana yang benar; skrip tidak menurunkan item;
-   - `createdIdr` satu tenant lebih besar dari saldo akun 1204 (piutang PPh 21 karyawan) di neraca saldo
-     tenant itu per tanggal yang sama (cek manual; belum diuji otomatis);
-   - jumlah `created` jauh dari jumlah karyawan yang memang punya piutang menurut payroll (selisih besar).
-6. Jalankan sungguhan, tanpa `--dry-run` (perintah sama tanpa flag). Boleh diulang kapan pun.
+   - untuk SATU badan hukum, `existingIdr + createdIdr` lebih besar dari saldo akun 1204 (piutang PPh 21
+     karyawan) di neraca saldo badan hukum itu per tanggal yang sama (cek manual; belum diuji otomatis).
+     Selisih ke bawah (saldo 1204 lebih besar) tidak otomatis berhenti: accounting menilai sebabnya;
+   - ada `payslip_unreadable` atau `item_exceeds_balance` yang belum dijelaskan tertulis oleh HR atau
+     finance untuk tiap karyawannya (lanjut hanya bila tiap nama punya penjelasan; skrip tidak menulis
+     apa pun untuk karyawan itu dan tidak menurunkan item yang ada);
+   - hasil nyata (langkah 6) berbeda dari dry-run (jumlah, rupiah, atau `held`).
+6. Jalankan sungguhan, tanpa `--dry-run` (perintah sama tanpa flag). Boleh diulang kapan pun. Bandingkan
+   dengan dry-run: harus sama.
 7. Verifikasi: jalankan dry-run lagi. Hasil benar: `created: 0` di semua tenant, `held` sama seperti
    langkah 4 (karyawan yang ditahan tetap ditahan). Cek di daftar piutang finance: saldo tiap
-   karyawan = saldo slip terakhir.
+   karyawan = saldo slip terakhir. Baru sesudah ini payroll dibuka kembali.
 8. Catat tanggal, perintah, hasil per tenant, dan keputusan atas `held` di `docs/PROGRESS.md`.
 
 ## Cara mundur
 
 Item yang dibuat skrip bisa dikenali dari nomor dokumen `PPH21-BACKFILL-%`. Selama belum ada pelunasan
-(belum ada run payroll terkunci sesudahnya yang memungut piutang itu), hapus item itu saja (diuji di
-test, tenant lain tidak tersentuh):
+(belum ada run payroll terkunci sesudahnya yang memungut piutang itu), hapus item itu saja. Jalankan
+sebagai role migrator (`BYPASSRLS`; role aplikasi tidak melihat semua baris), di dalam transaksi, dan
+jangan `COMMIT` sebelum jumlah baris yang terhapus dicek:
 
 ```sql
+BEGIN;
 DELETE FROM accounting_open_items i
- WHERE i.tenant_id = '<tenant>' AND i.kind = 'receivable'
-   AND i.counterparty_type = 'employee'
+ WHERE i.tenant_id = '<tenant>' AND i.legal_entity_id = '<badan hukum>'
+   AND i.kind = 'receivable' AND i.counterparty_type = 'employee'
    AND i.document_number LIKE 'PPH21-BACKFILL-%'
    AND i.settled_idr = 0
    AND NOT EXISTS (SELECT 1 FROM accounting_open_item_settlements s
-                    WHERE s.tenant_id = i.tenant_id AND s.kind = i.kind AND s.open_item_id = i.id);
+                    WHERE s.tenant_id = i.tenant_id AND s.kind = i.kind AND s.open_item_id = i.id)
+RETURNING i.id, i.original_idr;
+-- Cocokkan: jumlah baris dan total original_idr <= hasil apply badan hukum itu (langkah 6).
+-- Cocok: COMMIT;  Tidak cocok: ROLLBACK; dan berhenti.
 ```
 
-Jalankan sebagai role pemilik tabel, di transaksi, cek jumlah baris dulu. Item yang sudah ada pelunasan
-(`settled_idr > 0` atau ada baris pelunasan) jangan dihapus: pulihkan dari cadangan langkah 1 lewat
-CTO dan founder. Sesudah dihapus, menjalankan skrip lagi membuat id dan jumlah yang sama.
+Batasi per badan hukum (atau daftar id dari `RETURNING` apply). Item yang sudah ada pelunasan
+(`settled_idr > 0` atau ada baris pelunasan, artinya payroll sudah memungut): JANGAN memulihkan
+cadangan (itu menghapus pelunasan yang sah dan bisa membuat karyawan dipotong atau dibayar dobel).
+Berhenti, hubungi CTO; perbaikannya maju, bukan mundur. Sesudah penghapusan yang sah, menjalankan
+skrip lagi membuat id dan jumlah yang sama.
 Catatan: selama item backfill ada, reversal run payroll yang menaikkan atau memungut piutang karyawan
 itu ditolak (aturan sengaja, supaya daftar finance tetap sama dengan slip).
+Tenant diproses satu per satu, satu transaksi masing-masing: bila skrip gagal di tengah, tenant sebelum
+yang gagal SUDAH ter-commit. Selesaikan dulu reversal yang direncanakan (di atas) untuk tenant itu,
+baru ulangi skrip; mengulang aman (idempoten).
 
 ## Belum diverifikasi
 
 - Dry-run di staging atau production (belum ada staging); volume data nyata dan lamanya.
-- Perintah `docker compose ... exec api node dist/...` belum dijalankan di VM (hanya `node dist/...` lokal).
+- Perintah `docker compose ... run --rm --no-deps -T api node dist/...` belum dijalankan di VM (hanya `node dist/...` lokal).
 - Perbandingan dengan saldo akun 1204 (langkah 5) manual, belum ada kueri atau test.
 - Pesan gagal skrip sengaja tanpa penyebab; untuk diagnosa lihat log database dan ketersediaan DB.
 - Test memakai tenant seed bersama; di suite penuh paralel, skrip ikut memindai tenant itu (sama
