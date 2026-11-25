@@ -14,6 +14,12 @@
 // posOverrideRouter (mount at /api/pos-overrides):
 //   POST /                    signed-in requester; Idempotency-Key header
 //                             bound to the body. 201 new, 200 replay.
+//   GET  /approvers?outletId&action
+//                             card 1268 B3: who can approve this action in
+//                             the outlet (permission + usable PIN, requester
+//                             excluded). Needs the acting cashier on a shared
+//                             device and outlet membership; declared before
+//                             /:overrideId.
 //   GET  /:overrideId         requester/approver polls (settles a phone
 //                             approval once its chain ends).
 //   GET  /approvals/:requestId
@@ -35,6 +41,7 @@
 import { Router, type Request } from "express";
 import {
   createPosOverrideSchema,
+  posOverrideApproversQuerySchema,
   posOverrideParamsSchema,
   verifyStaffPinForUserSchema,
 } from "@starter/shared/access/override";
@@ -61,6 +68,7 @@ import { requireBackOfficeSurface } from "../middleware/identity-surface";
 import { requireTrustedOrigin } from "../middleware/origin";
 import { getTenantContext, requireTenantContext } from "../middleware/tenant";
 import { setStaffPin } from "../services/device-pin.service";
+import { listPosOverrideApprovers } from "../services/pos-override-approvers.service";
 import {
   PinDeviceThrottledError,
   verifyStaffPinWithProof,
@@ -189,6 +197,30 @@ posOverrideRouter.post("/", jsonBody, async (req, res) => {
   const { override, replayed } = result;
   res.setHeader("Cache-Control", "private, no-store");
   res.status(replayed ? 200 : 201).json({ data: override });
+});
+
+// Before /:overrideId, which would take "approvers" for an id.
+posOverrideRouter.get("/approvers", async (req, res) => {
+  const query = posOverrideApproversQuerySchema.parse(req.query);
+  // The route has no :outletId, so resolveActingStaff could not compare the
+  // token's outlet: do it against the query.
+  if (
+    req.actingStaff &&
+    req.actingStaff.outletId.toLowerCase() !== query.outletId.toLowerCase()
+  )
+    throw new HttpError(
+      403,
+      ACTING_STAFF_ERROR_CODES.OUTLET_MISMATCH,
+      "Kasir aktif bukan untuk outlet ini.",
+    );
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json({
+    data: await listPosOverrideApprovers(
+      getTenantContext(req),
+      actorOf(req),
+      query,
+    ),
+  });
 });
 
 posOverrideRouter.get("/:overrideId", async (req, res) => {
