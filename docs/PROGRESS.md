@@ -1,5 +1,16 @@
 # PROGRESS — Legend Super App
 
+## JEDA KUOTA 25 Nov malam (semua agent dihentikan, WIP ter-push)
+
+- B1 `ws/1268-b1` e67c1ec7f WIP: perbaikan review (docs/qa/1268-b1-review.md) belum terbukti hijau; lanjut uji hijau, lalu review delta dari 3569ce143.
+- 1162 `ws/1268-1162` 5956f70b9 WIP: test merah `void_deposit_applied`; lanjut `accounting-finance-exceptions.service.ts:246`, web `ws07-finance-exceptions/lib.ts:98` + i18n `:68`, `receipt-page.tsx:70` `?? 0`.
+- C0 `ws/1269-c0` d6a403012: review delta LULUS. Sisa 3 P3: 422 pada endpoint status (`platform-integration.service.ts:685-745`), gerbang lihat DEPLOYMENT_MODE/DATA_CLASSIFICATION, `check-refund-flag.sh` tolak sandbox sebelum migrasi.
+- E1 `ws/1269-e1` 13c1cd18d bersih: 195 test ulangan lulus, satu bukti gagal-dulu ada; sisa bukti kedua, typecheck akhir, review architect xhigh (belum ada hasil; periksa 9 ekspektasi test yang diubah).
+- E2 `ws/1269-e2` b42219e66 WIP: 6 berkas test merah (setelan edge mode).
+- F0 `ws/1269-f0` 7c2e99288 WIP: hanya shower ditutup; test dan review belum selesai.
+- W7 mockup belum menghasilkan berkas. WFC menunggu founder: arah usulan kredit makan/minum + 5 angka bisnis (catatan CTO brief 1270).
+- int/rc2 142a1b0fa tetap; gerbang gabungan belum dijalankan.
+
 ## CTO 25 Nov malam (1268 sambung POS, tanpa GitHub Actions)
 
 - Founder: tidak mau bayar GitHub Actions. Pengganti: `node scripts/test-shards.mjs --chunks 8 --lanes 2 --heavy` (cabang `int/rc1` f9dea5f98, push), bisa dilanjutkan; log `../legend-rc1/.test-shards/`. Suite penuh di f9dea5f98 sedang jalan (root+web, api-1, api-2 lulus).
