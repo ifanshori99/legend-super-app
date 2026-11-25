@@ -321,6 +321,8 @@ export async function seedReceivedPo(
           locationId: location[0]!.id,
           quantityReceived: `${quantity}.0000`,
           quantityRejected: "0.0000",
+          // legend-1242: a zero-price line is only receivable as a supplier bonus.
+          ...(unitPriceIdr === 0 ? { isBonus: true } : {}),
         },
       ],
       idempotencyKey: key(),
