@@ -613,6 +613,57 @@ describe("POS standalone EDC tender (legend-m4fv, EDC-04)", () => {
     expect(await standaloneRows(second.number)).toHaveLength(0);
   });
 
+  // 1268 W2: the supervisor of an unsettled request may not void a slip that
+  // paid the bill: the books would stay paid and the money would be gone.
+  it("EDC-04 a slip that paid the bill is closed as recorded, never as voided", async () => {
+    const order = await newOrder();
+    const overrideId = await standaloneOverride({
+      objectId: order.orderId,
+      valueIdr: order.totalIdr,
+    });
+    const bankRef = "44556677-88AB";
+    const paid = await payStandalone(order, {
+      terminalId,
+      bankRef,
+      overrideId,
+    });
+    expect(paid.status, JSON.stringify(paid.body)).toBe(201);
+    const resolve = (key: string | null, over: Record<string, unknown>) =>
+      cashier.client
+        .post(`${pos().base}/${order.orderId}/payment-intents/resolve`)
+        .set(headers)
+        .set(originHeader)
+        .send({
+          key,
+          reason: "Catatan rusak",
+          approverUserId: supervisor.userId,
+          pin: PIN,
+          ...over,
+        });
+    const lostKey = `edc_standalone:${randomUUID()}`;
+    for (const key of [null, lostKey])
+      for (const typed of [bankRef, "44556677-88ab", "4455667788AB"]) {
+        const voided = await resolve(key, {
+          card: "voided",
+          voidRef: "000123",
+          bankRef: typed,
+        });
+        expect(voided.status, JSON.stringify(voided.body)).toBe(409);
+      }
+    const recorded = await resolve(null, { card: "recording", bankRef });
+    expect(recorded.status, JSON.stringify(recorded.body)).toBe(200);
+    expect(recorded.body.data.outcome).toBe("recorded");
+    // Another slip charged for a paid bill is the one to void.
+    const other = await resolve(lostKey, {
+      card: "voided",
+      voidRef: "000123",
+      bankRef: "998877665511",
+    });
+    expect(other.status, JSON.stringify(other.body)).toBe(200);
+    expect(other.body.data.outcome).toBe("closed");
+    expect(await standaloneRows(order.number)).toHaveLength(1);
+  });
+
   // The order lock comes before the approval: a repeat that arrives while the
   // first send holds the bill waits for it and answers the recorded payment.
   it("EDC-04 a repeat sent together with the first answers the same payment", async () => {

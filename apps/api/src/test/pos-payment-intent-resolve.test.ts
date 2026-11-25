@@ -266,8 +266,11 @@ describe("a readable request", () => {
     const key = `edc_standalone:${randomUUID()}`;
     for (const over of [
       { card: "voided" },
-      { card: "voided", voidRef: "4111111111111111" },
-      { card: "voided", voidRef: "1" },
+      { card: "voided", voidRef: "000123" },
+      { card: "voided", bankRef: "445566778899" },
+      { card: "voided", voidRef: "4111111111111111", bankRef: "445566778899" },
+      { card: "voided", voidRef: "000123", bankRef: "4111111111111111" },
+      { card: "voided", voidRef: "1", bankRef: "445566778899" },
       { card: "not_debited", voidRef: "000123" },
     ])
       expect((await resolve(order, key, over)).status).toBe(422);
@@ -275,6 +278,7 @@ describe("a readable request", () => {
     const answer = await resolve(order, key, {
       card: "voided",
       voidRef: "000123",
+      bankRef: "445566778899",
     });
     expect(answer.status, JSON.stringify(answer.body)).toBe(200);
     expect(answer.body.data.outcome).toBe("closed");
@@ -291,6 +295,7 @@ describe("a readable request", () => {
     const answer = await resolve(order, key, {
       card: "voided",
       voidRef: "000123",
+      bankRef: "445566778899",
     });
     expect(answer.status, JSON.stringify(answer.body)).toBe(409);
     expect(await capturedIdr(fx, order.id)).toBe(BILL_IDR);
@@ -408,7 +413,7 @@ describe("an unreadable request", () => {
 
   it.each([
     { card: "recording" },
-    { card: "voided", voidRef: "000123" },
+    { card: "voided", voidRef: "000123", bankRef: "445566778899" },
     { card: "not_debited" },
   ])("fenced with the statement %j, and audited", async (statement) => {
     const order = await newSubmittedOrder(fx);
@@ -468,6 +473,34 @@ describe("an unreadable request", () => {
     const answer = await resolve(order, null, card);
     expect(answer.body.data.outcome).toBe("recorded");
     expect(await versionOf(order)).toBe(version);
+  });
+
+  it("paid: a charged card needs its slip, and closes as voided only when the bill does not hold it", async () => {
+    const order = await newSubmittedOrder(fx);
+    expect((await cash(order, cashKey())).status).toBe(201);
+    const version = await versionOf(order);
+    const silent = await resolve(order, null);
+    expect(silent.body.error.code).toBe(
+      "PAYMENT_INTENT_CARD_STATEMENT_REQUIRED",
+    );
+    const noSlip = await resolve(order, null, { card: "recording" });
+    expect(noSlip.body.error.code).toBe("PAYMENT_INTENT_SLIP_REQUIRED");
+    const notThere = await resolve(order, null, {
+      card: "recording",
+      bankRef: "445566778899",
+    });
+    expect(notThere.status, JSON.stringify(notThere.body)).toBe(409);
+    expect(await audits(order)).toHaveLength(0);
+    const voided = await resolve(order, null, {
+      card: "voided",
+      voidRef: "000123",
+      bankRef: "445566778899",
+    });
+    expect(voided.status, JSON.stringify(voided.body)).toBe(200);
+    expect(voided.body.data.outcome).toBe("recorded");
+    expect(JSON.stringify(await audits(order))).toContain("445566778899");
+    expect(await versionOf(order)).toBe(version);
+    expect(await capturedIdr(fx, order.id)).toBe(BILL_IDR);
   });
 
   it("refused while a QR can still be paid", async () => {

@@ -13,6 +13,7 @@ import {
 } from "../core/index.ts";
 import { defineEndpoint } from "../api/endpoint.ts";
 import { staffPinInputSchema } from "../identity/inputs.ts";
+import { posStandaloneEdcSchema } from "./endpoints.ts";
 import { orderIdSchema, posOrderDetailSchema } from "./schemas.ts";
 
 /** The kind of payment is part of the key the till makes: `<kind>:<uuid>`. */
@@ -63,6 +64,10 @@ export type PosPaymentIntentOutcome = z.infer<
 export const PAYMENT_INTENT_CARD_STATEMENT_REQUIRED =
   "PAYMENT_INTENT_CARD_STATEMENT_REQUIRED" as const;
 
+/** A charged card on a paid bill without a key: its slip must be named. */
+export const PAYMENT_INTENT_SLIP_REQUIRED =
+  "PAYMENT_INTENT_SLIP_REQUIRED" as const;
+
 export const resolvePosPaymentIntent = defineEndpoint({
   method: "POST",
   path: "/api/outlets/:outletId/pos/orders/:orderId/payment-intents/resolve",
@@ -72,13 +77,23 @@ export const resolvePosPaymentIntent = defineEndpoint({
     key: posPaymentIntentKeySchema.nullable(),
     card: posPaymentIntentCardSchema.optional(),
     voidRef: posPaymentIntentVoidRefSchema.optional(),
+    /**
+     * The bank reference of the charged slip. `voided` always names it: a slip
+     * the bill was paid with is never settled as voided.
+     */
+    bankRef: posStandaloneEdcSchema.shape.bankRef.optional(),
     reason: z.string().trim().min(3).max(500),
     approverUserId: userIdSchema,
     pin: staffPinInputSchema,
-  }).refine(
-    (value) => (value.card === "voided") === (value.voidRef !== undefined),
-    { message: "Isi nomor void dari mesin EDC.", path: ["voidRef"] },
-  ),
+  })
+    .refine(
+      (value) => (value.card === "voided") === (value.voidRef !== undefined),
+      { message: "Isi nomor void dari mesin EDC.", path: ["voidRef"] },
+    )
+    .refine((value) => value.card !== "voided" || value.bankRef !== undefined, {
+      message: "Isi nomor referensi bank dari slip.",
+      path: ["bankRef"],
+    }),
   response: dataResponseSchema(
     z.strictObject({
       outcome: posPaymentIntentOutcomeSchema,

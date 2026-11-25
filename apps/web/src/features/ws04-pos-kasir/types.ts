@@ -587,6 +587,8 @@ export type ResolvePaymentInput = {
   card?: "not_debited" | "recording" | "voided";
   /** `voided`: the number of the void or refund on the machine. */
   voidRef?: string;
+  /** `voided` of an unreadable request: the bank reference on its slip. */
+  bankRef?: string;
   /** `recording` of an unreadable request: what the paper slip says. */
   slip?: EdcSlip;
 };

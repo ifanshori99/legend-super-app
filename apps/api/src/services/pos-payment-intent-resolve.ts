@@ -19,6 +19,7 @@ import {
 } from "@starter/shared/core";
 import {
   PAYMENT_INTENT_CARD_STATEMENT_REQUIRED,
+  PAYMENT_INTENT_SLIP_REQUIRED,
   resolvePosPaymentIntent as resolveContract,
   type PosOrderDetail,
   type PosPaymentIntentOutcome,
@@ -64,6 +65,48 @@ const assertCardStated = (stated: boolean): void => {
       "Supervisor wajib menyatakan kartu tidak terdebit, sudah di-void di mesin, atau mencatat pembayarannya.",
     );
 };
+
+/** As read from paper: case and dashes say nothing about which slip it is. */
+const slipNumber = (value: string) => value.replaceAll("-", "").toUpperCase();
+
+/** The bill holds money of an EDC slip with this bank reference. */
+async function holdsSlip(
+  tx: Tx,
+  context: ScopedTenantContext,
+  orderId: string,
+  bankRef: string,
+): Promise<boolean> {
+  const tenders = await tendersOf(tx, context, orderId);
+  return tenders.some(
+    (tender) =>
+      tender.status === "captured" &&
+      (tender.method === "edc_card" || tender.method === "edc_qris") &&
+      tender.reference !== null &&
+      slipNumber(tender.reference) === slipNumber(bankRef),
+  );
+}
+
+/**
+ * The books hold this slip: voiding it on the machine would leave the bill paid
+ * and the money gone. The terminal and the amount are not compared: in doubt,
+ * no void.
+ */
+async function assertNotVoidingRecorded(
+  tx: Tx,
+  context: ScopedTenantContext,
+  orderId: string,
+  input: Input,
+): Promise<void> {
+  if (
+    input.card === "voided" &&
+    input.bankRef !== undefined &&
+    (await holdsSlip(tx, context, orderId, input.bankRef))
+  )
+    throw new CoreError(
+      "CONFLICT",
+      "Slip ini sudah tercatat di tagihan, jangan di-void. Bila sudah telanjur, batalkan lewat koreksi.",
+    );
+}
 
 /** Under the key lock: what the key recorded, or the tombstone. */
 async function settleKey(
@@ -139,8 +182,28 @@ async function fenceOrder(
   await assertNoOpenFundsOfPosOrderTx(tx, context.tenant.tenantId, order);
   // A bill paid by a hand-keyed EDC slip keeps a ledger row to reconcile, which
   // the check below counts as open: paid is decided first.
-  if (order.status !== "voided" && remainingIdr(order, tenders) <= 0)
+  if (order.status !== "voided" && remainingIdr(order, tenders) <= 0) {
+    // Paid, but with that card or on top of it? A charged card names its slip.
+    assertCardStated(input.card !== undefined);
+    if (input.card !== "not_debited") {
+      const { bankRef } = input;
+      if (bankRef === undefined)
+        throw new HttpError(
+          409,
+          PAYMENT_INTENT_SLIP_REQUIRED,
+          "Tagihan sudah lunas. Isi nomor referensi bank dari slip EDC.",
+        );
+      if (
+        input.card === "recording" &&
+        !(await holdsSlip(tx, context, order.id, bankRef))
+      )
+        throw new CoreError(
+          "CONFLICT",
+          "Slip ini tidak tercatat di tagihan. Cocokkan slip dulu; jangan void bila sudah tercatat.",
+        );
+    }
     return { outcome: "recorded", locked };
+  }
   await assertNoOpenEdcRequest(tx, context, order);
   // The stored request may have been an EDC payment: the supervisor says what
   // became of the card before the bill can take anything.
@@ -216,6 +279,7 @@ export async function resolvePosPaymentIntent(
     const locked = await lockPosOrder(tx, context, outletId, orderId);
     // A role that ended while the PIN was checked fails closed.
     await assertApprover(tx);
+    await assertNotVoidingRecorded(tx, context, orderId, input);
     const settled =
       key === null
         ? await fenceOrder(tx, context, locked, input, now)
@@ -240,6 +304,7 @@ export async function resolvePosPaymentIntent(
           // What the supervisor stated about the card, and the settled key.
           kind: input.card ?? null,
           voidRef: input.voidRef ?? null,
+          bankRef: input.bankRef ?? null,
           source: key,
         },
         reason: input.reason,

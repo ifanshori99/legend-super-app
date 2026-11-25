@@ -67,6 +67,8 @@ export const posKasirPaymentMessages = {
     cardNotDebited: "Kartu tidak terdebit",
     cardRecording: "Kartu sudah terdebit, catat pembayarannya",
     cardRequired: "Pilih keadaan kartu lebih dulu.",
+    cardRecorded: "Kartu sudah terdebit, slip ini sudah tercatat di tagihan",
+    cardPaidHint: "Cocokkan slip dulu; jangan void bila sudah tercatat.",
     cardVoided: "Kartu terdebit, sudah di-void atau refund di mesin EDC",
     voidRef: "Nomor void atau refund",
     voidRefHint: "Salin dari struk void mesin EDC, minimal 4 karakter.",
@@ -74,13 +76,13 @@ export const posKasirPaymentMessages = {
     slip: "Slip EDC {amount}, referensi bank {ref}. Data slip tidak bisa diubah.",
     slipRequired: "Lengkapi data slip EDC lebih dulu.",
     slipAmount: "Nominal di slip EDC",
-    slipAmountHint: "Salin nominal dari slip, harus sama dengan sisa tagihan.",
+    slipAmountHint: "Salin nominal persis seperti di slip.",
     slipTerminal: "Pilih terminal EDC",
     edcBody:
       "Kartu mungkin sudah terdebit. Semua cara bayar tagihan ini terkunci sampai pembayaran EDC ini tercatat atau diselesaikan dengan PIN supervisor.",
     paidCardTitle: "Kartu mungkin terdebit",
     paidCardBody:
-      "Tagihan sudah lunas, tetapi pembayaran EDC ini tidak tercatat. Periksa slip, void di mesin EDC bila terdebit, lalu selesaikan dengan PIN supervisor.",
+      "Tagihan sudah lunas. Cocokkan slip dulu; jangan void bila sudah tercatat. Bila slip ini tidak tercatat di tagihan, void di mesin EDC, lalu selesaikan dengan PIN supervisor.",
     sendingTitle: "Pembayaran sedang dikirim",
     sendingBody:
       "Tunggu jawaban server. Semua cara bayar tagihan ini terkunci sampai hasilnya diketahui.",

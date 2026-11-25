@@ -21,7 +21,8 @@ const VOID_REF_MIN_LENGTH = 4;
 // approves, what they state about the card (an EDC or unreadable request), a
 // reason and their own PIN. The server decides; nothing opens before it answers.
 // A charged card is recorded with the slip of the stored request as it is; only
-// when that cannot be read is the paper slip typed.
+// when that cannot be read is the paper slip typed, also to find it on a bill
+// that is already paid.
 export function ResolveDialog({
   orderId,
   kind,
@@ -50,6 +51,7 @@ export function ResolveDialog({
   const [pickedId, setPickedId] = useState<string>();
   const [card, setCard] = useState<ResolvePaymentInput["card"]>();
   const [voidRef, setVoidRef] = useState("");
+  const [bankRef, setBankRef] = useState("");
   const [typed, setTyped] = useState(EMPTY_SLIP);
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -68,6 +70,7 @@ export function ResolveDialog({
         setFormError(null);
         setCard(undefined);
         setVoidRef("");
+        setBankRef("");
         setTyped(EMPTY_SLIP);
         resolve.reset();
         onOpenChange(next);
@@ -115,7 +118,11 @@ export function ResolveDialog({
           {needsCard && (
             <FormField
               label={t("posKasirPayment.unresolved.cardLabel")}
-              hint={t("posKasirPayment.unresolved.cardHint")}
+              hint={t(
+                paid
+                  ? "posKasirPayment.unresolved.cardPaidHint"
+                  : "posKasirPayment.unresolved.cardHint",
+              )}
               required
             >
               <Select
@@ -137,9 +144,13 @@ export function ResolveDialog({
                   <SelectItem value="not_debited">
                     {t("posKasirPayment.unresolved.cardNotDebited")}
                   </SelectItem>
-                  {!paid && (
+                  {(!paid || kind === "corrupt") && (
                     <SelectItem value="recording">
-                      {t("posKasirPayment.unresolved.cardRecording")}
+                      {t(
+                        paid
+                          ? "posKasirPayment.unresolved.cardRecorded"
+                          : "posKasirPayment.unresolved.cardRecording",
+                      )}
                     </SelectItem>
                   )}
                   <SelectItem value="voided">
@@ -156,6 +167,23 @@ export function ResolveDialog({
                 ref: slip.bankRef,
               })}
             </p>
+          )}
+          {card === "voided" && kind === "corrupt" && (
+            <FormField
+              label={t("posKasirEdc.standalone.bankRef")}
+              hint={t("posKasirEdc.standalone.bankRefHint")}
+              required
+            >
+              <Input
+                name="bankRef"
+                value={bankRef}
+                onChange={(event) => setBankRef(event.target.value)}
+                autoComplete="off"
+                spellCheck={false}
+                className="tabular"
+                disabled={resolve.isPending}
+              />
+            </FormField>
           )}
           {card === "voided" && (
             <FormField
@@ -194,6 +222,9 @@ export function ResolveDialog({
         const voided = voidRef.trim();
         if (card === "voided" && voided.length < VOID_REF_MIN_LENGTH)
           return setFormError(t("posKasirPayment.unresolved.voidRefRequired"));
+        const ref = bankRef.trim();
+        if (card === "voided" && kind === "corrupt" && !ref)
+          return setFormError(t("posKasirEdc.standalone.bankRefRequired"));
         const charged =
           card === "recording" && kind === "corrupt" ? slipInput(typed) : null;
         if (card === "recording" && kind === "corrupt" && !charged)
@@ -207,6 +238,9 @@ export function ResolveDialog({
             pin,
             ...(needsCard ? { card } : {}),
             ...(card === "voided" ? { voidRef: voided } : {}),
+            ...(card === "voided" && kind === "corrupt"
+              ? { bankRef: ref }
+              : {}),
             ...(charged ? { slip: charged } : {}),
           },
           { onSuccess: () => onOpenChange(false) },

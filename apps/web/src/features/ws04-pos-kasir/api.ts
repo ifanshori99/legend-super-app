@@ -475,15 +475,28 @@ async function fetchQris(
   }
 }
 
-/** The bill holds money of this very EDC slip. */
-const hasCapturedSlip = (order: PosOrderDetail, bankRef: unknown): boolean =>
-  order.tenders.some(
-    (t) =>
+/**
+ * The bill holds money of this very EDC slip. A bank reference is not unique,
+ * so the terminal and the amount must be known and the same: in doubt it is
+ * another slip and the warning stays.
+ */
+const hasCapturedSlip = (
+  order: PosOrderDetail,
+  slip: Record<string, unknown> | undefined,
+  amountIdr: number | undefined,
+): boolean =>
+  order.tenders.some((t) => {
+    const row = order.edcAttempts.find((a) => a.id === t.edcTransactionId);
+    return (
       t.status === "captured" &&
       (t.method === "edc_card" || t.method === "edc_qris") &&
       t.reference !== null &&
-      t.reference === bankRef,
-  );
+      t.reference === slip?.bankRef &&
+      row !== undefined &&
+      row.terminalId === slip.terminalId &&
+      Number(t.amountIdr) === amountIdr
+    );
+  });
 
 const slipOf = (intent: PaymentIntent) =>
   intent.body.standalone as Record<string, unknown> | undefined;
@@ -502,7 +515,7 @@ function forgetPaidIntent(outletId: string, order: PosOrderDetail): void {
   const { intent } = state;
   if (
     intent.kind === "edc_standalone" &&
-    !hasCapturedSlip(order, slipOf(intent)?.bankRef)
+    !hasCapturedSlip(order, slipOf(intent), intent.amountIdr)
   )
     return;
   try {
@@ -822,12 +835,19 @@ export async function resolvePayment(
   }
   const slip =
     card === "recording" ? await newSlipRequest(scope, stored, input) : null;
+  // Named when the card was charged: the server never voids a recorded slip.
+  const bankRef =
+    card === "voided" || card === "recording"
+      ? (slip?.standalone.bankRef ??
+        (stored ? slipOf(stored)?.bankRef : input.bankRef))
+      : undefined;
   const { data } = await callEndpoint(resolvePosPaymentIntent, {
     params: { outletId, orderId },
     body: {
       key: stored?.key ?? null,
       ...(card ? { card } : {}),
       ...(voidRef === undefined ? {} : { voidRef }),
+      ...(typeof bankRef === "string" ? { bankRef } : {}),
       reason,
       approverUserId,
       pin,
@@ -836,15 +856,17 @@ export async function resolvePayment(
   const storage = intentStorage();
   if (slip === null || data.outcome === "recorded") {
     // Without a key "recorded" only says the bill is paid, not with this slip.
-    if (slip && !stored && !hasCapturedSlip(data.order, slip.bankRef))
-      throw new ApiError(
-        409,
-        EDC_SLIP_NOT_RECORDED,
-        "Tagihan sudah lunas dengan cara lain. Void transaksi ini di mesin EDC, lalu isi nomor void-nya.",
-      );
+    if (
+      slip &&
+      !stored &&
+      !hasCapturedSlip(data.order, slip.standalone, slip.amountIdr)
+    )
+      throw slipNotRecorded();
     settleStored(storage, scope, raw);
     return sessionAfterWrite(outletId, data.order);
   }
+  // The slip was on a paid bill a moment ago and is not now: nothing to record.
+  if (slip.body === null) throw slipNotRecorded();
   const key = `edc_standalone:${globalThis.crypto.randomUUID()}`;
   const intent: PaymentIntent = {
     kind: "edc_standalone",
@@ -903,7 +925,17 @@ function chargedSlip(
   );
 }
 
-/** The charged slip with a new supervisor approval of exactly its amount. */
+const slipNotRecorded = () =>
+  new ApiError(
+    409,
+    EDC_SLIP_NOT_RECORDED,
+    "Slip ini tidak cocok dengan pembayaran EDC di tagihan. Cocokkan slip dulu; jangan void bila sudah tercatat.",
+  );
+
+/**
+ * The charged slip with a new supervisor approval of exactly its amount. No
+ * approval and no body when it already paid the bill: it is only closed.
+ */
 async function newSlipRequest(
   { outletId, orderId }: IntentScope,
   stored: PaymentIntent | null,
@@ -921,12 +953,16 @@ async function newSlipRequest(
     );
   const order = await fetchPosOrder(outletId, orderId);
   // A slip is recorded for what it charged: never for another amount.
-  const { remainingIdr } = sessionFromOrder(order).bill;
+  const { remainingIdr, paid } = sessionFromOrder(order).bill;
+  if (!stored && paid) {
+    if (!hasCapturedSlip(order, standalone, amountIdr)) throw slipNotRecorded();
+    return { amountIdr, standalone, signature: "", body: null };
+  }
   if (amountIdr !== remainingIdr || amountIdr <= 0)
     throw new ApiError(
       409,
       EDC_SLIP_AMOUNT_MISMATCH,
-      "Nominal slip EDC berbeda dari sisa tagihan. Void transaksi ini di mesin EDC, lalu isi nomor void-nya.",
+      "Nominal slip EDC berbeda dari sisa tagihan. Cocokkan slip dulu; jangan void bila sudah tercatat.",
     );
   const { overrideId } = await requestEdcApproval(outletId, {
     orderId,
@@ -937,7 +973,7 @@ async function newSlipRequest(
   });
   return {
     amountIdr,
-    bankRef: standalone.bankRef,
+    standalone,
     signature: `resolved:${overrideId}`,
     body: { method, standalone: { ...standalone, overrideId } },
   };

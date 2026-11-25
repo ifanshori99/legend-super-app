@@ -235,7 +235,9 @@ describe("unresolved payment", () => {
     state.session = session({ bill: paidBill(), completion: "done" });
     const html = screen();
     expect(visibleText(html)).toContain("Kartu mungkin terdebit");
-    expect(visibleText(html)).toContain("void di mesin EDC");
+    expect(visibleText(html)).toContain(
+      "Cocokkan slip dulu; jangan void bila sudah tercatat",
+    );
     expect(button(html, "Selesaikan dengan PIN")?.disabled).toBe(false);
     expect(button(html, "Cetak struk")?.disabled).toBe(false);
   });

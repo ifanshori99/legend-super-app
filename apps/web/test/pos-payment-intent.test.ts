@@ -15,6 +15,7 @@ const OUTLET = "0a1b2c3d-0000-4000-8000-0000000000a1";
 const CASHIER = "0a1b2c3d-0000-4000-8000-0000000000c1";
 const OTHER = "0a1b2c3d-0000-4000-8000-0000000000c2";
 const TERMINAL = "0a1b2c3d-0000-4000-8000-0000000000d1";
+const OTHER_TERMINAL = "0a1b2c3d-0000-4000-8000-0000000000b9";
 const TENDER = "0a1b2c3d-0000-4000-8000-0000000000e1";
 const OVERRIDE = "01JCQ8Z5N0M3X4Y5Z6A7B8C9F1";
 
@@ -99,6 +100,21 @@ const orderOf = (over: Record<string, unknown> = {}): Order => ({
   ...over,
 });
 
+/** The EDC ledger row of a slip keyed for this bill. */
+const SLIP_ROW = {
+  id: "0a1b2c3d-0000-4000-8000-0000000000e5",
+  status: "approved",
+  amountIdr: 100_000,
+  terminalId: TERMINAL,
+  terminalLabel: "BCA",
+  bank: "bca",
+  method: "card",
+  mode: "standalone",
+  declineReason: null,
+  responseCode: null,
+  createdAt: "2026-11-26T03:00:00.000Z",
+};
+
 const server = {
   order: orderOf(),
   qris: null as Record<string, unknown> | null,
@@ -115,7 +131,8 @@ const refuse = (status: number, code: string) => () => {
   throw new ApiError(status, code, code);
 };
 const pay = (t: Tender, status = "sent") => {
-  server.order = orderOf({ status, tenders: [t] });
+  const edcAttempts = t.edcTransactionId ? [SLIP_ROW] : [];
+  server.order = orderOf({ status, tenders: [t], edcAttempts });
   return { data: { order: server.order, tender: t, remainingIdr: 0 } };
 };
 
@@ -386,7 +403,12 @@ describe("two tabs", () => {
 
 /** A slip of this bank reference, captured on the bill. */
 const slipTender = (over: Tender = {}) =>
-  tender({ method: "edc_card", reference: "736214805192", ...over });
+  tender({
+    method: "edc_card",
+    reference: "736214805192",
+    edcTransactionId: SLIP_ROW.id,
+    ...over,
+  });
 
 const EDC_REFUSALS: [number, string][] = [
   [400, "VALIDATION_ERROR"],
@@ -790,6 +812,8 @@ describe("a supervisor resolves the request", () => {
       key: money()[0]?.body?.idempotencyKey,
       card: "voided",
       voidRef: "000123",
+      // From the note: the server refuses it when the bill holds that slip.
+      bankRef: "736214805192",
     });
     expect(state()).toBe("none");
     expect(money()).toHaveLength(1);
@@ -843,7 +867,11 @@ describe("a supervisor resolves the request", () => {
         valueIdr: 100_000,
       });
       const body = sent("/resolve")[0]?.body;
-      expect(body).toMatchObject({ key: null, card: "recording" });
+      expect(body).toMatchObject({
+        key: null,
+        card: "recording",
+        bankRef: "736214805192",
+      });
       expect(body).not.toHaveProperty("slip");
       expect(money()[0]?.body).toMatchObject({
         method: "edc_card",
@@ -899,6 +927,78 @@ describe("a supervisor resolves the request", () => {
       });
       expect(money()).toHaveLength(0);
       expect(state()).toBe("corrupt");
+    });
+
+    describe("on a paid bill", () => {
+      beforeEach(() => {
+        outcome = "recorded";
+        server.order = orderOf({
+          status: "sent",
+          tenders: [slipTender()],
+          edcAttempts: [SLIP_ROW],
+        });
+      });
+
+      it("the slip is on the bill: closed as recorded, with no approval to spend", async () => {
+        const session = await record();
+        expect(session.bill.paid).toBe(true);
+        expect(sent("/pos-overrides")).toHaveLength(0);
+        expect(sent("/resolve")[0]?.body).toMatchObject({
+          key: null,
+          card: "recording",
+          bankRef: "736214805192",
+        });
+        expect(money()).toHaveLength(0);
+        expect(state()).toBe("none");
+      });
+
+      it.each([
+        ["reference", { bankRef: "736214805193" }],
+        ["amount", { amountIdr: 90_000 }],
+        ["terminal", { terminalId: OTHER_TERMINAL }],
+      ])("another %s is not called recorded", async (_name, over) => {
+        await expect(record(over)).rejects.toMatchObject({
+          code: "EDC_SLIP_NOT_RECORDED",
+        });
+        expect(posts()).toHaveLength(0);
+        expect(state()).toBe("corrupt");
+      });
+
+      it("voided sends the slip's reference, and a refusal keeps the warning", async () => {
+        onResolve = refuse(409, "CONFLICT");
+        await expect(
+          resolve({
+            card: "voided",
+            voidRef: "000123",
+            bankRef: "736214805192",
+          }),
+        ).rejects.toMatchObject({ code: "CONFLICT" });
+        expect(sent("/resolve")[0]?.body).toMatchObject({
+          key: null,
+          card: "voided",
+          voidRef: "000123",
+          bankRef: "736214805192",
+        });
+        expect(state()).toBe("corrupt");
+      });
+
+      it("another slip, voided, closes it", async () => {
+        await resolve({
+          card: "voided",
+          voidRef: "000123",
+          bankRef: "736214805193",
+        });
+        expect(state()).toBe("none");
+      });
+
+      it("no message says to void a slip that does not match", async () => {
+        const error: unknown = await record({ amountIdr: 90_000 }).catch(
+          (caught: unknown) => caught,
+        );
+        expect((error as ApiError).message).toContain(
+          "jangan void bila sudah tercatat",
+        );
+      });
     });
 
     it("paid by this very slip: the lock goes", async () => {
@@ -1005,12 +1105,27 @@ describe("review 6: the note goes once the server proves the bill paid", () => {
     ["another slip", slipTender({ reference: "736214805193" })],
     ["a slip not captured", slipTender({ status: "voided" })],
     ["QRIS with that reference", slipTender({ method: "qris" })],
+    ["that reference, another amount", slipTender({ amountIdr: 60_000 })],
+    ["a slip without its ledger row", slipTender({ edcTransactionId: null })],
   ])("an EDC note stays when the bill is paid by %s", async (_name, paidBy) => {
     server.onTender = lost;
     await expect(edc()).rejects.toThrow();
     server.order = orderOf({
       status: "sent",
       tenders: [paidBy, tender({ id: `${TENDER}-2` })],
+      edcAttempts: [SLIP_ROW],
+    });
+    expect((await fetchPaymentSession(OUTLET, ORDER)).bill.paid).toBe(true);
+    expect(state()).toBe("pending");
+  });
+
+  it("an EDC note stays when that reference was keyed on another terminal", async () => {
+    server.onTender = lost;
+    await expect(edc()).rejects.toThrow();
+    server.order = orderOf({
+      status: "sent",
+      tenders: [slipTender()],
+      edcAttempts: [{ ...SLIP_ROW, terminalId: OTHER_TERMINAL }],
     });
     expect((await fetchPaymentSession(OUTLET, ORDER)).bill.paid).toBe(true);
     expect(state()).toBe("pending");
