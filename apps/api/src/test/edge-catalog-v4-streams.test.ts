@@ -126,7 +126,7 @@ const own = (outletId: string | null = tenant.outletId) => ({
 const published = {
   status: "published",
   published_at: new Date("2026-11-02T00:00:00Z"),
-  published_by: "finance-1",
+  published_by: randomUUID(),
 };
 const taxRule = (over: Rec = {}) => ({
   ...own(null),
@@ -188,7 +188,7 @@ const table = (zoneId: string, over: Rec = {}) => ({
   code: `T-${randomUUID().slice(0, 8).toUpperCase()}`,
   capacity: 4,
   type: "regular",
-  layout: { x: 1, y: 2, width: 3, height: 4, rotation: 90, shape: "square" },
+  layout: { x: 1, y: 2, width: 3, height: 4, rotation: 90, shape: "rect" },
   ...over,
 });
 const terminal = (over: Rec = {}) => ({
