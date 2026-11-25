@@ -21,3 +21,12 @@ Belum dicek reviewer: tab duplikat (sessionStorage tersalin), ganti outlet/peran
 6. P3 tab duplikat saat resume belum jelas: kartu.
 
 409 final, asersi mock-engine, dan kunci create/submit/park: sah.
+
+## Re-review 2, 26 Nov (a13b1a607): TIDAK LULUS, 1 P1 1 P2
+
+No. 1-4 sebelumnya lulus.
+
+1. **P1** `OTHER_CASHIER_PENDING` (`order-flow.ts:assertScope`, `intent-store.ts:hasForeignIntent`) tanpa jalan keluar. Keputusan CTO: **hapus blokirnya**. Keranjang sudah per outlet+aktor, jadi kasir B hanya mengirim keranjangnya sendiri. Ganti dengan pemberitahuan menetap (bukan galat): ada pesanan kasir lain yang belum jelas, periksa tab "Belum selesai" sebelum memasukkan ulang. Intent kasir A tetap tersimpan, tidak dihapus dan tidak dikirim ulang oleh B.
+2. **P2** `order-flow.ts:parkCart`, `keyedSend`: intent park simpan snapshot; tawarkan "Kirim ulang" (byte dan kunci sama) atau "Sudah saya periksa, tutup". Pesan khusus park. 403/`IDEMPOTENCY_KEY_REUSED` pada park dan resume juga punya aksi tutup.
+3. **P3 betulkan** aktor klien = `staffUserId` yang disimpan bersama token acting-staff per tab, bukan `useActiveStaff()` localStorage.
+4. Kunci lama `"kasir"`: abaikan, belum dirilis.
