@@ -12,6 +12,7 @@ const nav: AreaNavEntry[] = [
     to: "/fasilitas",
     icon: ClipboardList,
     order: 20,
+    showerOnly: true,
     anyPermission: ["facility.booth.operate"],
   },
   {
@@ -20,6 +21,7 @@ const nav: AreaNavEntry[] = [
     to: "/fasilitas/kebersihan",
     icon: SprayCan,
     order: 21,
+    showerOnly: true,
     anyPermission: ["facility.booth.operate"],
   },
   {
@@ -28,6 +30,7 @@ const nav: AreaNavEntry[] = [
     to: "/fasilitas/insiden",
     icon: ShieldAlert,
     order: 22,
+    showerOnly: true,
     anyPermission: ["facility.access.assist"],
   },
   {

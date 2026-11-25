@@ -46,7 +46,7 @@ import {
   operatingDayEndAfter,
 } from "./facility-entitlement.service.ts";
 import { outletTimeZone } from "./facility-shared.ts";
-import { facilityTicketsEnabled } from "./facility-tickets-gate.ts";
+import { closedShowerFacilityIds } from "./facility-shower-gate.ts";
 import type { Tx } from "./inventory-ops.shared.ts";
 
 const ENTITLEMENT_EVENTS = new Set([
@@ -97,9 +97,6 @@ export async function deliverFacilityEntitlementEvent(
   const scope: Scope = { context, now };
   await tx.transaction(async (savepoint) => {
     if (event.name === "order.paid") {
-      // 1269 F0: no package or minimum-spend grant while facility tickets are
-      // off. Refund and void below still cancel what an earlier order issued.
-      if (!facilityTicketsEnabled()) return;
       const parsed = orderPaidSchema.safeParse(event.payload);
       if (parsed.success)
         await issueForPaidOrder(savepoint, scope, parsed.data);
@@ -340,7 +337,7 @@ async function issueForPaidOrder(
   if (training) return;
   const customerProfileId = order.customerProfileId;
 
-  const rules = await tx
+  const allRules = await tx
     .select()
     .from(entitlementRules)
     .where(
@@ -351,6 +348,15 @@ async function issueForPaidOrder(
         inArray(entitlementRules.type, ["package", "min_spend"]),
       ),
     );
+  // 1269 F0: a package or minimum-spend rule of a closed shower issues nothing
+  // (the facility type is read from the row). Refund and void below still
+  // cancel what an earlier order issued.
+  const closed = await closedShowerFacilityIds(
+    tx,
+    tenantId,
+    allRules.map((rule) => rule.facilityId),
+  );
+  const rules = allRules.filter((rule) => !closed.has(rule.facilityId));
   if (rules.length === 0) return;
 
   const facilityRows = await tx

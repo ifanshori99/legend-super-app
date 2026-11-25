@@ -87,7 +87,7 @@ import {
   resolveLine,
 } from "./pos-order-pricing.ts";
 import { businessDateFor, loadOutlet } from "./pos-order-support.ts";
-import { assertFacilityTicketsEnabled } from "./facility-tickets-gate.ts";
+import { assertFacilityIdsOpen } from "./facility-shower-gate.ts";
 
 /** Minutes before the session ends that the kitchen is fed (menu prep time). */
 // TODO(oa0qk): make this a facility setting; a constant until the owner asks.
@@ -371,7 +371,6 @@ export async function createBreakfastOrderForMember(
   body: CreateBreakfastOrderBody,
   now = new Date(),
 ): Promise<BreakfastOrder> {
-  assertFacilityTicketsEnabled();
   const { idempotencyKey, ...request } = body;
   // Merge duplicate dishes, then cap the portions per dish.
   const portions = new Map<string, number>();
@@ -398,6 +397,7 @@ export async function createBreakfastOrderForMember(
     const tenantId = context.tenant.tenantId;
     // The ticket row serializes every create (and replay) of this ticket.
     const ticket = await loadOwnTicket(tx, context, member, ticketId, true);
+    await assertFacilityIdsOpen(tx, tenantId, [ticket.facilityId]);
 
     const [replay] = await tx
       .select()
@@ -711,7 +711,6 @@ export async function payBreakfastOrderForMember(
   _body: { idempotencyKey: string },
   now = new Date(),
 ): Promise<BreakfastPayment> {
-  assertFacilityTicketsEnabled();
   // `confirmed`: the provider was asked about the pay link (outside any lock)
   // before this run may cancel; the first run only reports that it must.
   const attempt = (confirmed: boolean) =>
@@ -724,6 +723,8 @@ export async function payBreakfastOrderForMember(
         ticketId,
         orderId,
       );
+      // 1269 F0: no new payment for a shower ticket's breakfast (cancel stays).
+      await assertFacilityIdsOpen(tx, tenantId, [ticket.facilityId]);
       const dto = await toBreakfastOrder(tx, context, linked);
       if (linked.status === "cancelled")
         throw new FacilityError("BREAKFAST_ORDER_CANCELLED");

@@ -265,15 +265,16 @@ const schema = z
       .enum(["true", "false", "1", "0"])
       .optional()
       .transform((value) => value === "true" || value === "1"),
-    // Gate for the paid shower room and every facility ticket right (1269 F0,
-    // founder 25 Nov 2026: deferred past release 1). Off by default and fail
-    // closed: while off, the server refuses POS ticket sales, slot holds,
-    // subscription quota, entitlement claims and issues (package, minimum
-    // spend, tier, promo), breakfast from a ticket and the booth queue, with
-    // 403 FACILITY_TICKETS_DISABLED, writing nothing and taking no money.
-    // Refunds and cancellations of old transactions and the staff emergency
-    // unit button still work. Guest Wi-Fi and the WFC policy are not gated.
-    FACILITY_TICKETS_ENABLED: z
+    // Gate for the paid shower room (1269 F0, founder 25 Nov 2026: deferred
+    // past release 1). Off by default and fail closed. It closes ONLY
+    // facilities whose `facilities.type` is 'shower' (read from the database,
+    // not from the request): ticket sale, slot hold, subscription quota,
+    // entitlement issue (package, minimum spend, tier, promo) and claim,
+    // ticket breakfast and the booth queue answer 403 FACILITY_SHOWER_DISABLED,
+    // write nothing and take no money. Coworking (paid WFC), meeting rooms,
+    // lockers and guest Wi-Fi are not gated. Refunds and cancellations of old
+    // transactions and the staff emergency unit button still work.
+    FACILITY_SHOWER_ENABLED: z
       .enum(["true", "false", "1", "0"])
       .optional()
       .transform((value) => value === "true" || value === "1"),

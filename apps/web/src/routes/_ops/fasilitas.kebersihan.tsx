@@ -3,6 +3,7 @@ import { z } from "zod";
 import { createTranslator } from "@starter/shared/i18n";
 import { CleaningScreen } from "@/features/facility-staff/components/cleaning-screen";
 import { evaluateGuard } from "@/lib/areas/guard";
+import { showerGate } from "@/lib/areas/shower-gate";
 
 // /fasilitas/kebersihan — the cleaning queue and checklist (bead legend-1oi9;
 // PRD v1.7 §3 F25 "Siklus Kebersihan", FAC-06). `?taskId=` opens the checklist
@@ -15,6 +16,7 @@ const searchSchema = z.object({
 export const Route = createFileRoute("/_ops/fasilitas/kebersihan")({
   validateSearch: searchSchema,
   beforeLoad: ({ context }) => {
+    showerGate();
     const gate = evaluateGuard(
       {
         kind: "permission",

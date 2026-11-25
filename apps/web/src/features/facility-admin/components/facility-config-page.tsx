@@ -6,6 +6,7 @@ import * as React from "react";
 import { Link } from "@tanstack/react-router";
 import { ArrowLeft } from "lucide-react";
 import type { MessageKey } from "@starter/shared/i18n";
+import { isFacilityTypeReleased } from "@starter/shared/facility";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -71,10 +72,18 @@ export function FacilityConfigPage({ facilityId }: { facilityId: string }) {
       </div>
     );
 
-  if (configQuery.isError) {
+  // 1269 F0: a shower facility reads as not found while the shower is deferred.
+  const hiddenShower =
+    configQuery.data !== undefined &&
+    !isFacilityTypeReleased(configQuery.data.facility.type);
+  if (configQuery.isError || hiddenShower) {
     const error = configQuery.error;
-    const offline = error instanceof ApiError && error.code === "NETWORK_ERROR";
-    const notFound = error instanceof ApiError && error.status === 404;
+    const offline =
+      !hiddenShower &&
+      error instanceof ApiError &&
+      error.code === "NETWORK_ERROR";
+    const notFound =
+      hiddenShower || (error instanceof ApiError && error.status === 404);
     return (
       <div
         data-slot="facility-config"

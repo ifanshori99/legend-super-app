@@ -45,7 +45,7 @@ import { entitlementLedger } from "../db/schema/facility-entitlement.ts";
 import { zonedInstant } from "./facility-rules.ts";
 import { loadFacility, notFound, outletTimeZone } from "./facility-shared.ts";
 import type { Tx } from "./inventory-ops.shared.ts";
-import { assertFacilityTicketsEnabled } from "./facility-tickets-gate.ts";
+import { assertFacilityOpen } from "./facility-shower-gate.ts";
 
 export type LedgerRow = typeof entitlementLedger.$inferSelect;
 
@@ -171,7 +171,6 @@ export async function issueEntitlement(
   context: ScopedTenantContext,
   input: IssueEntitlementInput,
 ): Promise<IssueEntitlementResult> {
-  assertFacilityTicketsEnabled();
   const check = entitlementIssueCheck({
     source: input.source,
     paid: input.paid,
@@ -190,6 +189,7 @@ export async function issueEntitlement(
 
   // Unknown or foreign facility answers 404 (RLS hides other outlets).
   const facility = await loadFacility(tx, context, input.facilityId);
+  assertFacilityOpen(facility);
   const tenantId = context.tenant.tenantId;
   const [created] = await tx
     .insert(entitlementLedger)
@@ -442,10 +442,10 @@ export async function redeemEntitlement(
     linkTicket?: boolean;
   },
 ): Promise<{ entry: LedgerRow; grantEntryId: string }> {
-  assertFacilityTicketsEnabled();
   const tenantId = context.tenant.tenantId;
   const at = input.at ?? new Date();
   const facility = await loadFacility(tx, context, input.facilityId);
+  assertFacilityOpen(facility);
   await lockCustomer(tx, context, input.customerProfileId, facility.id);
 
   const [claimed] = await tx

@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { createTranslator } from "@starter/shared/i18n";
 import { FacilityBookingScreen } from "@/features/facility/components/booking-screen";
+import { showerGate } from "@/lib/areas/shower-gate";
 
 // "/f/[facility]" — the facility QR entry, e.g. the shower room (PRD §5:
 // dynamic SSR, availability never cached; noindex via the customer area). The
@@ -11,6 +12,7 @@ import { FacilityBookingScreen } from "@/features/facility/components/booking-sc
 const t = createTranslator();
 
 export const Route = createFileRoute("/_customer/f/$facility")({
+  beforeLoad: showerGate,
   headers: () => ({ "Cache-Control": "private, no-store" }),
   head: () => ({
     meta: [

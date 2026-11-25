@@ -1546,25 +1546,25 @@ describe("POS-936-TKT tickets of a bill: listing and isolation", () => {
   });
 });
 
-describe("1269 F0 facility tickets off: nothing is sold, no money is taken, old bills can still be voided", () => {
-  const flag = env as unknown as { FACILITY_TICKETS_ENABLED?: boolean };
-  const was = flag.FACILITY_TICKETS_ENABLED;
+describe("1269 F0 shower off: nothing is sold, no money is taken, old bills can still be voided", () => {
+  const flag = env as unknown as { FACILITY_SHOWER_ENABLED?: boolean };
+  const was = flag.FACILITY_SHOWER_ENABLED;
   afterEach(() => {
-    flag.FACILITY_TICKETS_ENABLED = was;
+    flag.FACILITY_SHOWER_ENABLED = was;
   });
 
-  it("F0-01 selling is refused (403 FACILITY_TICKETS_DISABLED) and holds nothing", async () => {
+  it("F0-01 selling is refused (403 FACILITY_SHOWER_DISABLED) and holds nothing", async () => {
     const unit = await newUnit();
-    flag.FACILITY_TICKETS_ENABLED = false;
+    flag.FACILITY_SHOWER_ENABLED = false;
     const response = await sell(saleBody(unit));
     expect(response.status, JSON.stringify(response.body)).toBe(403);
-    expect(errorCode(response.body)).toBe("FACILITY_TICKETS_DISABLED");
+    expect(errorCode(response.body)).toBe("FACILITY_SHOWER_DISABLED");
     expect(await ticketRowCount(unit)).toBe(0);
   });
 
   it("F0-02 a bill sold earlier takes no tender and no credential, and the cashier can still void it", async () => {
     const bought = await buy();
-    flag.FACILITY_TICKETS_ENABLED = false;
+    flag.FACILITY_SHOWER_ENABLED = false;
 
     const status = await readyOrder(bought.orderId);
     const tender = await posApi().cash(
@@ -1573,12 +1573,12 @@ describe("1269 F0 facility tickets off: nothing is sold, no money is taken, old 
       TICKET_TOTAL_IDR,
     );
     expect(tender.status, JSON.stringify(tender.body)).toBe(403);
-    expect(errorCode(tender.body)).toBe("FACILITY_TICKETS_DISABLED");
+    expect(errorCode(tender.body)).toBe("FACILITY_SHOWER_DISABLED");
     expect((await readOrder(bought.orderId)).tenders).toHaveLength(0);
 
     const credential = await credentialCall(bought.orderId, bought.ticketId);
     expect(credential.status).toBe(403);
-    expect(errorCode(credential.body)).toBe("FACILITY_TICKETS_DISABLED");
+    expect(errorCode(credential.body)).toBe("FACILITY_SHOWER_DISABLED");
 
     const voided = await voidUnpaid(bought.orderId);
     expect(voided.status, JSON.stringify(voided.body)).toBe(200);

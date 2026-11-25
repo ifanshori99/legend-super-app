@@ -21,10 +21,10 @@ export default defineConfig({
     hookTimeout: 30_000,
     env: {
       NODE_ENV: "test",
-      // 1269 F0: facility tickets are off by default (release 1). The older
-      // facility suites run with them on; facility-tickets-disabled.test.ts
-      // flips the flag off to prove every door refuses.
-      FACILITY_TICKETS_ENABLED: "true",
+      // 1269 F0: the shower is off by default (release 1). The older facility
+      // suites run with it on; facility-shower-disabled.test.ts flips it off to
+      // prove every door refuses a shower and still serves coworking.
+      FACILITY_SHOWER_ENABLED: "true",
       LOG_LEVEL: process.env.LOG_LEVEL ?? "silent",
       // legend-lgfru: a WhatsApp challenge is refused (503) without a webhook
       // secret. Tests that issue one directly get this placeholder; tests of

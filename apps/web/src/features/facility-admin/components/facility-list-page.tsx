@@ -9,6 +9,7 @@ import {
   CircleDashed,
   CircleSlash,
 } from "lucide-react";
+import { isFacilityTypeReleased } from "@starter/shared/facility";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -45,7 +46,10 @@ export function FacilityListPage() {
   const [search, setSearch] = React.useState("");
 
   const listQuery = useFacilities({ limit: LIST_PAGE_LIMIT });
-  const facilities = listQuery.data?.data ?? [];
+  // 1269 F0: shower rooms stay out of the list while the shower is deferred.
+  const facilities = (listQuery.data?.data ?? []).filter((facility) =>
+    isFacilityTypeReleased(facility.type),
+  );
 
   const loading = listQuery.isPending;
   const failed = listQuery.isError;

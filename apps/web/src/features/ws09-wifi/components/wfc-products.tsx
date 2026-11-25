@@ -8,7 +8,10 @@ import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { Money } from "@/components/ui/money";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { PublicSubscriptionPlan } from "@starter/shared/facility";
+import {
+  SHOWER_FACILITIES_RELEASED,
+  type PublicSubscriptionPlan,
+} from "@starter/shared/facility";
 import { useWfcPlans } from "../hooks";
 
 function ProductRow({ name, hint }: { name: string; hint: string }) {
@@ -93,11 +96,15 @@ export function WfcProducts({
         ))}
       </ul>
       {facilityId ? (
-        <Button variant="outline" asChild>
-          <Link to="/f/$facility" params={{ facility: facilityId }}>
-            {t("wifi.wfcCta")}
-          </Link>
-        </Button>
+        // 1269 F0: /f/$facility is closed until the paid WFC booking (W8) is
+        // wired, so the button that leads there stays hidden instead of 404.
+        SHOWER_FACILITIES_RELEASED && (
+          <Button variant="outline" asChild>
+            <Link to="/f/$facility" params={{ facility: facilityId }}>
+              {t("wifi.wfcCta")}
+            </Link>
+          </Button>
+        )
       ) : (
         <p className="text-sm leading-5 text-muted-foreground">
           {t("wifi.wfcNoFacility")}

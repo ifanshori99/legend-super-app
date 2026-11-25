@@ -1007,7 +1007,7 @@ describe("Idempotent redeem and release on void", () => {
   });
 });
 
-describe("1269 F0 a shower reward is refused while facility tickets are off", () => {
+describe("1269 F0 a shower reward is refused while the shower is off", () => {
   it("a facility reward promotion does not apply and writes no reward; a code for it is refused", async () => {
     const item = randomUUID();
     const facilityProductId = await asOwner(tenantId, (client) =>
@@ -1031,9 +1031,9 @@ describe("1269 F0 a shower reward is refused while facility tickets are off", ()
       voucherRequired: true,
       codeHash: hash(code0),
     });
-    const flag = env as unknown as { FACILITY_TICKETS_ENABLED?: boolean };
-    const was = flag.FACILITY_TICKETS_ENABLED;
-    flag.FACILITY_TICKETS_ENABLED = false;
+    const flag = env as unknown as { FACILITY_SHOWER_ENABLED?: boolean };
+    const was = flag.FACILITY_SHOWER_ENABLED;
+    flag.FACILITY_SHOWER_ENABLED = false;
     try {
       const rewardsOf = async (promotionId: string) =>
         (
@@ -1060,18 +1060,18 @@ describe("1269 F0 a shower reward is refused while facility tickets are off", ()
         ),
       ).rejects.toMatchObject({
         status: 403,
-        code: "FACILITY_TICKETS_DISABLED",
+        code: "FACILITY_SHOWER_DISABLED",
       });
       expect(await rewardsOf(codePromotion)).toBe(0);
 
-      flag.FACILITY_TICKETS_ENABLED = true;
+      flag.FACILITY_SHOWER_ENABLED = true;
       const on = await redeem(
         redeemInput([priced(item, 50_000)], { customer: sari }),
       );
       expect(discountOf(on, rewardPromotion)).toBeTruthy();
       expect(await rewardsOf(rewardPromotion)).toBe(1);
     } finally {
-      flag.FACILITY_TICKETS_ENABLED = was;
+      flag.FACILITY_SHOWER_ENABLED = was;
     }
   });
 });

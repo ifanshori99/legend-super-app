@@ -61,7 +61,7 @@ import {
   subscriptionAccessPeriod,
 } from "./payment-recurring.service";
 import type { Tx } from "./facility-shared.ts";
-import { facilityTicketsEnabled } from "./facility-tickets-gate.ts";
+import { closedShowerFacilityIds } from "./facility-shower-gate.ts";
 
 /** Upper bound of intervals walked inside one paid window (a bad row must not loop). */
 const MAX_SLICES = 240;
@@ -247,10 +247,6 @@ export async function syncSubscriptionQuota(
   const period = subscriptionAccessPeriod(sub, input.now, graceDays);
   if (!period) return revokeSubscriptionGrace(tx, context, sub, input.now);
 
-  // 1269 F0: no new subscription quota while facility tickets are off. The
-  // grace revoke above still runs, so an old grant can be closed.
-  if (!facilityTicketsEnabled()) return NOTHING;
-
   const p = paymentRecurringPlans;
   const [plan] = await tx
     .select()
@@ -276,6 +272,13 @@ export async function syncSubscriptionQuota(
     !facilityPlan ||
     !facilityPlan.isActive ||
     facilityPlan.interval !== "month"
+  )
+    return NOTHING;
+  // 1269 F0: no new quota for a shower plan while the shower is deferred (the
+  // facility type is read from the row). The grace revoke above still runs.
+  if (
+    (await closedShowerFacilityIds(tx, tenantId, [facilityPlan.facilityId]))
+      .size > 0
   )
     return NOTHING;
   // Money: the customer pays the recurring plan amount. A facility plan with a
