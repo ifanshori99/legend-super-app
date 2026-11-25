@@ -141,6 +141,15 @@ export interface TableOrderView {
   order: PosOrderView | null;
 }
 
+/**
+ * A table's orders on the real contract: one order per send, oldest first,
+ * never merged. Empty while the table has no session.
+ */
+export interface TableOrdersView {
+  table: CaptainTable;
+  orders: PosOrderView[];
+}
+
 export type ServiceCallType = "call_waiter" | "request_bill" | "complaint";
 
 export interface ServiceCall {
