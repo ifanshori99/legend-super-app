@@ -2,13 +2,11 @@
 
 ## CTO 26 Nov (kuota pulih, lanjut)
 
-- `int/rc2` 286a01f5e (lokal = remote, worktree `../legend-rc1`): s.d. F1 (0526). tsc web gabungan dan suite penuh belum. Jangan gabung selagi tes jalan.
-- Nomor migrasi diambil saat gabung: 0526 F1; 0527 WFC W1; E3 sementara 0528; W4/W11/W13 WFC nomor berikutnya. Unique index payment_links milik WFC W1: cek jumlah baris, deploy saat sepi.
-- 1268 W2 `ws/1268-w2` 93c1e6f05: perbaikan `docs/qa/1268-w2-review.md` "Re-review 26 Nov (93c1e6f05)" no. 1-2 jalan -> cek delta architect `a9bcebe9a2e8653bc` -> gabung -> W3 (9yw78.7, termasuk shift tender nontunai captain), W5, W6.
-- 1268 W4 `ws/1268-w4` 7d34546d2: review K TIDAK LULUS; perbaikan `docs/qa/1268-w4-review.md` no. 1,2,4,5,6 ANTRE slot (agent `a2167bcfb38f77e78`) -> review delta `af420ae2e6c81128a` -> gabung.
-- WFC W1 `ws/1270-w1` a35c76829 (0527): review delta `a728c41b5f4c599ab` jalan -> gabung -> W1b, W2.
-- E3 `ws/1269-e3` jalan (Opus); settlement .42+.43+.44 `ws/1269-c4a2` jalan (Sonnet).
-- Slot berikut: W4 perbaikan, lalu E9 (kode boleh; aktif sesudah syarat di legend-osqou.30), F11b, F2, .40/.41, F11c, E3/E5, E4, E7/E6, E10, E11, W3-W6, WFC W1b-W12; D1->D2->D4/D5; C2b/C4b/W-UI butuh mockup founder. Suite penuh int/rc2 di akhir.
+- `int/rc2` 0e6d570b3 (lokal = remote, worktree `../legend-rc1`): s.d. F1 (0526), W2 1268, settlement .42/.43/.44, WFC W1 (0527). Suite penuh belum. Jangan gabung selagi tes jalan.
+- Nomor migrasi diambil saat gabung: E3 sementara 0528; W4/W11/W13 WFC nomor berikutnya. Unique index payment_links milik WFC W1: cek jumlah baris, deploy saat sepi.
+- Jalan: E3 `ws/1269-e3` (Opus), W4 1268 perbaikan review K `ws/1268-w4` (lalu review delta `af420ae2e6c81128a`), W3 1268 shift `ws/1268-w3` (dari d058b37f4, termasuk tender nontunai captain).
+- Kartu baru: C4a susulan P3, Finance isi batas fee per metode sebelum C4b, W2 nominal slip dikunci (sebelum rilis), W2 resolve P3.
+- Slot berikut: WFC W1b, W2 WFC, lalu E9 (kode boleh; aktif sesudah syarat di legend-osqou.30), F11b, F2, .40/.41, F11c, E3/E5, E4, E7/E6, E10, E11, W3-W6, WFC W1b-W12; D1->D2->D4/D5; C2b/C4b/W-UI butuh mockup founder. Suite penuh int/rc2 di akhir.
 - Menunggu founder: mockup WFC (`design/mockups/wfc/`, 68 layar) Setuju / Ada perubahan; usulan AI harga WFC W13: sesudah rilis (saran) / wajib rilis 1 (+10 jam).
 - Perkiraan 11-17 Des dengan 3 agent, risiko mundur. Worktree B2, F0, C2a, C4a, E1, E2 sudah dihapus.
 
