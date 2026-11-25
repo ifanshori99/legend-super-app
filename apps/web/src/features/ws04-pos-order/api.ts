@@ -15,6 +15,7 @@ import {
   listPosParkedOrders,
   resumePosParkedOrder,
   submitPosOrder,
+  type PosOrderDetail,
   type PosOrderStatus,
 } from "@starter/shared/pos";
 import {
