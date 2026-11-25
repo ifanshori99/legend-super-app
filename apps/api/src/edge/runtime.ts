@@ -57,6 +57,8 @@ import {
   loadStaffPinCheckpoint,
   saveDeviceRegistryCheckpoint,
   saveStaffPinCheckpoint,
+  clearPendingEdgeIdentityStamps,
+  flushEdgeIdentityStamps,
 } from "../services/edge-device-sync-store.ts";
 import {
   EDGE_LINK_WAKE_CHANNEL,
@@ -1484,6 +1486,11 @@ export async function startEdgeRuntime(
   applyServerTime();
   // The owner grants an override on the edge API: the provider must see it now.
   setCatalogOverrideClock(() => catalogGate.clock.now());
+  // E2: the boot pulls may have finished before this clock. A failed write is
+  // made up by the next pull.
+  await flushEdgeIdentityStamps().catch((error: unknown) =>
+    logger.warn(safeError(error), "Edge identity stamp failed"),
+  );
   setCatalogOverrideListener((change) =>
     catalogGate.applyOverrideChange(
       change.kind === "granted" ? change.override : null,
@@ -1619,6 +1626,7 @@ export async function startEdgeRuntime(
       ]);
       setCatalogOverrideListener(null);
       setCatalogOverrideClock(null);
+      clearPendingEdgeIdentityStamps();
       promoGate.stop();
       await catalogGate.stop();
       await catalogAlarmQueue.flush().catch(reportCatalogAlarmError);

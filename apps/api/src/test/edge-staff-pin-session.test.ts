@@ -26,6 +26,11 @@ import { deviceSyncRecordSchema } from "@starter/shared/edge";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
 import { setCatalogOverrideClock } from "../edge/catalog-override.ts";
+import {
+  createDeviceRegistryPuller,
+  type DeviceRegistryPullerDeps,
+} from "../edge/device-registry-puller.ts";
+import { createPeopleSnapshotPuller } from "../edge/people-snapshot-pull.ts";
 import { setEdgeNodeForTests } from "../edge/mode.ts";
 import {
   getEdgeRuntimeState,
@@ -52,7 +57,12 @@ import {
   applyDeviceRecords,
   listDeviceRecordsSince,
 } from "../services/edge-device-sync.ts";
-import { saveEdgePullCheckpoint } from "../services/edge-device-sync-store.ts";
+import {
+  flushEdgeIdentityStamps,
+  saveDeviceRegistryCheckpoint,
+  saveEdgePullCheckpoint,
+  saveStaffPinCheckpoint,
+} from "../services/edge-device-sync-store.ts";
 import { registerEdgeNode } from "../services/edge-node.service.ts";
 import { attemptApproverPin } from "../services/staff-pin-proof.service.ts";
 import {
@@ -66,9 +76,10 @@ const PASSWORD = "Test-password-123!";
 const PIN = "582914";
 const HOUR = 3_600_000;
 const LOGIN = "/api/edge/staff-session";
+const CLOUD_URL = "wss://cloud.invalid/api/edge-link";
 
 let tenant: IsolatedTenant;
-let node: { id: string };
+let node: { id: string; credential: string };
 let outletPepper: { version: number; pepper: Buffer };
 const actor = randomUUID();
 const roleId = randomUUID();
@@ -182,19 +193,12 @@ function asEdge() {
 
 type SyncStream = "device_registry" | "staff_pins" | "people";
 async function syncedAt(stream: SyncStream, at: Date) {
-  if (stream === "people") {
-    await asOwner(
-      `INSERT INTO edge_people_sync_state (tenant_id, outlet_id, last_checked_at)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (tenant_id, outlet_id) DO UPDATE SET last_checked_at = $3`,
-      [tenant.tenantId, tenant.outletId, at],
-    );
-    return;
-  }
-  await saveEdgePullCheckpoint(scoped("device"), node.id, stream, {
-    watermark: null,
-    succeededAt: at,
-  });
+  await saveEdgePullCheckpoint(
+    scoped("device"),
+    node.id,
+    `catalog:identity:${stream}`,
+    { watermark: null, succeededAt: at },
+  );
 }
 async function syncedNow() {
   for (const stream of ["device_registry", "staff_pins", "people"] as const)
@@ -305,7 +309,7 @@ beforeAll(async () => {
     role: "primary",
     label: "Mini PC E2",
   });
-  node = { id: registered.edgeNode.id };
+  node = { id: registered.edgeNode.id, credential: registered.credential };
 });
 
 beforeEach(async () => {
@@ -828,6 +832,16 @@ describe("operational permissions only (decision 4)", () => {
 });
 
 describe("72 hours without a sync (decision 5)", () => {
+  const realPuller = (save: DeviceRegistryPullerDeps["save"]) =>
+    createDeviceRegistryPuller({
+      pull: async () => ({ watermark: null }),
+      load: async () => ({ watermark: null, lastSuccessAt: null }),
+      save,
+      intervalMs: HOUR,
+      staleAfterMs: HOUR,
+      maxBackoffMs: HOUR,
+    });
+
   const streams: SyncStream[] = ["device_registry", "staff_pins", "people"];
 
   it.each(streams)(
@@ -861,6 +875,57 @@ describe("72 hours without a sync (decision 5)", () => {
     asEdge();
     clockNow = () => new Date(Date.now() + 73 * HOUR);
     expect((await login(device)).status).toBe(503);
+  });
+
+  // The pulls use the wall clock; a wall clock that jumped ahead and was set
+  // back leaves the trusted clock ahead of it (monotonic since the jump).
+  it("pulls that succeed keep the edge fresh after a wall clock jump of more than 72 h", async () => {
+    const device = await newDevice();
+    asEdge();
+    clockNow = () => new Date(Date.now() + 100 * HOUR);
+    expect((await login(device)).status).toBe(503);
+    const pullers = [
+      realPuller((input) =>
+        saveDeviceRegistryCheckpoint(scoped("device"), node.id, input),
+      ),
+      realPuller((input) =>
+        saveStaffPinCheckpoint(scoped("device"), node.id, input),
+      ),
+      createPeopleSnapshotPuller({
+        config: { cloudUrl: CLOUD_URL, credential: node.credential },
+        intervalMs: HOUR,
+        staleAfterMs: HOUR,
+        maxBackoffMs: HOUR,
+        fetchImpl: async () => new Response(null, { status: 304 }),
+        onError: (error) => {
+          throw error;
+        },
+      }),
+    ];
+    for (const puller of pullers) {
+      expect(await puller.runOnce()).toBe(true);
+      await puller.stop();
+    }
+    expect((await login(device)).status).toBe(201);
+  });
+
+  it("a pull that finished before the trusted clock was installed counts once it is", async () => {
+    const device = await newDevice();
+    asEdge();
+    await asOwner("DELETE FROM edge_pull_checkpoints WHERE edge_node_id = $1", [
+      node.id,
+    ]);
+    setCatalogOverrideClock(null);
+    await saveDeviceRegistryCheckpoint(scoped("device"), node.id, {
+      watermark: null,
+      succeededAt: new Date(),
+    });
+    asEdge();
+    await syncedAt("staff_pins", new Date());
+    await syncedAt("people", new Date());
+    expect((await login(device)).status).toBe(503);
+    await flushEdgeIdentityStamps();
+    expect((await login(device)).status).toBe(201);
   });
 
   it("a running session keeps working, but no cashier switch and no override", async () => {

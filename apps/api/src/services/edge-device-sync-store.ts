@@ -19,9 +19,18 @@ import type { CatalogSyncStream } from "@starter/shared/edge";
 import { db } from "../db/index.ts";
 import { edgeNodes, edgePullCheckpoints } from "../db/schema/edge-node.ts";
 import { withTenant } from "../db/tenant.ts";
+import {
+  catalogOverrideNow,
+  isCatalogOverrideClockReady,
+} from "../edge/catalog-override.ts";
+
+type Database = Parameters<typeof withTenant>[0];
 
 export type EdgePullStream =
-  "device_registry" | "staff_pins" | `catalog:${CatalogSyncStream}`;
+  | "device_registry"
+  | "staff_pins"
+  | `catalog:${CatalogSyncStream}`
+  | `catalog:identity:${EdgeIdentityStream}`;
 
 export type DeviceRegistryCheckpoint = {
   watermark: string | null;
@@ -62,8 +71,9 @@ export async function saveEdgePullCheckpoint(
   edgeNodeId: string,
   stream: EdgePullStream,
   input: { watermark: string | null; succeededAt: Date },
+  database: Database = db,
 ): Promise<void> {
-  await withTenant(db, context, async (tx) => {
+  await withTenant(database, context, async (tx) => {
     const [node] = await tx
       .select({ tenantId: edgeNodes.tenantId, outletId: edgeNodes.outletId })
       .from(edgeNodes)
@@ -102,12 +112,13 @@ export function loadDeviceRegistryCheckpoint(
   return loadEdgePullCheckpoint(context, edgeNodeId, "device_registry");
 }
 
-export function saveDeviceRegistryCheckpoint(
+export async function saveDeviceRegistryCheckpoint(
   context: ScopedTenantContext,
   edgeNodeId: string,
   input: { watermark: string | null; succeededAt: Date },
 ): Promise<void> {
-  return saveEdgePullCheckpoint(context, edgeNodeId, "device_registry", input);
+  await saveEdgePullCheckpoint(context, edgeNodeId, "device_registry", input);
+  await stampEdgeIdentityPull(context, edgeNodeId, "device_registry");
 }
 
 export function loadStaffPinCheckpoint(
@@ -117,10 +128,109 @@ export function loadStaffPinCheckpoint(
   return loadEdgePullCheckpoint(context, edgeNodeId, "staff_pins");
 }
 
-export function saveStaffPinCheckpoint(
+export async function saveStaffPinCheckpoint(
   context: ScopedTenantContext,
   edgeNodeId: string,
   input: { watermark: string | null; succeededAt: Date },
 ): Promise<void> {
-  return saveEdgePullCheckpoint(context, edgeNodeId, "staff_pins", input);
+  await saveEdgePullCheckpoint(context, edgeNodeId, "staff_pins", input);
+  await stampEdgeIdentityPull(context, edgeNodeId, "staff_pins");
+}
+
+// ---- identity stamps (E2, brief 1269 decision 5) ------------------------------
+// When each identity pull last succeeded by the TRUSTED clock, the clock the
+// 72 h limit is measured with (edge/identity-freshness.ts). Apart from
+// `lastSuccessAt` above, which is the puller's wall clock: after a wall clock
+// jump that was set back, the two are hours apart for good.
+
+export type EdgeIdentityStream = "device_registry" | "staff_pins" | "people";
+
+type PendingStamp = {
+  readonly context: ScopedTenantContext;
+  readonly edgeNodeId: string;
+  readonly database: Database | undefined;
+  /** Monotonic, so the wait for the trusted clock is not lost. */
+  readonly pulledAt: number;
+};
+const pendingStamps = new Map<EdgeIdentityStream, PendingStamp>();
+
+/**
+ * A pull of `stream` just succeeded. The first pulls of a boot may finish
+ * before the trusted clock is installed: those wait for
+ * `flushEdgeIdentityStamps`, never for a wall clock stamp.
+ */
+export async function stampEdgeIdentityPull(
+  context: ScopedTenantContext,
+  edgeNodeId: string,
+  stream: EdgeIdentityStream,
+  database?: Database,
+): Promise<void> {
+  if (!isCatalogOverrideClockReady()) {
+    pendingStamps.set(stream, {
+      context,
+      edgeNodeId,
+      database,
+      pulledAt: performance.now(),
+    });
+    return;
+  }
+  pendingStamps.delete(stream);
+  await saveIdentityStamp(
+    context,
+    edgeNodeId,
+    stream,
+    catalogOverrideNow(),
+    database,
+  );
+}
+
+/** Called by edge/runtime.ts right after it installs the trusted clock. */
+export async function flushEdgeIdentityStamps(): Promise<void> {
+  if (!isCatalogOverrideClockReady()) return;
+  for (const [stream, pending] of [...pendingStamps]) {
+    pendingStamps.delete(stream);
+    await saveIdentityStamp(
+      pending.context,
+      pending.edgeNodeId,
+      stream,
+      new Date(
+        catalogOverrideNow().getTime() - (performance.now() - pending.pulledAt),
+      ),
+      pending.database,
+    );
+  }
+}
+
+/** A stopped runtime must not hand its pulls to the next one. */
+export function clearPendingEdgeIdentityStamps(): void {
+  pendingStamps.clear();
+}
+
+const saveIdentityStamp = (
+  context: ScopedTenantContext,
+  edgeNodeId: string,
+  stream: EdgeIdentityStream,
+  at: Date,
+  database: Database | undefined,
+): Promise<void> =>
+  saveEdgePullCheckpoint(
+    context,
+    edgeNodeId,
+    `catalog:identity:${stream}`,
+    { watermark: null, succeededAt: at },
+    database,
+  );
+
+export async function loadEdgeIdentityStamp(
+  context: ScopedTenantContext,
+  edgeNodeId: string,
+  stream: EdgeIdentityStream,
+): Promise<Date | null> {
+  return (
+    await loadEdgePullCheckpoint(
+      context,
+      edgeNodeId,
+      `catalog:identity:${stream}`,
+    )
+  ).lastSuccessAt;
 }

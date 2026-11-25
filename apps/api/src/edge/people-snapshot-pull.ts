@@ -25,6 +25,8 @@ import {
   EdgeCloudHttpError,
   type CloudGetOptions,
 } from "./cloud-http.ts";
+import { stampEdgeIdentityPull } from "../services/edge-device-sync-store.ts";
+import { edgeNodeContext } from "../services/edge-node.service.ts";
 import { parseEdgeCredential } from "./credential.ts";
 import {
   createDeviceRegistryPuller,
@@ -177,7 +179,13 @@ export function createPeopleSnapshotPuller(
       });
       return { watermark: null, lastSuccessAt: stored?.lastCheckedAt ?? null };
     },
-    save: async () => undefined,
+    save: () =>
+      stampEdgeIdentityPull(
+        edgeNodeContext(claims),
+        claims.edgeNodeId,
+        "people",
+        deps.database,
+      ),
     intervalMs: deps.intervalMs,
     staleAfterMs: deps.staleAfterMs,
     maxBackoffMs: deps.maxBackoffMs,
