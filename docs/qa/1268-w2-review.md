@@ -21,3 +21,9 @@ Batal QR kunci baru tiap tap: aman. Tunai, QRIS kedaluwarsa, struk: baik. Gabung
 - UI memakai pola dialog PIN/persetujuan yang sudah ada, tanpa layar baru.
 
 Urutan: 1, 3, 4, 6; lalu endpoint dan UI resolve + test konkurensi (kiriman terlambat vs resolve dua arah); lalu test tambahan: 403 EDC replay, 503 QRIS berulang, pindah metode saat sending, dua konteks (dua konteks JS terpisah), versi berubah. Migrasi: hindari; bila tak terhindar pakai 0531 dan lapor.
+
+## Keputusan CTO 26 Nov atas aeb824701
+
+1. 403 `EDC_STANDALONE_APPROVAL_REQUIRED` saat kirim ulang = server belum mencatat, BUKAN berarti kartu tidak terdebit. Metode lain tetap terkunci. Dua jalan keluar saja: (a) minta PIN persetujuan baru lalu catat ulang EDC yang sama (nominal, terminal, `bankRef` dari catatan, tidak bisa diubah); (b) resolve supervisor dengan pernyataan "kartu tidak terdebit" + alasan.
+2. Catatan rusak dan kartu ternyata terdebit: tetap terkunci untuk metode lain, tetapi supervisor harus bisa mencatat pembayaran EDC dari slip (RRN, approval, nominal = sisa tagihan) lewat alur EDC persetujuan yang sudah ada; sesudah lunas kunci lepas. Tanpa jalan itu kasir buntu.
+3. Cek izin resolve: `pos.edc_standalone.approve` / `pos.void.approve`, penyetuju orang lain. Diterima.
