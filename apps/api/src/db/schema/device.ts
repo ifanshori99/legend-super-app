@@ -90,6 +90,13 @@ export const devices = pgTable(
     enrolledBy: text("enrolled_by"),
     /** Floor for token `issuedAt`; a reissue moves it forward. Never the token. */
     tokenIssuedAt: timestamp("token_issued_at", { withTimezone: true }),
+    /**
+     * E2 (brief 1269): SHA-256 (hex) of the whole current device token, set by
+     * the cloud at enroll and reissue and copied to the outlet's edge, which
+     * accepts a token only by this digest. NULL = the edge refuses the device.
+     * Never in a DTO, a log or an audit row.
+     */
+    tokenHash: varchar("token_hash", { length: 64 }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -132,6 +139,10 @@ export const devices = pgTable(
     check(
       "devices_scanner_status_check",
       sql`${table.scannerStatus} IS NULL OR ${table.scannerStatus} IN ('connected', 'disconnected')`,
+    ),
+    check(
+      "devices_token_hash_check",
+      sql`${table.tokenHash} IS NULL OR ${table.tokenHash} ~ '^[0-9a-f]{64}$'`,
     ),
     check(
       "devices_shared_mode_pos_only",
