@@ -62,8 +62,8 @@ import { paymentGatewayFor } from "./payment-gateway.ts";
 import { liveCodeWhere } from "./payment-live-code.ts";
 import { outstandingIdr } from "./payment-support.ts";
 import {
-  canIssueMethod,
   gatewayListsMethod,
+  methodIssuable,
   selectGatewayForNewIntent,
 } from "./payment-gateway-select.ts";
 import { resolveRoutingRule } from "./payment-routing.service.ts";
@@ -316,10 +316,10 @@ export async function assertGuestChannel(
   const port = selected.provider
     ? selected.port
     : paymentGatewayFor(routing.provider);
-  // An e-wallet is checked at the real bill amount (it can be out of limits
+  // Checked at the real bill amount when known (a channel can be out of limits
   // for it); a gateway without `methods()` answers from `channels()`.
   let channels: readonly PaymentChannel[];
-  if (method === "ewallet" && amountIdr !== undefined && port.methods) {
+  if (amountIdr !== undefined && port.methods) {
     const listed = await port.methods(context, outletId, amountIdr);
     channels =
       listed.find((entry) => entry.method === method && entry.enabled)
@@ -547,6 +547,7 @@ async function voidOldCodesForChange(
     payerSecret: string | undefined;
     idempotencyKey: string;
   },
+  outletId: string,
   now: Date,
 ): Promise<void> {
   const tenantId = context.tenant.tenantId;
@@ -632,6 +633,31 @@ async function voidOldCodesForChange(
     };
   });
   if (scope === null) return;
+  // 1269 C2a: nothing is voided for a method that cannot be issued at the bill
+  // amount now. Only asked here, where a code would really be voided.
+  const amountIdr = await billAmountIdr(
+    context,
+    credential,
+    sessionId,
+    orderId,
+    splitId,
+    now,
+  );
+  if (amountIdr <= 0) return;
+  const routing = await withTenant(db, context, (tx) =>
+    resolveRoutingRule(tx, context, outletId, request.method),
+  );
+  const issuable = await methodIssuable(context, outletId, routing, {
+    method: request.method,
+    channelCode: request.bankCode,
+    amountIdr,
+  });
+  if (issuable === "not_offered") throw methodNotOffered();
+  if (issuable === "gateway_down")
+    throw new CoreError(
+      "SERVICE_UNAVAILABLE",
+      "Gateway pembayaran sedang tidak tersedia. Bayar di kasir.",
+    );
   // `next` is read again where the candidates are read: a twin request that
   // issued this very choice between the two reads must not be voided.
   await voidLiveCodesForMethodChange(
@@ -770,52 +796,6 @@ async function billAmountIdr(
 }
 
 /**
- * 1269 C2a: may the guest's new method replace an old live code? QRIS that a
- * usable gateway does not list is refused here (VALIDATION_ERROR), the same
- * answer as an e-wallet or card; any other "no" returns false. A bill with
- * nothing left to pay replaces nothing.
- */
-async function canIssueGuestMethod(
-  context: ScopedTenantContext,
-  credential: string,
-  sessionId: string,
-  orderId: string,
-  splitId: string | null,
-  choice: {
-    method: GuestPaymentMethod;
-    bankCode: string | null;
-    outletId: string;
-  },
-  now: Date,
-): Promise<boolean> {
-  const amountIdr = await billAmountIdr(
-    context,
-    credential,
-    sessionId,
-    orderId,
-    splitId,
-    now,
-  );
-  if (amountIdr <= 0) return false;
-  const routing = await withTenant(db, context, (tx) =>
-    resolveRoutingRule(tx, context, choice.outletId, choice.method),
-  );
-  const issuable = await canIssueMethod(context, choice.outletId, routing, {
-    method: choice.method,
-    channelCode: choice.bankCode,
-    amountIdr,
-  });
-  if (issuable || choice.method !== "qris" || !routing.enabled) return issuable;
-  const selected = await selectGatewayForNewIntent(
-    context,
-    choice.outletId,
-    routing,
-  );
-  if (selected.provider !== null) throw methodNotOffered();
-  return false;
-}
-
-/**
  * POST /api/table-sessions/:sessionId/payments (contract guest.ts). The
  * pay-first `order` and the split `split` targets are live, with QRIS or VA:
  * the open-bill `bill` target belongs to the bill settlement bead.
@@ -924,36 +904,40 @@ export async function createGuestPayment(
         outletId,
         amountIdr,
       );
-  } else if (bankCode !== null && namesChannel(parsed.method))
-    await assertGuestChannel(context, parsed.method, bankCode, outletId);
-  // legend-9vmit: a changed method or bank voids the old code first, only when
-  // the new one can be issued (1269 C2a). With no usable gateway or route the
-  // old code stays and the steps below give their own answer.
-  if (
-    await canIssueGuestMethod(
+  } else if (bankCode !== null && namesChannel(parsed.method)) {
+    const amountIdr = await billAmountIdr(
       context,
       credential,
       sessionId,
       orderId,
       splitId,
-      { method: parsed.method, bankCode, outletId },
-      now,
-    )
-  )
-    await voidOldCodesForChange(
-      context,
-      credential,
-      sessionId,
-      orderId,
-      splitId,
-      {
-        method: parsed.method,
-        bankCode,
-        payerSecret: parsed.payerSecret,
-        idempotencyKey: parsed.idempotencyKey,
-      },
       now,
     );
+    // A paid bill has no amount to ask for; its stored answer is served below.
+    await assertGuestChannel(
+      context,
+      parsed.method,
+      bankCode,
+      outletId,
+      amountIdr > 0 ? amountIdr : undefined,
+    );
+  }
+  // legend-9vmit: a changed method or bank voids the old code first.
+  await voidOldCodesForChange(
+    context,
+    credential,
+    sessionId,
+    orderId,
+    splitId,
+    {
+      method: parsed.method,
+      bankCode,
+      payerSecret: parsed.payerSecret,
+      idempotencyKey: parsed.idempotencyKey,
+    },
+    outletId,
+    now,
+  );
   return withTenant(db, context, async (tx) => {
     const session = await lockGuestSessionForPayment(
       tx,

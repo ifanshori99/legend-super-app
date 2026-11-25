@@ -284,7 +284,17 @@ const schema = z
     DUITKU_CALLBACK_BASE_URL: origin(
       "Use the API's public origin, e.g. https://api.example.com.",
     ).optional(),
-    DUITKU_RETURN_URL: z.url().max(255).optional(),
+    // One page for every payment: no query, hash or userinfo, so it can never
+    // carry a token (1269 C2a). Production: the `/bayar/kembali` page.
+    DUITKU_RETURN_URL: z
+      .url()
+      .max(255)
+      .refine((value) => {
+        if (value.includes("?") || value.includes("#")) return false;
+        const url = new URL(value);
+        return url.username === "" && url.password === "";
+      }, "Use a URL without query, hash or user info.")
+      .optional(),
     // 1269 C0: Duitku methods that may take money, comma-separated (qris, va,
     // ewallet, card). Empty by default: every method stays locked until its
     // sandbox proof exists. Status reads of codes already out are not gated.
@@ -806,6 +816,16 @@ const schema = z
           message: "Use an https URL in production (http only on localhost).",
         });
     }
+    if (
+      values.NODE_ENV === "production" &&
+      values.DUITKU_RETURN_URL !== undefined &&
+      new URL(values.DUITKU_RETURN_URL).pathname !== "/bayar/kembali"
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["DUITKU_RETURN_URL"],
+        message: "Use the /bayar/kembali page in production.",
+      });
     for (const key of [
       "DUITKU_CALLBACK_BASE_URL",
       "DUITKU_RETURN_URL",

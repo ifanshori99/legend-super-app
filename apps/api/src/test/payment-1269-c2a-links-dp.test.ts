@@ -10,7 +10,7 @@
 // - One return URL for every Duitku payment, without a token.
 //
 // Run: LEGEND_TEST_FILES="src/test/payment-1269-c2a-links-dp.test.ts" heavy pnpm test
-import { randomUUID } from "node:crypto";
+import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import {
   afterAll,
   beforeAll,
@@ -21,9 +21,14 @@ import {
   vi,
 } from "vitest";
 import type { ScopedTenantContext } from "@starter/shared/core";
+import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
 import type { PaymentInstructions } from "@starter/shared/payment";
 import { env } from "../config/env.ts";
 import { createDuitkuGateway } from "../services/payment-duitku.ts";
+import { receiveDuitkuCallback } from "../services/payment-duitku-webhook.service.ts";
 import {
   setPaymentGateway,
   type GatewayIntentRequest,
@@ -37,6 +42,10 @@ import {
   getPaymentLinkView,
   refreshIntent,
 } from "../services/payment.service.ts";
+import {
+  setIntegrationStatus,
+  upsertIntegration,
+} from "../services/platform-integration.service.ts";
 import { createPaymentReservationDepositPort } from "../services/reservation-deposit-payment.ts";
 import { endPools } from "./facility-breakfast-helpers.ts";
 import { owner } from "./floor-test-helpers.ts";
@@ -53,7 +62,10 @@ import { bindLinkToOrder, intentRow } from "./qr-va-912-3p1-helpers.ts";
 vi.setConfig({ testTimeout: 180_000, hookTimeout: 180_000 });
 
 const CHANNELS: Record<string, { code: string; name: string }[]> = {
-  va: [{ code: "BC", name: "BCA Virtual Account" }],
+  va: [
+    { code: "BC", name: "BCA Virtual Account" },
+    { code: "I1", name: "BNI Virtual Account" },
+  ],
   ewallet: [{ code: "OV", name: "OVO" }],
 };
 const ALL: GatewayPaymentMethod[] = ["qris", "va", "ewallet", "card"];
@@ -64,16 +76,22 @@ class Gateway implements PaymentGatewayPort {
   listed = new Set<GatewayPaymentMethod>(ALL);
   maxQrisIdr = Number.POSITIVE_INFINITY;
   failMethods = false;
+  down = false;
+  /** Channel code -> the largest amount `methods(amount)` still lists it for.
+   * `channels()` reads the probe amount, so it ignores this. */
+  readonly channelLimits = new Map<string, number>();
   readonly created: GatewayIntentRequest[] = [];
   private sequence = 0;
   reset() {
     this.listed = new Set(ALL);
     this.maxQrisIdr = Number.POSITIVE_INFINITY;
     this.failMethods = false;
+    this.down = false;
+    this.channelLimits.clear();
     this.created.length = 0;
   }
   async health() {
-    return { status: "available" as const };
+    return { status: this.down ? ("down" as const) : ("available" as const) };
   }
   async methods(_context?: unknown, _outletId?: string, amountIdr?: number) {
     if (this.failMethods) throw new Error("methods down");
@@ -83,7 +101,11 @@ class Gateway implements PaymentGatewayPort {
         enabled:
           this.listed.has(method) &&
           (method !== "qris" || (amountIdr ?? 0) <= this.maxQrisIdr),
-        channels: CHANNELS[method] ?? [],
+        channels: (CHANNELS[method] ?? []).filter(
+          (channel) =>
+            (amountIdr ?? 0) <=
+            (this.channelLimits.get(channel.code) ?? Number.POSITIVE_INFINITY),
+        ),
       }),
     );
   }
@@ -277,7 +299,7 @@ describe("e-wallet and card on a link", () => {
     },
   );
 
-  it("e-wallet then QRIS, both paid: the bill is paid once, the other is parked", async () => {
+  it("e-wallet then QRIS, both paid: the strict settlement refuses the second (the callback parks it, below)", async () => {
     const { token, linkId } = await openBill();
     const wallet = await pay(token, "ewallet", "OV");
     const qris = await pay(token, "qris", null);
@@ -286,7 +308,7 @@ describe("e-wallet and card on a link", () => {
         "SELECT provider_ref FROM payment_intents WHERE tenant_id = $1 AND id = $2",
         [fx.tenant.tenantId, id],
       );
-      await confirmPayment(
+      return confirmPayment(
         fx.context,
         id,
         {
@@ -297,20 +319,156 @@ describe("e-wallet and card on a link", () => {
           at: new Date().toISOString(),
         } as Parameters<typeof confirmPayment>[2],
         { type: "system" },
-      ).catch(() => undefined);
+        new Date(),
+        { closedIntentNeedsOpenBill: true },
+      );
     };
     await settle(qris.id, "qris");
-    await settle(wallet.id, "ewallet");
-    await settle(wallet.id, "ewallet");
+    for (let delivery = 0; delivery < 2; delivery += 1)
+      await expect(settle(wallet.id, "ewallet")).rejects.toMatchObject({
+        decisionCode: "BILL_CLOSED",
+      });
     const { rows } = await owner.query<{ paid: number }>(
       "SELECT paid_idr::int AS paid FROM payment_links WHERE tenant_id = $1 AND id = $2",
       [fx.tenant.tenantId, linkId],
     );
     expect(rows[0]!.paid).toBe(100_000);
-    expect(
-      (await unallocatedFunds(fx, wallet.id)).map((fund) => fund.amountIdr),
-    ).toEqual([100_000]);
   });
+});
+
+describe("real Duitku adapter and callback", () => {
+  const merchantCode = "DSC2A";
+  const apiKey = `key-${randomBytes(12).toString("hex")}`;
+  /** merchantOrderId (intent id) -> reference Duitku answered at inquiry. */
+  const references = new Map<string, string>();
+  const duitku = (async (url: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body)) as {
+      merchantOrderId: string;
+      paymentAmount: number;
+    };
+    const path = String(url);
+    let answer: Record<string, unknown>;
+    if (path.endsWith("getpaymentmethod"))
+      answer = {
+        responseCode: "00",
+        paymentFee: ["SP", "OV"].map((paymentMethod) => ({
+          paymentMethod,
+          paymentName: paymentMethod,
+          totalFee: "0",
+        })),
+      };
+    else if (path.endsWith("inquiry")) {
+      const reference = `REF-${randomUUID()}`;
+      references.set(body.merchantOrderId, reference);
+      answer = {
+        statusCode: "00",
+        reference,
+        paymentUrl: `https://sandbox.duitku.com/pay/${reference}`,
+        qrString: "00020101021226C2A",
+        amount: String(body.paymentAmount),
+      };
+    } else
+      answer = {
+        merchantOrderId: body.merchantOrderId,
+        statusCode: "00",
+        reference: references.get(body.merchantOrderId),
+        amount: "100000",
+      };
+    return new Response(JSON.stringify(answer), { status: 200 });
+  }) as typeof fetch;
+
+  const paidCallback = (intentId: string) =>
+    receiveDuitkuCallback({
+      tenantId: fx.tenant.tenantId,
+      rawBody: Buffer.from(
+        new URLSearchParams({
+          merchantCode,
+          amount: "100000",
+          merchantOrderId: intentId,
+          resultCode: "00",
+          reference: references.get(intentId)!,
+          signature: createHmac("sha256", apiKey)
+            .update(`${merchantCode}100000${intentId}`)
+            .digest("hex"),
+        }).toString(),
+      ),
+      fetch: duitku,
+    });
+
+  beforeAll(async () => {
+    await owner.query(
+      `UPDATE tenants SET feature_flags = jsonb_set(feature_flags, '{integrationProviders}',
+         COALESCE(feature_flags->'integrationProviders', '[]'::jsonb) || '"duitku"'::jsonb)
+        WHERE id = $1`,
+      [fx.tenant.tenantId],
+    );
+    const scope = establishScopedTenantContext(
+      establishTenantContext({
+        tenantId: fx.tenant.tenantId,
+        brandId: null,
+        source: "session",
+      }),
+      { kind: "tenant" },
+    );
+    const created = await upsertIntegration(
+      scope,
+      {
+        outletId: null,
+        provider: "duitku",
+        config: {
+          environment: "sandbox",
+          notificationEmail: "owner@example.test",
+        },
+        credentials: { merchantCode, apiKey },
+      },
+      randomUUID(),
+    );
+    await setIntegrationStatus(
+      scope,
+      created.id,
+      { status: "active" },
+      randomUUID(),
+    );
+  });
+  beforeEach(() =>
+    setPaymentGateway(
+      createDuitkuGateway({
+        fetch: duitku,
+        callbackBaseUrl: "https://api.example.test",
+        returnUrl: "https://app.example.test/bayar/kembali",
+      }),
+    ),
+  );
+  afterAll(() => setPaymentGateway(gw));
+
+  it.each([
+    ["the new QRIS first", ["qris", "ewallet"]],
+    ["the replaced e-wallet first", ["ewallet", "qris"]],
+  ] as const)(
+    "both codes paid, %s: the bill is paid once, the second payment is parked",
+    async (_name, order) => {
+      const { token, linkId } = await openBill();
+      const ids = {
+        ewallet: (await pay(token, "ewallet", "OV")).id,
+        qris: (await pay(token, "qris", null)).id,
+      };
+      // A repeat of a delivery changes nothing.
+      for (const method of [...order, ...order])
+        await paidCallback(ids[method]);
+      const { rows } = await owner.query<{ paid: number }>(
+        "SELECT paid_idr::int AS paid FROM payment_links WHERE tenant_id = $1 AND id = $2",
+        [fx.tenant.tenantId, linkId],
+      );
+      expect(rows[0]!.paid).toBe(100_000);
+      expect((await intentRow(fx.tenant.tenantId, ids[order[0]])).status).toBe(
+        "paid",
+      );
+      expect(await unallocatedFunds(fx, ids[order[0]])).toEqual([]);
+      expect(
+        (await unallocatedFunds(fx, ids[order[1]])).map((f) => f.amountIdr),
+      ).toEqual([100_000]);
+    },
+  );
 });
 
 describe("reservation DP port (finding 5)", () => {
@@ -367,8 +525,83 @@ describe("a refused method voids no live code (finding 7)", () => {
         method: "qris",
         idempotencyKey: randomUUID(),
       });
-    return { vaId: va.body.data.id as string, toQris };
+    const toVa = (bankCode: string) =>
+      fx.guestPost(guest, "/payments", {
+        target: { kind: "order", orderId: order.id },
+        method: "va",
+        bankCode,
+        idempotencyKey: randomUUID(),
+      });
+    return { vaId: va.body.data.id as string, toQris, toVa };
   }
+
+  async function linkVa() {
+    const order = await newSubmittedOrder(fx, 0);
+    const { token } = await bindLinkToOrder(fx, order);
+    const post = (method: string, channelCode: string | null) =>
+      agent(fx.app)
+        .post(`/api/payments/links/${token}/intents`)
+        .send({ method, channelCode, idempotencyKey: randomUUID() });
+    const va = await post("va", "BC");
+    expect(va.status, JSON.stringify(va.body)).toBe(201);
+    return { vaId: va.body.data.id as string, post };
+  }
+
+  it("QR guest: a bank listed at the probe amount but not at the bill amount keeps the old VA", async () => {
+    const { vaId, toVa } = await guestVa();
+    gw.channelLimits.set("I1", 10_000);
+    const refused = await toVa("I1");
+    expect(refused.status, JSON.stringify(refused.body)).toBe(400);
+    await expectStillLive(vaId);
+    expect(gw.created).toHaveLength(1);
+  });
+
+  it("public link: a bank listed at the probe amount but not at the bill amount keeps the old VA", async () => {
+    const { vaId, post } = await linkVa();
+    gw.channelLimits.set("I1", 10_000);
+    const refused = await post("va", "I1");
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    await expectStillLive(vaId);
+    expect(gw.created).toHaveLength(1);
+  });
+
+  it.each([
+    ["QRIS is unlisted", () => void gw.listed.delete("qris")],
+    ["the method list cannot be read", () => void (gw.failMethods = true)],
+  ])(
+    "QR guest: a pending QRIS is shown again while %s",
+    async (_n, arrange) => {
+      const guest = await fx.newGuest();
+      const order = await fx.qrOrder(guest);
+      const qris = () =>
+        fx.guestPost(guest, "/payments", {
+          target: { kind: "order", orderId: order.id },
+          method: "qris",
+          idempotencyKey: randomUUID(),
+        });
+      const first = await qris();
+      expect(first.status, JSON.stringify(first.body)).toBe(201);
+      arrange();
+      const again = await qris();
+      expect(again.status, JSON.stringify(again.body)).toBe(201);
+      expect(again.body.data.id).toBe(first.body.data.id);
+      expect(gw.created).toHaveLength(1);
+    },
+  );
+
+  it.each([
+    ["the method list cannot be read", () => void (gw.failMethods = true)],
+    ["the gateway is down", () => void (gw.down = true)],
+  ])("a swap answers 503 and keeps the VA while %s", async (_n, arrange) => {
+    const guest = await guestVa();
+    const link = await linkVa();
+    arrange();
+    const swaps = [await guest.toQris(), await link.post("qris", null)];
+    for (const swap of swaps)
+      expect(swap.status, JSON.stringify(swap.body)).toBe(503);
+    await expectStillLive(guest.vaId);
+    await expectStillLive(link.vaId);
+  });
 
   it("QR guest: VA to a QRIS the gateway does not list keeps the VA", async () => {
     const { vaId, toQris } = await guestVa();

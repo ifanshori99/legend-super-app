@@ -117,8 +117,8 @@ import {
   type OnlinePaymentMethod,
 } from "./payment-gateway";
 import {
-  canIssueMethod,
   gatewayListsMethod,
+  methodIssuable,
   ONLINE_METHODS,
   outletGatewayHealth,
   selectGatewayForNewIntent,
@@ -1148,6 +1148,30 @@ async function keepRefusedCodeAsOrphan(
   }
 }
 
+/** No usable gateway for this outlet: records the outlet-level reading and
+ * answers the refusal. */
+async function gatewayDownRefusal(
+  context: ScopedTenantContext,
+  link: PaymentLinkRow,
+  now: Date,
+): Promise<HttpError> {
+  const health = await outletGatewayHealth(context, link.outletId);
+  const incident = await syncGatewayHealthSafely(
+    context,
+    link.outletId,
+    health,
+    now,
+    health.provider,
+  );
+  if (incident?.openIncident != null)
+    await failOverLinkSafely(context, link, incident.openIncident, now);
+  return new HttpError(
+    503,
+    "SERVICE_UNAVAILABLE",
+    "The payment gateway is unavailable; pay at the cashier.",
+  );
+}
+
 async function createIntentCore(
   context: ScopedTenantContext,
   token: string,
@@ -1204,14 +1228,19 @@ async function createIntentCore(
     ))
       throw error;
     // 1269 C2a: a method that cannot be issued voids nothing.
-    if (
-      !(await canIssueMethod(context, plan.link.outletId, plan.routing, {
+    const issuable = await methodIssuable(
+      context,
+      plan.link.outletId,
+      plan.routing,
+      {
         method: parsed.method,
         channelCode: parsed.channelCode,
         amountIdr,
-      }))
-    )
-      throw error;
+      },
+    );
+    if (issuable === "gateway_down")
+      throw await gatewayDownRefusal(context, plan.link, now);
+    if (issuable === "not_offered") throw error;
     const { voided } = await options.voidLiveCodesForChange({
       paymentLinkId: plan.link.id,
       billSplitId: part?.billSplitId ?? null,
@@ -1241,24 +1270,8 @@ async function createIntentCore(
     plan.link.outletId,
     plan.routing,
   );
-  if (selected.provider === null) {
-    // No usable gateway for this outlet: record the outlet-level reading.
-    const health = await outletGatewayHealth(context, plan.link.outletId);
-    const incident = await syncGatewayHealthSafely(
-      context,
-      plan.link.outletId,
-      health,
-      now,
-      health.provider,
-    );
-    if (incident?.openIncident != null)
-      await failOverLinkSafely(context, plan.link, incident.openIncident, now);
-    throw new HttpError(
-      503,
-      "SERVICE_UNAVAILABLE",
-      "The payment gateway is unavailable; pay at the cashier.",
-    );
-  }
+  if (selected.provider === null)
+    throw await gatewayDownRefusal(context, plan.link, now);
 
   // The caller may shorten the lifetime (a QR guest's session ends sooner);
   // never lengthen it past the method default.

@@ -5,7 +5,8 @@
 // An existing intent never comes through here: it resolves by its own
 // `payment_intents.provider` (PAY-05).
 
-import type { ScopedTenantContext } from "@starter/shared/core";
+import { CoreError, type ScopedTenantContext } from "@starter/shared/core";
+import type { PaymentChannel } from "@starter/shared/payment";
 import {
   integrationProviderSchema,
   isIntegrationProviderAvailable,
@@ -170,12 +171,16 @@ export async function gatewayListsMethod(
   }
 }
 
+export type MethodIssuable = "yes" | "not_offered" | "gateway_down";
+
 /**
  * Can a new code of this method (and channel) be issued for the amount now?
  * Asked before an old live code is voided for it (1269 C2a): a refused method
- * must leave the old code payable. A failed read is "no".
+ * must leave the old code payable. Method and channel are both read at the bill
+ * amount (a bank can be listed at a small amount and be out of limits for this
+ * one). A failed read is unknown, never "no": it throws 503.
  */
-export async function canIssueMethod(
+export async function methodIssuable(
   context: ScopedTenantContext,
   outletId: string,
   routing: ResolvedRouting,
@@ -184,28 +189,39 @@ export async function canIssueMethod(
     readonly channelCode: string | null;
     readonly amountIdr: number;
   },
-): Promise<boolean> {
+): Promise<MethodIssuable> {
   const { method, channelCode, amountIdr } = choice;
-  if (!routing.enabled) return false;
+  if (!routing.enabled) return "not_offered";
   const selected = await selectGatewayForNewIntent(context, outletId, routing);
-  if (
-    selected.provider === null ||
-    !(await gatewayListsMethod(
-      context,
-      selected.port,
-      method,
-      outletId,
-      amountIdr,
-    ))
-  )
-    return false;
-  if (channelCode === null) return true;
+  if (selected.provider === null) return "gateway_down";
+  const { port } = selected;
+  let listed: boolean;
+  let channels: readonly PaymentChannel[];
   try {
-    const channels = await selected.port.channels(context, method, outletId);
-    return channels.some((channel) => channel.code === channelCode);
+    if (port.methods) {
+      const entry = (await port.methods(context, outletId, amountIdr)).find(
+        (candidate) => candidate.method === method && candidate.enabled,
+      );
+      listed = entry !== undefined;
+      channels = entry?.channels ?? [];
+    } else {
+      listed = await gatewayListsMethod(context, port, method, outletId);
+      channels =
+        listed && channelCode !== null
+          ? await port.channels(context, method, outletId)
+          : [];
+    }
   } catch {
-    return false;
+    throw new CoreError(
+      "SERVICE_UNAVAILABLE",
+      "Metode pembayaran belum dapat diperiksa. Coba lagi.",
+    );
   }
+  return listed &&
+    (channelCode === null ||
+      channels.some((channel) => channel.code === channelCode))
+    ? "yes"
+    : "not_offered";
 }
 
 const RANK: Record<GatewayHealth["status"], number> = {
