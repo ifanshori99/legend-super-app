@@ -165,9 +165,9 @@ describe("recipes stream by negotiated catalog protocol", () => {
     expect(stamped).toBe(3);
   });
 
-  it("protocolVersion above ours is negotiated down to 3 and stays tenant-wide", async () => {
+  it("protocolVersion above ours is negotiated down to 4 and stays tenant-wide", async () => {
     const { ids, stamped } = await recipeIds(outletB, 9);
     expect([...ids].sort()).toEqual([recA, recB].sort());
-    expect(stamped).toBe(3);
+    expect(stamped).toBe(4);
   });
 });

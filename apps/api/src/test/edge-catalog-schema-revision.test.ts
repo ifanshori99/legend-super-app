@@ -276,6 +276,8 @@ describe("CTO-930 compatibility / legend-i78o6", () => {
           protocolVersion,
         }),
       });
+      // Never the cloud's own version: an old edge only knows its own.
+      expect(page.protocolVersion).toBe(protocolVersion);
       const record = stationSyncRecordSchema
         .array()
         .parse(page.records)
@@ -304,7 +306,7 @@ describe("CTO-930 compatibility / legend-i78o6", () => {
     expect(legacy).not.toHaveProperty("displayOrder");
     expect(legacy).not.toHaveProperty("isActive");
     expect(legacy).not.toHaveProperty("autoPrintFallback");
-    expect(CATALOG_PROTOCOL_VERSION).toBe(3);
+    expect(CATALOG_PROTOCOL_VERSION).toBe(4);
   });
 
   it("AC2 a legacy station remains valid without inventing absent KDS fields", () => {
