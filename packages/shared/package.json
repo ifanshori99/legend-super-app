@@ -54,6 +54,7 @@
     "./qr-order/sample": "./src/qr-order/sample.ts",
     "./crm": "./src/crm/index.ts",
     "./facility": "./src/facility/index.ts",
+    "./wfc": "./src/wfc/index.ts",
     "./accounting": "./src/accounting/index.ts",
     "./pos": "./src/pos/index.ts",
     "./pos/acting-staff": "./src/pos/acting-staff.ts",

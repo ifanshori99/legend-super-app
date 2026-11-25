@@ -91,6 +91,11 @@ export const floorZones = pgTable(
       table.name,
     ),
     unique("floor_zones_tenant_id_id_key").on(table.tenantId, table.id),
+    unique("floor_zones_tenant_outlet_id_key").on(
+      table.tenantId,
+      table.outletId,
+      table.id,
+    ),
     foreignKey({
       name: "floor_zones_outlet_fk",
       columns: [table.tenantId, table.outletId],
