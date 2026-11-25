@@ -25,3 +25,12 @@ W1b: rumus boleh mulai; simpan settings menunggu no. 3. W2 menunggu no. 1, 2, 4,
 
 Urutan: guard + 0526, test gagal-dulu, crm-promo, review delta no. 1-3. Diterima: unik payment_links (cek jumlah baris dan deploy saat sepi di gerbang rilis), kuota butuh settings disetujui.
 W2: boleh mulai di luar refund/batal, gabung sesudah no. 1 dan 3; pakai `lockWfcClaim`, tangani 55P03; putuskan klaim yang hold-nya lewat lalu lunas (paling membatasi: tidak disahkan bila kursi sudah tidak bebas, uang jadi bayar telat). W3: payout refund memakai total link. W1b: `lockOutletSeats`, tolak `wfc_seats` < kuota tertinggi.
+
+## Re-review 26 Nov (a35c76829): TIDAK LULUS, 0 P1, 1 P2 (no. 2-4 tertutup, penomoran 0527 benar)
+
+1. **P2** guard `wfc-seat.custom.sql:195-213` (isi sama di 0527): SUM semua intent tautan; bayar dobel + refund dobel membuat klaim terpakai bisa `refunded` padahal uang asli masih kita pegang. Test `wfc-schema.test.ts` (50.000 + 19.999 + 1, tiga intent) mengesahkannya, harus dibalik.
+   Perbaikan, per transaksi pelunas: EXISTS satu intent `i` (tenant, outlet, tautan sama; `paid_at` dan `provider_ref` terisi; `amount_idr >= total tautan`), tanpa baris `payment_unallocated_funds` pada `i`, dengan SUM `payment_provider_refunds` (intent `i`, `provider = i.provider`, `provider_payment_ref = i.provider_ref`) `>= total tautan`. Kasus lain: Finance manual.
+   Test gagal-dulu: refund dobel di intent kedua dan di transaksi kedua intent yang sama, gabungan antarintent, ref beda: ditolak; refund bertahap pada transaksi pelunas: diterima; total memuat pajak.
+2. W1b wajib membuat id versi settings sebelum membuka approval.
+3. W3 WFC: rancang fakta refund provider untuk Duitku (sekarang hanya DOIT yang mencatat; untuk Duitku pengecualian belum pernah menyala, aman).
+4. Sesudah perbaikan: CTO cek diff guard + test, tanpa review architect ulang bila SQL sesuai no. 1.
