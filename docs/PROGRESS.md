@@ -14,6 +14,10 @@
 - Founder (keputusan 27): WFC berbayar wajib rilis 1; backend lama `ws/bz9h-wfc-products` a73998a99 sedang dirancang architect. F0 hanya menutup shower.
 - Sesudahnya: review tiap kartu -> gabung gelombang -> B2, W0, C2a/C4a, F1, F7, F11a/c.
 - Founder (keputusan 26): kamar mandi berbayar ditunda; F6a (WIP parkir), F6b, F7, F8, F9 deferred; F0 menutup fitur di server dan web. Sisa sekitar 410 jam agent. F11a jalan di `ws/1269-f11a`.
+- WFC: brief `docs/briefs/1270-wfc-berbayar.md`, epic legend-zmtrl W1-W10 (86 jam plus review). W7 mockup (`design/mockups/wfc/`) menunggu slot subagent (hook RAM merah menolak); W1 sesudah F0. Migrasi 0526 W1, 0527 W4. Menunggu jawaban founder: harga/kursi/kuota/pajak, minuman, bayar di kasir, pembatalan.
+- Review uang C0 LULUS; tambahan: tolak simpan sandbox di production. Temuan no. 5-7 (gateway siap tanpa cek metode) masuk C2a legend-osqou.3, wajib sebelum gerbang rilis.
+- E1 `ws/1269-e1` a176d4795: 55 test v4 lulus; sisa katalog lama, RLS, typecheck web, bukti gagal-dulu. E2 dan B1 dilanjutkan; F0 cakupan baru (hanya shower, RevPASH buka). 1162 memperbaiki P2 struk DP lalu digabung ulang ke int/rc2.
+- Sisa sekitar 500 jam agent (410 + 86 + review); perkiraan 9-15 Des dengan 3 agent, lewat beku kode 6 Des.
 - Triase bead uang: tidak ada pemblokir baru; `DOIT_REFUNDS_ENABLED` dan `DOIT_RECURRING_ENABLED` harus tetap false. Cek dulu iojd1 (tukar item tiket fasilitas) bila tiket dijual. q7jj F2 menunggu putusan akuntansi CTO.
 
 ## CTO 25 Nov (batch107 mendarat)
