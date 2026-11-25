@@ -71,6 +71,7 @@ describe("actingStaffHeaderFor", () => {
       "/api/pos/orders/abc/tickets",
       "/api/pos/orders/abc/tickets/t1/credential",
       "/api/outlets/o1/tables/t1/staff-session",
+      "/api/facility/tickets/pos",
     ])
       assert.deepEqual(
         actingStaffHeaderFor(path),
@@ -89,6 +90,7 @@ describe("actingStaffHeaderFor", () => {
       "/api/pos/orders/abc/tickets/t1",
       "/api/outlets/o1/tables/t1",
       "/api/outlets/o1/tables/t1/staff-session/extra",
+      "/api/facility/tickets/pos/extra",
       "/api/notes",
     ])
       assert.deepEqual(actingStaffHeaderFor(path), {}, path);

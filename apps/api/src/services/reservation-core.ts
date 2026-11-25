@@ -169,7 +169,7 @@ export async function storeIdempotencyResult(
   tx: Tx,
   context: ScopedTenantContext,
   key: string,
-  reservationId: string,
+  reservationId: string | null,
   response: Record<string, unknown>,
 ): Promise<void> {
   await tx

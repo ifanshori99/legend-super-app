@@ -666,7 +666,7 @@ function scanResult(input: {
   });
 }
 
-function tokenExpired(row: SessionRow, now: Date): boolean {
+export function tokenExpired(row: SessionRow, now: Date): boolean {
   const expiresAt = new Date(
     tableSessionTokenExpiresAt({
       openedAt: row.openedAt.toISOString(),
@@ -1202,7 +1202,11 @@ export async function openStaffSeatedSession(
       tenantId,
       outletId: input.outletId,
       tableSessionId: sessionId,
-      deviceHash: input.deviceHash ?? `reservation:${input.reservationId}`,
+      deviceHash:
+        input.deviceHash ??
+        (input.reservationId === null
+          ? `staff-seat:${sessionId}`
+          : `reservation:${input.reservationId}`),
       joinedAt: now,
       lastSeenAt: now,
     })

@@ -12,11 +12,20 @@
 
 import { randomUUID } from "node:crypto";
 import type { Express } from "express";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { tenantIdSchema } from "@starter/shared/core";
 import { establishTenantContext } from "@starter/shared/core/server";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
+import { HttpError } from "../lib/http-error.ts";
 import { signDeviceToken } from "../lib/device-token.ts";
 import {
   setDeviceOutletResolver,
@@ -28,9 +37,25 @@ import {
   createTable,
   createZone,
   owner,
-  seedTenantOutlets,
+  staffOfIsolatedTenant,
   type IsolatedTenant,
 } from "./floor-test-helpers.ts";
+
+// Spy on the provider confirmation that scan, close and reservation seating run
+// before they expire a stale session (legend-ukbq3). It passes through unless a
+// test makes it refuse.
+const confirmSpy = vi.hoisted(() => vi.fn());
+vi.mock("../services/order-recovery-charge.ts", async (importOriginal) => {
+  const original =
+    await importOriginal<
+      typeof import("../services/order-recovery-charge.ts")
+    >();
+  confirmSpy.mockImplementation(
+    (...args: Parameters<typeof original.confirmChargeLinksUnpaid>) =>
+      original.confirmChargeLinksUnpaid(...args),
+  );
+  return { ...original, confirmChargeLinksUnpaid: confirmSpy };
+});
 
 const ACTING_HEADER = "X-Acting-Staff";
 const PIN = "582914";
@@ -48,6 +73,7 @@ let till: Member;
 let cashierB: Member;
 let limited: Member;
 let payFirstZone: string;
+let openBillZone: string;
 let otherOutletId: string;
 
 async function member(label: string, roleId: string): Promise<Member> {
@@ -114,12 +140,8 @@ function seat(
   ).send(body);
 }
 
-async function emptyTable(): Promise<string> {
-  const table = await createTable(
-    till.client,
-    { zoneId: payFirstZone },
-    headers,
-  );
+async function emptyTable(zoneId = payFirstZone): Promise<string> {
+  const table = await createTable(till.client, { zoneId }, headers);
   return table.id as string;
 }
 
@@ -148,6 +170,10 @@ function expectError(
   expect(response.status, JSON.stringify(response.body)).toBe(status);
   expect(body.error?.code, JSON.stringify(response.body)).toBe(code);
 }
+
+beforeEach(() => {
+  confirmSpy.mockClear();
+});
 
 beforeAll(async () => {
   app = createApp();
@@ -204,6 +230,13 @@ beforeAll(async () => {
     [sharedDevice, tenant.tenantId, tenant.outletId],
   );
   payFirstZone = (await createZone(till.client, { hours: HOURS }, headers)).id;
+  openBillZone = (
+    await createZone(
+      till.client,
+      { paymentMode: "open_bill", hours: HOURS },
+      headers,
+    )
+  ).id;
   // A second outlet in the same tenant (the till's token is bound to the first).
   otherOutletId = randomUUID();
   await owner.query(
@@ -307,22 +340,182 @@ describe("POST /api/outlets/:outletId/tables/:tableId/staff-session", () => {
     expect(await sessionsOf(tableId)).toHaveLength(1);
   });
 
-  it.each(["dirty", "inactive"])("refuses a %s table", async (status) => {
-    const tableId = await emptyTable();
+  it.each(["dirty", "inactive", "reserved", "occupied"])(
+    "refuses a %s table that has no session of its own",
+    async (status) => {
+      // `occupied` without a session is the second table of a reservation
+      // party: seating a walk-in there would share the party's bill (review
+      // 1268 B1, no. 2).
+      const tableId = await emptyTable();
+      await owner.query(
+        `UPDATE tables SET status = $1 WHERE tenant_id = $2 AND id = $3`,
+        [status, tenant.tenantId, tableId],
+      );
+
+      expectError(
+        await seat(tableId, { pax: 2, idempotencyKey: newKey() }),
+        409,
+        "CONFLICT",
+      );
+      expect(await sessionsOf(tableId)).toHaveLength(0);
+      expect(await tableStatus(tableId)).toBe(status);
+    },
+  );
+
+  it("leaves the second table of a seated reservation party alone", async () => {
+    // Real shape: a primary table with the party's session, a secondary table
+    // marked occupied by seating and released by closing the primary session.
+    const primary = await emptyTable();
+    const secondary = await emptyTable();
+    expect(
+      (await seat(primary, { pax: 4, idempotencyKey: newKey() })).status,
+    ).toBe(200);
     await owner.query(
-      `UPDATE tables SET status = $1 WHERE tenant_id = $2 AND id = $3`,
-      [status, tenant.tenantId, tableId],
+      `UPDATE tables SET status = 'occupied' WHERE tenant_id = $1 AND id = $2`,
+      [tenant.tenantId, secondary],
     );
 
     expectError(
-      await seat(tableId, { pax: 2, idempotencyKey: newKey() }),
+      await seat(secondary, { pax: 2, idempotencyKey: newKey() }),
       409,
       "CONFLICT",
     );
+    expect(await sessionsOf(secondary)).toHaveLength(0);
+  });
+
+  it("confirms the payment links of a stale session unpaid before expiring it, and refuses when the provider is unsure", async () => {
+    // Review 1268 B1, no. 1: a link already paid at the provider must never be
+    // cancelled by a walk-in taking the table over.
+    const tableId = await emptyTable();
+    const first = await seat(tableId, { pax: 2, idempotencyKey: newKey() });
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    const staleId = first.body.data.id as string;
+    await owner.query(
+      `UPDATE table_sessions SET opened_at = now() - interval '13 hours', last_activity_at = now() - interval '13 hours'
+       WHERE tenant_id = $1 AND id = $2`,
+      [tenant.tenantId, staleId],
+    );
+    confirmSpy.mockRejectedValueOnce(
+      new HttpError(
+        409,
+        "PAYMENT_PROVIDER_UNCONFIRMED",
+        "Status pembayaran belum terkonfirmasi.",
+      ),
+    );
+
+    const refused = await seat(tableId, {
+      pax: 3,
+      idempotencyKey: newKey(),
+    });
+
+    expectError(refused, 409, "PAYMENT_PROVIDER_UNCONFIRMED");
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    expect(confirmSpy.mock.calls[0]?.[1]).toEqual({ sessionId: staleId });
+    const rows = await sessionsOf(tableId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id: staleId, status: "open" });
+  });
+
+  it("takes a table over from a stale session once the provider confirms nothing is owed", async () => {
+    const tableId = await emptyTable();
+    const first = await seat(tableId, { pax: 2, idempotencyKey: newKey() });
+    const staleId = first.body.data.id as string;
+    await owner.query(
+      `UPDATE table_sessions SET opened_at = now() - interval '13 hours', last_activity_at = now() - interval '13 hours'
+       WHERE tenant_id = $1 AND id = $2`,
+      [tenant.tenantId, staleId],
+    );
+
+    const next = await seat(tableId, { pax: 3, idempotencyKey: newKey() });
+
+    expect(next.status, JSON.stringify(next.body)).toBe(200);
+    expect(next.body.data.id).not.toBe(staleId);
+    expect(confirmSpy.mock.calls.map((call) => call[1])).toContainEqual({
+      sessionId: staleId,
+    });
+    const rows = await sessionsOf(tableId);
+    expect(rows.filter((row) => row.status === "open")).toHaveLength(1);
+    expect(rows.find((row) => row.id === staleId)?.status).not.toBe("open");
+  });
+
+  it("answers the same session to a replay after the party moved tables", async () => {
+    // Review 1268 B1, no. 4: the key lives in its own table, not on a
+    // participant row that follows the session.
+    const tableId = await emptyTable();
+    const target = await emptyTable();
+    const body = { pax: 2, idempotencyKey: newKey() };
+    const first = await seat(tableId, body);
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    const moved = await till.client
+      .post(`/api/table-sessions/${first.body.data.id}/move`)
+      .set(headers)
+      .set(originHeader)
+      .set(DEVICE_TOKEN_HEADER, deviceToken())
+      .send({ toTableId: target });
+    expect(moved.status, JSON.stringify(moved.body)).toBe(200);
+
+    const again = await seat(tableId, body);
+
+    expect(again.status, JSON.stringify(again.body)).toBe(200);
+    expect(again.body.data.id).toBe(first.body.data.id);
     expect(await sessionsOf(tableId)).toHaveLength(0);
   });
 
-  it("does not find a table through another outlet's path", async () => {
+  it("is not tricked by a guest who chose a device hash like the key", async () => {
+    const tableId = await emptyTable();
+    const key = newKey();
+    const first = await seat(tableId, { pax: 2, idempotencyKey: key });
+    expect(first.status).toBe(200);
+    const { rows } = await owner.query(
+      `SELECT device_hash FROM session_participants WHERE tenant_id = $1 AND table_session_id = $2`,
+      [tenant.tenantId, first.body.data.id],
+    );
+    expect(JSON.stringify(rows)).not.toContain(key);
+  });
+
+  it("opens an open-bill zone at once, confirmed by the host, with an audit row", async () => {
+    // Review 1268 B1, no. 5.
+    const tableId = await emptyTable(openBillZone);
+    const token = await tokenFor(cashierB);
+
+    const response = await seat(
+      tableId,
+      { pax: 2, idempotencyKey: newKey() },
+      { token },
+    );
+
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.data).toMatchObject({
+      status: "open",
+      paymentMode: "open_bill",
+      confirmedBy: cashierB.userId,
+    });
+    const { rows } = await owner.query<{ actor: string; after: string }>(
+      `SELECT event->>'actorId' AS actor, event->'maskedChanges'->'after' AS after
+       FROM audit_logs
+       WHERE tenant_id = $1 AND event->>'action' = 'table_session.staff_opened'
+         AND event->>'objectId' = $2`,
+      [tenant.tenantId, response.body.data.id],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.actor).toBe(cashierB.userId);
+  });
+
+  it("writes an audit row for a pay-first walk-in too", async () => {
+    const tableId = await emptyTable();
+    const response = await seat(tableId, { pax: 2, idempotencyKey: newKey() });
+    const { rows } = await owner.query(
+      `SELECT 1 FROM audit_logs
+       WHERE tenant_id = $1 AND event->>'action' = 'table_session.staff_opened'
+         AND event->>'objectId' = $2`,
+      [tenant.tenantId, response.body.data.id],
+    );
+    expect(rows).toHaveLength(1);
+  });
+
+  it("does not seat a table of another outlet through this outlet's path", async () => {
+    // The till's login reaches every outlet of the tenant, so the refusal is
+    // the table's own outlet check.
     const tableId = await emptyTable();
 
     const response = await seat(
@@ -331,23 +524,60 @@ describe("POST /api/outlets/:outletId/tables/:tableId/staff-session", () => {
       { outletId: otherOutletId },
     );
 
-    // The till's token reaches only its own outlet: no session either way.
-    expect([403, 404]).toContain(response.status);
+    expectError(response, 404, "NOT_FOUND");
     expect(await sessionsOf(tableId)).toHaveLength(0);
   });
 
-  it("does not find a table of another tenant", async () => {
-    const [foreignOutlet] = await seedTenantOutlets(randomUUID(), 1);
-    const foreignTable = randomUUID();
+  it("refuses a cashier token of outlet A on the path of outlet B", async () => {
+    const tableId = await emptyTable();
+    const token = await tokenFor(cashierB);
 
     const response = await seat(
-      foreignTable,
+      tableId,
       { pax: 2, idempotencyKey: newKey() },
-      { outletId: foreignOutlet },
+      { token, outletId: otherOutletId },
     );
 
-    expect([403, 404]).toContain(response.status);
-    expect(await sessionsOf(foreignTable)).toHaveLength(0);
+    expectError(response, 403, "ACTING_STAFF_OUTLET_MISMATCH");
+    expect(await sessionsOf(tableId)).toHaveLength(0);
+  });
+
+  it("does not find a real table of another tenant, by its own outlet or ours", async () => {
+    const foreign = await createIsolatedTenant(
+      `soss2-${randomUUID().slice(0, 6)}`,
+    );
+    const foreignStaff = await staffOfIsolatedTenant(app, foreign);
+    const foreignHeaders = { Host: foreign.hostname };
+    const zone = await createZone(
+      foreignStaff.client,
+      { hours: HOURS },
+      foreignHeaders,
+    );
+    const foreignTable = (
+      await createTable(
+        foreignStaff.client,
+        { zoneId: zone.id },
+        foreignHeaders,
+      )
+    ).id as string;
+
+    const viaOurOutlet = await seat(foreignTable, {
+      pax: 2,
+      idempotencyKey: newKey(),
+    });
+    const viaTheirOutlet = await seat(
+      foreignTable,
+      { pax: 2, idempotencyKey: newKey() },
+      { outletId: foreign.outletId },
+    );
+
+    expectError(viaOurOutlet, 404, "NOT_FOUND");
+    expectError(viaTheirOutlet, 403, "PERMISSION_DENIED");
+    const { rows } = await owner.query(
+      `SELECT 1 FROM table_sessions WHERE table_id = $1`,
+      [foreignTable],
+    );
+    expect(rows).toHaveLength(0);
   });
 
   it("refuses a cashier without floor.table.operate", async () => {
