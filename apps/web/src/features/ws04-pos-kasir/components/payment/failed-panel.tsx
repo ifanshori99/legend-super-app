@@ -2,11 +2,7 @@ import { ArrowRight } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { formatRupiah } from "@starter/shared/i18n";
-import {
-  usePaymentSession,
-  useRefreshQris,
-  useStartPayment,
-} from "../../hooks";
+import { usePaymentSession, useStartPayment } from "../../hooks";
 import { tenderVoidMessageKey } from "../../tender-void-reason";
 import type { PaymentAttempt } from "../../types";
 import {
@@ -25,10 +21,9 @@ import { Notice, PosPanel, StateBlock, StatusPill } from "../shared";
 // method (where that needs no new choice) or picks another one.
 export function FailedPanel({ orderId, onChangeMethod }: PaymentPanelProps) {
   const t = useT();
-  const { bill, activeAttempt, isLoading, error, refetch } =
+  const { bill, activeAttempt, partialAllowed, isLoading, error, refetch } =
     usePaymentSession(orderId);
   const startPayment = useStartPayment();
-  const refreshQris = useRefreshQris();
 
   const attempt = activeAttempt?.status === "failed" ? activeAttempt : null;
   const methodLabel = attempt ? methodLabelOf(attempt, t) : "";
@@ -53,16 +48,16 @@ export function FailedPanel({ orderId, onChangeMethod }: PaymentPanelProps) {
     attempt.method === "qris" ||
     attempt.method === "card" ||
     (attempt.method === "ewallet" && attempt.ewallet !== undefined);
-  const retrying = startPayment.isPending || refreshQris.isPending;
-  const retryError = startPayment.error ?? refreshQris.error;
+  const retrying = startPayment.isPending;
+  const retryError = startPayment.error;
   const retry = () => {
-    const ref = { orderId, attemptId: attempt.id };
-    if (attempt.method === "qris") refreshQris.mutate(ref);
-    else if (attempt.method === "card")
+    if (attempt.method === "qris" || attempt.method === "card")
       startPayment.mutate({
         orderId,
-        method: "card",
-        amountIdr: attempt.amountIdr,
+        method: attempt.method,
+        // Without partial amounts the server takes the whole remaining balance.
+        amountIdr:
+          partialAllowed || !bill ? attempt.amountIdr : bill.remainingIdr,
       });
     else if (attempt.method === "ewallet" && attempt.ewallet)
       startPayment.mutate({

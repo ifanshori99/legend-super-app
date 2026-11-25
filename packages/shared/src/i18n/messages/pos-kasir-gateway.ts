@@ -29,15 +29,37 @@ export const posKasirGatewayMessages = {
   grid: {
     loadError: "Metode pembayaran tidak bisa dimuat",
     loadErrorHint: "Periksa koneksi, lalu coba lagi.",
+    hint: {
+      qris: "QR di customer display",
+      va: "Virtual Account",
+      ewallet: "Dompet digital",
+      card: "Pembayaran online",
+      cash: "Hitung uang dan kembalian",
+      edc: "Kartu atau QRIS di mesin, dicatat manual",
+    },
+    locked: {
+      not_supported: "Belum bisa dipakai di kasir",
+      device_required: "Perlu perangkat kasir terdaftar",
+      routing_disabled: "Tidak aktif di outlet ini",
+      gateway_down: "Penyedia pembayaran sedang gangguan",
+      needs_cloud: "Perlu koneksi internet outlet",
+      no_terminal: "Belum ada mesin EDC aktif",
+    },
   },
   receipt: {
     skipPrint: "Lewati cetak, transaksi baru",
+    notPrintedTitle: "Struk {receiptNo} tidak tercetak",
+    notPrintedBody:
+      "Server tidak punya printer untuk struk ini. Simpan PDF untuk pelanggan. Percobaan cetak berikutnya ditandai CETAK ULANG.",
+    pdf: "Simpan PDF struk",
+    pdfError: "PDF struk belum bisa dibuka",
   },
   qris: {
     panelTitle: "QRIS · Customer display",
     startHeading: "Tampilkan QRIS di layar pelanggan",
     startBody:
       "Kode QR dibuat untuk nominal ini dan hanya tampil di customer display.",
+    start: "Buat QRIS",
     starting: "Membuat QRIS…",
     readyHeading: "QRIS siap dipindai",
     readyBodyOutlet: "QRIS {outlet} sudah tampil di layar pelanggan.",
@@ -47,8 +69,20 @@ export const posKasirGatewayMessages = {
     expiredBody: "Pelanggan belum menyelesaikan pembayaran.",
     expiredWarn: "Jangan gunakan kode QR sebelumnya.",
     expiredNoticeBody:
-      "QRIS baru akan muncul setelah status pembayaran lama diperiksa.",
-    renewing: "Memeriksa status dan memperbarui QRIS…",
+      "Buat QRIS baru setelah status pembayaran lama diperiksa, atau pilih metode lain.",
+    renew: "Buat QRIS baru",
+    renewing: "Memeriksa status dan membuat QRIS…",
+    hiddenHeading: "Menunggu hasil QRIS",
+    hiddenBody:
+      "QR tidak bisa ditampilkan untuk tagihan ini. Tunggu kepastian dari penyedia pembayaran.",
+    lapsedBody:
+      "Waktu QRIS sudah habis. Tunggu kepastian dari penyedia pembayaran sebelum memakai cara lain.",
+    cancel: "Batalkan QRIS",
+    cancelError: "QRIS belum bisa dibatalkan",
+    cancellingHeading: "Membatalkan QRIS",
+    cancellingBody:
+      "QR sudah disembunyikan. Tagihan tetap terkunci sampai penyedia memastikan QR tidak dibayar.",
+    cancellingStatus: "Menunggu kepastian",
   },
   va: {
     panelTitle: "Virtual Account",

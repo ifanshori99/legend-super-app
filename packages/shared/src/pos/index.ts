@@ -10,5 +10,6 @@ export * from "./receipt-run-event.ts";
 export * from "./events.ts";
 export * from "./endpoints.ts";
 export * from "./parked.ts";
+export * from "./payment-intent.ts";
 export * from "./errors.ts";
 export * from "./fixtures.ts";

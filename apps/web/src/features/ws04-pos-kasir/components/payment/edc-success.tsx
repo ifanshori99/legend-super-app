@@ -4,9 +4,10 @@ import { formatRupiah } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { usePrintReceipt } from "../../hooks";
-import type { PaymentAttempt, PaymentBill } from "../../types";
+import type { OrderCompletion, PaymentAttempt, PaymentBill } from "../../types";
 import { Notice, PosPanel } from "../shared";
 import { EdcLayout, useEdcErrorText } from "./edc-side";
+import { ReceiptNotPrinted, wasQueued } from "./receipt-result-notice";
 
 type EdcAttempt = PaymentAttempt & { edc: NonNullable<PaymentAttempt["edc"]> };
 
@@ -26,11 +27,13 @@ export function EdcSuccess({
   bill,
   attempt,
   receiptNo,
+  completion,
 }: {
   orderId: string;
   bill: PaymentBill;
   attempt: EdcAttempt;
   receiptNo?: string;
+  completion?: OrderCompletion;
 }) {
   const t = useT();
   const errorText = useEdcErrorText();
@@ -72,10 +75,15 @@ export function EdcSuccess({
               type="button"
               variant="outline"
               loading={print.isPending}
+              disabled={completion === "held"}
               onClick={() => print.mutate({ orderId })}
             >
               <Printer aria-hidden="true" />
-              {t("posKasirEdc.success.reprint")}
+              {t(
+                receiptNo
+                  ? "posKasirEdc.success.reprint"
+                  : "posKasirEdc.success.print",
+              )}
             </Button>
             <Button asChild>
               <Link to="/pos">{t("posKasirEdc.success.back")}</Link>
@@ -151,9 +159,20 @@ export function EdcSuccess({
               </p>
             </div>
           )}
+          {completion === "held" && (
+            <Notice
+              tone="warning"
+              title={t("posKasirPayment.success.heldTitle")}
+            >
+              {t("posKasirPayment.success.heldHint")}
+            </Notice>
+          )}
           <div aria-live="polite">
-            {print.isSuccess && (
+            {print.isSuccess && wasQueued(print.data) && (
               <p className="text-base">{t("posKasirEdc.success.reprinted")}</p>
+            )}
+            {print.isSuccess && !wasQueued(print.data) && (
+              <ReceiptNotPrinted result={print.data} />
             )}
           </div>
           {print.error && (

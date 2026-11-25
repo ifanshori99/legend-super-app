@@ -1883,6 +1883,38 @@ async function intentOf(tx: Tx, tenantId: TenantId, intentId: string) {
  *   order_issue.charge_paid (chargePaidFactOf): booking it again would count
  *   the cash twice.
  */
+/**
+ * 1269 C4a (legend-osqou.43): the emitter checked that the bank line's account
+ * is the entity's mapped `bank` account; the journal debits the mapping at
+ * posting time. When finance re-mapped `bank` in between, the money would land
+ * on another account: parked for a person instead. A settlement with no match
+ * row (events made outside the emitter) is not judged here.
+ */
+async function assertSettlementBankMappingUnchanged(
+  tx: Tx,
+  tenantId: TenantId,
+  settlementId: string,
+): Promise<void> {
+  const result = await tx.execute<{ drifted: boolean }>(sql`
+    SELECT (am.account_id IS DISTINCT FROM ba.gl_account_id) AS drifted
+      FROM bank_statement_line_matches m
+      JOIN bank_statement_lines l
+        ON l.tenant_id = m.tenant_id AND l.id = m.line_id
+      JOIN bank_accounts ba
+        ON ba.tenant_id = l.tenant_id AND ba.id = l.bank_account_id
+      LEFT JOIN account_mappings am
+        ON am.tenant_id = ba.tenant_id
+       AND am.legal_entity_id = ba.legal_entity_id AND am.role = 'bank'
+     WHERE m.tenant_id = ${tenantId}
+       AND m.ref_type = 'gateway_settlement'
+       AND m.ref_id = ${settlementId}::uuid
+       AND m.stale_at IS NULL`);
+  if (result.rows.some((row) => row.drifted))
+    throw new AutoJournalPayloadInvalid(
+      "The bank mapping changed since the settlement was reconciled",
+    );
+}
+
 async function cashMovementFactOf(
   tx: Tx,
   tenantId: TenantId,
@@ -3402,6 +3434,7 @@ export async function autoJournalFactOf(
     // dated settledOn exactly: entryDate, not a date derived from an instant.
     case "settlement.reconciled": {
       const p = settlementReconciledPayloadSchema.parse(stored.payload);
+      await assertSettlementBankMappingUnchanged(tx, tenantId, p.settlementId);
       return {
         ruleEvent: "settlement.reconciled",
         amounts: {

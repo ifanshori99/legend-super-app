@@ -18,10 +18,11 @@
 // - The case never fails the reversal: the owner is the person who matched
 //   (`matched_by`, who holds accounting.reconcile) and no role check runs.
 
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, or } from "drizzle-orm";
 import {
   outletIdSchema,
   type ScopedTenantContext,
+  type TenantId,
   type UserId,
 } from "@starter/shared/core";
 import {
@@ -29,12 +30,48 @@ import {
   bankReconciliationCases,
   bankStatementLineMatches,
 } from "../db/schema/accounting-cash-bank.ts";
+import { paymentSettlements } from "../db/schema/payment-settlement.ts";
+import { HttpError } from "../lib/http-error.ts";
 import { auditApFa } from "./accounting-ap-fa-shared.ts";
 import { entityLock } from "./accounting-bank-matching.ts";
 import { loadReconciliationPolicyInTx } from "./accounting-finance-policy.service.ts";
 import type { TenantTransaction } from "./accounting-shared.ts";
 
 const DAY_MS = 86_400_000;
+const SETTLEMENT_SOURCE = "gateway_settlement";
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * 1269 C4a (legend-osqou.42): a settlement journal that carries a fee is never
+ * reversed by hand; reversing it would also erase the fee expense, so any
+ * correction goes through a manual journal. Anything in doubt (no readable
+ * report, a fee) refuses.
+ */
+export async function assertSettlementJournalReversibleByHand(
+  tx: TenantTransaction,
+  tenantId: TenantId,
+  journal: { sourceType: string; sourceId: string | null },
+): Promise<void> {
+  if (journal.sourceType !== SETTLEMENT_SOURCE) return;
+  const [report] =
+    journal.sourceId !== null && UUID.test(journal.sourceId)
+      ? await tx
+          .select({ feeIdr: paymentSettlements.feeIdr })
+          .from(paymentSettlements)
+          .where(
+            and(
+              eq(paymentSettlements.tenantId, tenantId),
+              eq(paymentSettlements.id, journal.sourceId),
+            ),
+          )
+      : [];
+  if (!report || report.feeIdr !== 0)
+    throw new HttpError(
+      409,
+      "SETTLEMENT_JOURNAL_LOCKED",
+      "Jurnal settlement gateway ber-fee tidak dapat dibalik; koreksi lewat jurnal manual.",
+    );
+}
 
 export async function markMatchStaleForReversedJournal(
   tx: TenantTransaction,
@@ -43,6 +80,9 @@ export async function markMatchStaleForReversedJournal(
     legalEntityId: string;
     outletId: string | null;
     journalEntryId: string;
+    /** The reversed journal's source: a settlement journal stales its settlement match. */
+    sourceType: string;
+    sourceId: string | null;
     reversalEntryId: string;
     reversedBy: UserId | null;
     reason: string;
@@ -51,14 +91,31 @@ export async function markMatchStaleForReversedJournal(
 ): Promise<void> {
   const tenantId = context.tenant.tenantId;
   await entityLock(tx, tenantId, input.legalEntityId);
+  // A settlement is matched as itself (`gateway_settlement`), not as its journal.
+  const settlementId =
+    input.sourceType === SETTLEMENT_SOURCE &&
+    input.sourceId !== null &&
+    UUID.test(input.sourceId)
+      ? input.sourceId
+      : null;
   const staled = await tx
     .update(bankStatementLineMatches)
     .set({ staleAt: now, staleByReversalEntryId: input.reversalEntryId })
     .where(
       and(
         eq(bankStatementLineMatches.tenantId, tenantId),
-        eq(bankStatementLineMatches.refType, "journal_entry"),
-        eq(bankStatementLineMatches.refId, input.journalEntryId),
+        or(
+          and(
+            eq(bankStatementLineMatches.refType, "journal_entry"),
+            eq(bankStatementLineMatches.refId, input.journalEntryId),
+          ),
+          settlementId === null
+            ? undefined
+            : and(
+                eq(bankStatementLineMatches.refType, SETTLEMENT_SOURCE),
+                eq(bankStatementLineMatches.refId, settlementId),
+              ),
+        ),
         isNull(bankStatementLineMatches.staleAt),
       ),
     )
@@ -96,7 +153,12 @@ export async function markMatchStaleForReversedJournal(
         ownerId,
         status: "open",
         dueAt: new Date(now.getTime() + caseDueDays * DAY_MS),
-        refs: [{ type: "journal_entry", id: input.journalEntryId }],
+        refs: [
+          ...(match.refType === SETTLEMENT_SOURCE
+            ? [{ type: "gateway_settlement" as const, id: match.refId }]
+            : []),
+          { type: "journal_entry", id: input.journalEntryId },
+        ],
         openedBy: ownerId,
         openedAt: now,
       })

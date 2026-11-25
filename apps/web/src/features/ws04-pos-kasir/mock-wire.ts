@@ -144,6 +144,7 @@ const EDC_BANK_WIRE: Record<string, "bca" | "bni"> = {
 };
 const EDC_STATUS_WIRE = {
   waiting: "pending",
+  cancelling: "pending",
   unknown: "unknown",
   confirmed: "approved",
   declined: "declined",

@@ -163,6 +163,7 @@ import { deviceRecordSyncRouter } from "./edge-device-sync.routes.ts";
 import { catalogRecordSyncRouter } from "./edge-catalog-sync.routes.ts";
 import { edgePeopleSnapshotRouter } from "./edge-people-snapshot.routes.ts";
 import { edgeBootstrapRouter } from "./edge-bootstrap.routes.ts";
+import { edgeCloudCommandRouter } from "./edge-cloud-command.routes.ts";
 import { edgeSyncConflictsRouter } from "./edge-sync-conflicts.routes.ts";
 import { edgeNodeStatusRouter } from "./edge-node-status.routes.ts";
 import { deliveryChannelsRouter } from "./delivery-channels.routes.ts";
@@ -531,6 +532,8 @@ apiRouter.use("/edge-sync/catalog", catalogRecordSyncRouter);
 // People snapshot for edge clocking (WS-02/WS-10 C2, legend-ye4j1): edge credential only.
 apiRouter.use("/edge-sync/people-snapshot", edgePeopleSnapshotRouter);
 apiRouter.use("/edge-sync/bootstrap", edgeBootstrapRouter);
+// Edge -> cloud commands (card F1): edge credential only, cloud only.
+apiRouter.use("/edge-sync/commands", edgeCloudCommandRouter);
 apiRouter.use("/edge-sync-conflicts", edgeSyncConflictsRouter);
 // Back-office edge node status list (legend-eo3lc): cloud only.
 apiRouter.use("/edge-node-status", edgeNodeStatusRouter);

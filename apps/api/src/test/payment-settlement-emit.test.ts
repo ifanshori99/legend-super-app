@@ -139,6 +139,13 @@ async function makeWorld(tenant: string = tenantId): Promise<World> {
        VALUES ($1, $2, 'bank', $3), ($1, $2, 'gateway_clearing', $4), ($1, $2, 'gateway_fee_expense', $5)`,
       [tenant, w.entity, w.bankGl, w.clearingGl, w.feeGl],
     );
+    // Fee cap of the gateway per outlet: qris at most 1% (1269 C4a, osqou.42).
+    for (const id of w.outlets)
+      await c.query(
+        `INSERT INTO tenant_integrations (tenant_id, outlet_id, provider, config, credentials_encrypted, status)
+         VALUES ($1, $2, 'doit', $3::jsonb, 'seed', 'active')`,
+        [tenant, id, JSON.stringify({ maxFeeBps_qris: 100 })],
+      );
     await c.query(
       `INSERT INTO fiscal_periods (tenant_id, legal_entity_id, period)
        VALUES ($1, $2, '2026-10'), ($1, $2, '2026-11')`,
@@ -168,7 +175,12 @@ async function makeWorld(tenant: string = tenantId): Promise<World> {
   return w;
 }
 
-async function seedIntent(outlet: string, ref: string, amountIdr: number) {
+async function seedIntent(
+  outlet: string,
+  ref: string,
+  amountIdr: number,
+  provider = "doit",
+) {
   const linkId = randomUUID();
   const id = randomUUID();
   await asTenant(async (c) => {
@@ -188,7 +200,7 @@ async function seedIntent(outlet: string, ref: string, amountIdr: number) {
       `INSERT INTO payment_intents
          (id, tenant_id, outlet_id, payment_link_id, method, provider, provider_ref, amount_idr,
           idempotency_key, status, paid_at, instructions, expires_at)
-       VALUES ($1, $2, $3, $4, 'qris', 'doit', $5, $6, $7, 'paid', $8::timestamptz,
+       VALUES ($1, $2, $3, $4, 'qris', $9, $5, $6, $7, 'paid', $8::timestamptz,
                '{"method":"qris","qrPayload":"test","issuer":null}', now())`,
       [
         id,
@@ -199,6 +211,7 @@ async function seedIntent(outlet: string, ref: string, amountIdr: number) {
         amountIdr,
         `emit-${id}`,
         `${SOLD_ON} 12:00:00+07`,
+        provider,
       ],
     );
   });
@@ -212,13 +225,15 @@ async function seedSettlement(
     posIdr?: number | null;
     amountIdr?: number;
     feeIdr?: number;
+    provider?: string;
   } = {},
 ): Promise<string> {
   const outlet = o.outlet ?? world.outlets[0];
   const amountIdr = o.amountIdr ?? 100_000;
   const feeIdr = o.feeIdr ?? 700;
   const ref = `PR-${uid()}`;
-  if (o.posIdr !== null) await seedIntent(outlet, ref, o.posIdr ?? amountIdr);
+  if (o.posIdr !== null)
+    await seedIntent(outlet, ref, o.posIdr ?? amountIdr, o.provider);
   const res = await finance
     .post(IMPORT)
     .set(originHeader)
@@ -226,7 +241,7 @@ async function seedSettlement(
     .send({
       outletId: outlet,
       source: "gateway",
-      provider: "doit",
+      provider: o.provider ?? "doit",
       reference: `EMIT-${uid()}`,
       periodStart: SOLD_ON,
       periodEnd: SOLD_ON,
@@ -304,7 +319,11 @@ async function post(settlementId: string) {
 }
 
 /** A journal on the entity's bank account that finance posted by hand. */
-async function seedManualJournal(amountIdr: number, date: string) {
+async function seedManualJournal(
+  amountIdr: number,
+  date: string,
+  o: { counter?: string; bankCredit?: boolean } = {},
+) {
   return asTenant(async (c) => {
     const { rows } = await c.query(
       `INSERT INTO journal_entries
@@ -323,7 +342,13 @@ async function seedManualJournal(amountIdr: number, date: string) {
     await c.query(
       `INSERT INTO journal_lines (tenant_id, entry_id, account_id, line_no, debit_idr, credit_idr)
        VALUES ($1, $2, $3, 1, $5, 0), ($1, $2, $4, 2, 0, $5)`,
-      [tenantId, id, world.bankGl, world.clearingGl, amountIdr],
+      [
+        tenantId,
+        id,
+        o.bankCredit ? (o.counter ?? world.clearingGl) : world.bankGl,
+        o.bankCredit ? world.bankGl : (o.counter ?? world.clearingGl),
+        amountIdr,
+      ],
     );
     return id;
   });
@@ -902,5 +927,282 @@ describe("settlement.reconciled emitter (1269 C4a)", () => {
     for (const client of [cashier, outletOwner])
       await expectRefused(await reconcile(line, [id], { client }), 403, [id]);
     expect(await lineStatus(line)).toBe("unmatched");
+  });
+});
+
+describe("settlement.reconciled emitter: free bank journals (osqou.44)", () => {
+  it("refuses a free Dr bank / Cr clearing journal of the gross", async () => {
+    const id = await seedSettlement();
+    const line = await seedBankLine(99_300);
+    await seedManualJournal(100_000, PAID_ON);
+    await expectRefused(await reconcile(line, [id]), 409, [id]);
+    expect(await lineStatus(line)).toBe("unmatched");
+  });
+
+  it("refuses a free Dr bank / Cr clearing journal of any amount", async () => {
+    const id = await seedSettlement();
+    const line = await seedBankLine(99_300);
+    await seedManualJournal(12_345, PAID_ON);
+    await expectRefused(await reconcile(line, [id]), 409, [id]);
+  });
+
+  it("refuses a journal of the nets of two outlets when the payout carries one", async () => {
+    const a = await seedSettlement();
+    await seedSettlement({
+      outlet: world.outlets[1],
+      amountIdr: 50_000,
+      feeIdr: 350,
+    });
+    const line = await seedBankLine(99_300);
+    await seedManualJournal(148_950, PAID_ON);
+    await expectRefused(await reconcile(line, [a]), 409, [a]);
+  });
+
+  it("refuses a month-end journal dated after the tolerance, up to today", async () => {
+    const id = await seedSettlement();
+    const line = await seedBankLine(99_300);
+    await seedManualJournal(99_300, "2026-11-20");
+    await expectRefused(await reconcile(line, [id]), 409, [id]);
+  });
+
+  it("keeps the amount check for another counter account, over the whole window", async () => {
+    const id = await seedSettlement();
+    const line = await seedBankLine(99_300);
+    await seedManualJournal(99_300, "2026-11-20", { counter: world.feeGl });
+    await expectRefused(await reconcile(line, [id]), 409, [id]);
+  });
+
+  it("does not block on another counter account of another amount, nor on money out of the bank", async () => {
+    const id = await seedSettlement();
+    const line = await seedBankLine(99_300);
+    await seedManualJournal(12_345, PAID_ON, { counter: world.feeGl });
+    await seedManualJournal(5_000, PAID_ON, { bankCredit: true });
+    expect((await reconcile(line, [id])).status).toBe(200);
+  });
+});
+
+describe("settlement.reconciled emitter: fee cap per method (osqou.42)", () => {
+  async function setConfig(
+    config: object | null,
+    o: { outlet?: string | null; provider?: string; status?: string } = {},
+  ) {
+    const outlet = o.outlet === undefined ? world.outlets[0] : o.outlet;
+    await asTenant(async (c) => {
+      await c.query(
+        `DELETE FROM tenant_integrations
+          WHERE tenant_id = $1 AND provider = $2 AND outlet_id IS NOT DISTINCT FROM $3`,
+        [tenantId, o.provider ?? "doit", outlet],
+      );
+      if (config)
+        await c.query(
+          `INSERT INTO tenant_integrations (tenant_id, outlet_id, provider, config, credentials_encrypted, status)
+           VALUES ($1, $2, $3, $4::jsonb, 'seed', $5)`,
+          [
+            tenantId,
+            outlet,
+            o.provider ?? "doit",
+            JSON.stringify(config),
+            o.status ?? "active",
+          ],
+        );
+    });
+  }
+
+  it("refuses a report with no fee number at all", async () => {
+    await setConfig(null);
+    const id = await seedSettlement();
+    const line = await seedBankLine(99_300);
+    await expectRefused(await reconcile(line, [id]), 409, [id]);
+  });
+
+  it("refuses a 90% fee even though the net equals the bank line", async () => {
+    const id = await seedSettlement({ feeIdr: 90_000 });
+    const line = await seedBankLine(10_000);
+    await expectRefused(await reconcile(line, [id]), 409, [id]);
+    expect(await lineStatus(line)).toBe("unmatched");
+  });
+
+  it("accepts a fee exactly at the cap and refuses one rupiah more", async () => {
+    const ok = await seedSettlement({ feeIdr: 1_000 });
+    const okLine = await seedBankLine(99_000);
+    expect((await reconcile(okLine, [ok])).status).toBe(200);
+    const over = await seedSettlement({
+      outlet: world.outlets[1],
+      feeIdr: 1_001,
+    });
+    const overLine = await seedBankLine(98_999);
+    await expectRefused(await reconcile(overLine, [over]), 409, [over]);
+  });
+
+  it("adds the flat part to the cap", async () => {
+    await setConfig({ maxFeeBps_qris: 0, maxFeeFlatIdr_qris: 4_000 });
+    const over = await seedSettlement({ feeIdr: 4_001 });
+    const overLine = await seedBankLine(95_999);
+    await expectRefused(await reconcile(overLine, [over]), 409, [over]);
+    const ok = await seedSettlement({ feeIdr: 4_000 });
+    const okLine = await seedBankLine(96_000);
+    expect((await reconcile(okLine, [ok])).status).toBe(200);
+  });
+
+  it("refuses a method that has no number", async () => {
+    await setConfig({ maxFeeBps_va: 100 });
+    const id = await seedSettlement();
+    const line = await seedBankLine(99_300);
+    await expectRefused(await reconcile(line, [id]), 409, [id]);
+  });
+
+  it("refuses a draft or disabled integration", async () => {
+    for (const status of ["draft", "disabled"]) {
+      await setConfig({ maxFeeBps_qris: 100 }, { status });
+      const id = await seedSettlement();
+      const line = await seedBankLine(99_300);
+      await expectRefused(await reconcile(line, [id]), 409, [id]);
+    }
+  });
+
+  for (const [name, value] of [
+    ["text", "abc"],
+    ["negative", -1],
+    ["above 100%", 10_001],
+    ["fractional", 0.5],
+    ["null", null],
+  ] as const)
+    it(`refuses a ${name} fee number`, async () => {
+      await setConfig({ maxFeeBps_qris: value });
+      const id = await seedSettlement();
+      const line = await seedBankLine(99_300);
+      await expectRefused(await reconcile(line, [id]), 409, [id]);
+    });
+
+  it("falls back to the tenant number, and the outlet number wins over it", async () => {
+    const [saved] = (
+      await asTenant((c) =>
+        c.query(
+          `SELECT config, status, credentials_encrypted FROM tenant_integrations
+            WHERE tenant_id = $1 AND provider = 'duitku' AND outlet_id IS NULL`,
+          [tenantId],
+        ),
+      )
+    ).rows;
+    try {
+      await setConfig(
+        { maxFeeBps_qris: 100 },
+        { outlet: null, provider: "duitku" },
+      );
+      const ok = await seedSettlement({ provider: "duitku", feeIdr: 1_000 });
+      const okLine = await seedBankLine(99_000);
+      const okRes = await reconcile(okLine, [ok]);
+      expect(okRes.status, JSON.stringify(okRes.body)).toBe(200);
+      // The outlet's own number is tighter than the tenant's.
+      await setConfig(
+        { maxFeeBps_qris: 50 },
+        { outlet: world.outlets[1], provider: "duitku" },
+      );
+      const over = await seedSettlement({
+        outlet: world.outlets[1],
+        provider: "duitku",
+        feeIdr: 1_000,
+      });
+      const overLine = await seedBankLine(99_000);
+      await expectRefused(await reconcile(overLine, [over]), 409, [over]);
+    } finally {
+      await setConfig(null, { outlet: null, provider: "duitku" });
+      if (saved)
+        await asTenant((c) =>
+          c.query(
+            `INSERT INTO tenant_integrations (tenant_id, outlet_id, provider, config, credentials_encrypted, status)
+             VALUES ($1, NULL, 'duitku', $2::jsonb, $3, $4)`,
+            [
+              tenantId,
+              JSON.stringify(saved.config),
+              saved.credentials_encrypted,
+              saved.status,
+            ],
+          ),
+        );
+    }
+  });
+});
+
+describe("settlement.reconciled emitter: reversal and mapping (osqou.43)", () => {
+  const reverse = (journalId: string, client = finance) =>
+    client
+      .post(`/api/accounting/journals/${journalId}/reversal`)
+      .set(originHeader)
+      .send({
+        entryDate: "2026-11-10",
+        reason: "salah",
+        idempotencyKey: `rev-${randomUUID()}`,
+      });
+
+  async function postedSettlement(feeIdr: number) {
+    const id = await seedSettlement({ feeIdr });
+    const line = await seedBankLine(100_000 - feeIdr);
+    expect((await reconcile(line, [id])).status).toBe(200);
+    const posted = await post(id);
+    if (posted.status !== "posted") throw new Error("not posted");
+    return { id, line, journal: posted.journalEntryId };
+  }
+
+  it("a manual reversal of a journal with a fee is refused", async () => {
+    const { journal, line } = await postedSettlement(700);
+    const res = await reverse(journal);
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    const { rows } = await owner.query(
+      "SELECT 1 FROM journal_entries WHERE tenant_id = $1 AND reversal_of = $2",
+      [tenantId, journal],
+    );
+    expect(rows).toHaveLength(0);
+    expect(await lineStatus(line)).toBe("manually_matched");
+  });
+
+  it("a reversal of a journal without a fee turns the settlement match stale and opens a case", async () => {
+    const { id, journal } = await postedSettlement(0);
+    const res = await reverse(journal);
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const { rows: matches } = await owner.query(
+      `SELECT stale_at FROM bank_statement_line_matches
+        WHERE tenant_id = $1 AND ref_type = 'gateway_settlement' AND ref_id = $2`,
+      [tenantId, id],
+    );
+    expect(matches).toHaveLength(1);
+    expect(matches[0].stale_at).not.toBeNull();
+    const { rows: cases } = await owner.query(
+      `SELECT status FROM bank_reconciliation_cases
+        WHERE tenant_id = $1 AND refs @> $2::jsonb`,
+      [tenantId, JSON.stringify([{ type: "gateway_settlement", id }])],
+    );
+    expect(cases.map((c) => c.status)).toEqual(["open"]);
+    // The case holds the settlement: it cannot be emitted again.
+    const other = await seedBankLine(100_000);
+    await expectRefused(await reconcile(other, [id]), 409, []);
+  });
+
+  it("books nothing when the bank mapping changed after the emit", async () => {
+    const id = await seedSettlement();
+    const line = await seedBankLine(99_300);
+    expect((await reconcile(line, [id])).status).toBe(200);
+    const other = randomUUID();
+    await asTenant(async (c) => {
+      await c.query(
+        `INSERT INTO chart_of_accounts (id, tenant_id, legal_entity_id, code, name, type, report_group)
+         VALUES ($1, $2, $3, '1104', 'Bank lain', 'asset', 'cash_and_equivalents')`,
+        [other, tenantId, world.entity],
+      );
+      await c.query(
+        `UPDATE account_mappings SET account_id = $3
+          WHERE tenant_id = $1 AND legal_entity_id = $2 AND role = 'bank'`,
+        [tenantId, world.entity, other],
+      );
+    });
+    expect(await post(id)).toMatchObject({
+      status: "parked",
+      code: "AUTO_JOURNAL_PAYLOAD_INVALID",
+    });
+    const { rows } = await owner.query(
+      "SELECT 1 FROM journal_entries WHERE tenant_id = $1 AND legal_entity_id = $2 AND source_type = 'gateway_settlement'",
+      [tenantId, world.entity],
+    );
+    expect(rows).toHaveLength(0);
   });
 });
