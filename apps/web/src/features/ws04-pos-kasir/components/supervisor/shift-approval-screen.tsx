@@ -18,13 +18,13 @@ import { Money } from "@/components/ui/money";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { ApiError } from "@/lib/api/errors";
+import { isContractPending } from "../../hooks";
 import {
-  isContractPending,
   useApproveShiftClose,
   useRequestOverride,
   useShiftReview,
   useSupervisorOptions,
-} from "../../hooks";
+} from "../../shift-hooks";
 import type { ShiftReview } from "../../types";
 import { HeldCashOutGate } from "./held-cash-out-gate";
 import { ShiftForceClose } from "./shift-force-close";

@@ -24,11 +24,8 @@ import { ApiError } from "@/lib/api/errors";
 import type { AreaAccess } from "@/lib/areas/access";
 import { holdsAny } from "@/lib/areas/guard";
 import { useOutletClock } from "@/lib/tenant-context";
-import {
-  useCurrentUserId,
-  useDecideHeldCashMovement,
-  useHeldCashOuts,
-} from "../../hooks";
+import { useCurrentUserId } from "../../hooks";
+import { useDecideHeldCashMovement, useHeldCashOuts } from "../../shift-hooks";
 import type {
   HeldCashDecision,
   HeldCashOut,

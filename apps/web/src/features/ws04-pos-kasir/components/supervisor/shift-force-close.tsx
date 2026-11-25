@@ -16,7 +16,7 @@ import {
   useRequestOverride,
   useSubmitForcedCount,
   useWitnessForcedCount,
-} from "../../hooks";
+} from "../../shift-hooks";
 import type { ForceCloseView } from "../../shift-extra-types";
 import { CASH_DENOMINATIONS_IDR } from "../../types";
 import {

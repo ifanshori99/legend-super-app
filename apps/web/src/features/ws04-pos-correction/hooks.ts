@@ -20,8 +20,8 @@ import {
 import { ApiError } from "@/lib/api/client";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { useTenantContext } from "@/lib/tenant-context";
-import { requestOverride } from "../ws04-pos-kasir/api";
-import { useSupervisorOptions } from "../ws04-pos-kasir/hooks";
+import { requestOverride } from "../ws04-pos-kasir/shift-api";
+import { useSupervisorOptions } from "../ws04-pos-kasir/shift-hooks";
 import type { OverrideAction } from "../ws04-pos-kasir/types";
 import {
   applyManualDiscount,

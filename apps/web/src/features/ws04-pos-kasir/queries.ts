@@ -3,19 +3,21 @@
 // demand and refreshed by the mutations in ./hooks.ts.
 import { queryOptions } from "@tanstack/react-query";
 import {
-  fetchActiveShift,
-  fetchCashMovements,
-  fetchDayCloseRecap,
   fetchEdcTerminals,
   fetchEwallets,
   fetchPaymentMethods,
   fetchPaymentSession,
   fetchPointsAccount,
+  fetchVaBanks,
+} from "./api";
+import {
+  fetchActiveShift,
+  fetchCashMovements,
+  fetchDayCloseRecap,
   fetchRegisteredTerminals,
   fetchShiftReview,
   fetchSupervisors,
-  fetchVaBanks,
-} from "./api";
+} from "./shift-api";
 import {
   fetchForceCloseView,
   fetchHeldCashOuts,

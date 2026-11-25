@@ -11,7 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { useOutletClock } from "@/lib/tenant-context";
 import { Money } from "@/components/ui/money";
-import { useCashMovements, useRecordCashMovement } from "../../hooks";
+import { useCashMovements, useRecordCashMovement } from "../../shift-hooks";
 import type { CashMovement } from "../../types";
 import { PosPanel, StateBlock, parseDigits } from "../shared";
 import { formatShiftTime } from "./shift-format";

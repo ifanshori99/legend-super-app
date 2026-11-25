@@ -12,11 +12,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  useRecordEdcStandalone,
-  useRequestOverride,
-  useSupervisorOptions,
-} from "../../hooks";
+import { useRecordEdcStandalone } from "../../hooks";
+import { useRequestOverride, useSupervisorOptions } from "../../shift-hooks";
 import type { EdcTerminal, PaymentBill } from "../../types";
 import { Notice, PosPanel, StatusPill } from "../shared";
 import { EdcLayout, useEdcErrorText } from "./edc-side";
