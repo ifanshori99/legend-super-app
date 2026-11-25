@@ -187,7 +187,12 @@ export function createPosOrderEngine(options: EngineOptions = {}) {
       callNumber: order.callNumber,
       lines: order.lines,
       subtotalIdr: cartTotals(
-        order.lines.map((line) => ({ ...line, hold: false })),
+        order.lines.map((line) => ({
+          ...line,
+          variantId: null,
+          variantName: null,
+          hold: false,
+        })),
       ).subtotalIdr,
     };
   }
@@ -282,11 +287,21 @@ export function createPosOrderEngine(options: EngineOptions = {}) {
           `Pilih ${(group?.name ?? "opsi").toLowerCase()} sebelum menambahkan.`,
         );
       }
+      const variant =
+        item.variants.find((entry) => entry.id === line.variantId) ?? null;
+      if (item.variants.length > 0 && !variant)
+        throw new ApiError(
+          422,
+          "VARIANT_REQUIRED",
+          `Pilih varian ${item.name} sebelum menambahkan.`,
+        );
       return {
         lineId: line.lineId,
         menuItemId: item.id,
+        variantId: variant?.id ?? null,
+        variantName: variant?.name ?? null,
         name: item.name,
-        unitPriceIdr: item.priceIdr,
+        unitPriceIdr: variant?.priceIdr ?? item.priceIdr,
         quantity: line.quantity,
         modifiers,
         note: line.note.trim().slice(0, MAX_NOTE_LENGTH),
@@ -297,10 +312,16 @@ export function createPosOrderEngine(options: EngineOptions = {}) {
   }
 
   function toOrderLines(lines: readonly CartLine[]): OrderLine[] {
-    return lines.map(({ hold, ...rest }) => ({
-      ...rest,
+    return lines.map((line) => ({
       lineId: nextLineId(),
-      status: hold ? "held" : "sent",
+      menuItemId: line.menuItemId,
+      name: line.variantName ? `${line.name} (${line.variantName})` : line.name,
+      unitPriceIdr: line.unitPriceIdr,
+      quantity: line.quantity,
+      modifiers: line.modifiers,
+      note: line.note,
+      course: line.course,
+      status: line.hold ? ("held" as const) : ("sent" as const),
     }));
   }
 
@@ -363,7 +384,10 @@ export function createPosOrderEngine(options: EngineOptions = {}) {
       const s = ensure();
       const known = s.idempotency[input.idempotencyKey];
       if (known) return orderView(findOrder(known));
-      const tableLabel = input.tableLabel?.trim() || null;
+      const seated = input.tableSessionId
+        ? s.tables.find((entry) => entry.sessionId === input.tableSessionId)
+        : undefined;
+      const tableLabel = seated?.label ?? null;
       if (input.channel === "dine_in" && !tableLabel)
         throw new ApiError(422, "TABLE_REQUIRED", "Pilih meja untuk dine-in.");
       const externalRef = input.ojol?.externalRef.trim() ?? "";
@@ -416,6 +440,8 @@ export function createPosOrderEngine(options: EngineOptions = {}) {
         id: `draft-${pad(s.counters.draft, 4)}`,
         label: `${channelName[input.channel]} · Draf ${s.counters.draft}`,
         channel: input.channel,
+        tableSessionId: input.tableSessionId,
+        ojol: input.ojol,
         lines,
         parkedAt: nowIso(),
         subtotalIdr: cartTotals(lines).subtotalIdr,

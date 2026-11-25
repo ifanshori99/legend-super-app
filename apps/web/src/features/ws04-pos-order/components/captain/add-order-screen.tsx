@@ -14,7 +14,7 @@ import {
   Notice,
   StatusPill,
 } from "@/features/ws04-pos-kasir/components/shared";
-import { cartTotals } from "@/features/ws04-pos-order/cart-logic";
+import { cartTotals, needsChoice } from "@/features/ws04-pos-order/cart-logic";
 import { useDraftCart } from "@/features/ws04-pos-order/draft-store";
 import {
   isContractPending,
@@ -96,7 +96,7 @@ export function AddOrderScreen({ tableId }: { tableId: string }) {
 
   // An item without choices goes straight into the draft, as on the cashier.
   const pick = (item: MenuItem) => {
-    if (item.modifierGroups.length === 0) {
+    if (!needsChoice(item)) {
       draft.add(item, { modifiers: [], note: "", quantity: 1 });
       return;
     }
@@ -401,7 +401,7 @@ function MenuRow({
           </Button>
         )}
       </div>
-      {!item.soldOut && only && item.modifierGroups.length > 0 && (
+      {!item.soldOut && only && needsChoice(item) && (
         <Button
           variant="ghost"
           aria-label={t("posCaptainOrder.add.addOther", { name: item.name })}

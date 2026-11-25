@@ -10,8 +10,10 @@ import {
 } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Notice } from "@/features/ws04-pos-kasir/components/shared";
+import { needsCashierClose } from "@/features/ws04-pos-order/order-flow";
 import {
   isContractPending,
+  useCloseResume,
   useParkedDrafts,
   useResumeDraft,
 } from "@/features/ws04-pos-order/hooks";
@@ -34,10 +36,13 @@ export function ParkedDraftsSheet({
   open,
   onOpenChange,
   onResumed,
+  draftKey,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onResumed: (draft: ParkedDraft) => void;
+  /** The cashier's cart the resumed lines go into. */
+  draftKey: string;
+  onResumed: (draft: ParkedDraft & { missing?: number }) => void;
 }) {
   const t = useT();
   return (
@@ -53,7 +58,7 @@ export function ParkedDraftsSheet({
             {t("posOrderCart.parkedSheet.description")}
           </SheetDescription>
         </SheetHeader>
-        {open && <ParkedList onResumed={onResumed} />}
+        {open && <ParkedList onResumed={onResumed} draftKey={draftKey} />}
       </SheetContent>
     </Sheet>
   );
@@ -62,12 +67,15 @@ export function ParkedDraftsSheet({
 // Only mounted while the sheet is open, so the list is fetched on demand.
 function ParkedList({
   onResumed,
+  draftKey,
 }: {
-  onResumed: (draft: ParkedDraft) => void;
+  draftKey: string;
+  onResumed: (draft: ParkedDraft & { missing?: number }) => void;
 }) {
   const t = useT();
   const drafts = useParkedDrafts();
-  const resume = useResumeDraft({ draftKey: "kasir" });
+  const resume = useResumeDraft({ draftKey });
+  const closeResume = useCloseResume();
 
   if (drafts.isPending) {
     return (
@@ -132,6 +140,21 @@ function ParkedList({
         >
           {!isContractPending(resume.error) &&
             t("posOrderCart.error.resumeBody")}
+          {needsCashierClose(resume.error) && resume.variables && (
+            <div className="mt-2 grid gap-2">
+              <p>{t("posOrderCart.resumeClose.body")}</p>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  closeResume(resume.variables.id);
+                  resume.reset();
+                }}
+              >
+                {t("posOrderCart.resumeClose.confirm")}
+              </Button>
+            </div>
+          )}
         </Notice>
       )}
       <ul className="grid gap-2">
@@ -172,7 +195,11 @@ function ParkedList({
                   if (resume.isPending) return;
                   resume.mutate(
                     { id: draft.id },
-                    { onSuccess: (resumed) => onResumed(resumed) },
+                    {
+                      onSuccess: (resumed) => {
+                        if (resumed) onResumed(resumed);
+                      },
+                    },
                   );
                 }}
               >

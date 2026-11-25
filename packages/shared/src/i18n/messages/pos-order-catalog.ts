@@ -51,6 +51,7 @@ export const posOrderCatalogMessages = {
     optionalMax: "Pilih sampai {max}",
     maxReached: "Maksimal {max} pilihan",
     missing: "Pilih {group} sebelum menambahkan.",
+    variantGroup: "Varian",
     noteLabel: "Catatan untuk dapur",
     noteOptional: "(opsional)",
     notePlaceholder: "Contoh: tanpa bawang",

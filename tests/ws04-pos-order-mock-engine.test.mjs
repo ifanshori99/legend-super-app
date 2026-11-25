@@ -85,6 +85,8 @@ function line(
   return {
     lineId: `line-${seq}`,
     menuItemId: item.id,
+    variantId: null,
+    variantName: null,
     name: item.name,
     unitPriceIdr: item.priceIdr,
     quantity,
@@ -209,7 +211,7 @@ test("submitOrder: sent lines, held lines, and a subtotal that ignores the hold"
   const lines = [line(a, 2), line(b, 1, { hold: true }), line(c, 3)];
   const order = engine.submitOrder({
     channel: "takeaway",
-    tableLabel: null,
+    tableSessionId: null,
     ojol: null,
     lines,
   });
@@ -234,7 +236,7 @@ test("submitOrder: a takeaway order gets a call number and the counter moves on"
   const [a] = plainItems(engine.catalog());
   const first = engine.submitOrder({
     channel: "takeaway",
-    tableLabel: null,
+    tableSessionId: null,
     ojol: null,
     lines: [line(a, 1)],
   });
@@ -242,7 +244,7 @@ test("submitOrder: a takeaway order gets a call number and the counter moves on"
   assert.equal(engine.nextCallNumber(), "A-13");
   const second = engine.submitOrder({
     channel: "takeaway",
-    tableLabel: null,
+    tableSessionId: null,
     ojol: null,
     lines: [line(a, 1)],
   });
@@ -250,17 +252,24 @@ test("submitOrder: a takeaway order gets a call number and the counter moves on"
   assert.notEqual(second.orderId, first.orderId);
 });
 
+// An order goes onto an open table session (the table's label is derived).
+function seatedTable(engine) {
+  const table = engine.tables().find((t) => t.sessionId);
+  assert.ok(table, "the demo has a seated table");
+  return table;
+}
+
 test("submitOrder: dine-in keeps the table label", () => {
   const engine = api();
   const [a] = plainItems(engine.catalog());
   const order = engine.submitOrder({
     channel: "dine_in",
-    tableLabel: "A05",
+    tableSessionId: seatedTable(engine).sessionId,
     ojol: null,
     lines: [line(a, 1)],
   });
   assert.equal(order.channel, "dine_in");
-  assert.equal(order.tableLabel, "A05");
+  assert.equal(order.tableLabel, seatedTable(engine).label);
 });
 
 test("submitOrder: a modifier delta is part of the line price in the subtotal", () => {
@@ -285,7 +294,7 @@ test("submitOrder: a modifier delta is part of the line price in the subtotal", 
   ];
   const order = engine.submitOrder({
     channel: "takeaway",
-    tableLabel: null,
+    tableSessionId: null,
     ojol: null,
     lines,
   });
@@ -298,7 +307,7 @@ test("submitOrder: an ojol order carries the platform channel", () => {
   const [a] = plainItems(engine.catalog());
   const order = engine.submitOrder({
     channel: "ojol_manual",
-    tableLabel: null,
+    tableSessionId: null,
     ojol: { platform: "gofood", externalRef: "GF-123456" },
     lines: [line(a, 1)],
   });
@@ -311,7 +320,7 @@ test("submitOrder rejects an empty cart", () => {
     code(() =>
       engine.submitOrder({
         channel: "takeaway",
-        tableLabel: null,
+        tableSessionId: null,
         ojol: null,
         lines: [],
       }),
@@ -330,7 +339,7 @@ test("fireLines: only the chosen held lines become sent; the subtotal does not m
   ];
   const order = engine.submitOrder({
     channel: "dine_in",
-    tableLabel: "A05",
+    tableSessionId: seatedTable(engine).sessionId,
     ojol: null,
     lines,
   });
@@ -631,7 +640,7 @@ test("a repeated option in one group is refused by order, park and addToTable", 
     code(() =>
       engine.submitOrder({
         channel: "takeaway",
-        tableLabel: null,
+        tableSessionId: null,
         ojol: null,
         lines,
       }),
@@ -660,7 +669,7 @@ test("a repeated option in one group is refused by order, park and addToTable", 
   assert.ok(
     engine.submitOrder({
       channel: "takeaway",
-      tableLabel: null,
+      tableSessionId: null,
       ojol: null,
       lines: ok,
     }),
@@ -679,7 +688,7 @@ test("parkDraft keeps a sold-out item aside; the order still refuses it", () => 
     code(() =>
       engine.submitOrder({
         channel: "takeaway",
-        tableLabel: null,
+        tableSessionId: null,
         ojol: null,
         lines: engine.resume({ id: parked.id }).lines,
       }),
@@ -726,7 +735,7 @@ test("addToTable refuses a sold-out item without opening an order or the table",
   const nextNumber = Number(first.order.number.replace("POS-", ""));
   const direct = api().submitOrder({
     channel: "takeaway",
-    tableLabel: null,
+    tableSessionId: null,
     ojol: null,
     lines: [line(a, 1)],
   });
