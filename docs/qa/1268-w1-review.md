@@ -10,3 +10,14 @@ Berkas di `apps/web/src/features/ws04-pos-order/`.
 6. **P3** `hooks.ts:72` `actorId` kosong: tolak kirim. P3 draf lama dibuang: diterima. P3 katalog per kanal: kartu.
 
 Belum dicek reviewer: tab duplikat (sessionStorage tersalin), ganti outlet/perangkat/akun di tengah intent, `apps/web/test/pos-936-*`.
+
+## Re-review 26 Nov (1edad5938): TIDAK LULUS, 3 P2
+
+1. **P2** `order-flow.ts:275-288`: ulangi cek `peekIntent(...).data === APPLIED` di dalam `after`, tepat sebelum `apply`; lewati bila sudah (dua resume bersamaan menggandakan baris).
+2. **P2** `cashier-main-screen.tsx:249`: "Kembalikan pesanan tertunda" menimpa keranjang aktif. Keputusan CTO: bila keranjang sekarang berbeda dari snapshot, minta konfirmasi dan simpan isi sekarang (tahan/parkir lokal) sebelum menimpa; replay resume tidak jalan selama ada intent pesanan yang belum jelas.
+3. **P2** `cashier-main-screen.tsx:70`, `draft-store.ts:16`: `draftKey` memuat outlet + aktor; kirim diblokir bila storage memuat intent aktor lain yang belum jelas di outlet itu.
+4. **P3, betulkan sekarang** 403: aksi "tutup" sesudah konfirmasi, seperti KEY_REUSED.
+5. **Cek** `useActiveStaff().userId` sama dengan `actorOf(req)` server.
+6. P3 tab duplikat saat resume belum jelas: kartu.
+
+409 final, asersi mock-engine, dan kunci create/submit/park: sah.
