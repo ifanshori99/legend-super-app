@@ -9,6 +9,9 @@
 - Scope rilis 1 dari founder (keputusan 22-25 di `docs/founder/keputusan-2026-11-21.md`): edge printer, EDC otomatis, Duitku VA/e-wallet/kartu, laporan, POS offline, tiket/poin/voucher/DP di kasir. Brief `docs/briefs/1269-scope-tambahan.md` (C, D, E) dan `docs/briefs/1269-f-tiket-poin-dp-standby.md` (F, sekitar 148 jam). Epic legend-osqou, anak F di legend-osqou.33.
 - Suite penuh f9dea5f98: root-web, api-1/2/4/5 lulus; api-3 dan api-6 gagal karena test (jam, VAPID), dibetulkan di `int/rc1` b61b245db (uji ulang VAPID antre); api-7/8 jalan.
 - E8 `ws/1269-e8` eaa6faa41 review LULUS, menunggu gabung. Jalan: B1, B3, 1162 (antre test), C0 `ws/1269-c0`, E2 `ws/1269-e2` (migrasi 0524), E1 `ws/1269-e1` (0525), F6a `ws/1269-f6a`.
+- Suite penuh f9dea5f98 selesai: 9 bagian, 7 lulus; api-3 dan api-6 gagal karena test, perbaikannya lulus uji ulang (b61b245db).
+- `int/rc2` 142a1b0fa = int/rc1 + E8 + F11a (b1bf61290) + B3 + 1162 (review LULUS; P2 struk DP menyusul di ws/1268-1162). Gerbang gabungan belum dijalankan; worktree `../legend-rc1` kini di int/rc2.
+- Founder (keputusan 27): WFC berbayar wajib rilis 1; backend lama `ws/bz9h-wfc-products` a73998a99 sedang dirancang architect. F0 hanya menutup shower.
 - Sesudahnya: review tiap kartu -> gabung gelombang -> B2, W0, C2a/C4a, F1, F7, F11a/c.
 - Founder (keputusan 26): kamar mandi berbayar ditunda; F6a (WIP parkir), F6b, F7, F8, F9 deferred; F0 menutup fitur di server dan web. Sisa sekitar 410 jam agent. F11a jalan di `ws/1269-f11a`.
 - Triase bead uang: tidak ada pemblokir baru; `DOIT_REFUNDS_ENABLED` dan `DOIT_RECURRING_ENABLED` harus tetap false. Cek dulu iojd1 (tukar item tiket fasilitas) bila tiket dijual. q7jj F2 menunggu putusan akuntansi CTO.
