@@ -21,3 +21,17 @@ Bead legend-wxvt9. Staging belum ada, jadi latihan di database lokal sekali paka
 3. "Isian 0558" di bead: cari migrasi/constraint yang dimaksud (nomor bisa berubah sesudah squash; cek `apps/api/drizzle` dan git log), uji terhadap data lama.
 4. Bug nyata: test gagal dulu, lalu perbaiki. Test terarah hijau dan tsc api hijau.
 5. Tulis langkah persis untuk staging/production (perintah, cara baca hasil, ambang berhenti, cara mundur) di `docs/release/pph21-backfill-rehearsal.md`. Jangan klaim staging sudah dijalankan.
+
+## Gelombang 2: hasil review architect (25 Nov). Dua agent, berkas tidak bertumpuk.
+
+### G1 (perintah ops di dist): `apps/api/tsup.config.ts`, `apps/api/package.json`, berkas wrapper baru, skrip yang disebut, dokumen perintahnya selain runbook PPh21
+- Penjaga entry `payroll-pph21-receivable-backfill.ts:98-107`: dipanggil tanpa `.js` atau lewat symlink = exit 0 tanpa output. Ganti pola wrapper seperti `apps/api/src/reset-preswitch-refunds.ts` (wrapper selalu menjalankan, modul tidak punya penjaga).
+- Masalah sama, pakai wrapper + entry tsup, urut penting: `db/backfill-ptkp-history.ts` (`docs/deployment.md:202`, wajib sebelum simulate payroll), `db:backfill-defaults`, `metrics:backfill`, `db:backfill-employee-managers`, `db:rotate-data-key`, `role:set`, `purchase-return:variance-check`, `db/repair-supplier-invoice-npwp.ts`. Penjaga `.ts$` lama = diam exit 0: hilangkan. Argumen salah/kosong = exit bukan 0 dengan usage, tidak menulis. Perilaku dan default (dry-run bila ada) tidak berubah.
+- Test: tiap entry ada di tsup; build (lewat heavy) lalu jalankan `node dist/<x>.js` dengan argumen salah: keluar bukan 0 dan ada pesan. Perintah di dokumen diperbarui ke `docker compose ... run --rm --no-deps -T api node dist/<x>.js`.
+- Smoke: salin dist + node_modules produksi (image api bila build murah, kalau tidak Node 22 lokal) dan jalankan dry-run PPh21 + PTKP ke DB sekali pakai.
+
+### G2 (PPh21): `apps/api/src/services/payroll-pph21-receivable-backfill.service.ts`, `apps/api/src/test/payroll-pph21-receivable-backfill.test.ts`, `docs/release/pph21-backfill-rehearsal.md`
+- Service `:181` `catch` menelan galat DB: tangkap hanya galat `unreadable`. Test gagal dulu.
+- Laporan: rincian per badan hukum + sisa item yang sudah ada.
+- Test `:1389-1395`: saring kunci yang ditunggu, jangan terminate backend test lain.
+- Runbook: (1) tanpa baris `summary` = STOP. (2) pakai `run --rm --no-deps -T api node dist/payroll-pph21-receivable-backfill.js --dry-run`. (3) Ambang (putusan): STOP bila (sisa item yang ada + `createdIdr`) > saldo 1204 per badan hukum; selisih ke bawah dinilai accounting; STOP bila `summary.tenants` ≠ jumlah tenant, ada `employee_missing`/`id_taken`, atau hasil nyata ≠ dry-run; payroll dibekukan di antaranya. `payslip_unreadable`/`item_exceeds_balance`: lanjut hanya bila tiap nama dijelaskan tertulis HR/finance (tidak ditulis apa pun). Hapus "selisih besar". (4) Mundur: migrator `BYPASSRLS`, `BEGIN`, `DELETE ... RETURNING`, batasi badan hukum/id, jumlah ≤ hasil apply, baru `COMMIT`. Sudah ada pelunasan: jangan pulihkan backup; berhenti, hubungi CTO, perbaikan maju. (5) `pg_dump` sebagai superuser/migrator di container postgres, `umask 077`; tenant sebelum yang gagal sudah ter-commit; selesaikan reversal yang direncanakan dulu.
