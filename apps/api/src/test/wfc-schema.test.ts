@@ -1887,7 +1887,8 @@ describe("review 3: a settings version carries its own approval", () => {
         ).rejects.toMatchObject(refused);
       await expect(
         attempt((_, payload) => {
-          const { [key]: _gone, ...rest } = payload;
+          const rest: Record<string, unknown> = { ...payload };
+          delete rest[key];
           return { payload: JSON.stringify(rest) };
         }),
         `${key} missing`,
