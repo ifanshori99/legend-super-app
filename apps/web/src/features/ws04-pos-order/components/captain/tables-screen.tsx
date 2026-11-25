@@ -19,6 +19,7 @@ import { useTenantContext } from "@/lib/tenant-context";
 import { CallBanner } from "./call-banner";
 import { CaptainShell } from "./captain-shell";
 import { TableTile } from "./table-tile";
+import { UnclearSends } from "./unclear-sends";
 
 type Filter = "all" | "occupied" | "empty";
 const FILTERS: readonly Filter[] = ["all", "occupied", "empty"];
@@ -92,6 +93,8 @@ export function TablesScreen() {
             {t("posCaptainTables.offline.body")}
           </Notice>
         )}
+
+        <UnclearSends tables={tables} />
 
         {/* Always in the page, so a call that arrives later is announced. */}
         <div aria-live="polite" className="empty:sr-only">

@@ -122,6 +122,13 @@ export type PosCaller = {
   /** Order version the client expects (legend-63l6): body `expectedVersion`
    * or `If-Match`; null when the client sent neither. */
   readonly expectedVersion: number | null;
+  /**
+   * Set when the caller holds `order.create` but not `pos.sale.create`
+   * (waiter, captain): they may only create, submit and fire `captain`
+   * orders. The service reads the channel from the order row, never from
+   * the client.
+   */
+  readonly captainOnly?: boolean;
 };
 
 const EVENT_DESTINATION = "cloud-sync";

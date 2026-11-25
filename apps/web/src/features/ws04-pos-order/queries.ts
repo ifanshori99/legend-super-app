@@ -69,7 +69,7 @@ export function tableOrderQuery(outletId: string, tableId: string) {
 export function serviceCallsQuery(outletId: string) {
   return queryOptions({
     queryKey: posOrderKeys.calls(outletId),
-    queryFn: () => fetchServiceCalls(),
+    queryFn: () => fetchServiceCalls(outletId),
     refetchInterval: SERVICE_CALLS_POLL_MS,
     refetchIntervalInBackground: false,
     retry: false,

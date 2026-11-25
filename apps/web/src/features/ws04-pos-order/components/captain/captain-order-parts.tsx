@@ -4,6 +4,34 @@ import { API_MOCK } from "@/lib/api/mock-flag";
 import type { Translate } from "@starter/shared/i18n";
 import type { CaptainTable, CartLine } from "@/features/ws04-pos-order/types";
 
+/**
+ * The cart while its order is being sent or its answer is unknown: same lines,
+ * every change does nothing, so nothing can change under the keyed send.
+ */
+export function lockDraft<
+  T extends {
+    lines: CartLine[];
+    add: unknown;
+    setQuantity: unknown;
+    remove: unknown;
+    toggleHold: unknown;
+    clear: unknown;
+    replace: unknown;
+  },
+>(draft: T, locked: boolean): T {
+  if (!locked) return draft;
+  const noop = () => undefined;
+  return {
+    ...draft,
+    add: noop,
+    setQuantity: noop,
+    remove: noop,
+    toggleHold: noop,
+    clear: noop,
+    replace: noop,
+  };
+}
+
 /** Chosen modifier names, then the note, as short detail parts. */
 export function lineDetails(
   line: Pick<CartLine, "modifiers" | "note">,

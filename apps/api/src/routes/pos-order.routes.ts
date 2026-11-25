@@ -63,6 +63,8 @@ import {
   getAccessSnapshot,
   getScopedTenantContext,
   requireOutletPermission,
+  requireOutletPermissionOrFallback,
+  usedFallbackPermission,
 } from "../middleware/permissions.ts";
 import {
   getTenantContext,
@@ -100,6 +102,13 @@ const can = (permission: PermissionCode) =>
 
 const view = can("order.view");
 const sell = can("pos.sale.create");
+// Create, submit and fire: a waiter or captain (`order.create`) may only touch
+// `captain` orders; the service enforces that (PosCaller.captainOnly).
+const sellOrCaptain = requireOutletPermissionOrFallback(
+  "pos.sale.create",
+  "order.create",
+  outletOf,
+);
 const pay = can("pos.payment.accept");
 const discount = can("pos.discount.apply");
 const voids = can("pos.void.request");
@@ -145,6 +154,7 @@ async function caller(
     userId: userIdSchema.parse(actorOf(req)),
     deviceId: await currentDeviceIdOf(req),
     expectedVersion: fromBody ?? fromHeader,
+    captainOnly: usedFallbackPermission(req),
   };
 }
 
@@ -245,7 +255,7 @@ posOrderRouter.get("/orders", view, async (req, res) => {
   );
 });
 
-posOrderRouter.post("/orders", sell, jsonBody, async (req, res) => {
+posOrderRouter.post("/orders", sellOrCaptain, jsonBody, async (req, res) => {
   const { outletId } = createPosOrder.params.parse(req.params);
   const body = createPosOrder.body.parse(req.body);
   const order = await pos.createPosOrder(
@@ -272,7 +282,7 @@ posOrderRouter.get("/orders/:orderId", view, async (req, res) => {
 
 posOrderRouter.post(
   "/orders/:orderId/submit",
-  sell,
+  sellOrCaptain,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId } = submitPosOrder.params.parse(req.params);
@@ -290,7 +300,7 @@ posOrderRouter.post(
 
 posOrderRouter.post(
   "/orders/:orderId/fire",
-  sell,
+  sellOrCaptain,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId } = firePosOrderItems.params.parse(req.params);

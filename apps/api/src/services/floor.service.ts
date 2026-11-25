@@ -13,7 +13,7 @@
 // audited (`table.qr_rotated`), so an old sticker stops resolving (ORD-04).
 
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import {
   assertOutletInScope,
   CoreError,
@@ -65,6 +65,7 @@ import { sealSecret, openSecret } from "../lib/secrets";
 import { recordAudit } from "./core-audit";
 import { qrTokenHash, signTableQrToken } from "./qr-token";
 import { qrOrderSettlementLookup } from "./qr-order.service";
+import { businessDateFor, loadOutlet } from "./pos-order-support";
 import { lockTableLiveState } from "./table-session.service";
 
 type Database = NodePgDatabase<typeof schema>;
@@ -369,6 +370,45 @@ export async function listFloorBoard(
     const openCallCountByTable = new Map(
       openCalls.map((row) => [row.tableId, row.count]),
     );
+    // Earliest live hold per table, time and party size only (no PII).
+    const holdRows = await tx
+      .select({
+        tableId: schema.reservationTables.tableId,
+        startsAt: schema.reservationTables.startsAt,
+        endsAt: schema.reservationTables.endsAt,
+        pax: schema.reservations.pax,
+      })
+      .from(schema.reservationTables)
+      .innerJoin(
+        schema.reservations,
+        and(
+          eq(schema.reservations.tenantId, schema.reservationTables.tenantId),
+          eq(schema.reservations.id, schema.reservationTables.reservationId),
+        ),
+      )
+      .where(
+        and(
+          eq(schema.reservationTables.tenantId, context.tenant.tenantId),
+          eq(schema.reservationTables.outletId, outlet),
+          inArray(schema.reservationTables.tableId, tableIds),
+          isNull(schema.reservationTables.releasedAt),
+          gt(schema.reservationTables.endsAt, now),
+          inArray(schema.reservations.status, ["confirmed", "pending_deposit"]),
+          isNull(schema.reservations.tableSessionId),
+        ),
+      )
+      .orderBy(asc(schema.reservationTables.startsAt));
+    // Only a hold that starts by the end of the outlet's current business day
+    // counts: tomorrow's booking does not hold the table today.
+    const outletRow = await loadOutlet(tx, context, outlet);
+    const today = businessDateFor(outletRow, now);
+    const holdByTable = new Map<string, (typeof holdRows)[number]>();
+    for (const row of holdRows)
+      if (
+        !holdByTable.has(row.tableId) &&
+        businessDateFor(outletRow, row.startsAt) <= today
+      )
+        holdByTable.set(row.tableId, row);
     const linkGroups = await linkGroupsForTables(
       tx,
       context.tenant.tenantId,
@@ -398,6 +438,16 @@ export async function listFloorBoard(
                   lastActivityAt: session.lastActivityAt.toISOString(),
                   billTotalIdr: settlement?.billTotalIdr ?? 0,
                 }),
+          reservationHold: (() => {
+            const hold = holdByTable.get(row.id);
+            return hold
+              ? {
+                  startsAt: hold.startsAt.toISOString(),
+                  endsAt: hold.endsAt.toISOString(),
+                  pax: hold.pax,
+                }
+              : null;
+          })(),
           openServiceRequestCount: openCallCountByTable.get(row.id) ?? 0,
           outstandingIdr: settlement
             ? Math.max(0, settlement.billTotalIdr - settlement.paidIdr)

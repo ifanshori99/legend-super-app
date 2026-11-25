@@ -18,13 +18,19 @@ import { cartTotals, needsChoice } from "@/features/ws04-pos-order/cart-logic";
 import { useDraftCart } from "@/features/ws04-pos-order/draft-store";
 import {
   isContractPending,
+  useCaptainCartKey,
+  useCaptainCartLocked,
   useOrderingConnectivity,
   usePosCatalog,
   useTableOrder,
 } from "@/features/ws04-pos-order/hooks";
 import type { CartLine, MenuItem } from "@/features/ws04-pos-order/types";
 import { CaptainShell } from "./captain-shell";
-import { formatClock, tableSessionText } from "./captain-order-parts";
+import {
+  formatClock,
+  lockDraft,
+  tableSessionText,
+} from "./captain-order-parts";
 
 const ALL = "all";
 
@@ -38,7 +44,10 @@ export function AddOrderScreen({ tableId }: { tableId: string }) {
   const catalog = usePosCatalog();
   const connectivity = useOrderingConnectivity();
   const tableOrder = useTableOrder(tableId);
-  const draft = useDraftCart(`captain:${tableId}`);
+  const cartKey = useCaptainCartKey(tableId);
+  const rawDraft = useDraftCart(cartKey ?? "captain:none");
+  const locked = useCaptainCartLocked(cartKey);
+  const draft = lockDraft(rawDraft, locked);
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState(ALL);
   const [picking, setPicking] = useState<MenuItem | null>(null);
@@ -93,6 +102,9 @@ export function AddOrderScreen({ tableId }: { tableId: string }) {
     !tableOrder.data &&
     tableOrder.error instanceof ApiError &&
     tableOrder.error.status === 404;
+  // No session, no order: the table must be seated before items are chosen.
+  const payFirst = tableOrder.data?.table.paymentMode === "pay_first";
+  const unseated = Boolean(tableOrder.data) && cartKey === null && !payFirst;
 
   // An item without choices goes straight into the draft, as on the cashier.
   const pick = (item: MenuItem) => {
@@ -123,7 +135,7 @@ export function AddOrderScreen({ tableId }: { tableId: string }) {
       }
       backTo={`/pos/captain/meja/${encodeURIComponent(tableId)}`}
       bottomBar={
-        tableMissing ? undefined : (
+        tableMissing || unseated || payFirst ? undefined : (
           <div className="grid gap-1 text-center">
             {totals.itemCount > 0 ? (
               <Button
@@ -168,6 +180,12 @@ export function AddOrderScreen({ tableId }: { tableId: string }) {
           </Notice>
         )}
 
+        {locked && (
+          <Notice tone="info" title={t("posCaptainOrder.locked.title")}>
+            {t("posCaptainOrder.locked.body")}
+          </Notice>
+        )}
+
         {offline && (
           <Notice tone="warning" title={t("posCaptainOrder.add.offlineTitle")}>
             {clock
@@ -188,6 +206,30 @@ export function AddOrderScreen({ tableId }: { tableId: string }) {
               <Button asChild>
                 <Link to="/pos/captain">
                   {t("posCaptainOrder.order.backToTables")}
+                </Link>
+              </Button>
+            }
+          />
+        ) : payFirst ? (
+          <EmptyState
+            title={t("posCaptainOrder.payFirst.title")}
+            description={t("posCaptainOrder.payFirst.hint")}
+            action={
+              <Button asChild>
+                <Link to="/pos/captain/meja/$tableId" params={{ tableId }}>
+                  {t("posCaptainOrder.noSession.action")}
+                </Link>
+              </Button>
+            }
+          />
+        ) : unseated ? (
+          <EmptyState
+            title={t("posCaptainOrder.noSession.title")}
+            description={t("posCaptainOrder.noSession.hint")}
+            action={
+              <Button asChild>
+                <Link to="/pos/captain/meja/$tableId" params={{ tableId }}>
+                  {t("posCaptainOrder.noSession.action")}
                 </Link>
               </Button>
             }
@@ -283,6 +325,7 @@ export function AddOrderScreen({ tableId }: { tableId: string }) {
                       lines={draft.lines.filter(
                         (line) => line.menuItemId === item.id,
                       )}
+                      locked={locked}
                       onPick={() => pick(item)}
                       onQuantity={setQuantity}
                     />
@@ -318,11 +361,13 @@ export function AddOrderScreen({ tableId }: { tableId: string }) {
 function MenuRow({
   item,
   lines,
+  locked,
   onPick,
   onQuantity,
 }: {
   item: MenuItem;
   lines: CartLine[];
+  locked: boolean;
   onPick: () => void;
   onQuantity: (lineId: string, quantity: number) => void;
 }) {
@@ -361,6 +406,7 @@ function MenuRow({
               aria-label={t("posCaptainOrder.add.decrease", {
                 name: item.name,
               })}
+              disabled={locked}
               onClick={() => onQuantity(only.lineId, only.quantity - 1)}
             >
               <Minus aria-hidden="true" />
@@ -384,6 +430,7 @@ function MenuRow({
               aria-label={t("posCaptainOrder.add.increase", {
                 name: item.name,
               })}
+              disabled={locked}
               onClick={() => onQuantity(only.lineId, only.quantity + 1)}
             >
               <Plus aria-hidden="true" />
@@ -394,6 +441,7 @@ function MenuRow({
             variant="outline"
             aria-label={t("posCaptainOrder.add.addNamed", { name: item.name })}
             onClick={onPick}
+            disabled={locked}
             className="shrink-0"
           >
             <Plus aria-hidden="true" />
@@ -406,6 +454,7 @@ function MenuRow({
           variant="ghost"
           aria-label={t("posCaptainOrder.add.addOther", { name: item.name })}
           onClick={onPick}
+          disabled={locked}
           className="mt-2 underline underline-offset-4"
         >
           <Plus aria-hidden="true" />

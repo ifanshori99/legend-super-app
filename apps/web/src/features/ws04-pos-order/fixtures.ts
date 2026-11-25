@@ -188,6 +188,7 @@ function table(
     qrSessionActive: false,
     sessionId: null,
     hasOpenCall: false,
+    hold: null,
     ...extra,
   };
 }
