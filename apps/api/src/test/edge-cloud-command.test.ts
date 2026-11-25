@@ -10,7 +10,12 @@ import type { AddressInfo } from "node:net";
 import express from "express";
 import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { createUlid, ulidToUuid } from "@starter/shared/core";
+import {
+  createUlid,
+  outletIdSchema,
+  tenantIdSchema,
+  ulidToUuid,
+} from "@starter/shared/core";
 import {
   EDGE_COMMAND_INSTANCE_HEADER,
   EDGE_COMMAND_PATH,
@@ -117,8 +122,8 @@ async function createNode(
     label: `f1-${role}`,
   });
   const created: Node = {
-    tenantId: tenant.tenantId,
-    outletId,
+    tenantId: tenantIdSchema.parse(tenant.tenantId),
+    outletId: outletIdSchema.parse(outletId),
     edgeNodeId: edgeNode.id,
     credential,
     instanceId: randomUUID(),
@@ -133,7 +138,7 @@ async function secondOutlet(): Promise<string> {
     `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
      SELECT $1, tenant_id, brand_id, legal_entity_id, $2, 'F1 B', address, timezone, opening_hours, 'active'
        FROM outlets WHERE id = $3`,
-    [id, `F1-${id.slice(0, 8)}`, tenant.outletId],
+    [id, `F1-${id.slice(0, 8)}`.toUpperCase(), tenant.outletId],
   );
   return id;
 }
@@ -233,7 +238,7 @@ beforeEach(() => {
 
 afterAll(async () => {
   setEdgeCredentialVerifier(null);
-  await new Promise((resolve) => server.close(resolve));
+  if (server) await new Promise((resolve) => server.close(resolve));
   await owner.end();
 });
 
