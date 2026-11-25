@@ -299,7 +299,8 @@ const schema = z
       )
       .pipe(z.array(z.enum(["qris", "va", "ewallet", "card"]))),
     // A Duitku sandbox account is refused in production (its "paid" is not
-    // money). Only staging, which runs production builds, sets this.
+    // money). Only staging, which runs production builds, sets this; a process
+    // in production mode or with real data refuses to start with it.
     DUITKU_ALLOW_SANDBOX: z
       .enum(["true", "false", "1", "0"])
       .optional()
@@ -821,6 +822,17 @@ const schema = z
           message: "Use an https URL in production.",
         });
     }
+    if (
+      values.DUITKU_ALLOW_SANDBOX &&
+      (values.DEPLOYMENT_MODE === "production" ||
+        values.DATA_CLASSIFICATION === "real")
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["DUITKU_ALLOW_SANDBOX"],
+        message:
+          "The Duitku sandbox is for staging only: not with DEPLOYMENT_MODE=production or DATA_CLASSIFICATION=real.",
+      });
     if (values.NODE_ENV === "production" && values.AI_PROVIDER === "fake")
       ctx.addIssue({
         code: "custom",

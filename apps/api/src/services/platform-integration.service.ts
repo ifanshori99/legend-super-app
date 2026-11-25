@@ -47,6 +47,7 @@ import {
   assertTrustedScopedContext,
   type ScopedTenantContext,
 } from "@starter/shared/core";
+import { env } from "../config/env.ts";
 import type * as schema from "../db/schema/index.ts";
 import { db } from "../db/index.ts";
 import { outlets, tenantIntegrations, tenants } from "../db/schema/index.ts";
@@ -539,6 +540,19 @@ export async function upsertIntegration(
         422,
         "VALIDATION_ERROR",
         `Invalid ${input.provider} settings: ${issues.join(", ")}.`,
+      );
+    // 1269 C0: the adapter refuses a sandbox account in production, so a saved
+    // one would only break payments (staging sets DUITKU_ALLOW_SANDBOX).
+    if (
+      input.provider === "duitku" &&
+      input.config.environment === "sandbox" &&
+      env.isProduction &&
+      !env.DUITKU_ALLOW_SANDBOX
+    )
+      throw new HttpError(
+        422,
+        "VALIDATION_ERROR",
+        "Invalid duitku settings: environment (sandbox is not allowed in production).",
       );
 
     const credentialColumns = (

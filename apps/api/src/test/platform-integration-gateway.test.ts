@@ -16,6 +16,7 @@ import {
 } from "vitest";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
+import { env } from "../config/env.ts";
 import { createLogger } from "../lib/logger.ts";
 import { openSecret } from "../lib/secrets.ts";
 import {
@@ -392,6 +393,57 @@ describe("Duitku credential spec (D15)", () => {
       .set(originHeader)
       .send({ ...duitkuBody(), config: { vaName: "Cafe" } });
     expect(broken.status).toBe(422);
+  });
+
+  it("1269 C0 refuses to save a duitku sandbox row in production, new or existing, unless staging allows it", async () => {
+    const { client } = await tenantMember("tenant_admin");
+    const saved = {
+      isProduction: env.isProduction,
+      allowSandbox: env.DUITKU_ALLOW_SANDBOX,
+    };
+    const put = (environment: string, credentials?: Record<string, string>) =>
+      client
+        .put("/api/org/integrations")
+        .set(originHeader)
+        .send({
+          ...duitkuBody(credentials),
+          config: { ...duitkuConfig, environment },
+        });
+    const storedEnvironments = async () => {
+      const { rows } = await owner.query<{ environment: string }>(
+        "SELECT config->>'environment' AS environment FROM tenant_integrations WHERE tenant_id = $1 AND provider = 'duitku'",
+        [seededTenantId],
+      );
+      return rows.map((row) => row.environment);
+    };
+    const expectRefused = (response: {
+      status: number;
+      body: { error: { code: string; message: string } };
+    }) => {
+      expect(response.status).toBe(422);
+      expect(response.body.error.code).toBe("VALIDATION_ERROR");
+      expect(response.body.error.message).toContain("environment");
+    };
+    const creds = secrets();
+    try {
+      env.isProduction = true;
+      env.DUITKU_ALLOW_SANDBOX = false;
+      const refused = await put("sandbox", creds);
+      expectRefused(refused);
+      expect(JSON.stringify(refused.body)).not.toContain(creds.apiKey);
+      expect(await storedEnvironments()).toEqual([]);
+
+      expect((await put("production", creds)).status).toBe(200);
+      expectRefused(await put("sandbox"));
+      expect(await storedEnvironments()).toEqual(["production"]);
+
+      env.DUITKU_ALLOW_SANDBOX = true;
+      expect((await put("sandbox")).status).toBe(200);
+      expect(await storedEnvironments()).toEqual(["sandbox"]);
+    } finally {
+      env.isProduction = saved.isProduction;
+      env.DUITKU_ALLOW_SANDBOX = saved.allowSandbox;
+    }
   });
 });
 

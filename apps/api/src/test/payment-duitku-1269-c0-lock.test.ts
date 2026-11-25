@@ -219,7 +219,10 @@ describe("duitku sandbox in production", () => {
 
 describe("duitku env", () => {
   // config/env.ts validates process.env once, at import: a fresh process each.
-  function load(overrides: Record<string, string | undefined>) {
+  function load(
+    overrides: Record<string, string | undefined>,
+    preload: string[] = [],
+  ) {
     const childEnv: NodeJS.ProcessEnv = { ...process.env, ...overrides };
     for (const [key, value] of Object.entries(overrides))
       if (value === undefined) delete childEnv[key];
@@ -228,6 +231,7 @@ describe("duitku env", () => {
       [
         "--import",
         "tsx",
+        ...preload.flatMap((file) => ["--import", file]),
         "--input-type=module",
         "-e",
         `const { env } = await import("./src/config/env.ts");
@@ -270,4 +274,61 @@ describe("duitku env", () => {
       expect(result.stderr).toContain("DUITKU_ENABLED_METHODS");
     },
   );
+
+  // CTO 25 Nov: the staging switch never reaches a live or real-data process.
+  // The worker loads the same module after its role marker (env.test.ts).
+  describe.each([
+    ["api", []],
+    ["worker", ["./src/role-worker.ts"]],
+  ])("DUITKU_ALLOW_SANDBOX in the %s", (_role, preload) => {
+    const deployed = (overrides: Record<string, string>) =>
+      load(
+        {
+          NODE_ENV: "production",
+          EDGE_MODE: "false",
+          DATABASE_URL: "postgresql://owner:pw@localhost:5432/legend",
+          APP_DATABASE_URL:
+            "postgresql://legend_runtime_0123456789abcdef:pw@localhost:5432/legend",
+          WORKER_DATABASE_URL:
+            "postgresql://legend_worker_0123456789abcdef:pw@localhost:5432/legend",
+          PAYOUT_GRANTOR_DATABASE_URL:
+            "postgresql://legend_grant_0123456789abcdef:pw@localhost:5432/legend",
+          BETTER_AUTH_SECRET: "a".repeat(40),
+          STAFF_PIN_PEPPER: "b".repeat(40),
+          ...overrides,
+        },
+        preload,
+      );
+
+    it.each([
+      ["production", "synthetic", "true"],
+      ["production", "real", "true"],
+      ["production", "real", "1"],
+      // Already refused by the data policy; the switch is named as well.
+      ["staging", "real", "true"],
+    ])("stops the start: %s, %s data, %s", (mode, data, value) => {
+      const result = deployed({
+        DEPLOYMENT_MODE: mode,
+        DATA_CLASSIFICATION: data,
+        DUITKU_ALLOW_SANDBOX: value,
+      });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("DUITKU_ALLOW_SANDBOX");
+      expect(result.stderr).not.toContain("postgresql://");
+    });
+
+    it.each([
+      ["staging", "synthetic", "true", true],
+      ["production", "real", "false", false],
+    ])("lets %s with %s data start on %s", (mode, data, value, allowed) => {
+      const result = deployed({
+        DEPLOYMENT_MODE: mode,
+        DATA_CLASSIFICATION: data,
+        DUITKU_ALLOW_SANDBOX: value,
+      });
+      expect(result.stderr).not.toContain("DUITKU_ALLOW_SANDBOX");
+      expect(result.stderr).toBe("");
+      expect(JSON.parse(result.stdout)[1]).toBe(allowed);
+    });
+  });
 });
