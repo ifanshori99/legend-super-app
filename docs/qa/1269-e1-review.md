@@ -12,3 +12,14 @@
 10. P3-1 jadi bead. Semua path relatif ke `/Users/ifanshori99/Projects/legend super app/legend-1269-e1/`.
 
 Keputusan CTO: perbaiki no. 1, 2, dan setengah P3-2 (langkah 1-3) sebelum gabung; P3-1 bead. Migrasi 0525 memakai idx 525 dan prevId ke 0524 saat digabung; E2 (0524) wajib digabung lebih dulu.
+
+## Re-review 26 Nov (6ecbf4f3a): TIDAK LULUS, tiga P2 kecil
+
+Sudah benar: rewind, epoch, dan replay terbuka menahan jual saat berjalan, boot, dan cloud tak terjangkau.
+
+1. P2 `apps/api/src/edge/catalog-gate.ts:315-321`: seed gagal sekali saat boot tak diulang; offline hanya lepas lewat restart. Ulangi seed tiap `retryMs` sampai terbaca, seperti gate state (`:328-350`).
+2. P2 `apps/api/src/edge/master-sync.ts:259-260`: satu galat baca DB sesaat menahan semua stream pajak sampai tick berikut (5 menit), tanpa override. Saat berjalan: pertahankan himpunan lama + lapor; hanya boot yang gagal tertutup.
+3. P2 `docs/deployment.md:486`: tidak ada langkah bila tahanan sudah aktif dan cloud tak terjangkau. Tulis: (i) uji cloud terjangkau dari edge dan simpan `watermark` + `last_success_at` 3 stream pajak sebelum `UPDATE`; (ii) bila 3 stream masih `rewind` dan baris `catalog:replay:<pajak>` belum ada, kembalikan nilai itu lalu restart API (aturan terakhir, batas 24 jam), rewind ulang saat online; (iii) bila baris replay sudah ada, jangan edit; sambungkan internet cadangan. Keputusan CTO: (ii) hanya dengan izin owner tertulis dan dicatat di log insiden.
+4. Test gagal-dulu: `edge-catalog-v4-streams.test.ts` offline tanpa rewind tetap menjual (tunggu tick selesai; `waitFor([])` lolos seketika) dan galat baca DB saat berjalan tidak menahan; `edge-catalog-gate-runtime.test.ts` seed gagal sekali lalu pulih offline.
+5. P3 (bead): konfirmasi replay menunggu tick berikut (`master-sync.ts:992`); `CATALOG_SCHEMA_REVISION` naik menulis epoch sebelum menghubungi cloud (`catalog-puller.ts:497-503`). Skrip teruji untuk replay aktif lalu cloud mati: kartu.
+6. Halaman pajak pertama ditolak: aman, tanpa kartu.
