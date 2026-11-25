@@ -41,7 +41,6 @@ import { spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 import { Writable } from "node:stream";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -797,6 +796,79 @@ describe("legend-i848k: backfill of the employee PPh 21 receivable open item", (
     expect(await financeList(world, owes)).toEqual([]);
   }, 900_000);
 
+  it("the report splits the result per legal entity and shows what was already open there", async () => {
+    const world = await makeWorld();
+    const owes = await makeEmployee(world);
+    const jul = await lockedRun(world, monthDates(7, 2025));
+    const open = 40_000_000;
+    expect(await raiseReceivable(jul, owes, open)).toBe(open);
+    await stripItems(world);
+
+    const { backfillPph21ReceivableOpenItemsInTransaction } =
+      await import("../services/payroll-pph21-receivable-backfill.service.ts");
+    const scope = tenantScope();
+    const run = () =>
+      withTenant(db, scope, (tx) =>
+        backfillPph21ReceivableOpenItemsInTransaction(tx, scope),
+      );
+    const mine = (report: Awaited<ReturnType<typeof run>>) =>
+      report.entities.filter((e) => e.legalEntityId === world.entityId);
+
+    const first = await run();
+    expect(mine(first)).toEqual([
+      {
+        legalEntityId: world.entityId,
+        created: 1,
+        createdIdr: open,
+        existingIdr: 0,
+      },
+    ]);
+    // Second run: the item exists, nothing to add, and it is shown as existing.
+    const second = await run();
+    expect(mine(second)).toEqual([
+      {
+        legalEntityId: world.entityId,
+        created: 0,
+        createdIdr: 0,
+        existingIdr: open,
+      },
+    ]);
+    expect(
+      second.entities.reduce((sum, e) => sum + e.created, 0),
+      "totals equal the sum of the entities",
+    ).toBe(second.created);
+  }, 900_000);
+
+  it("a database error while reading a payslip aborts the run; it is not reported as an unreadable payslip", async () => {
+    const world = await makeWorld();
+    const owes = await makeEmployee(world);
+    const jul = await lockedRun(world, monthDates(7, 2025));
+    expect(await raiseReceivable(jul, owes, 40_000_000)).toBe(40_000_000);
+    await stripItems(world);
+
+    const { backfillPph21ReceivableOpenItemsInTransaction } =
+      await import("../services/payroll-pph21-receivable-backfill.service.ts");
+    const scope = tenantScope();
+    const dbError = new Error("simulated: connection terminated");
+    await expect(
+      withTenant(db, scope, (tx) => {
+        // Only the payslip read of the balance oracle (the one that selects
+        // the sealed calculation) fails, like a dropped connection would.
+        const failing = new Proxy(tx, {
+          get(target, prop, receiver) {
+            if (prop !== "select") return Reflect.get(target, prop, receiver);
+            return (fields?: Record<string, unknown>) => {
+              if (fields && "calculationEncrypted" in fields) throw dbError;
+              return target.select(fields as never);
+            };
+          },
+        });
+        return backfillPph21ReceivableOpenItemsInTransaction(failing, scope);
+      }),
+    ).rejects.toBe(dbError);
+    expect(await rawItems(world, owes), "nothing was written").toEqual([]);
+  }, 900_000);
+
   it("reversing a run that raised a receivable is refused while a backfill item of the employee exists", async () => {
     const world = await makeWorld();
     const owes = await makeEmployee(world);
@@ -1384,9 +1456,16 @@ describe("legend-wxvt9: release rehearsal of the PPh 21 receivable backfill", ()
     let waitingPid: number | undefined;
     for (let i = 0; i < 240 && waitingPid === undefined; i++) {
       await sleep(500);
+      // Only the wait for the key held by `gate`: never another test's backend.
       waitingPid = (
         await owner.query<{ pid: number }>(
-          "SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND NOT granted LIMIT 1",
+          `WITH k AS (SELECT hashtextextended($1, 0) AS h)
+           SELECT pid FROM pg_locks, k
+            WHERE locktype = 'advisory' AND NOT granted AND objsubid = 1
+              AND classid = ((h >> 32) & 4294967295)::bigint::oid
+              AND objid = (h & 4294967295)::bigint::oid
+            LIMIT 1`,
+          [`payroll-pph21-receivable:${tenant.id}:${hi.entityId}`],
         )
       ).rows[0]?.pid;
     }
@@ -1636,27 +1715,24 @@ describe("legend-wxvt9: release rehearsal of the PPh 21 receivable backfill", ()
   }, 120_000);
 
   // Found in the rehearsal: the production image has no pnpm, tsx or src, only
-  // dist/. The command of the bead therefore cannot run there unless the script
-  // is a tsup entry and its "am I the entry file" guard accepts a built .js.
-  it("the command can run from the production image: tsup builds it as an entry and the entry guard accepts dist/*.js", async () => {
+  // dist/. The command must be a tsup entry whose wrapper always runs (no
+  // "am I the entry file" guard, which exited 0 silently when called by path).
+  it("the command can run from the production image: tsup builds the always-running wrapper as an entry", async () => {
     const { default: tsupConfig } = await import("../../tsup.config.ts");
     const config = Array.isArray(tsupConfig) ? tsupConfig[0] : tsupConfig;
     const entries = (config as { entry?: Record<string, string> }).entry ?? {};
     expect(entries["payroll-pph21-receivable-backfill"]).toBe(
-      "src/scripts/payroll-pph21-receivable-backfill.ts",
+      "src/cli/payroll-pph21-receivable-backfill.ts",
     );
-    const { isCliEntry } =
-      await import("../scripts/payroll-pph21-receivable-backfill.ts");
-    for (const file of [
-      "/app/dist/payroll-pph21-receivable-backfill.js",
-      "/work/apps/api/src/scripts/payroll-pph21-receivable-backfill.ts",
-    ])
-      expect(isCliEntry(file, pathToFileURL(file).href), file).toBe(true);
-    // Imported by something else (a test, another script): never runs.
-    const file = "/app/dist/server.js";
-    expect(
-      isCliEntry(file, "file:///app/dist/payroll-pph21-receivable-backfill.js"),
-    ).toBe(false);
-    expect(isCliEntry(undefined, import.meta.url)).toBe(false);
+    const script = readFileSync(
+      resolve(
+        import.meta.dirname,
+        "../scripts/payroll-pph21-receivable-backfill.ts",
+      ),
+      "utf8",
+    );
+    expect(script, "no entry-file guard in the module").not.toContain(
+      "isCliEntry",
+    );
   }, 60_000);
 });

@@ -51,11 +51,26 @@ export type Pph21ReceivableBackfillHold = {
     | "id_taken";
 };
 
+/** One legal entity: what this run adds and what is already open there. */
+export type Pph21ReceivableBackfillEntity = {
+  legalEntityId: string;
+  created: number;
+  createdIdr: number;
+  /** Outstanding (original - settled) of the employee receivable items that
+   * existed before this run, whoever the employee. Compare
+   * existingIdr + createdIdr with the balance of account 1204. */
+  existingIdr: number;
+};
+
 export type Pph21ReceivableBackfillReport = {
   created: number;
   createdIdr: number;
   held: Pph21ReceivableBackfillHold[];
+  entities: Pph21ReceivableBackfillEntity[];
 };
+
+/** Thrown inside the balance oracle for a payslip that cannot be read. */
+class UnreadablePayslip extends Error {}
 
 /** Namespace of the UUIDv5 item ids written by this file. */
 const ITEM_ID_NAMESPACE = Buffer.from(
@@ -91,6 +106,7 @@ export async function backfillPph21ReceivableOpenItemsInTransaction(
     created: 0,
     createdIdr: 0,
     held: [],
+    entities: [],
   };
   // Every employee with a payslip in a locked or paid run, per legal entity,
   // with the pay date of the latest one (the item's document date).
@@ -159,6 +175,16 @@ export async function backfillPph21ReceivableOpenItemsInTransaction(
     const existing = new Map(
       existingRows.map((row) => [row.employeeId, Number(row.outstanding)]),
     );
+    const entity: Pph21ReceivableBackfillEntity = {
+      legalEntityId,
+      created: 0,
+      createdIdr: 0,
+      existingIdr: existingRows.reduce(
+        (sum, row) => sum + Number(row.outstanding),
+        0,
+      ),
+    };
+    report.entities.push(entity);
 
     for (const { employeeId, lastPayDate } of entityPairs) {
       const hold = (reason: Pph21ReceivableBackfillHold["reason"]) =>
@@ -175,10 +201,14 @@ export async function backfillPph21ReceivableOpenItemsInTransaction(
             payDate: FAR_FUTURE,
             employeeIds: [employeeId],
           },
-          () => new Error("unreadable"),
+          () => new UnreadablePayslip(),
         );
         balance = total.get(employeeId) ?? 0;
-      } catch {
+      } catch (error) {
+        // Only an unreadable payslip holds the employee back. A database
+        // error (dropped connection, timeout) aborts the tenant: reporting it
+        // as "unreadable" would hide a failure behind a clean-looking report.
+        if (!(error instanceof UnreadablePayslip)) throw error;
         hold("payslip_unreadable");
         continue;
       }
@@ -224,6 +254,8 @@ export async function backfillPph21ReceivableOpenItemsInTransaction(
       }
       report.created += 1;
       report.createdIdr += gap;
+      entity.created += 1;
+      entity.createdIdr += gap;
     }
   }
   return report;
