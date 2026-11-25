@@ -30,6 +30,7 @@ import {
   installSalesGateProvider,
   setSalesGateEdgeModeForTests,
 } from "./sales-gate.ts";
+import { CATALOG_TAX_STREAMS } from "@starter/shared/edge";
 import { createTrustedClock } from "./trusted-clock.ts";
 
 const MIN = 60_000;
@@ -178,14 +179,19 @@ describe("legend-10nex a successful sync of every critical stream ends the hold"
 });
 
 describe("legend-10nex a stream that never succeeded counts from trackingStartedAt", () => {
-  it("a new edge is not blocked at once, but is after 24 hours", () => {
+  it("a new edge is not stale at once, but is after 24 hours (without tax it sells nothing meanwhile)", () => {
     const started = new Date(T0.getTime() - 2 * HOUR);
     const { freshness, advance } = setup({ trackingStartedAt: started });
     // Nothing ever synced: no success, no failure.
-    expect(freshness.snapshot().salesBlocked).toBe(false);
+    expect(freshness.snapshot().salesGate.stale24h).toBe(false);
+    // legend-osqou.22: no tax rules, no sale.
+    expect(freshness.snapshot().salesBlocked).toBe(true);
+    expect(freshness.snapshot().salesGate.taxUnsynced).toEqual([
+      ...CATALOG_TAX_STREAMS,
+    ]);
 
     advance(22 * HOUR); // exactly 24h since tracking started
-    expect(freshness.snapshot().salesBlocked).toBe(false);
+    expect(freshness.snapshot().salesGate.stale24h).toBe(false);
     advance(1);
     const snap = freshness.snapshot();
     expect(snap.salesBlocked).toBe(true);
@@ -202,6 +208,41 @@ describe("legend-10nex a stream that never succeeded counts from trackingStarted
     expect(snap.salesBlocked).toBe(true);
     expect(snap.salesGate.staleStreams).toEqual([STREAM_A]);
     expect(snap.salesGate.staleSince).toEqual(started);
+  });
+});
+
+describe("legend-osqou.22 tax never pulled whole holds sales at once", () => {
+  it("one missing tax stream is enough; a stored epoch is not a success", () => {
+    const { freshness } = setup();
+    for (const name of STREAMS)
+      if (name !== "tax_settings") freshness.recordSuccess(name);
+    freshness.seedLastSuccess("tax_settings", new Date(0));
+    let snap = freshness.snapshot();
+    expect(snap.salesBlocked).toBe(true);
+    expect(snap.salesGate).toMatchObject({
+      stale24h: false,
+      taxUnsynced: ["tax_settings"],
+    });
+    freshness.recordFailure("tax_settings", {
+      reason: "CATALOG_CLOUD_OUTDATED",
+      cloudReachable: true,
+    });
+    expect(freshness.snapshot().salesBlocked).toBe(true);
+    freshness.recordSuccess("tax_settings");
+    snap = freshness.snapshot();
+    expect(snap.salesBlocked).toBe(false);
+    expect(snap.salesGate.taxUnsynced).toEqual([]);
+  });
+
+  it("a failure after a success does not (the last rules stay valid for 24 hours)", () => {
+    const { freshness, advance } = setup();
+    succeedAll(freshness);
+    advance(HOUR);
+    freshness.recordFailure("tax_rules", {
+      reason: "fetch failed",
+      cloudReachable: false,
+    });
+    expect(freshness.snapshot().salesBlocked).toBe(false);
   });
 });
 

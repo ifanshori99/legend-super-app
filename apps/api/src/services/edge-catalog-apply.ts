@@ -492,7 +492,7 @@ export const STREAM_TABLES: Readonly<Record<CatalogSyncStream, PgTable>> = {
       stream,
       CATALOG_DOCUMENTS[stream].table,
     ]),
-  ) as Record<CatalogDocumentStream, PgTable>),
+  ) as unknown as Record<CatalogDocumentStream, PgTable>),
 };
 
 /**

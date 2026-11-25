@@ -168,7 +168,7 @@ describe("legend-10nex hold messages match their reason", () => {
     expect(message("CATALOG_STALE_24H")).toBe(BLOCKED_MESSAGE);
   });
 
-  it.each(["GATE_UNAVAILABLE", "CLOCK_REGRESSED"] as const)(
+  it.each(["GATE_UNAVAILABLE", "CLOCK_REGRESSED", "TAX_NOT_SYNCED"] as const)(
     "%s does not say the catalog is over 24 hours old",
     (reason) => {
       const text = message(reason as SalesGateState["reason"]);
@@ -177,6 +177,12 @@ describe("legend-10nex hold messages match their reason", () => {
       expect(text).not.toBe(BLOCKED_MESSAGE);
     },
   );
+
+  it("TAX_NOT_SYNCED names the tax and does not send the cashier to the owner", () => {
+    const text = message("TAX_NOT_SYNCED");
+    expect(text).toMatch(/pajak/i);
+    expect(text).not.toMatch(/owner/i);
+  });
 
   it("no provider installed (GATE_UNAVAILABLE) uses the same non-24h text", () => {
     setSalesGateEdgeModeForTests(() => true);
