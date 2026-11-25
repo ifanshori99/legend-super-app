@@ -17,6 +17,8 @@ Perilaku edge lama terhadap event katalog dan field `sharedMode` belum diverifik
 
 ## Instalasi pertama
 
+Sebelum langkah 1: data shower wajib nol, lihat `docs/runbooks/rilis1-shower-nol-data.md` (1269 F0).
+
 Build edge dan cloud yang sama, dari commit rilis yang sama. Belum ada edge lama di lapangan dan belum ada katalog tersinkron di edge, jadi tidak ada pihak yang menolak record dari pihak lain. Urutan:
 
 1. Cloud: jalankan pre-deploy check dan migrasi (`docs/deployment.md`, bagian "Gerbang rilis 1"), lalu naikkan API, web, dan worker.
