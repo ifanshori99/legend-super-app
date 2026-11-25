@@ -40,3 +40,25 @@ Celah: (1) sandbox Duitku di production tidak ditolak (`payment-duitku.ts:97`); 
 - C4b layar impor (6 jam, mockup): `ws05-payment-admin/**` kecuali dialog refund.
 - C5 dokumen dan e2e (Sonnet, 5 jam): PRD D11/D14, runbook refund, credentials.
 Test wajib: callback ganda/telat/nominal beda; ganti metode lalu kode lama dibayar (dana parkir); tunai saat kode hidup; hasil tak diketahui mengunci; sandbox di production ditolak.
+
+## A+B. Kartu edge printer dan ECR (architect 25 Nov)
+
+Keputusan CTO (menunggu jawaban founder soal offline): POS dan buku uang tetap di cloud; edge = satelit periferal (cetak, lalu ECR) lewat link yang ada. POS dilayani edge ditolak untuk rilis 1 (hanya katalog yang tersinkron; refund/void tunai/poin/tiket/QRIS ditolak di edge; shift edge diparkir legend-8yqik). Node lama tetap mode `full`. Migrasi mulai 0524, nomor dibagi CTO. Path api = `apps/api/src/`.
+
+Celah cetak: cloud menulis `sent` lalu tidak mencetak (`pos-receipt-delivery.service.ts:394-420`, `pos-receipt-edge-print.ts:60`); node aktif memblokir cloud (`pos-receipt.service.ts:495-542`, `edge-device-sync.ts:285`, `pos-day.service.ts:802`, `qr-order.service.ts:1893`, `panic-edge-ownership.ts:30`); tidak ada perintah cloud->edge dan hasil balik; `pos-shift-print.ts:40` dan `facility-pos-ticket-print.ts:77` diam di cloud; printer struk = baris pertama per outlet.
+
+- A1 mode `peripheral` (Opus K, 8 jam, sesudah 1162): `db/schema/edge-node.ts` + migrasi, `edge-node.service.ts`, `edge-bootstrap.service.ts`, `edge/{bootstrap,mode,runtime}.ts`, `edge/qr-order-forwarding.ts`, `edge-device-sync.ts`, `pos-receipt.service.ts`, `pos-day.service.ts`, `panic-edge-ownership.ts`, `panic-alert-outbox.ts`. Mode dari cloud, default `full`, immutable; API POS di node menolak.
+- A2 perintah cetak (Opus, 10 jam, sesudah A1): `packages/shared/src/edge/print-command.ts`, `edge_print_requests`, `edge-print-request.service.ts`, `edge/print/{request,result}-applier.ts`, `print/{store,agent}.ts`, `edge/runtime.ts`. Status `queued/printed/failed/unknown/expired`; kedaluwarsa 10 menit (dapur 5).
+- A3 sambung struk/shift/tiket fasilitas (Sonnet, 7 jam, sesudah A2 dan B2): `pos-receipt-edge-print.ts`, `pos-receipt-delivery.service.ts`, `pos-shift-print.ts`, `facility-pos-ticket-print.ts`, `pos/{schemas,endpoints}.ts`; printer per kasir.
+- A4 dapur (Sonnet, 8 jam, sesudah A2): `kds-print.service.ts`, `kds.service.ts`, `edge/print/kds-fallback.ts`, migrasi heartbeat.
+- A5 UI status cetak (ui, 5 jam, sesudah A3 dan W2). A6 host + status kertas (Sonnet, 8 jam, sesudah A2): `deploy/edge/**`, `print/transport.ts` (2lp.11), legend-16s.
+Test A: balasan hilang = satu cetak; `unknown` tidak dicetak ulang otomatis, cetak ulang bertanda; `full` tetap dijaga; cloud tak pernah mengaku tercetak; printer mati tidak membatalkan penjualan; lintas outlet/tenant ditolak.
+
+Celah ECR: `getEdgeEdcAgent` tak dipanggil route; agent cek tagihan di DB lokal (`agent.ts:1621`); terminal tak disinkronkan; event `edc_transaction.*` tanpa applier; `payment_edc_terminals` tanpa port; registry production kosong (vpx, mooi).
+Desain: cloud insert `pending` di bawah kunci tagihan + guard -> perintah (id dan trace sama, kedaluwarsa 20 detik) -> agent -> event hasil -> applier. Tanpa hasil = `unknown` = semua cara bayar terkunci; buka hanya lewat hasil edge atau rekonsiliasi Owner/Finance + MFA.
+- B-E1 terminal turun (Opus K, 6 jam, sesudah A1): `catalog-sync.ts`, `edge-catalog-{sync,apply}.ts`, `catalog-puller.ts`, migrasi.
+- B-E2 agent satelit (Opus xhigh, 10 jam, sesudah B-E1 dan A2): `edc/{agent,runtime}.ts`, `edc/command-applier.ts`, `shared/src/edc/command.ts`.
+- B-E3 cloud mulai/cek/batal (Opus xhigh, 12 jam, sesudah B-E2 dan B2): `pos-edc.routes.ts`, `pos-edc-request.service.ts`, `edc-event-applier.ts`, `routes/index.ts`, `pos-order-support.ts`.
+- B-E4 UI kasir (Opus, 8 jam, sesudah B-E3 dan W2). B-E6 e2e simulator (Sonnet, 5 jam).
+- B-E5 adapter per bank (Opus, 12-20 jam per bank + sertifikasi): butuh spesifikasi + terminal. Jangan menebak protokol.
+Test B: balasan hilang di tiap hop = maksimum satu sale; perintah terlambat tidak menagih; tender lain menyalip ditolak; restart = `unknown`; nominal beda = tidak lunas; event ganda/terbalik aman; PAN tak tersimpan; production tanpa adapter = ECR terkunci.
