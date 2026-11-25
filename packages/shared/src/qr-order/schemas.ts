@@ -1925,10 +1925,23 @@ export const tableLinkGroupRefSchema = z.strictObject({
 });
 export type TableLinkGroupRef = z.infer<typeof tableLinkGroupRefSchema>;
 
+/**
+ * A reservation still holds this unseated table. Time and party size only: no
+ * name, contact or note, so a floor reader without `reservation.view` sees it
+ * (1268 W4 review no. 2).
+ */
+export const tableReservationHoldSchema = z.strictObject({
+  startsAt: isoDateTimeSchema,
+  endsAt: isoDateTimeSchema,
+  pax: z.number().int().positive(),
+});
+export type TableReservationHold = z.infer<typeof tableReservationHoldSchema>;
+
 export const tableLiveStatusSchema = z
   .strictObject({
     table: tableSchema,
     session: tableSessionSummarySchema.nullable(),
+    reservationHold: tableReservationHoldSchema.nullable().optional(),
     linkGroup: tableLinkGroupRefSchema.nullable().optional(),
     openServiceRequestCount: z.number().int().nonnegative(),
     outstandingIdr: nonnegativeIdr,
