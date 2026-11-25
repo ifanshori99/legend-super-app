@@ -18,6 +18,7 @@ import {
   pendingCaptainOrders,
   pendingOpenSeats,
   planFireReplay,
+  continueDraft,
   SESSION_CLOSED,
   OPEN_INTENT_PENDING,
   FIRE_INTENT_PENDING,
@@ -25,6 +26,7 @@ import {
 import {
   assertOrderable,
   assertSeated,
+  isUnsentDraft,
   CAPTAIN_PAY_FIRST,
   canResolveCall,
   captainDraftKey,
@@ -702,4 +704,86 @@ test("a pay-first table is held back before anything is sent", () => {
     (error: unknown) =>
       error instanceof ApiError && error.code === NO_TABLE_SESSION,
   );
+});
+
+// ---- An order that was created but not submitted --------------------------------
+
+test("a draft whose submit was lost goes on with the same key, and no second order is created", async () => {
+  const server = orderServer();
+  const storage = new MemoryStorage();
+  const draftKey = captainDraftKey(WHO.outletId, WHO.actorId, SESSION);
+  server.state.loseSubmit = 1;
+  await assert.rejects(
+    placeCaptainOrder(
+      server.deps(storage, draftKey),
+      SESSION,
+      LINES,
+      captainMeta({ label: "A1", sessionId: SESSION }),
+    ),
+  );
+  const submits: string[] = [];
+  const reloaded = storage.clone();
+  const continued = await continueDraft(
+    {
+      storage: reloaded,
+      makeKey,
+      scope: WHO,
+      submit: async (orderId, body) => {
+        submits.push(body.idempotencyKey);
+        return server.deps(reloaded, draftKey).submit(orderId, body);
+      },
+    },
+    "order-1",
+  );
+  assert.equal(continued.status, "awaiting_payment");
+  assert.equal(server.state.orders.size, 1);
+  // The key of the unclear submit, not a new one; nothing is left to resend.
+  assert.equal(submits.length, 1);
+  assert.deepEqual(pendingCaptainOrders(reloaded, WHO), []);
+});
+
+test("a draft with no stored intent is submitted on its own key, repeated as it was", async () => {
+  const storage = new MemoryStorage();
+  const keys: string[] = [];
+  let lose = 1;
+  const deps = (store: MemoryStorage) => ({
+    storage: store,
+    makeKey,
+    scope: WHO,
+    submit: async (orderId: string, body: { idempotencyKey: string }) => {
+      keys.push(body.idempotencyKey);
+      if (lose-- > 0) throw NETWORK();
+      return { id: orderId, status: "awaiting_payment" };
+    },
+  });
+  await assert.rejects(continueDraft(deps(storage), "order-9"));
+  await continueDraft(deps(storage.clone()), "order-9");
+  assert.equal(keys.length, 2);
+  assert.equal(keys[0], keys[1]);
+});
+
+test("a captain draft is listed on the table; another channel's draft is not", () => {
+  const order = (id: string, status: string, channel: string) =>
+    ({
+      id,
+      status,
+      channel,
+      serviceType: "dine_in",
+      number: id,
+      callNumber: null,
+      subtotalIdr: 0,
+      createdAt: `2026-11-26T05:0${id}:00.000Z`,
+      items: [],
+    }) as never;
+  const view = mapTableOrders(table(), [
+    order("1", "draft", "captain"),
+    order("2", "draft", "pos"),
+    order("3", "awaiting_payment", "pos"),
+  ]);
+  assert.deepEqual(
+    view.orders.map((entry) => entry.orderId),
+    ["1", "3"],
+  );
+  assert.equal(isUnsentDraft(view.orders[0]!), true);
+  assert.equal(isUnsentDraft(view.orders[1]!), false);
 });

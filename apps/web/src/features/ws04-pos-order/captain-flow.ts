@@ -23,8 +23,10 @@ import {
   placeOrder,
   scopeOf,
   type FlowDeps,
+  type SubmitBody,
 } from "./order-flow.ts";
 import { NO_TABLE_SESSION, captainInput } from "./captain-wire.ts";
+import { submitBodyOf } from "./order-wire.ts";
 import type { CartLine, OrderMeta, OrderSnapshot } from "./types.ts";
 
 export { NO_TABLE_SESSION };
@@ -91,6 +93,65 @@ export function pendingCaptainOrders(
     );
     return snapshot ? [{ draftKey, snapshot }] : [];
   });
+}
+
+export interface ContinueDeps<Order> {
+  storage: Storage3;
+  makeKey: () => string;
+  scope: Who;
+  submit: (orderId: string, body: SubmitBody) => Promise<Order>;
+}
+
+/** The cart whose unclear submit belongs to this order (null: none stored). */
+export function submitIntentOf(
+  storage: Storage3,
+  who: Who,
+  orderId: string,
+): string | null {
+  if (who.outletId === "" || who.actorId === "") return null;
+  for (const draftKey of listIntentSubjects(storage, {
+    ...who,
+    kind: "submit",
+  }))
+    if (
+      peekIntent(storage, scopeFor(who, "submit", draftKey))?.data === orderId
+    )
+      return draftKey;
+  return null;
+}
+
+/**
+ * Submit an order that was created but never submitted (its submit reply was
+ * lost, or the page was left). The stored submit key is used when there is
+ * one, else the draft gets its own key kept until answered: never a second
+ * create, so never a second order.
+ */
+export async function continueDraft<Order>(
+  deps: ContinueDeps<Order>,
+  orderId: string,
+): Promise<Order> {
+  checkWho(deps.storage, deps.scope);
+  const draftKey = submitIntentOf(deps.storage, deps.scope, orderId);
+  if (draftKey !== null) {
+    const scope = scopeFor(deps.scope, "submit", draftKey);
+    const stored = peekIntent(deps.storage, scope);
+    if (stored) {
+      try {
+        const result = await deps.submit(orderId, submitBodyOf(stored.key));
+        endIntent(deps.storage, scope, stored.key);
+        return result;
+      } catch (error) {
+        forgetOnFinalRefusal(deps.storage, scope, stored.key, error);
+        throw error;
+      }
+    }
+  }
+  return keyedSend(
+    deps,
+    scopeFor(deps.scope, "submit", `draft:${orderId}`),
+    JSON.stringify({ orderId }),
+    (key) => deps.submit(orderId, submitBodyOf(key)),
+  );
 }
 
 // ---- Walk-in seat -----------------------------------------------------------------

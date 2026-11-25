@@ -28,6 +28,7 @@ import { useActiveStaff } from "@/features/ws01-device-pin/storage";
 import {
   acknowledgeCall,
   closePendingFire,
+  continueDraftOrder,
   closePendingOpen,
   closePendingOrder,
   closePendingPark,
@@ -514,6 +515,24 @@ export function usePendingOpen(tableId: string): {
     notifyPending();
   }, [outletId, actorId, tableId]);
   return { pax, close };
+}
+
+/** Submit an order of the table that was created but not submitted. */
+export function useContinueDraft(
+  tableId: string,
+): UseMutationResult<void, Error, { orderId: string }> {
+  const queryClient = useQueryClient();
+  const outletId = useOutletId();
+  const actorId = useCaptainActorId();
+  return useMutation<void, Error, { orderId: string }>({
+    mutationFn: ({ orderId }) => continueDraftOrder(outletId, actorId, orderId),
+    onSettled: () => {
+      notifyPending();
+      void queryClient.invalidateQueries({
+        queryKey: posOrderKeys.tableOrder(outletId, tableId),
+      });
+    },
+  });
 }
 
 export function useFireTableLines(): UseMutationResult<

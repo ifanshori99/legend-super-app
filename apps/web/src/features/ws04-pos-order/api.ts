@@ -33,7 +33,9 @@ import { DEMO_PHOTO_NAMES } from "./fixtures";
 import {
   closeFireIntent,
   closeOpenIntent,
+  continueDraft,
   fireItems,
+  submitIntentOf,
   openTableSession,
   pendingFireItems,
   pendingCaptainOrders,
@@ -426,7 +428,7 @@ export async function fetchTableOrder(
     callEndpoint(listPosOrders, {
       params: { outletId },
       query: {
-        status: "awaiting_payment,sent",
+        status: "draft,awaiting_payment,sent",
         tableSessionId: table.sessionId as never,
         limit: 100,
         cursor,
@@ -668,6 +670,39 @@ export function pendingCaptainSends(
     orders: pendingCaptainOrders(window.sessionStorage, who),
     seats: pendingOpenSeats(window.sessionStorage, who),
   };
+}
+
+/** Submit an order of the table that was created but not submitted. */
+export async function continueDraftOrder(
+  outletId: string,
+  actorId: string,
+  orderId: string,
+): Promise<void> {
+  if (API_MOCK) return;
+  const who = { outletId, actorId };
+  const draftKey = submitIntentOf(window.sessionStorage, who, orderId);
+  const lines = draftKey
+    ? pendingCaptainOrders(window.sessionStorage, who).find(
+        (entry) => entry.draftKey === draftKey,
+      )?.snapshot.lines
+    : undefined;
+  await continueDraft(
+    {
+      storage: window.sessionStorage,
+      makeKey: () => globalThis.crypto.randomUUID(),
+      scope: who,
+      submit: async (id, body) => {
+        const { data } = await callEndpoint(submitPosOrder, {
+          params: { outletId, orderId: id as never },
+          body,
+        });
+        return data;
+      },
+    },
+    orderId,
+  );
+  if (draftKey && lines)
+    writeDraft(draftKey, removeSentLines(readDraft(draftKey), lines));
 }
 
 /** Send an unclear captain order again from its stored snapshot alone. */

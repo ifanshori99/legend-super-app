@@ -44,6 +44,12 @@ export const posCaptainOrderMessages = {
     title: "Meja ini bayar di muka",
     hint: "Meja ini bayar di muka. Arahkan tamu ke kasir.",
   },
+  draft: {
+    title: "Pesanan ini belum terkirim ke dapur",
+    body: "Pesanan sudah tercatat di meja, tetapi belum dikirim. Lanjutkan kirim memakai pesanan yang sama; tidak dibuat pesanan kedua.",
+    continue: "Lanjutkan kirim",
+    failed: "Belum berhasil dikirim. Coba lagi, atau periksa pesanan meja.",
+  },
   locked: {
     title: "Keranjang dikunci",
     body: "Pesanan sedang dikirim atau belum jelas hasilnya. Keranjang tidak bisa diubah sampai ada jawaban.",

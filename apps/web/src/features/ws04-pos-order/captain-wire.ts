@@ -70,6 +70,11 @@ export function assertSeated(table: CaptainTable): string {
   return table.sessionId;
 }
 
+/** Created but not submitted yet: nothing reached the kitchen. */
+export function isUnsentDraft(order: { status?: string }): boolean {
+  return order.status === "draft";
+}
+
 export const CAPTAIN_PAY_FIRST = "CAPTAIN_PAY_FIRST";
 
 /** A pay-first table is paid before the kitchen starts: the cashier's. */
@@ -109,6 +114,10 @@ export function mapTableOrders(
     table,
     orders: [...orders]
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      // A draft belongs on the table only when it is the captain's own.
+      .filter(
+        (order) => order.status !== "draft" || order.channel === "captain",
+      )
       .map((order) => ({ ...mapOrder(order), tableLabel: table.label })),
   };
 }

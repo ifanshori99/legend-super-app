@@ -11,10 +11,12 @@ import {
 } from "@/features/ws04-pos-kasir/components/shared";
 import {
   isContractPending,
+  useContinueDraft,
   useFireTableLines,
   usePendingFires,
   useTableOrder,
 } from "@/features/ws04-pos-order/hooks";
+import { isUnsentDraft } from "@/features/ws04-pos-order/captain-wire";
 import { needsCashierClose } from "@/features/ws04-pos-order/order-flow";
 import type { OrderLine, PosOrderView } from "@/features/ws04-pos-order/types";
 import { CaptainShell } from "./captain-shell";
@@ -41,6 +43,7 @@ export function TableOrderScreen({ tableId }: { tableId: string }) {
   const t = useT();
   const query = useTableOrder(tableId);
   const fire = useFireTableLines();
+  const continueDraft = useContinueDraft(tableId);
   const view = query.data;
   const firingLineIds =
     fire.isPending && fire.variables ? fire.variables.lineIds : [];
@@ -172,6 +175,19 @@ export function TableOrderScreen({ tableId }: { tableId: string }) {
                   fire={fire}
                   firingLineIds={firingLineIds}
                   canFire={!payFirst}
+                  onContinue={
+                    payFirst
+                      ? undefined
+                      : () => continueDraft.mutate({ orderId: order.orderId })
+                  }
+                  continuing={
+                    continueDraft.isPending &&
+                    continueDraft.variables?.orderId === order.orderId
+                  }
+                  continueFailed={
+                    continueDraft.isError &&
+                    continueDraft.variables?.orderId === order.orderId
+                  }
                 />
               ))
             ) : (
@@ -211,8 +227,14 @@ function OrderSection({
   fire,
   firingLineIds,
   canFire,
+  onContinue,
+  continuing,
+  continueFailed,
 }: {
   canFire: boolean;
+  onContinue: (() => void) | undefined;
+  continuing: boolean;
+  continueFailed: boolean;
   order: PosOrderView;
   tableId: string;
   fire: ReturnType<typeof useFireTableLines>;
@@ -225,6 +247,26 @@ function OrderSection({
       <h2 className="text-lg leading-6 font-bold">
         {t("posCaptainOrder.order.orderNumber", { number: order.number })}
       </h2>
+      {isUnsentDraft(order) && (
+        <Notice tone="warning" title={t("posCaptainOrder.draft.title")}>
+          <div className="grid gap-2">
+            <p>{t("posCaptainOrder.draft.body")}</p>
+            {continueFailed && (
+              <p role="alert">{t("posCaptainOrder.draft.failed")}</p>
+            )}
+            {onContinue && (
+              <Button
+                type="button"
+                variant="outline"
+                loading={continuing}
+                onClick={onContinue}
+              >
+                {t("posCaptainOrder.draft.continue")}
+              </Button>
+            )}
+          </div>
+        </Notice>
+      )}
       {groups.map((group) => {
         const held = canFire
           ? group.lines.filter((line) => line.status === "held")
