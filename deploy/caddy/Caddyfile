@@ -28,6 +28,7 @@
 	}
 	reverse_proxy api:4000 {
 		header_up X-Forwarded-Host {http.request.host}
+		header_up -X-Tls-Ask-Token
 	}
 }
 
@@ -55,7 +56,7 @@ http://127.0.0.1:2019 {
 		-Server
 	}
 	# Never expose the internal ask endpoint publicly.
-	@internal path /api/internal/*
+	@internal path /api/internal /api/internal/*
 	handle @internal {
 		respond 404
 	}
@@ -83,6 +84,7 @@ http://127.0.0.1:2019 {
 		}
 		reverse_proxy api:4000 {
 			header_up X-Forwarded-Host {http.request.host}
+			header_up -X-Tls-Ask-Token
 		}
 	}
 	handle {
@@ -91,6 +93,8 @@ http://127.0.0.1:2019 {
 		request_body {
 			max_size 2MB
 		}
-		reverse_proxy web:3000
+		reverse_proxy web:3000 {
+			header_up -X-Tls-Ask-Token
+		}
 	}
 }
