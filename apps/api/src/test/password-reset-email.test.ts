@@ -11,15 +11,7 @@
 
 import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
-import {
-  afterAll,
-  afterEach,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { setEmailSenderForTests, type EmailMessage } from "../lib/email-sender";
 import { flushPasswordResetMail } from "../lib/password-reset";
 import { agent, originHeader, setRole, signUp } from "./helpers";
@@ -39,7 +31,8 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await flushPasswordResetMail();
   setEmailSenderForTests(undefined);
 });
 
@@ -50,7 +43,11 @@ afterAll(async () => {
 async function inTenant<T>(
   run: (conn: import("pg").PoolClient, tenantId: string) => Promise<T>,
 ): Promise<T> {
-  const tenant = await pool.query("SELECT id FROM tenants LIMIT 1");
+  // The oldest tenant is the seeded one; a shared test database holds others
+  // without roles or outlets.
+  const tenant = await pool.query(
+    "SELECT id FROM tenants ORDER BY created_at, id LIMIT 1",
+  );
   const tenantId = tenant.rows[0].id as string;
   const conn = await pool.connect();
   try {
@@ -147,7 +144,8 @@ describe("password reset by email", () => {
 
     const asked = await requestReset(client, email);
     expect(asked.status).toBe(200);
-    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    await flushPasswordResetMail();
+    expect(sent).toHaveLength(1);
     expect(sent[0]!.to).toBe(email);
     expect(sent[0]!.text).toMatch(/\/reset-password\?token=/);
     expect(sent[0]!.html).toContain("/reset-password?token=");
@@ -178,7 +176,8 @@ describe("password reset by email", () => {
     });
 
     await requestReset(agent(), email);
-    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    await flushPasswordResetMail();
+    expect(sent).toHaveLength(1);
     const token = tokenOf(sent[0]!);
     const row = await pool.query(
       "SELECT extract(epoch FROM (expires_at - now())) AS seconds FROM verification WHERE identifier = $1",
@@ -244,7 +243,8 @@ describe("password reset by email", () => {
     const client = agent();
     const email = await signUp(client);
     await requestReset(client, email);
-    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    await flushPasswordResetMail();
+    expect(sent).toHaveLength(1);
     const token = tokenOf(sent[0]!);
 
     await pool.query(
@@ -269,7 +269,8 @@ describe("password reset by email", () => {
     );
     expect(unknownAnswer.status).toBe(knownAnswer.status);
     expect(unknownAnswer.body).toEqual(knownAnswer.body);
-    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    await flushPasswordResetMail();
+    expect(sent).toHaveLength(1);
     expect(sent[0]!.to).toBe(known);
   });
 
