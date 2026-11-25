@@ -64,6 +64,13 @@ describe("actingStaffHeaderFor", () => {
       "/api/pos-overrides/x",
       "/api/pos/orders/abc/customer",
       "/api/pos/orders/abc/customer?x=1",
+      // legend-1268 bug 6: points and ticket routes, and B1 walk-in seating.
+      "/api/pos/orders/abc/points",
+      "/api/pos/orders/abc/points/quote",
+      "/api/pos/orders/abc/points/redeem",
+      "/api/pos/orders/abc/tickets",
+      "/api/pos/orders/abc/tickets/t1/credential",
+      "/api/outlets/o1/tables/t1/staff-session",
     ])
       assert.deepEqual(
         actingStaffHeaderFor(path),
@@ -78,6 +85,10 @@ describe("actingStaffHeaderFor", () => {
       "/api/outlets/o1/menu",
       "/api/pos/orders/abc",
       "/api/pos/orders/abc/customer/extra",
+      "/api/pos/orders/abc/points/extra",
+      "/api/pos/orders/abc/tickets/t1",
+      "/api/outlets/o1/tables/t1",
+      "/api/outlets/o1/tables/t1/staff-session/extra",
       "/api/notes",
     ])
       assert.deepEqual(actingStaffHeaderFor(path), {}, path);

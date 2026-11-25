@@ -35,6 +35,7 @@ import {
   floorBoardSchema,
   floorZoneIdSchema,
   floorZoneSchema,
+  openStaffSessionInputSchema,
   orderIssueIdSchema,
   orderIssueOptionsSchema,
   orderIssueSchema,
@@ -237,6 +238,19 @@ export const closeTableSession = defineEndpoint({
   path: "/api/table-sessions/:sessionId/close",
   params: sessionParams,
   body: closeTableSessionInputSchema,
+  response: dataResponseSchema(tableSessionSchema),
+});
+
+/**
+ * Walk-in seating: staff opens a session on an empty table (POS B1, brief
+ * 1268). Needs `floor.table.operate` on the outlet. The same key and body
+ * answer the same session; another party on the table answers 409.
+ */
+export const openStaffSession = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/tables/:tableId/staff-session",
+  params: z.strictObject({ outletId: outletIdSchema, tableId: tableIdSchema }),
+  body: openStaffSessionInputSchema,
   response: dataResponseSchema(tableSessionSchema),
 });
 
