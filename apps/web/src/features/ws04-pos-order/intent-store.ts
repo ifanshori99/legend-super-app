@@ -142,6 +142,25 @@ export function listIntentSubjects(
   return subjects;
 }
 
+/**
+ * True when this outlet's storage holds an unresolved send of ANOTHER cashier
+ * (a shared till, a copied tab): sending as this cashier is blocked until that
+ * one is settled, so two people never act on each other's unclear request.
+ */
+export function hasForeignIntent(
+  storage: StorageLike,
+  who: Pick<IntentScope, "outletId" | "actorId">,
+): boolean {
+  for (let index = 0; index < storage.length; index += 1) {
+    const name = storage.key(index);
+    if (!name?.startsWith(PREFIX)) continue;
+    // legend-pos-order-intent:<kind>:<outlet>:<actor>:<subject>
+    const [, outletId, actorId] = name.slice(PREFIX.length).split(":");
+    if (outletId === who.outletId && actorId !== who.actorId) return true;
+  }
+  return false;
+}
+
 /** A request was sent and its answer is not known yet. */
 export function hasUnresolvedIntent(
   storage: StorageLike,

@@ -14,6 +14,7 @@ import {
 } from "@tanstack/react-query";
 import { ApiError } from "@/lib/api/errors";
 import { API_MOCK } from "@/lib/api/mock-flag";
+import { useRouteContext } from "@tanstack/react-router";
 import { useTenantContext } from "@/lib/tenant-context";
 import { useCloudConnection } from "@/features/ws02-edge/hooks";
 import { useActiveStaff } from "@/features/ws01-device-pin/storage";
@@ -30,7 +31,7 @@ import {
   resumeDraft,
   submitOrder,
 } from "./api";
-import { readDraft, writeDraft } from "./draft-store";
+import { cashierDraftKey, readDraft, writeDraft } from "./draft-store";
 import { parseOrderSnapshot } from "./order-flow";
 import {
   callNumberQuery,
@@ -77,9 +78,24 @@ function useOutletId(): string {
   return useTenantContext().outlet?.id ?? "";
 }
 
-/** The cashier at the till; a keyed send never shares its key with another. */
+/**
+ * The cashier at the till, as the server names the actor: the active (PIN)
+ * cashier when there is one, else the signed-in user. A keyed send never
+ * shares its key with another actor.
+ */
 function useActorId(): string {
-  return useActiveStaff()?.userId ?? "";
+  const staff = useActiveStaff();
+  const session = (
+    useRouteContext({ strict: false }) as {
+      session?: { user?: { id?: string } } | null;
+    }
+  ).session;
+  return staff?.userId ?? session?.user?.id ?? "";
+}
+
+/** The key of this cashier's cart in this outlet (see `cashierDraftKey`). */
+export function useCashierDraftKey(): string {
+  return cashierDraftKey(useOutletId(), useActorId());
 }
 
 /** Mock mode needs no outlet; real calls do. */
@@ -224,10 +240,13 @@ export function useReplayPendingResumes({ draftKey }: { draftKey: string }) {
   const actorId = useActorId();
   const resume = useResumeDraft({ draftKey });
   const { mutate } = resume;
+  // An order send that is not answered yet comes first: nothing is replayed
+  // over it.
+  const blocked = usePendingOrder(draftKey).pending !== null;
   useEffect(() => {
-    if (outletId === "" || actorId === "") return;
+    if (blocked || outletId === "" || actorId === "") return;
     for (const id of pendingResumes(outletId, actorId)) mutate({ id });
-  }, [outletId, actorId, mutate]);
+  }, [blocked, outletId, actorId, mutate]);
   return resume;
 }
 

@@ -11,6 +11,8 @@ import {
   beginIntent,
   endIntent,
   isFinalRefusal,
+  hasForeignIntent,
+  KEY_REUSED_CODE,
   listIntentSubjects,
   peekIntent,
   recordIntentData,
@@ -46,6 +48,7 @@ export interface FlowDeps<Order, Parked> {
 
 export const ORDER_INTENT_PENDING = "ORDER_INTENT_PENDING";
 export const ACTOR_MISSING = "ACTOR_MISSING";
+export const OTHER_CASHIER_PENDING = "OTHER_CASHIER_PENDING";
 const APPLIED = "applied";
 
 function pendingError(): ApiError {
@@ -56,14 +59,36 @@ function pendingError(): ApiError {
   );
 }
 
-/** No outlet or no cashier: nothing may be sent (a key needs both). */
-function assertScope(scope: FlowScope): void {
+/**
+ * No outlet or no cashier: nothing may be sent (a key needs both). Another
+ * cashier's unclear send in this outlet blocks sending too.
+ */
+function assertScope(deps: { storage: Storage3; scope: FlowScope }): void {
+  const { scope, storage } = deps;
   if (scope.outletId === "" || scope.actorId === "")
     throw new ApiError(
       401,
       ACTOR_MISSING,
       "Kasir belum dikenali. Masuk dengan PIN lagi.",
     );
+  if (hasForeignIntent(storage, scope))
+    throw new ApiError(
+      409,
+      OTHER_CASHIER_PENDING,
+      "Ada pengiriman kasir lain yang belum jelas hasilnya. Selesaikan dulu di akun kasir itu.",
+    );
+}
+
+/**
+ * The key is refused for another body, or the server said 403: nothing says
+ * whether the first request landed, so only the cashier closes it, after
+ * checking the open orders.
+ */
+export function needsCashierClose(error: unknown): boolean {
+  return (
+    error instanceof ApiError &&
+    (error.code === KEY_REUSED_CODE || error.status === 403)
+  );
 }
 
 const scopeOf = (
@@ -134,7 +159,7 @@ export async function placeOrder<Order, Parked>(
   input: SubmitOrderInput,
   meta?: OrderMeta,
 ): Promise<Order> {
-  assertScope(deps.scope);
+  assertScope(deps);
   const body = createBodyOf(input);
   const signature = JSON.stringify(body);
   const snapshot = snapshotOf(input, meta);
@@ -234,7 +259,7 @@ export async function parkCart<Order, Parked>(
   deps: FlowDeps<Order, Parked>,
   input: SubmitOrderInput,
 ): Promise<Parked> {
-  assertScope(deps.scope);
+  assertScope(deps);
   const body = parkBodyOf(input);
   return keyedSend(
     deps,
@@ -264,13 +289,33 @@ export function pendingResumeIds(
  * after a crash from adding them twice. Returns null when it was already
  * applied.
  */
-export async function resumeParkedInto<Order, Parked, Catalog>(
+export function resumeParkedInto<Order, Parked, Catalog>(
   deps: FlowDeps<Order, Parked>,
   parkedId: string,
   loadCatalog: () => Promise<Catalog>,
   apply: (parked: Parked, catalog: Catalog) => void,
 ): Promise<Parked | null> {
-  assertScope(deps.scope);
+  // Two calls for the same parked cart at once (the sheet and the replay on
+  // open) share one run: the lines are applied once.
+  const flight = `${deps.scope.outletId}:${deps.scope.actorId}:${parkedId}`;
+  const running = resumesInFlight.get(flight);
+  if (running) return running as Promise<Parked | null>;
+  const run = resumeOnce(deps, parkedId, loadCatalog, apply).finally(() =>
+    resumesInFlight.delete(flight),
+  );
+  resumesInFlight.set(flight, run);
+  return run;
+}
+
+const resumesInFlight = new Map<string, Promise<unknown>>();
+
+async function resumeOnce<Order, Parked, Catalog>(
+  deps: FlowDeps<Order, Parked>,
+  parkedId: string,
+  loadCatalog: () => Promise<Catalog>,
+  apply: (parked: Parked, catalog: Catalog) => void,
+): Promise<Parked | null> {
+  assertScope(deps);
   const scope = scopeOf(deps.scope, "resume", parkedId);
   if (peekIntent(deps.storage, scope)?.data === APPLIED) {
     endIntent(deps.storage, scope);
@@ -284,6 +329,9 @@ export async function resumeParkedInto<Order, Parked, Catalog>(
     (key) => deps.resume(parkedId, { idempotencyKey: key }),
     null,
     (parked, key) => {
+      // Checked again right before applying: another run (or tab) may have
+      // saved these lines while this one waited for its answer.
+      if (peekIntent(deps.storage, scope)?.data === APPLIED) return;
       apply(parked, catalog);
       recordIntentData(deps.storage, scope, key, APPLIED);
     },

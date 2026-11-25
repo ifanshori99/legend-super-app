@@ -18,6 +18,8 @@ import type {
   Course,
   MenuItem,
   OjolPlatform,
+  OrderMeta,
+  OrderSnapshot,
   ParkedDraft,
   PosOrderView,
   SaleChannel,
@@ -313,4 +315,34 @@ export function draftFromPark(
     parkedAt: parked.parkedAt,
     subtotalIdr: cartTotals(input.lines).subtotalIdr,
   };
+}
+
+/** The send input of a cart and its meta (what `createBodyOf` fingerprints). */
+export function inputOfMeta(
+  meta: OrderMeta,
+  lines: CartLine[],
+): SubmitOrderInput {
+  return {
+    channel: meta.channel,
+    tableSessionId: meta.channel === "dine_in" ? meta.tableSessionId : null,
+    ojol:
+      meta.channel === "ojol_manual" &&
+      meta.ojolPlatform &&
+      meta.ojolRef.trim() !== ""
+        ? { platform: meta.ojolPlatform, externalRef: meta.ojolRef.trim() }
+        : null,
+    lines,
+  };
+}
+
+/** True when the cart on screen would be sent as exactly this snapshot. */
+export function sameOrder(
+  lines: CartLine[],
+  meta: OrderMeta,
+  snapshot: OrderSnapshot,
+): boolean {
+  return (
+    JSON.stringify(createBodyOf(inputOfMeta(meta, lines))) ===
+    JSON.stringify(createBodyOf(inputOfMeta(snapshot.meta, snapshot.lines)))
+  );
 }

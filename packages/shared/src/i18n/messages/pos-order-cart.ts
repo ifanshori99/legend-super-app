@@ -86,6 +86,14 @@ export const posOrderCartMessages = {
     title: "Ada pesanan yang belum jelas terkirim",
     body: "{where}: {count} item. Kembalikan pesanan ini lalu kirim ulang. Pesanan tidak akan dobel.",
     restore: "Kembalikan pesanan tertunda",
+    replaceBody:
+      "Keranjang sekarang ({count} item) akan disimpan dulu ke “Pesanan ditahan”, lalu pesanan tertunda dikembalikan.",
+    replaceConfirm: "Simpan lalu kembalikan",
+    replaceCancel: "Batal",
+  },
+  forbidden: {
+    title: "Pengiriman tidak diizinkan",
+    body: "Akun ini tidak boleh mengirim pesanan, atau izinnya sedang berubah. Periksa pesanan terbuka di kasir, lalu tutup peringatan ini.",
   },
   reused: {
     title: "Pengiriman ditolak server",

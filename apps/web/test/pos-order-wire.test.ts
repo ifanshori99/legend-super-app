@@ -14,14 +14,18 @@ import {
   closeOrderIntent,
   pendingResumeIds,
   ACTOR_MISSING,
+  needsCashierClose,
+  OTHER_CASHIER_PENDING,
   ORDER_INTENT_PENDING,
   type FlowDeps,
 } from "@/features/ws04-pos-order/order-flow";
 import { peekIntent } from "@/features/ws04-pos-order/intent-store";
+import { cashierDraftKey } from "@/features/ws04-pos-order/draft-store";
 import {
   createBodyOf,
   draftFromPark,
   mapParked,
+  sameOrder,
 } from "@/features/ws04-pos-order/order-wire";
 import type {
   CartLine,
@@ -618,9 +622,91 @@ test("another cashier or outlet never reuses or sees the key", async () => {
   const elsewhere = { outletId: "o2", actorId: "u1", subject: "kasir" };
   assert.equal(readPendingOrder(storage, other), null);
   assert.equal(readPendingOrder(storage, elsewhere), null);
-  await placeOrder(deps(storage, other), input(), META);
   await placeOrder(deps(storage, elsewhere), input(), META);
-  assert.equal(new Set(state.createCalls).size, 3, "three scopes, three keys");
+  assert.equal(
+    new Set(state.createCalls).size,
+    2,
+    "another outlet, another key",
+  );
   // The first cashier's unresolved send is untouched.
   assert.notEqual(readPendingOrder(storage, SCOPE), null);
+});
+
+// ---- Re-review of W1 --------------------------------------------------------
+
+test("two resumes at once apply the parked cart once", async () => {
+  const { deps } = fakeServer();
+  const storage = new MemoryStorage();
+  const applied: string[] = [];
+  const run = () =>
+    resumeParkedInto(
+      deps(storage),
+      "p1",
+      async () => "cat",
+      (p) => applied.push(p.id),
+    );
+  await Promise.all([run(), run()]);
+  assert.deepEqual(applied, ["p1"]);
+  assert.deepEqual(pendingResumeIds(storage, SCOPE), []);
+});
+
+test("restoring is a no-op question only when the cart is the same order", () => {
+  const same = sameOrder(LINES, META, { lines: LINES, meta: META });
+  assert.equal(same, true);
+  assert.equal(
+    sameOrder(
+      addLine(LINES, item(), { modifiers: [], note: "", quantity: 1 }),
+      META,
+      {
+        lines: LINES,
+        meta: META,
+      },
+    ),
+    false,
+  );
+  assert.equal(
+    sameOrder(
+      LINES,
+      { ...META, tableSessionId: uuid() },
+      { lines: LINES, meta: META },
+    ),
+    false,
+  );
+  assert.equal(sameOrder([], META, { lines: LINES, meta: META }), false);
+});
+
+test("the cart key carries outlet and cashier", () => {
+  assert.notEqual(cashierDraftKey("o1", "u1"), cashierDraftKey("o1", "u2"));
+  assert.notEqual(cashierDraftKey("o1", "u1"), cashierDraftKey("o2", "u1"));
+});
+
+test("a send is blocked while another cashier's send in this outlet is unclear", async () => {
+  const { state, deps } = fakeServer();
+  const storage = new MemoryStorage();
+  state.loseCreateReply = 1;
+  await assert.rejects(placeOrder(deps(storage), input(), META));
+  const other = { outletId: "o1", actorId: "u2", subject: "kasir" };
+  const blocked = (error: unknown) =>
+    error instanceof ApiError && error.code === OTHER_CASHIER_PENDING;
+  await assert.rejects(
+    placeOrder(deps(storage, other), input(), META),
+    blocked,
+  );
+  await assert.rejects(parkCart(deps(storage, other), input()), blocked);
+  assert.equal(state.createCalls.length, 1, "nothing new was sent");
+  // The first cashier is not blocked by their own intent, and can finish it.
+  await placeOrder(deps(storage), input(), META);
+  await placeOrder(deps(storage, other), input(), META);
+  assert.equal(state.orders.size, 2);
+});
+
+test("a refused key and a 403 are closed only by the cashier", () => {
+  assert.equal(
+    needsCashierClose(new ApiError(409, "IDEMPOTENCY_KEY_REUSED", "x")),
+    true,
+  );
+  assert.equal(needsCashierClose(new ApiError(403, "FORBIDDEN", "x")), true);
+  assert.equal(needsCashierClose(new ApiError(500, "X", "x")), false);
+  assert.equal(needsCashierClose(new ApiError(422, "X", "x")), false);
+  assert.equal(needsCashierClose(new Error("x")), false);
 });

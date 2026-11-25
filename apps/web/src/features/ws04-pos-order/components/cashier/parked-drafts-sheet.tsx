@@ -34,9 +34,12 @@ export function ParkedDraftsSheet({
   open,
   onOpenChange,
   onResumed,
+  draftKey,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** The cashier's cart the resumed lines go into. */
+  draftKey: string;
   onResumed: (draft: ParkedDraft & { missing?: number }) => void;
 }) {
   const t = useT();
@@ -53,7 +56,7 @@ export function ParkedDraftsSheet({
             {t("posOrderCart.parkedSheet.description")}
           </SheetDescription>
         </SheetHeader>
-        {open && <ParkedList onResumed={onResumed} />}
+        {open && <ParkedList onResumed={onResumed} draftKey={draftKey} />}
       </SheetContent>
     </Sheet>
   );
@@ -62,12 +65,14 @@ export function ParkedDraftsSheet({
 // Only mounted while the sheet is open, so the list is fetched on demand.
 function ParkedList({
   onResumed,
+  draftKey,
 }: {
+  draftKey: string;
   onResumed: (draft: ParkedDraft & { missing?: number }) => void;
 }) {
   const t = useT();
   const drafts = useParkedDrafts();
-  const resume = useResumeDraft({ draftKey: "kasir" });
+  const resume = useResumeDraft({ draftKey });
 
   if (drafts.isPending) {
     return (
