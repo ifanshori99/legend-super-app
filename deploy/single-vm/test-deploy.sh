@@ -4,7 +4,7 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 # The caller's shell must not leak into the checks (shell wins over env files).
 unset API_ENV_FILE WORKER_ENV_FILE DOIT_REFUNDS_ENABLED
-unset DUITKU_ALLOW_SANDBOX DUITKU_ENABLED_METHODS
+unset DUITKU_ALLOW_SANDBOX DUITKU_ENABLED_METHODS DEPLOYMENT_MODE DATA_CLASSIFICATION
 tmp=$(mktemp -d /tmp/legend-deploy-test.XXXXXXXX)
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 mkdir "$tmp/bin"
@@ -522,7 +522,7 @@ echo 'legend-3gna: empty value and comment checks passed'
 set_duitku() {
   # set_duitku <api line> <worker line>; an empty line means the key is absent.
   for file in api worker; do
-    grep -v '^DUITKU_' "$tmp/$file.env" > "$tmp/$file.env.new" || true
+    grep -Ev '^(DUITKU_|DEPLOYMENT_MODE|DATA_CLASSIFICATION)' "$tmp/$file.env" > "$tmp/$file.env.new" || true
     mv "$tmp/$file.env.new" "$tmp/$file.env"
   done
   [ -z "$1" ] || printf '%s\n' "$1" >> "$tmp/api.env"
@@ -562,6 +562,18 @@ duitku_refused DUITKU_ENABLED_METHODS 'DUITKU_ENABLED_METHODS=qris' ''
 duitku_refused DUITKU_ENABLED_METHODS 'DUITKU_ENABLED_METHODS=qris,va' 'DUITKU_ENABLED_METHODS=qris'
 duitku_refused DUITKU_ENABLED_METHODS 'DUITKU_ENABLED_METHODS=kartu' 'DUITKU_ENABLED_METHODS=kartu'
 duitku_refused DUITKU_ENABLED_METHODS 'DUITKU_ENABLED_METHODS' ''
+# The sandbox switch is refused before any migration in production mode or with
+# real data, in either file (the API and the worker would refuse to start).
+on='DUITKU_ALLOW_SANDBOX=true'
+nl='
+'
+duitku_same "$on${nl}DEPLOYMENT_MODE=staging${nl}DATA_CLASSIFICATION=synthetic" "$on"
+duitku_same 'DUITKU_ALLOW_SANDBOX=false' 'DEPLOYMENT_MODE=production'
+for live in 'DEPLOYMENT_MODE=production' 'DEPLOYMENT_MODE="production" #c' \
+  'DATA_CLASSIFICATION=real' 'DEPLOYMENT_MODE' 'DEPLOYMENT_MODE=' \
+  'DATA_CLASSIFICATION' 'DEPLOYMENT_MODE=${MODE}'; do
+  duitku_refused DUITKU_ALLOW_SANDBOX "$on$nl$live" "$on"
+done
 set_duitku 'DUITKU_ENABLED_METHODS=qris' 'DUITKU_ENABLED_METHODS=qris'
 : > "$TEST_LOG"
 "$root/deploy.sh" --env-file "$tmp/compose.env" >/dev/null 2>&1 || {

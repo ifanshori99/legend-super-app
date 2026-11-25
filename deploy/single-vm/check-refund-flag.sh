@@ -10,6 +10,7 @@
 # The two Duitku settings follow the same rules (legend-osqou.1):
 # DUITKU_ALLOW_SANDBOX is such a flag, DUITKU_ENABLED_METHODS is a comma list
 # compared as a set (missing or empty = all locked, an unknown method fails).
+# DUITKU_ALLOW_SANDBOX on is refused in production mode or with real data.
 # Prints only file and setting names, never values or URLs.
 #
 #   check-refund-flag.sh --env-file /absolute/path/compose.env
@@ -44,7 +45,7 @@ service_file() {
 # shell, which this check cannot see reliably, so it fails closed.
 no_bare_line() {
   if grep -Eq "^[[:space:]]*(export[[:space:]]+)?$2[[:space:]]*\$" "$1"; then
-    fail "$(basename "$1") has a bare $2 line. Give $2 an explicit value on that line."
+    fail "$(basename "$1") has a bare $2 line${3:-}. Give $2 an explicit value on that line."
   fi
 }
 has_line() { grep -Eq "^[[:space:]]*(export[[:space:]]+)?$2[[:space:]]*[=:]" "$1"; }
@@ -78,6 +79,19 @@ methods_of() {
   fi
   printf '%s\n' "$list"
 }
+# The Duitku sandbox switch is for staging: refused unless the file states (or
+# defaults to) a mode other than production and synthetic data. Anything this
+# check cannot read for certain (bare, empty, interpolated) is refused too.
+sandbox_allowed_in() {
+  for key in DEPLOYMENT_MODE DATA_CLASSIFICATION; do
+    no_bare_line "$1" "$key" " while DUITKU_ALLOW_SANDBOX is on"
+    has_line "$1" "$key" || continue
+    case "$key:$(clean_value "$1" "$key")" in
+      DEPLOYMENT_MODE:development | DEPLOYMENT_MODE:staging | DATA_CLASSIFICATION:synthetic) ;;
+      *) fail "DUITKU_ALLOW_SANDBOX is on in $(basename "$1"), whose $key does not allow it. The Duitku sandbox is for staging with synthetic data only." ;;
+    esac
+  done
+}
 same_or_fail() {
   # same_or_fail <setting> <api value> <worker value>
   [ "$2" = "$3" ] ||
@@ -91,6 +105,11 @@ for flag in DOIT_REFUNDS_ENABLED DUITKU_ALLOW_SANDBOX; do
   worker_flag=$(flag_of "$worker_env" "$flag")
   same_or_fail "$flag" "$api_flag" "$worker_flag"
 done
+# The loop ends on DUITKU_ALLOW_SANDBOX, equal in both files here.
+if [ "$api_flag" = 1 ]; then
+  sandbox_allowed_in "$api_env"
+  sandbox_allowed_in "$worker_env"
+fi
 api_methods=$(methods_of "$api_env")
 worker_methods=$(methods_of "$worker_env")
 same_or_fail DUITKU_ENABLED_METHODS "$api_methods" "$worker_methods"

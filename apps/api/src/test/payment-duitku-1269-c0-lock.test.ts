@@ -105,6 +105,8 @@ const saved = {
   methods: env.DUITKU_ENABLED_METHODS,
   allowSandbox: env.DUITKU_ALLOW_SANDBOX,
   isProduction: env.isProduction,
+  mode: env.DEPLOYMENT_MODE,
+  data: env.DATA_CLASSIFICATION,
 };
 beforeEach(() => {
   env.DUITKU_ENABLED_METHODS = [];
@@ -113,6 +115,8 @@ afterEach(() => {
   env.DUITKU_ENABLED_METHODS = saved.methods;
   env.DUITKU_ALLOW_SANDBOX = saved.allowSandbox;
   env.isProduction = saved.isProduction;
+  env.DEPLOYMENT_MODE = saved.mode;
+  env.DATA_CLASSIFICATION = saved.data;
 });
 
 describe("duitku method lock", () => {
@@ -213,6 +217,30 @@ describe("duitku sandbox in production", () => {
     expect(duitkuCredentialSet(row("sandbox"), NOW)).toHaveLength(1);
     env.DUITKU_ALLOW_SANDBOX = false;
     env.isProduction = false;
+    expect(duitkuCredentialSet(row("sandbox"), NOW)).toHaveLength(1);
+  });
+});
+
+describe("duitku sandbox in a live deployment", () => {
+  // Whatever NODE_ENV and the staging switch say.
+  it.each([
+    ["production", "synthetic", false],
+    ["production", "real", true],
+    ["staging", "real", true],
+  ] as const)("refused: %s, %s data, switch %s", (mode, data, allow) => {
+    env.isProduction = false;
+    env.DEPLOYMENT_MODE = mode;
+    env.DATA_CLASSIFICATION = data;
+    env.DUITKU_ALLOW_SANDBOX = allow;
+    expect(duitkuCredentialSet(row("sandbox"), NOW)).toEqual([]);
+    expect(duitkuCredentialSet(row("production"), NOW)).toHaveLength(1);
+  });
+
+  it("allowed on staging with synthetic data and the switch", () => {
+    env.isProduction = true;
+    env.DEPLOYMENT_MODE = "staging";
+    env.DATA_CLASSIFICATION = "synthetic";
+    env.DUITKU_ALLOW_SANDBOX = true;
     expect(duitkuCredentialSet(row("sandbox"), NOW)).toHaveLength(1);
   });
 });

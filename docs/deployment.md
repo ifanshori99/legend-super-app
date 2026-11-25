@@ -1007,7 +1007,7 @@ The same check compares `DUITKU_ALLOW_SANDBOX` (same rules) and
 `DUITKU_ENABLED_METHODS` (a set of `qris`, `va`, `ewallet`, `card`; missing or
 empty locks every method). `DUITKU_ALLOW_SANDBOX=true` is for staging only: the
 API and the worker refuse to start with it when `DEPLOYMENT_MODE=production` or
-`DATA_CLASSIFICATION=real`.
+`DATA_CLASSIFICATION=real`, and the check stops the deploy before migrating.
 
 A disabled channel is never planned for a recipient: in-app notifications are
 still written and the attempt is skipped, never reported as sent. A gap in an

@@ -29,6 +29,7 @@ import type {
   OnlinePaymentMethod,
   PaymentGatewayPort,
 } from "./payment-gateway";
+import { duitkuSandboxRefused } from "./payment-duitku-sandbox-policy";
 import {
   duitkuGetPaymentMethods,
   duitkuInquiry,
@@ -98,7 +99,7 @@ export function duitkuCredentialSet(
     !merchantCode ||
     !apiKey ||
     (environment !== "sandbox" && environment !== "production") ||
-    (environment === "sandbox" && env.isProduction && !env.DUITKU_ALLOW_SANDBOX)
+    (environment === "sandbox" && duitkuSandboxRefused())
   )
     return [];
   const set: DuitkuCredentials[] = [{ merchantCode, apiKey, environment }];

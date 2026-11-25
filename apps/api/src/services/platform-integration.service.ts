@@ -47,7 +47,6 @@ import {
   assertTrustedScopedContext,
   type ScopedTenantContext,
 } from "@starter/shared/core";
-import { env } from "../config/env.ts";
 import type * as schema from "../db/schema/index.ts";
 import { db } from "../db/index.ts";
 import { outlets, tenantIntegrations, tenants } from "../db/schema/index.ts";
@@ -56,6 +55,7 @@ import { HttpError } from "../lib/http-error.ts";
 import { logger } from "../lib/logger.ts";
 import { newSecretRef, openSecret, sealSecret } from "../lib/secrets.ts";
 import { recordAudit, type AuditTransaction } from "./audit-writer.ts";
+import { duitkuSandboxRefused } from "./payment-duitku-sandbox-policy.ts";
 import { clearDoitWebhookSecretCache } from "./payment-webhook.service.ts";
 import { gatewaySecretGraceMs } from "./platform-payment-gateway.service.ts";
 
@@ -455,6 +455,24 @@ async function claimingWhatsAppNumber<T>(write: () => Promise<T>): Promise<T> {
   }
 }
 
+/** 1269 C0: the adapter refuses a sandbox account in production, so a saved or
+ * activated one would only break payments. */
+function assertDuitkuSandboxAllowed(row: {
+  provider: IntegrationProvider;
+  config: Record<string, unknown>;
+}): void {
+  if (
+    row.provider === "duitku" &&
+    row.config.environment === "sandbox" &&
+    duitkuSandboxRefused()
+  )
+    throw new HttpError(
+      422,
+      "VALIDATION_ERROR",
+      "Invalid duitku settings: environment (sandbox is not allowed in production).",
+    );
+}
+
 // ------------------------------------------------------------- services
 
 /** GET /api/org/integrations: masked rows of the caller's tenant. */
@@ -541,19 +559,7 @@ export async function upsertIntegration(
         "VALIDATION_ERROR",
         `Invalid ${input.provider} settings: ${issues.join(", ")}.`,
       );
-    // 1269 C0: the adapter refuses a sandbox account in production, so a saved
-    // one would only break payments (staging sets DUITKU_ALLOW_SANDBOX).
-    if (
-      input.provider === "duitku" &&
-      input.config.environment === "sandbox" &&
-      env.isProduction &&
-      !env.DUITKU_ALLOW_SANDBOX
-    )
-      throw new HttpError(
-        422,
-        "VALIDATION_ERROR",
-        "Invalid duitku settings: environment (sandbox is not allowed in production).",
-      );
+    assertDuitkuSandboxAllowed(input);
 
     const credentialColumns = (
       integrationId: string,
@@ -727,8 +733,10 @@ export async function setIntegrationStatus(
       )
     )
       throw new PlatformError("INVALID_TRANSITION");
-    if (input.status === "active")
+    if (input.status === "active") {
       await assertProviderAvailable(tx, tenantId, current.provider);
+      assertDuitkuSandboxAllowed(current);
+    }
     const [row] = await claimingWhatsAppNumber(() =>
       tx
         .update(tenantIntegrations)

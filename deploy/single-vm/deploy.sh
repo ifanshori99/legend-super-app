@@ -35,7 +35,7 @@ fi
 # two DUITKU_* method settings (legend-osqou.1); stop before any docker work when
 # they do not.
 "$script_dir/check-refund-flag.sh" --env-file "$env_file" ||
-  { echo "Env agreement check failed: nothing was started. Make DOIT_REFUNDS_ENABLED, DUITKU_ALLOW_SANDBOX and DUITKU_ENABLED_METHODS the same in api.env and worker.env (docs/deployment.md)." >&2; exit 1; }
+  { echo "Env agreement check failed: nothing was started. Make DOIT_REFUNDS_ENABLED, DUITKU_ALLOW_SANDBOX and DUITKU_ENABLED_METHODS the same in api.env and worker.env, with the sandbox off in production (docs/deployment.md)." >&2; exit 1; }
 compose up -d --wait postgres
 compose --profile migration run --rm migrate node dist/predeploy-check.js || {
   echo "Pre-deploy check failed: nothing was migrated and services were not started. See docs/deployment.md (Pre-deploy check)." >&2
