@@ -10,11 +10,31 @@ import {
 
 const trackers = new Map<string, AttemptKeyTracker>();
 
-export function retainedAttempt(scope: string): AttemptKeyTracker {
-  let tracker = trackers.get(scope);
+/**
+ * Who a retained attempt belongs to: tenant, user and outlet reach. Another
+ * login on this tab, or the same login with other outlets, never reuses a key.
+ */
+export function retainedOwnerKey(owner: {
+  tenant: string;
+  userId: string;
+  outletIds: readonly string[];
+}): string {
+  return JSON.stringify([
+    owner.tenant,
+    owner.userId,
+    [...owner.outletIds].sort(),
+  ]);
+}
+
+export function retainedAttempt(
+  scope: string,
+  owner: string,
+): AttemptKeyTracker {
+  const slot = `${owner}|${scope}`;
+  let tracker = trackers.get(slot);
   if (!tracker) {
     tracker = createAttemptKeyTracker();
-    trackers.set(scope, tracker);
+    trackers.set(slot, tracker);
   }
   return tracker;
 }

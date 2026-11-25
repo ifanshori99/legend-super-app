@@ -190,11 +190,21 @@ export function useApproveRefund() {
   });
 }
 
+/**
+ * Mutation key of one refund's follow-up actions (retry, release, re-open,
+ * reject, manual settle). The dialog waits only for its own refund, so another
+ * refund's pending call never freezes it.
+ */
+export function refundMutationKey(refundId: string) {
+  return ["refund-followup", refundId] as const;
+}
+
 // Every refund follow-up carries its idempotency key in the body (set once per
 // dialog by the caller), so a double click or retry replays instead of acting twice.
-export function useRejectRefund() {
+export function useRejectRefund(refundId: string) {
   const queryClient = useQueryClient();
   return useMutation({
+    mutationKey: refundMutationKey(refundId),
     mutationFn: (input: { refundId: string; body: RejectRefundInput }) =>
       rejectRefund({ refundId: input.refundId }, input.body),
     onSuccess: () =>
@@ -203,9 +213,10 @@ export function useRejectRefund() {
 }
 
 /** Retry (never-sent) and "check status" (maybe-sent) share this endpoint. */
-export function useRetryRefundPayout() {
+export function useRetryRefundPayout(refundId: string) {
   const queryClient = useQueryClient();
   return useMutation({
+    mutationKey: refundMutationKey(refundId),
     mutationFn: (input: { refundId: string; body: RetryRefundPayoutInput }) =>
       retryRefundPayout({ refundId: input.refundId }, input.body),
     // A failed lookup still changes counters server-side: refresh either way.
@@ -214,9 +225,10 @@ export function useRetryRefundPayout() {
   });
 }
 
-export function useReleaseQuarantinedRefund() {
+export function useReleaseQuarantinedRefund(refundId: string) {
   const queryClient = useQueryClient();
   return useMutation({
+    mutationKey: refundMutationKey(refundId),
     mutationFn: (input: {
       refundId: string;
       body: QuarantinedRefundActionInput;
@@ -226,9 +238,10 @@ export function useReleaseQuarantinedRefund() {
   });
 }
 
-export function useReopenQuarantinedRefund() {
+export function useReopenQuarantinedRefund(refundId: string) {
   const queryClient = useQueryClient();
   return useMutation({
+    mutationKey: refundMutationKey(refundId),
     mutationFn: (input: {
       refundId: string;
       body: QuarantinedRefundActionInput;
@@ -239,9 +252,10 @@ export function useReopenQuarantinedRefund() {
 }
 
 /** Records an approved refund finance paid by hand (card 1259). */
-export function useSettleRefundManually() {
+export function useSettleRefundManually(refundId: string) {
   const queryClient = useQueryClient();
   return useMutation({
+    mutationKey: refundMutationKey(refundId),
     mutationFn: (input: {
       refundId: string;
       body: ManualRefundSettlementInput;

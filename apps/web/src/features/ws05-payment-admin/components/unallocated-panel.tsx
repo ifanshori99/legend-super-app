@@ -41,7 +41,7 @@ import {
   unallocatedTone,
 } from "../format";
 import { useResolveUnallocatedFund, useUnallocatedFunds } from "../hooks";
-import { retainedAttempt } from "../../../lib/retained-attempt-key.ts";
+import { useRetainedAttempt } from "../../../lib/use-retained-attempt.ts";
 
 const ALL = "all";
 
@@ -192,7 +192,7 @@ function ResolveFundDialog({
   const [note, setNote] = React.useState("");
   // One key per request, kept across close and reopen, so a retry never books
   // the refund/credit twice.
-  const attempt = retainedAttempt(`unallocated.resolve.${fund.id}`);
+  const attempt = useRetainedAttempt(`unallocated.resolve.${fund.id}`);
   const [error, setError] = React.useState<string | undefined>();
 
   const submit = (event: React.FormEvent) => {

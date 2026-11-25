@@ -30,7 +30,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { StatStrip, StatTile } from "@/components/ui/stat-tile";
 import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
-import { retainedAttempt } from "@/lib/retained-attempt-key";
+import { useRetainedAttempt } from "@/lib/use-retained-attempt";
+import { publishAttemptPayload } from "../publish-key";
 import { useTenantContext } from "@/lib/tenant-context";
 import { rosterTemplatesFor, stationName } from "../fixtures";
 import {
@@ -123,7 +124,7 @@ function RosterContent({
   // closing the dialog starts a new attempt (the week's drafts may change).
   // Kept for the same outlet and week across close and reopen: a lost
   // response then replays instead of publishing twice.
-  const publishAttempt = retainedAttempt("roster.publish");
+  const publishAttempt = useRetainedAttempt("roster.publish");
   const confirmedPublication = React.useRef<string | null>(null);
 
   const days = weekDays(weekStart);
@@ -320,7 +321,9 @@ function RosterContent({
   };
 
   const confirmPublish = () => {
-    const idempotencyKey = publishAttempt.keyFor({ outletId, weekStart });
+    const idempotencyKey = publishAttempt.keyFor(
+      publishAttemptPayload({ outletId, weekStart, rows }),
+    );
     publish.mutate(
       {
         outletId,

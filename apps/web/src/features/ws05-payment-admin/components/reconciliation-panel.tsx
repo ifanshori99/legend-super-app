@@ -3,7 +3,7 @@
 // becomes a case and is closed with a written note. Gateway and EDC batches
 // (per bank) live in the same queue.
 import * as React from "react";
-import { retainedAttempt } from "../../../lib/retained-attempt-key.ts";
+import { useRetainedAttempt } from "../../../lib/use-retained-attempt.ts";
 import { useT } from "@/components/i18n";
 import { ApiError } from "@/lib/api/errors";
 import { Badge, StatusPill } from "@/components/ui/badge";
@@ -344,7 +344,7 @@ function ResolveCaseDialog({
   const t = useT();
   const toast = useToast();
   const resolve = useResolveReconciliationCase();
-  const attempt = retainedAttempt(`recon.resolve.${entry.id}`);
+  const attempt = useRetainedAttempt(`recon.resolve.${entry.id}`);
   const [note, setNote] = React.useState("");
   const [error, setError] = React.useState<string | undefined>();
 

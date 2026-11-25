@@ -38,6 +38,7 @@ import { ANONYMOUS_ACCESS, type AreaAccess } from "@/lib/areas/access";
 import { formatMoment, methodLabelKey } from "../format";
 import {
   useRefunds,
+  refundMutationKey,
   useRejectRefund,
   useReleaseQuarantinedRefund,
   useReopenQuarantinedRefund,
@@ -64,7 +65,7 @@ import {
   type RefundUiState,
 } from "../refund-actions.ts";
 import { ApiError } from "../../../lib/api/errors.ts";
-import { retainedAttempt } from "../../../lib/retained-attempt-key.ts";
+import { useRetainedAttempt } from "../../../lib/use-retained-attempt.ts";
 
 const P = "paymentAdmin.refundFollowup";
 const key = (suffix: string) => `${P}.${suffix}` as MessageKey;
@@ -107,7 +108,8 @@ export function RefundFollowupDialog({
   const refunds = useRefunds();
   // Retry, release, re-open and manual settle each run their own mutation in
   // this dialog: none may be cut off by closing it.
-  const mutating = useIsMutating() > 0;
+  const mutating =
+    useIsMutating({ mutationKey: refundMutationKey(refundId) }) > 0;
   const refund = refunds.data?.data.find((entry) => entry.id === refundId);
   const [rejecting, setRejecting] = React.useState(false);
   // "Catat refund manual" is a two-step form inside this dialog. Presentation
@@ -575,8 +577,8 @@ function RetryButton({
 }) {
   const t = useT();
   const toast = useToast();
-  const retry = useRetryRefundPayout();
-  const attempt = retainedAttempt(`refund.${mode}.${refund.id}`);
+  const retry = useRetryRefundPayout(refund.id);
+  const attempt = useRetainedAttempt(`refund.${mode}.${refund.id}`);
   const [error, setError] = React.useState<string | null>(null);
 
   const run = () => {
@@ -619,11 +621,11 @@ function RejectRefundDialog({
 }) {
   const t = useT();
   const toast = useToast();
-  const reject = useRejectRefund();
+  const reject = useRejectRefund(refund.id);
   const [reason, setReason] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
   // Kept per refund across close and reopen: a lost response then replays.
-  const attempt = retainedAttempt(`refund.reject.${refund.id}`);
+  const attempt = useRetainedAttempt(`refund.reject.${refund.id}`);
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
@@ -717,14 +719,14 @@ function QuarantineStep({
 }) {
   const t = useT();
   const toast = useToast();
-  const release = useReleaseQuarantinedRefund();
-  const reopen = useReopenQuarantinedRefund();
+  const release = useReleaseQuarantinedRefund(refund.id);
+  const reopen = useReopenQuarantinedRefund(refund.id);
   const mutation = action === "release" ? release : reopen;
   const [note, setNote] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
   // One key per step, kept across close and reopen: a double click or retry
   // replays, never acts twice.
-  const attempt = retainedAttempt(`refund.${action}.${refund.id}`);
+  const attempt = useRetainedAttempt(`refund.${action}.${refund.id}`);
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
@@ -866,8 +868,8 @@ function ManualSettleStep({
 }) {
   const t = useT();
   const toast = useToast();
-  const settle = useSettleRefundManually();
-  const attempt = retainedAttempt(`refund.settle.${refund.id}`);
+  const settle = useSettleRefundManually(refund.id);
+  const attempt = useRetainedAttempt(`refund.settle.${refund.id}`);
   const [form, setForm] =
     React.useState<ManualSettlementForm>(EMPTY_SETTLEMENT);
   const [confirming, setConfirming] = React.useState(false);

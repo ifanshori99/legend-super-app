@@ -53,7 +53,7 @@ import {
   useRefunds,
 } from "../hooks";
 import { ApiError } from "../../../lib/api/errors.ts";
-import { retainedAttempt } from "../../../lib/retained-attempt-key.ts";
+import { useRetainedAttempt } from "../../../lib/use-retained-attempt.ts";
 
 const ALL = "all";
 
@@ -213,7 +213,7 @@ function CreateRefundDialog({ onClose }: { onClose: () => void }) {
   const [note, setNote] = React.useState("");
   // One key per request, kept across close and reopen: a retry or double
   // submit replays, never refunds twice.
-  const attempt = retainedAttempt("refund.create");
+  const attempt = useRetainedAttempt(`refund.create.${paymentId}`);
   const [errors, setErrors] = React.useState<
     Record<string, string | undefined>
   >({});
@@ -393,7 +393,7 @@ function ApproveRefundDialog({
   const toast = useToast();
   const approve = useApproveRefund();
   const [note, setNote] = React.useState("");
-  const attempt = retainedAttempt(`refund.approve.${refund.id}`);
+  const attempt = useRetainedAttempt(`refund.approve.${refund.id}`);
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
