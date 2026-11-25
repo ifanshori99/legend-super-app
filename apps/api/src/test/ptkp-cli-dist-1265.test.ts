@@ -2,26 +2,47 @@
 // owner only, and proves it on a real database with row level security and two
 // tenants that hold locked payslips. The app login (legend_app, no BYPASSRLS)
 // must never run it: it cannot write the history, and a role that cannot see
-// the rows would report a clean "0 employees". Needs
-// `heavy pnpm --filter @starter/api build` first; skipped on a tree without dist/.
+// the rows would report a clean "0 employees". It runs on its own scratch
+// database (migrated from zero by a production-shaped migrator login, with a
+// real app login), never on the shared test database, so "0 tenants" is a state
+// this test controls. Needs `heavy pnpm --filter @starter/api build` first;
+// skipped on a tree without dist/.
 import { spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { provisionMigrator } from "../db/migrator-role.ts";
+import { provisionRoles } from "../db/provision-roles.ts";
 import { sealPayrollValue } from "../lib/payroll-sealed.ts";
+import { dropTestDatabase, endTestPool } from "./helpers/database-cleanup.ts";
 import { insertPolicy } from "./payroll-simulate-kit.ts";
 
 const apiDir = resolve(import.meta.dirname, "../..");
 const script = resolve(apiDir, "dist/backfill-ptkp-history.js");
-const owner = new Pool({
-  connectionString: process.env.STARTER_TEST_DATABASE_URL,
-  max: 2,
-});
-const appUrl = process.env.DATABASE_URL!;
-const ownerUrl = process.env.STARTER_TEST_DATABASE_URL!;
+const drizzleFolder = resolve(apiDir, "drizzle");
+const bootstrapUrl = process.env.STARTER_TEST_DATABASE_URL;
+const hex = (bytes: number) => randomBytes(bytes).toString("hex");
+const database = `ptkp1265_${hex(6)}`;
+const migratorUser = `legend_migrator_${hex(8)}`;
+const appUser = `legend_runtime_${hex(8)}`;
+const urlFor = (user?: string, password?: string) => {
+  const url = new URL(bootstrapUrl ?? "postgres://x@localhost/x");
+  url.pathname = `/${database}`;
+  if (user) url.username = user;
+  if (password) url.password = password;
+  return url.toString();
+};
+// Superuser pool on the scratch database: seeds with triggers off and reads back.
+let owner: Pool;
+let admin: Pool;
+// The CLI logs in as the migrator (NOSUPERUSER, BYPASSRLS), like production.
+const migratorUrl = urlFor(migratorUser, hex(24));
+const appUrl = urlFor(appUser, hex(24));
 
 type Seed = { tenantId: string; employeeId: string; currentStatus: string };
 const seeded: Seed[] = [];
@@ -193,10 +214,15 @@ async function clearHistory() {
     );
 }
 
+const YEAR = ["--year", "2026"];
+
 function run(env: Record<string, string | undefined>, args: string[] = []) {
   const merged: NodeJS.ProcessEnv = { ...process.env };
   delete merged.MIGRATION_DATABASE_URL;
   delete merged.MIGRATION_DATABASE_URL_FILE;
+  // Never the shared test database, even for a variable the test does not set.
+  delete merged.STARTER_TEST_DATABASE_URL;
+  merged.DATABASE_URL = appUrl;
   for (const [key, value] of Object.entries(env))
     if (value === undefined) delete merged[key];
     else merged[key] = value;
@@ -213,30 +239,53 @@ function run(env: Record<string, string | undefined>, args: string[] = []) {
 
 describe.skipIf(!existsSync(script))("backfill-ptkp-history in dist", () => {
   beforeAll(async () => {
-    seeded.push(await seedTenant("K/0"), await seedTenant("TK/0"));
-  }, 60_000);
+    if (
+      !bootstrapUrl ||
+      !process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-")
+    )
+      throw new Error("Run pnpm test for the disposable PostgreSQL server");
+    admin = new Pool({ connectionString: bootstrapUrl, max: 1 });
+    await admin.query(`CREATE DATABASE "${database}"`);
+    const bootstrap = {
+      user: new URL(bootstrapUrl).username,
+      password: new URL(bootstrapUrl).password,
+    };
+    await provisionMigrator({ bootstrap, migratorUrl, appUrl });
+    const migrator = new Pool({ connectionString: migratorUrl, max: 2 });
+    try {
+      await migrate(drizzle(migrator), { migrationsFolder: drizzleFolder });
+    } finally {
+      await endTestPool(migrator);
+    }
+    await provisionRoles({ adminUrl: migratorUrl, appUrl });
+    owner = new Pool({ connectionString: urlFor(), max: 2 });
+  }, 240_000);
 
   afterAll(async () => {
-    for (const seed of seeded)
-      await inTenant(seed.tenantId, async (c) => {
-        for (const table of [
-          "employee_ptkp_history",
-          "payslips",
-          "payroll_runs",
-          "payroll_policies",
-          "employees",
-          "outlets",
-          "legal_entities",
-          "brands",
-        ])
-          await c.query(`DELETE FROM ${table} WHERE tenant_id = $1`, [
-            seed.tenantId,
-          ]);
-      });
-    await owner.query("DELETE FROM tenants WHERE id = ANY($1::uuid[])", [
-      seeded.map((seed) => seed.tenantId),
-    ]);
-    await owner.end();
+    if (owner) await endTestPool(owner);
+    if (admin) {
+      try {
+        await dropTestDatabase(admin, database);
+        for (const role of [appUser, migratorUser])
+          await admin
+            .query(`DROP ROLE IF EXISTS "${role}"`)
+            .catch(() => undefined);
+      } finally {
+        await endTestPool(admin);
+      }
+    }
+  }, 60_000);
+
+  it("a database with no tenant is an error, not a clean run, and writes nothing", () => {
+    const result = run({ MIGRATION_DATABASE_URL: migratorUrl }, YEAR);
+    expect(result.status).not.toBe(0);
+    expect(result.status).not.toBeNull();
+    expect(result.out).toMatch(/no tenant was read/i);
+    expect(result.out).not.toMatch(/PTKP history 2026: \d+ tenant/);
+  });
+
+  it("seeds two tenants with locked payslips", async () => {
+    seeded.push(await seedTenant("K/0"), await seedTenant("TK/0"));
   }, 60_000);
 
   it("the app login cannot read the payroll rows without a tenant context (RLS is real)", async () => {
@@ -252,7 +301,7 @@ describe.skipIf(!existsSync(script))("backfill-ptkp-history in dist", () => {
 
   it("stops before any connection without MIGRATION_DATABASE_URL, even with the app DATABASE_URL", async () => {
     await clearHistory();
-    const result = run({ DATABASE_URL: appUrl });
+    const result = run({ DATABASE_URL: appUrl }, YEAR);
     expect(result.status).not.toBe(0);
     expect(result.status).not.toBeNull();
     expect(result.out).toContain("MIGRATION_DATABASE_URL");
@@ -262,7 +311,7 @@ describe.skipIf(!existsSync(script))("backfill-ptkp-history in dist", () => {
 
   it("refuses the app login given as the migration URL and writes nothing", async () => {
     await clearHistory();
-    const result = run({ MIGRATION_DATABASE_URL: appUrl });
+    const result = run({ MIGRATION_DATABASE_URL: appUrl }, YEAR);
     expect(result.status).not.toBe(0);
     expect(result.status).not.toBeNull();
     expect(result.out).toMatch(/migration owner/i);
@@ -272,7 +321,7 @@ describe.skipIf(!existsSync(script))("backfill-ptkp-history in dist", () => {
   it("writes the history of both tenants as the migration owner, and is idempotent", async () => {
     await clearHistory();
     for (let pass = 0; pass < 2; pass += 1) {
-      const result = run({ MIGRATION_DATABASE_URL: ownerUrl });
+      const result = run({ MIGRATION_DATABASE_URL: migratorUrl }, YEAR);
       expect(result.status, result.out).toBe(0);
       expect(result.out).toMatch(/PTKP history 2026: \d+ tenant, \d+ karyawan/);
       const [changed, same] = seeded;
@@ -291,14 +340,17 @@ describe.skipIf(!existsSync(script))("backfill-ptkp-history in dist", () => {
     const dir = mkdtempSync(join(tmpdir(), "ptkp-url-"));
     try {
       const file = join(dir, "url");
-      writeFileSync(file, `${ownerUrl}\n`, { mode: 0o600 });
-      const result = run({ MIGRATION_DATABASE_URL_FILE: file });
+      writeFileSync(file, `${migratorUrl}\n`, { mode: 0o600 });
+      const result = run({ MIGRATION_DATABASE_URL_FILE: file }, YEAR);
       expect(result.status, result.out).toBe(0);
       expect((await history(seeded[0]!)).length).toBeGreaterThan(0);
-      const both = run({
-        MIGRATION_DATABASE_URL_FILE: file,
-        MIGRATION_DATABASE_URL: ownerUrl,
-      });
+      const both = run(
+        {
+          MIGRATION_DATABASE_URL_FILE: file,
+          MIGRATION_DATABASE_URL: migratorUrl,
+        },
+        YEAR,
+      );
       expect(both.status).not.toBe(0);
     } finally {
       rmSync(dir, { recursive: true, force: true });
