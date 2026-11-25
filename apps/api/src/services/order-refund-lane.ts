@@ -12,6 +12,7 @@
 import { ulidToUuid, type TenantId } from "@starter/shared/core";
 import { sql } from "drizzle-orm";
 import { HttpError } from "../lib/http-error.ts";
+import { hasParkedEdgeRefund } from "./payment-refund-edge-history.ts";
 import type { Tx } from "./permission-resolver.ts";
 
 type LaneTx = Pick<Tx, "execute">;
@@ -55,13 +56,18 @@ export async function assertNoOrd09Refund(
 
 /** Why an order can no longer take an ORD-09 refund. */
 export type OrderMoneyBackLane =
-  "voided" | "edge_voided" | "edge_void_parked" | "pos_refunded";
+  | "voided"
+  | "edge_voided"
+  | "edge_void_parked"
+  | "edge_refund_parked"
+  | "pos_refunded";
 
 /**
  * ORD-09 side: the order already gave the guest money back another way, or
  * is being voided. Null when the lane is free. Checks, in order: a cloud void
  * (`pos_order_voids`), an edge void in the ingest ledger, a final-sale
- * `order.voided` still parked from an edge, a cashier refund
+ * `order.voided` still parked from an edge, an `order.refunded` still parked
+ * from an edge, a cashier refund
  * (`pos_order_refunds`). Call it after the order lock.
  */
 export async function orderMoneyBackLaneOf(
@@ -105,6 +111,10 @@ export async function orderMoneyBackLaneOf(
   if (row?.voided === true) return "voided";
   if (row?.edge_voided === true) return "edge_voided";
   if (row?.edge_void_parked === true) return "edge_void_parked";
+  // Brief 1264: a parked edge `order.refunded` already paid the guest from the
+  // drawer and has no native row yet (same check as the edge void ingest, 1244).
+  if (await hasParkedEdgeRefund(tx, { tenantId, orderId }))
+    return "edge_refund_parked";
   if (row?.pos_refunded === true) return "pos_refunded";
   return null;
 }

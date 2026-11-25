@@ -31,6 +31,7 @@ import {
   createUlid,
   tenantIdSchema,
   ulidToUuid,
+  uuidToUlid,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
@@ -521,6 +522,76 @@ describe("legend-iu91r R2 final failure of a recovery refund: the reversal reque
       cap: ROTI_WANTED,
       reserved: ROTI_WANTED,
     });
+  });
+
+  /** Parks an edge `order.refunded` of the order (brief 1264: drawer cash already paid out). */
+  async function parkEdgeRefund(orderId: string) {
+    const orderUuid = toUuid(orderId);
+    const ulid = uuidToUlid(orderUuid);
+    const eventId = createUlid();
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [w.tenant.tenantId],
+      );
+      // The edge node row is not needed to read the parked fact.
+      await client.query("SET LOCAL session_replication_role = replica");
+      await client.query(
+        `INSERT INTO edge_deferred_events
+           (tenant_id, outlet_id, edge_node_id, event_id, aggregate_type, aggregate_id,
+            aggregate_sequence, event_name, parked_reason, envelope)
+         VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, 'order', $5, 2, 'order.refunded',
+           'deferred', $6::jsonb)`,
+        [
+          w.tenant.tenantId,
+          w.tenant.outletId,
+          randomUUID(),
+          ulidToUuid(eventId),
+          ulid,
+          JSON.stringify({
+            id: eventId,
+            name: "order.refunded",
+            aggregateType: "order",
+            aggregateId: ulid,
+            sequence: 2,
+            payload: { orderId: ulid },
+          }),
+        ],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  it("FF-1264 a parked edge order.refunded blocks the delivery: no ORD-09 refund, audit blocked", async () => {
+    const made = await paidRotiRefund();
+    await parkEdgeRefund(made.order.id);
+
+    await deliverRecovery(made.event);
+
+    expect(await issueRefunds(made.issueId)).toHaveLength(0);
+    expect(await auditCount(made.issueId, "order_issue.refund_blocked")).toBe(
+      1,
+    );
+  });
+
+  it("FF-1264 a parked edge order.refunded blocks the re-file: no second refund, final failure", async () => {
+    const { order, issueId, first } = await deliveredRefund();
+    await parkEdgeRefund(order.id);
+
+    await failChain(first.id, "approval_expired");
+
+    expect(await issueRefunds(issueId)).toHaveLength(1);
+    expect(await auditCount(issueId, "order_issue.refund_refile_blocked")).toBe(
+      1,
+    );
+    expect(await auditCount(issueId, "order_issue.refund_refiled")).toBe(0);
   });
 
   it("FF-7 open bill (no order.refunded), final failure: audit only, no reversal request", async () => {

@@ -1370,6 +1370,37 @@ const issueCount = (order: Order) =>
     [tenant.tenantId, order.uuid],
   );
 
+/** Parks an edge `order.refunded` of `order` (cash already paid from the drawer). */
+async function parkRefund(order: Order): Promise<void> {
+  const eventId = createUlid();
+  const envelope = {
+    id: eventId,
+    tenantId: tenant.tenantId,
+    name: "order.refunded",
+    aggregateType: "order",
+    aggregateId: order.ulid,
+    sequence: 2,
+    payload: { orderId: order.ulid },
+  };
+  await asOwnerTenant(tenant.tenantId, async (client) => {
+    await client.query(
+      `INSERT INTO edge_deferred_events
+         (tenant_id, outlet_id, edge_node_id, event_id, aggregate_type, aggregate_id,
+          aggregate_sequence, event_name, parked_reason, envelope)
+       VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, 'order', $5, 2, 'order.refunded',
+         'deferred', $6::jsonb)`,
+      [
+        tenant.tenantId,
+        tenant.outletId,
+        node.scope.edgeNodeId,
+        ulidToUuid(eventId),
+        order.ulid,
+        JSON.stringify(envelope),
+      ],
+    );
+  });
+}
+
 describe("legend-1042 a parked edge void blocks the manual refund", () => {
   it("a parked final void: the manual refund is refused (409), nothing is paid, the ledger stays ingested", async () => {
     const order = await edgeSale();
@@ -1438,6 +1469,26 @@ describe("legend-1042 a parked edge void blocks the manual refund", () => {
   it("control: with no parked void the lone manual refund is accepted (the refusal is not an unrelated 4xx)", async () => {
     const order = await cloudSale();
     expect(await deferredCount(order)).toBe(0);
+    expect((await manualRefund(order)).status).toBe(201);
+    expect(await paidOut(order)).toBe(PAID);
+  });
+});
+
+describe("legend-1264 a parked edge refund blocks the manual refund", () => {
+  it("a parked order.refunded: the manual refund is refused (409), nothing is paid", async () => {
+    const order = await cloudSale();
+    await parkRefund(order);
+
+    refusedManual((await manualRefund(order)).status);
+    expect(await manualCount(order)).toBe(0);
+    expect(await issueCount(order)).toBe(0);
+    expect(await paidOut(order)).toBe(0);
+  });
+
+  it("control: a parked refund of ANOTHER order does not block this order", async () => {
+    const other = await cloudSale();
+    await parkRefund(other);
+    const order = await cloudSale();
     expect((await manualRefund(order)).status).toBe(201);
     expect(await paidOut(order)).toBe(PAID);
   });

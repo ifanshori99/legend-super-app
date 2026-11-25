@@ -61,7 +61,7 @@ import {
   shiftCancelled,
   shiftPublished,
 } from "./events.ts";
-import { employeeIdSchema } from "./ids.ts";
+import { employeeIdSchema, offboardingIdSchema } from "./ids.ts";
 import type { Employee } from "./organization.ts";
 import type { ShiftAssignment } from "./scheduling.ts";
 
@@ -846,6 +846,9 @@ const checklistTemplates = [
   }),
 ];
 
+/** Nadia Safitri's live offboarding (her exit-clearance tasks carry it). */
+const nadiaOffboardingId = offboardingIdSchema.parse(id(7018));
+
 const checklistTasks = [
   checklistTaskSchema.parse({
     id: id(6101),
@@ -914,7 +917,7 @@ const checklistTasks = [
     id: id(6104),
     tenantId: tenant.id,
     employeeId: id(1018),
-    offboardingId: null,
+    offboardingId: nadiaOffboardingId,
     templateId: id(6004),
     kind: "offboarding",
     code: "asset_return",
@@ -935,7 +938,7 @@ const checklistTasks = [
     id: id(6105),
     tenantId: tenant.id,
     employeeId: id(1018),
-    offboardingId: null,
+    offboardingId: nadiaOffboardingId,
     templateId: id(6004),
     kind: "offboarding",
     code: "final_settlement",
@@ -956,7 +959,7 @@ const checklistTasks = [
     id: id(6106),
     tenantId: tenant.id,
     employeeId: id(1018),
-    offboardingId: null,
+    offboardingId: nadiaOffboardingId,
     templateId: id(6004),
     kind: "offboarding",
     code: "work_certificate",

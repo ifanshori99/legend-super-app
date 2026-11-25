@@ -90,7 +90,7 @@ test("PAY-04 a refund is requested, waits for approval, then settles", async ({
 }) => {
   await page.clock.install();
   await page.goto("/kelola/pembayaran?mock=normal", NAV);
-  await page.getByRole("tab", { name: "Refund" }).click();
+  await page.getByRole("tab", { name: "Refund", exact: true }).click();
   await page.getByRole("button", { name: "Buat refund" }).click();
 
   const dialog = page.getByRole("dialog");
@@ -282,7 +282,7 @@ test("F13 payment admin screens have empty and error states", async ({
   page,
 }) => {
   await page.goto("/kelola/pembayaran?mock=empty", NAV);
-  await page.getByRole("tab", { name: "Refund" }).click();
+  await page.getByRole("tab", { name: "Refund", exact: true }).click();
   await expect(page.getByText("Belum ada refund")).toBeVisible();
   await page.getByRole("tab", { name: "Dana belum teralokasi" }).click();
   await expect(page.getByText("Tidak ada dana belum teralokasi")).toBeVisible();

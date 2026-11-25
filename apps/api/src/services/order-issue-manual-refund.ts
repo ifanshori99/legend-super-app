@@ -51,6 +51,7 @@ import { posOrderRefunds, posOrderVoids } from "../db/schema/pos-order.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { HttpError } from "../lib/http-error.ts";
 import type { Tx } from "./menu-internals.ts";
+import { hasParkedEdgeRefund } from "./payment-refund-edge-history.ts";
 import { orderPromoPartialRefundPort } from "./order-promo-refund.ts";
 import { liveRouteManualRefundWhere } from "./order-issue-route-refund.ts";
 import { recoveryRefundSplit } from "./order-recovery-refund-amount.ts";
@@ -313,6 +314,14 @@ export async function manualRefundAmountIdr(
         "Pesanan ini sudah di-void di kasir (menunggu sinkron). Refund manual per item ditolak agar uang yang sama tidak dikembalikan dua kali.",
       );
   }
+
+  // A parked edge `order.refunded` (brief 1244/1264): the drawer already paid
+  // the guest and the cloud has no refund row yet. Any parked refund refuses,
+  // readable or not.
+  if (await hasParkedEdgeRefund(tx, { tenantId, orderId }))
+    throw conflict(
+      "Pesanan ini sudah di-refund di kasir (menunggu sinkron). Refund manual per item ditolak agar uang yang sama tidak dikembalikan dua kali.",
+    );
 
   // A provider or payout refund (ORD-09) that is not one of this order's live
   // route manual refunds (a failed-item refund, an ORD-09 manual issue's, a

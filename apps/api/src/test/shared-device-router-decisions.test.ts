@@ -149,6 +149,7 @@ const DECISIONS: Record<string, Decision> = {
   org: "backoffice",
   "org-config": "backoffice",
   "org-themes": "backoffice",
+  "password-reset": "public",
   payment: "backoffice",
   "payment-admin": "backoffice",
   "payment-recurring": "backoffice",
