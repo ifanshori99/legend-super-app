@@ -33,3 +33,4 @@ coverage/
 
 # Coordinator-managed git worktrees
 .worktrees/
+.test-shards/
