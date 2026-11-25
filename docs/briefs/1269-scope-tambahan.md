@@ -97,3 +97,7 @@ Turun belum sinkron: tax_rules, service_charge_rules, tax_settings, floor_zones,
 Urutan: (E1, E2, E8) -> (E3, E5) -> (E4, E9) -> (E7, E6) -> E10 -> E11. Total sekitar 116 jam. Potong bila waktu kurang: E5, lalu E9, lalu E7. Sisanya wajib.
 Test wajib: replay event dua kali/acak/crash = satu sale, jurnal, stok, shift; laci cocok; pajak edge = cloud sampai rupiah, tanpa stream pajak jual ditolak; cloud menolak order/shift/tutup hari outlet beredge; E9 putus/timeout/bayar telat/ganda tak pernah lunas dua kali; E6 refund ganda dan lebih ditolak; E2 token dicabut ditolak, sesi edge ditolak cloud, PIN salah terkunci; E5 order lunas fire sekali; drill 4 jam nol selisih.
 
+
+### Koreksi CTO atas bagian E
+- PRD 637, 1523, FAC-03: tiket fasilitas WAJIB bisa dijual di POS saat offline (diterbitkan edge). Baris matriks "tiket ditolak" berlawanan dengan PRD; menunggu founder, jangan dikunci permanen.
+- PRD 204, 346, 453, EDG-04: 2 mini PC (utama + standby), pengalihan <= 15 menit. Anggaran sudah ada di PRD; kartu standby perlu disusun (legend-b3k).
