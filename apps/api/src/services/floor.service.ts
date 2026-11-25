@@ -47,6 +47,11 @@ import { db } from "../db";
 import * as schema from "../db/schema";
 import { linkGroupsForTables } from "./table-link.service";
 import {
+  assertWfcZoneReleasable,
+  assertZoneWithoutWfcSeat,
+  lockOutletSeats,
+} from "./wfc-seat.service";
+import {
   brands,
   floorZones,
   outlets,
@@ -185,11 +190,17 @@ async function audit(
   );
 }
 
-async function zoneRow(tx: Tx, tenantId: TenantId, zoneId: string) {
-  const [row] = await tx
+async function zoneRow(
+  tx: Tx,
+  tenantId: TenantId,
+  zoneId: string,
+  options: { forUpdate?: boolean } = {},
+) {
+  const query = tx
     .select()
     .from(floorZones)
     .where(and(eq(floorZones.tenantId, tenantId), eq(floorZones.id, zoneId)));
+  const [row] = options.forUpdate ? await query.for("update") : await query;
   if (!row) throw new CoreError("NOT_FOUND", "Zona tidak ditemukan.");
   return row;
 }
@@ -472,8 +483,22 @@ export async function updateFloorZone(
   now = new Date(),
 ): Promise<FloorZone> {
   return withTenant(db, context, async (tx) => {
-    const row = await zoneRow(tx, context.tenant.tenantId, zoneId);
+    let row = await zoneRow(tx, context.tenant.tenantId, zoneId);
     assertOutletInScope(context.outletScope, row.outletId);
+    // 1270 W1: same lock as the WFC seats and quota.
+    if (input.isWfc !== undefined || input.status !== undefined) {
+      await lockOutletSeats(tx, context, row.outletId);
+      row = await zoneRow(tx, context.tenant.tenantId, zoneId, {
+        forUpdate: true,
+      });
+      if (
+        row.isWfc &&
+        row.status === "active" &&
+        (input.isWfc === false ||
+          (input.status !== undefined && input.status !== "active"))
+      )
+        await assertWfcZoneReleasable(tx, context, row, now);
+    }
     let updated: ZoneRow;
     try {
       [updated] = await tx
@@ -553,6 +578,8 @@ export async function deleteFloorZone(
   await withTenant(db, context, async (tx) => {
     const row = await zoneRow(tx, context.tenant.tenantId, zoneId);
     assertOutletInScope(context.outletScope, row.outletId);
+    await lockOutletSeats(tx, context, row.outletId);
+    await assertZoneWithoutWfcSeat(tx, context, row.id);
     const [used] = await tx
       .select({ count: sql<number>`count(*)::int` })
       .from(tables)

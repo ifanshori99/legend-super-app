@@ -13,6 +13,10 @@ import type {
   ChecklistSchedule,
 } from "@starter/shared/operations";
 import {
+  wfcProductSplitSchema,
+  type WfcProductSplit,
+} from "@starter/shared/wfc";
+import {
   entitlementRules,
   facilities,
   facilityAddons,
@@ -361,6 +365,7 @@ type FacilityKind =
       isActive: boolean;
       taxRuleKey: string | null;
       maxPerDay: number | null;
+      wfc?: WfcProductSplit;
     }
   | {
       kind: "addon";
@@ -498,6 +503,17 @@ const facilitiesHandler: SectionHandler = {
         isActive: row.isActive,
         taxRuleKey: row.taxRuleId ? (taxKeys.get(row.taxRuleId) ?? null) : null,
         maxPerDay: row.maxPerDay,
+        ...(row.wfcKind === null
+          ? {}
+          : {
+              wfc: wfcProductSplitSchema.parse({
+                kind: row.wfcKind,
+                access: row.wfcAccess,
+                seatFeeIdr: row.seatFeeIdr,
+                creditIdr: row.creditIdr,
+                durationMinutes: row.durationMinutes,
+              }),
+            }),
       });
     }
 
@@ -574,7 +590,10 @@ const facilitiesHandler: SectionHandler = {
       all.filter((item): item is Of<K> => item.kind === kind);
     const skips = outletSkips("facilities", warn);
     // Facility key → target facility id/outlet; skipped keys drop their children.
-    const placed = new Map<string, { id: string; outletId: string }>();
+    const placed = new Map<
+      string,
+      { id: string; outletId: string; type: FacilityRow["type"] }
+    >();
     // Target facility id → the first source facility key mapped onto it.
     const claimed = new Map<string, string>();
     const skippedFacilities = new Set<string>();
@@ -599,7 +618,7 @@ const facilitiesHandler: SectionHandler = {
         `Facility "${item.name}": sessionMinutes must be 1-480, cleaningMinutes 0-240, arrivalGraceMinutes 0-1440 and session plus cleaning at most 720.`,
       );
       const [existing] = await tx
-        .select({ id: facilities.id })
+        .select({ id: facilities.id, type: facilities.type })
         .from(facilities)
         .where(
           and(
@@ -610,6 +629,8 @@ const facilitiesHandler: SectionHandler = {
         )
         .limit(1);
       let id = existing?.id;
+      // Mapped by name, the target facility keeps its own type.
+      const type = existing?.type ?? item.type;
       if (!id) {
         const [created] = await tx
           .insert(facilities)
@@ -644,7 +665,7 @@ const facilitiesHandler: SectionHandler = {
       else claimed.set(id, item.key);
       keys.facilities.set(item.key, id);
       keys.facilityOutlets.set(item.key, outletId);
-      placed.set(item.key, { id, outletId });
+      placed.set(item.key, { id, outletId, type });
     }
 
     /** Resolve a child's facility; `null` = its outlet was skipped. */
@@ -736,6 +757,17 @@ const facilitiesHandler: SectionHandler = {
           (item.maxPerDay === null || between(item.maxPerDay, 1, 10)),
         `Product "${item.name}": priceIdr must be >= 0, sessions 1-100 and maxPerDay empty or 1-10.`,
       );
+      // 1270 W1: the same rules as setWfcProduct.
+      const { wfc } = item;
+      ensure(
+        wfc === undefined ||
+          (facility.type === "coworking" &&
+            item.type === "single" &&
+            item.sessions === 1 &&
+            item.maxPerDay === null &&
+            item.priceIdr === wfc.seatFeeIdr + wfc.creditIdr),
+        `Product "${item.name}": a WFC product is a single coworking product priced seat fee + credit.`,
+      );
       const [existing] = await tx
         .select({ id: facilityProducts.id })
         .from(facilityProducts)
@@ -767,7 +799,17 @@ const facilitiesHandler: SectionHandler = {
         taxRuleId,
         sessions: item.sessions,
         maxPerDay: item.maxPerDay,
-        isActive: item.isActive,
+        ...(wfc === undefined
+          ? { isActive: item.isActive }
+          : {
+              wfcKind: wfc.kind,
+              wfcAccess: wfc.access,
+              seatFeeIdr: wfc.seatFeeIdr,
+              creditIdr: wfc.creditIdr,
+              durationMinutes: wfc.durationMinutes,
+              // Switching it on belongs to the price floor (W1b).
+              isActive: false,
+            }),
       });
     }
 

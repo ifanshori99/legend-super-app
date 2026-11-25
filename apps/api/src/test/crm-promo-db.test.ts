@@ -1222,3 +1222,55 @@ describe("TEN-01..03 isolation", () => {
     });
   });
 });
+
+describe("1270 W1 a WFC product is never a promo reward", () => {
+  it("does not apply, a code for it is refused, and no reward is written", async () => {
+    const item = randomUUID();
+    const facilityProductId = await asOwner(tenantId, (client) =>
+      seedPromoFacilityProduct(client, tenantId, outletA, "coworking"),
+    );
+    const sari = await member();
+    const voucherCode = code();
+    const plain = await seedPromotion(item, {
+      benefit: { kind: "nominal_off", amountIdr: 1_000 },
+    });
+    const benefit = {
+      kind: "facility_entitlement",
+      facilityProductId,
+      quantity: 1,
+    };
+    const reward = await seedPromotion(item, { benefit });
+    const coded = await seedPromotion(item, {
+      benefit,
+      voucherRequired: true,
+      codeHash: hash(voucherCode),
+    });
+    await asOwner(tenantId, (client) =>
+      client.query(
+        `UPDATE facility_products
+            SET wfc_kind = 'day_pass', wfc_access = 'all_day', type = 'single',
+                menu_item_id = NULL, sessions = 1, max_per_day = NULL,
+                seat_fee_idr = 50000, credit_idr = 20000, price_idr = 70000
+          WHERE id = $1`,
+        [facilityProductId],
+      ),
+    );
+    const result = await redeem(
+      redeemInput([priced(item, 50_000)], { customer: sari }),
+    );
+    expect(discountOf(result, plain)).toBeTruthy();
+    expect(discountOf(result, reward)).toBeUndefined();
+    await expect(
+      redeem(
+        redeemInput([priced(item, 50_000)], { customer: sari, voucherCode }),
+      ),
+    ).rejects.toMatchObject({ status: 409, code: "WFC_PRODUCT_NOT_REWARD" });
+    const rewards = await asOwner(tenantId, (client) =>
+      client.query(
+        "SELECT id FROM facility_rewards WHERE tenant_id = $1 AND promotion_id = ANY($2)",
+        [tenantId, [reward, coded]],
+      ),
+    );
+    expect(rewards.rows).toHaveLength(0);
+  });
+});

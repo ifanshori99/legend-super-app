@@ -1238,6 +1238,61 @@ describe("TEN-09 failure and repeat imports", () => {
     expect(await counts(target.tenantId)).toEqual(SOURCE_COUNTS);
   });
 
+  it("1270 W1 a WFC product travels with its kind and always lands switched off", async () => {
+    const wfc = {
+      kind: "seat_reservation",
+      access: "off_peak",
+      seatFeeIdr: 30_000,
+      creditIdr: 20_000,
+      durationMinutes: 120,
+    };
+    const bundleWith = (patch: Record<string, unknown>, type = "coworking") => {
+      const bundle = JSON.parse(JSON.stringify(sourceBundle));
+      for (const item of bundle.sections.facilities.items)
+        if (item.kind === "facility") item.type = type;
+        else if (item.kind === "product")
+          Object.assign(item, { priceIdr: 50_000, isActive: true, wfc }, patch);
+      return bundle;
+    };
+    const target = await newTarget(admin);
+    await importOk(admin, target.tenantId, { bundle: bundleWith({}) });
+    const { rows } = await asTenant(target.tenantId, (client) =>
+      client.query(
+        `SELECT wfc_kind, wfc_access, seat_fee_idr::int, credit_idr::int,
+                duration_minutes, price_idr::int, is_active
+           FROM facility_products WHERE tenant_id = $1`,
+        [target.tenantId],
+      ),
+    );
+    expect(rows).toEqual([
+      {
+        wfc_kind: "seat_reservation",
+        wfc_access: "off_peak",
+        seat_fee_idr: 30_000,
+        credit_idr: 20_000,
+        duration_minutes: 120,
+        price_idr: 50_000,
+        is_active: false,
+      },
+    ]);
+    const exported = await exportBundle(admin, target.tenantId);
+    expect(
+      exported.sections.facilities.items.find(
+        (item: { kind: string }) => item.kind === "product",
+      ),
+    ).toMatchObject({ wfc, isActive: false });
+
+    for (const bad of [
+      bundleWith({ priceIdr: 49_999 }),
+      bundleWith({ sessions: 2 }),
+      bundleWith({}, "shower"),
+    ]) {
+      const other = await newTarget(admin);
+      const response = await postImport(admin, other.tenantId, { bundle: bad });
+      expect(response.status, JSON.stringify(response.body)).toBe(422);
+    }
+  });
+
   it("TEN-09 non-empty loyalty or payroll settings fail the import as not supported yet", async () => {
     const target = await newTarget(admin);
     const before = await snapshot(target.tenantId);
