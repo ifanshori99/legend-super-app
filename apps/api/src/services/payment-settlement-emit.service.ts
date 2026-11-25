@@ -9,6 +9,8 @@
 // - The bank line is free, money in, dated on or after the report's end, on an
 //   active account that is the legal entity's mapped bank account (the journal
 //   debits that mapping), and equals the sum of the nets to the rupiah.
+// - No unmatched document books the same money already: a journal of the line
+//   amount or of one net, or a cash deposit of the line amount.
 // - One settlement per outlet on one bank line.
 // - Once, ever: the match row is kept, and an unmatch leaves a rejection row
 //   that blocks both the line and the settlement. The outbox key (aggregate,
@@ -47,8 +49,13 @@ import {
   assertTenantScope,
   loadAccountMap,
 } from "./accounting-ap-fa-shared.ts";
-import { applyMatch, entityLock } from "./accounting-bank-matching.ts";
+import {
+  applyMatch,
+  entityLock,
+  hasUnmatchedDocument,
+} from "./accounting-bank-matching.ts";
 import { loadBankAccount, notFound } from "./accounting-cash-bank-shared.ts";
+import { loadMatchingPolicy } from "./accounting-finance-policy.service.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { idempotentPaymentAdminWrite } from "./payment-admin-idempotency.ts";
@@ -73,6 +80,7 @@ export async function reconcileSettlements(
   assertTenantScope(context);
   const input = reconcileEndpoint.body.parse(body);
   const tenantId = context.tenant.tenantId;
+  const matchingPolicy = await loadMatchingPolicy(context);
   return withTenant(db, context, async (tx) => {
     const now = new Date();
     for (const permission of [
@@ -120,6 +128,7 @@ export async function reconcileSettlements(
           outletId: settlements.outletId,
           source: settlements.source,
           provider: settlements.provider,
+          periodStart: settlements.periodStart,
           periodEnd: settlements.periodEnd,
           grossIdr: settlements.grossIdr,
           feeIdr: settlements.feeIdr,
@@ -168,6 +177,26 @@ export async function reconcileSettlements(
       const netIdr = reports.reduce((sum, r) => sum + r.netIdr, 0);
       if (netIdr !== bankLine.amountIdr || reports.some((r) => r.netIdr <= 0))
         throw refuse("The settlements do not add up to the bank line.");
+
+      const from = reports.reduce(
+        (min, r) => (r.periodStart < min ? r.periodStart : min),
+        bankLine.postedOn,
+      );
+      if (
+        await hasUnmatchedDocument(tx, tenantId, account, {
+          lineAmountIdr: bankLine.amountIdr,
+          journalAmountsIdr: [
+            bankLine.amountIdr,
+            ...reports.map((r) => r.netIdr),
+          ],
+          from,
+          to: bankLine.postedOn,
+          toleranceDays: matchingPolicy.dateToleranceDays,
+        })
+      )
+        throw refuse(
+          "A journal or cash deposit of this amount is not matched yet; match or reverse it first.",
+        );
 
       // Once, ever: matched now, or matched before and unmatched since.
       const usedMatch = await tx
@@ -258,7 +287,11 @@ export async function reconcileSettlements(
           .where(
             and(
               eq(bankReconciliationCases.tenantId, tenantId),
-              inArray(bankReconciliationCases.status, ["open", "in_progress"]),
+              inArray(bankReconciliationCases.status, [
+                "open",
+                "in_progress",
+                "written_off",
+              ]),
               sql`${bankReconciliationCases.refs} @> ${JSON.stringify([{ type: REF_TYPE, id: report.id }])}::jsonb`,
             ),
           )

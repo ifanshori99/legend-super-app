@@ -25,7 +25,8 @@
 //   STATEMENT_LINE_ALREADY_MATCHED.
 // - Journals that are reversals or reversed, journals already behind a cash
 //   deposit (the same money twice) and write-off adjustment journals are never
-//   candidates.
+//   candidates. Nor is the journal of a gateway settlement that is itself
+//   matched to a line: that line already paid it (1269 C4a).
 // - A cash deposit's date is its local business date in the outlet's time
 //   zone, not UTC.
 
@@ -106,6 +107,11 @@ function journalCandidateSql(
       AND NOT EXISTS (SELECT 1 FROM bank_reconciliation_cases c
                       WHERE c.tenant_id = je.tenant_id
                         AND c.adjustment_journal_entry_id = je.id)
+      AND NOT (je.source_type = 'gateway_settlement'
+               AND EXISTS (SELECT 1 FROM bank_statement_line_matches gm
+                           WHERE gm.tenant_id = je.tenant_id
+                             AND gm.ref_type = 'gateway_settlement'
+                             AND gm.ref_id::text = je.source_id))
       ${extra}
     GROUP BY je.id, je.entry_date
     HAVING SUM(jl.debit_idr - jl.credit_idr) <> 0`;
@@ -186,6 +192,60 @@ async function loadFreeCandidates(
     });
   }
   return candidates;
+}
+
+/**
+ * Does a document no line has claimed already book one of these amounts on the
+ * account (journals) or the line itself (cash deposits)? Documents in an open
+ * case count too: any doubt is the caller's to refuse (1269 C4a).
+ */
+export async function hasUnmatchedDocument(
+  tx: TenantTransaction,
+  tenantId: string,
+  account: BankAccountRow,
+  input: {
+    lineAmountIdr: number;
+    journalAmountsIdr: readonly number[];
+    from: string;
+    to: string;
+    toleranceDays: number;
+  },
+): Promise<boolean> {
+  const from = shiftDate(input.from, -input.toleranceDays);
+  const to = shiftDate(input.to, input.toleranceDays);
+  const free = (type: string, column: ReturnType<typeof sql>) =>
+    sql`AND NOT EXISTS (SELECT 1 FROM bank_statement_line_matches m
+                        WHERE m.tenant_id = ${tenantId} AND m.ref_type = ${type}
+                          AND m.ref_id = ${column})`;
+  const journals = rowsOf(
+    await tx.execute(
+      journalCandidateSql(
+        tenantId,
+        account,
+        sql`AND je.entry_date BETWEEN ${from}::date AND ${to}::date
+            ${free("journal_entry", sql`je.id`)}`,
+      ),
+    ),
+  );
+  if (
+    journals.some((row) => input.journalAmountsIdr.includes(Number(row.amount)))
+  )
+    return true;
+  const deposits = rowsOf(
+    await tx.execute(
+      depositCandidateSql(
+        tenantId,
+        account,
+        sql`AND d.status = 'recorded' ${free("cash_deposit", sql`d.id`)}`,
+      ),
+    ),
+  );
+  return deposits.some((row) => {
+    const date = depositDate(row);
+    return (
+      Number(row.amount) === input.lineAmountIdr && date >= from && date <= to
+    );
+  });
 }
 
 function shiftDate(date: string, days: number): string {
