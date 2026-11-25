@@ -43,6 +43,9 @@ export const PAYMENT_UNRESOLVED = "PAYMENT_UNRESOLVED";
 /** The browser cannot keep the request, so it must not be sent. */
 export const INTENT_STORAGE_UNAVAILABLE = "INTENT_STORAGE_UNAVAILABLE";
 
+/** The supervisor approval of a hand-keyed EDC payment is spent or too old. */
+export const EDC_APPROVAL_REQUIRED = "EDC_STANDALONE_APPROVAL_REQUIRED";
+
 const PREFIX = "legend-pos-payment-intent:";
 const KEY_PATTERN = /^[A-Za-z0-9._:-]{8,100}$/;
 const KINDS: readonly string[] = [
@@ -175,12 +178,20 @@ export function endIntent(
   storage.removeItem(intentStorageKey(scope));
 }
 
+/** The server proves the bill paid: whatever was stored no longer matters. */
+export function clearPaidIntent(
+  storage: StorageLike,
+  scope: Pick<IntentScope, "outletId" | "orderId">,
+): void {
+  storage.removeItem(intentStorageKey({ ...scope, slot: "payment" }));
+}
+
 /**
  * True when the error proves the server recorded nothing for this key. The
  * first send is refused by any client error that answers the request itself; a
- * repeat only by an answer about the bill (409, 412, 422): a 401, 403, 404 or
- * 429 of the repeat says nothing about the first send, and a reused key means
- * the server DID record one.
+ * repeat only by an answer about the bill (409, 412, 422, a refused EDC
+ * approval): another 401, 403, 404 or 429 of the repeat says nothing about the
+ * first send, and a reused key means the server DID record one.
  */
 export function isDefinitiveRefusal(error: unknown, replay: boolean): boolean {
   if (!(error instanceof ApiError)) return false;
@@ -190,6 +201,11 @@ export function isDefinitiveRefusal(error: unknown, replay: boolean): boolean {
     error.code === PAYMENT_UNRESOLVED
   )
     return false;
+  // The API throws this one only inside the keyed transaction: after the stored
+  // key was looked up (posIdempotent) and under the order lock, so nothing is
+  // recorded under this key and the approval, spent or too old, cannot serve a
+  // late arrival of the same body either (pos-edc-standalone.test.ts).
+  if (replay && error.code === EDC_APPROVAL_REQUIRED) return true;
   if (replay) return [409, 412, 422].includes(error.status);
   return (
     error.status >= 400 &&

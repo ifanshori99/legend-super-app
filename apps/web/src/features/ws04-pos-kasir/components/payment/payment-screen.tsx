@@ -22,9 +22,11 @@ import {
   usePaymentMethods,
   usePaymentSession,
   useRemoveVoucher,
+  useReplayPayment,
   useStartPayment,
   useUnresolvedPayment,
 } from "../../hooks";
+import { trackSender, type SenderLock } from "../../sender-lock";
 import type { PaymentAttempt, PaymentMethodCode } from "../../types";
 import { CardOnlinePanel } from "./card-online-panel";
 import { CashPanel } from "./cash-panel";
@@ -124,6 +126,7 @@ export function PaymentScreen({ orderId }: { orderId: string }) {
   const removeVoucher = useRemoveVoucher(orderId);
   const startQris = useStartPayment();
   const unresolvedPayment = useUnresolvedPayment(orderId);
+  const replay = useReplayPayment();
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [step, setStep] = useState<Step>({ kind: "methods", selected: null });
   // "Pilih metode lain" on an expired or failed attempt: hide that attempt
@@ -133,6 +136,22 @@ export function PaymentScreen({ orderId }: { orderId: string }) {
   );
 
   const { bill, activeAttempt, partialAllowed } = session;
+
+  // While a request is sent only the panel that sent it stays open; set during
+  // render so no other panel paints with a live button.
+  const payStatus = unresolvedPayment?.status ?? "none";
+  const view = [
+    step.kind,
+    "method" in step ? step.method : "",
+    activeAttempt?.id ?? "",
+  ].join(":");
+  const [lock, setLock] = useState<SenderLock>({
+    status: payStatus,
+    sender: null,
+  });
+  const nextLock = trackSender(lock, payStatus, view);
+  if (nextLock.status !== lock.status || nextLock.sender !== lock.sender)
+    setLock(nextLock);
 
   // A payment was just confirmed but the bill is not settled: the old step
   // (its method and amount) is stale and would charge again. Back to the
@@ -204,7 +223,22 @@ export function PaymentScreen({ orderId }: { orderId: string }) {
       ? activeAttempt
       : null;
   // A paid bill has nothing left to take: the stored request no longer matters.
-  const unresolved = bill.paid ? null : unresolvedPayment;
+  const sending = payStatus === "sending";
+  const unresolved =
+    bill.paid || (sending && nextLock.sender !== null)
+      ? null
+      : unresolvedPayment;
+
+  // The repeat was refused for good: say so, the stored request is gone.
+  const refused =
+    replay.error != null && !bill.paid && !unresolved ? (
+      <Notice
+        tone="danger"
+        title={t("posKasirPayment.unresolved.refusedTitle")}
+      >
+        {replay.error.message} {t("posKasirPayment.unresolved.refusedBody")}
+      </Notice>
+    ) : null;
 
   const toMethods = () => {
     if (activeAttempt) setDismissedAttemptId(activeAttempt.id);
@@ -219,7 +253,7 @@ export function PaymentScreen({ orderId }: { orderId: string }) {
     !unresolved &&
     (attempt?.method === "edc" || (!attempt && edcStep))
   ) {
-    return (
+    const edcPanel = (
       <EdcPanel
         orderId={orderId}
         amountIdr={
@@ -228,6 +262,14 @@ export function PaymentScreen({ orderId }: { orderId: string }) {
         }
         onChangeMethod={toMethods}
       />
+    );
+    return refused ? (
+      <div className="grid content-start gap-4">
+        {refused}
+        {edcPanel}
+      </div>
+    ) : (
+      edcPanel
     );
   }
   if (bill.paid && attempt?.method === "edc") {
@@ -276,6 +318,7 @@ export function PaymentScreen({ orderId }: { orderId: string }) {
       <UnresolvedPanel
         orderId={orderId}
         payment={unresolved}
+        replay={replay}
         onReload={() => void session.refetch()}
       />
     );
@@ -384,7 +427,9 @@ export function PaymentScreen({ orderId }: { orderId: string }) {
               voucher={bill.voucher ?? null}
               removingVoucher={removeVoucher.isPending}
               onRemoveVoucher={
-                attempt || unresolved ? undefined : () => setConfirmRemove(true)
+                attempt || unresolved || sending
+                  ? undefined
+                  : () => setConfirmRemove(true)
               }
             />
             <Dialog
@@ -439,7 +484,7 @@ export function PaymentScreen({ orderId }: { orderId: string }) {
               <div className="grid gap-2 sm:grid-cols-2">
                 <Button
                   variant="outline"
-                  disabled={removeVoucher.isPending}
+                  disabled={removeVoucher.isPending || sending}
                   onClick={() => setStep({ kind: "voucher" })}
                 >
                   <TicketPercent aria-hidden="true" />
@@ -447,6 +492,7 @@ export function PaymentScreen({ orderId }: { orderId: string }) {
                 </Button>
                 <Button
                   variant="outline"
+                  disabled={sending}
                   onClick={() => setStep({ kind: "points" })}
                 >
                   <Star aria-hidden="true" />
@@ -475,7 +521,14 @@ export function PaymentScreen({ orderId }: { orderId: string }) {
           </div>
         }
       >
-        {panel}
+        {refused ? (
+          <div className="grid content-start gap-4">
+            {refused}
+            {panel}
+          </div>
+        ) : (
+          panel
+        )}
       </PosTwoPane>
     </div>
   );

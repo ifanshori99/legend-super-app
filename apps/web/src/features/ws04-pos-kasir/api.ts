@@ -43,6 +43,7 @@ import {
 import {
   PAYMENT_UNRESOLVED,
   beginIntent,
+  clearPaidIntent,
   endIntent,
   isDefinitiveRefusal,
   parseIntent,
@@ -467,6 +468,16 @@ async function fetchQris(
   }
 }
 
+/** A paid bill takes no other payment: the stored request is settled. */
+function forgetPaidIntent(outletId: string, orderId: string): void {
+  if (rawIntent(scopeOf(outletId, orderId, "payment")) === null) return;
+  try {
+    clearPaidIntent(intentStorage(), { outletId, orderId });
+  } catch {
+    // Blocked storage (or the server render): there is no note to forget.
+  }
+}
+
 /** An order read plus its QRIS hold, which can lock an unpaid bill. */
 async function sessionOfOrder(
   outletId: string,
@@ -474,7 +485,10 @@ async function sessionOfOrder(
   signal?: AbortSignal,
 ): Promise<PaymentSession> {
   const session = sessionFromOrder(order);
-  if (session.bill.paid) return session;
+  if (session.bill.paid) {
+    forgetPaidIntent(outletId, order.id);
+    return session;
+  }
   return sessionFromOrder(order, await fetchQris(outletId, order.id, signal));
 }
 
@@ -656,18 +670,29 @@ function tenderBody(body: TenderBody): TenderBody {
   return body;
 }
 
+type PaymentAsk = {
+  kind: IntentKind;
+  signature: string;
+  /** Reads the bill and builds the body; skipped when a request is stored. */
+  prepare: () => Promise<(key: string) => Record<string, unknown>>;
+};
+
 async function pay(
   outletId: string,
   orderId: string,
   actorId: string,
-  ask: {
-    kind: IntentKind;
-    signature: string;
-    /** Reads the bill and builds the body; skipped when a request is stored. */
-    prepare: () => Promise<(key: string) => Record<string, unknown>>;
-  },
+  ask: PaymentAsk,
 ): Promise<PosOrderDetail> {
   const scope = scopeOf(outletId, orderId, "payment");
+  // Sending from the tap: the other panels lock before the bill is even read.
+  return whileSending(scope, () => payScoped(scope, actorId, ask));
+}
+
+async function payScoped(
+  scope: IntentScope,
+  actorId: string,
+  ask: PaymentAsk,
+): Promise<PosOrderDetail> {
   const storage = intentStorage();
   const stored = parseIntent(rawIntent(scope)).status !== "none";
   // A stored request must not be checked against the bill first: after a lost
@@ -728,6 +753,7 @@ async function completePaid(
     makeKey: () => `complete:${globalThis.crypto.randomUUID()}`,
     makeBody: (idempotencyKey) => ({
       expectedStatus: order.status,
+      expectedVersion: order.version,
       idempotencyKey,
     }),
     now: () => new Date(),
@@ -771,6 +797,7 @@ export async function startPayment(
         tenderBody({
           method: "qris",
           expectedStatus: before.status,
+          expectedVersion: before.version,
           idempotencyKey,
         });
     },
@@ -889,6 +916,7 @@ export async function recordEdcStandalone(
             overrideId,
           },
           expectedStatus: before.status,
+          expectedVersion: before.version,
           idempotencyKey,
         });
     },
@@ -915,6 +943,7 @@ export async function confirmCash(
           method: "cash",
           receivedIdr: input.receivedIdr,
           expectedStatus: before.status,
+          expectedVersion: before.version,
           idempotencyKey,
         });
     },
@@ -1121,8 +1150,14 @@ export async function redeemPointsValue(
   const order = await pay(outletId, orderId, actorId, {
     kind: "points",
     signature: `points:${points}`,
-    prepare: () =>
-      Promise.resolve((idempotencyKey) => ({ points, idempotencyKey })),
+    prepare: async () => {
+      const { version } = await fetchPosOrder(outletId, orderId);
+      return (idempotencyKey) => ({
+        points,
+        expectedVersion: version,
+        idempotencyKey,
+      });
+    },
   });
   return sessionAfterWrite(outletId, order);
 }

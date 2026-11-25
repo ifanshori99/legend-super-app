@@ -58,6 +58,9 @@ import {
   isDefinitiveRefusal,
   readIntent,
 } from "@/features/ws04-pos-kasir/payment-intent-store";
+import { isSendingIntent } from "@/features/ws04-pos-kasir/payment-intent-browser";
+import { edcApprovalKey } from "@/features/ws04-pos-kasir/components/payment/payment-helpers";
+import { trackSender } from "@/features/ws04-pos-kasir/sender-lock";
 
 type Tender = Record<string, unknown>;
 type Order = Record<string, unknown> & { tenders: Tender[] };
@@ -85,6 +88,7 @@ const orderOf = (over: Record<string, unknown> = {}): Order => ({
   serviceChargeIdr: 0,
   taxIdr: 0,
   totalIdr: 100_000,
+  version: 7,
   depositAppliedIdr: 0,
   discounts: [],
   edcAttempts: [],
@@ -214,6 +218,7 @@ describe("bug 1: a lost cash answer repeats the same request", () => {
     const body = money()[0]?.body ?? {};
     expect(Object.keys(body).sort()).toEqual([
       "expectedStatus",
+      "expectedVersion",
       "idempotencyKey",
       "method",
       "receivedIdr",
@@ -374,6 +379,174 @@ describe("two tabs", () => {
     answer();
     await first;
     expect(money()).toHaveLength(1);
+  });
+});
+
+describe("review 1: an EDC repeat refused for its approval", () => {
+  const approval = refuse(403, "EDC_STANDALONE_APPROVAL_REQUIRED");
+
+  it("unlocks: the server checks the key before the approval", async () => {
+    server.onTender = lost;
+    await expect(edc()).rejects.toThrow();
+    server.onTender = approval;
+    await expect(replayPayment(OUTLET, ORDER, CASHIER)).rejects.toMatchObject({
+      code: "EDC_STANDALONE_APPROVAL_REQUIRED",
+    });
+    expect(state()).toBe("none");
+  });
+
+  it("any other 403 of the repeat stays locked", async () => {
+    server.onTender = lost;
+    await expect(edc()).rejects.toThrow();
+    server.onTender = refuse(403, "FORBIDDEN");
+    await expect(edc()).rejects.toThrow();
+    expect(state()).toBe("pending");
+  });
+
+  it("repeated gateway 503s keep the QRIS request", async () => {
+    server.onTender = refuse(503, "PAYMENT_GATEWAY_UNAVAILABLE");
+    for (let i = 0; i < 3; i += 1) {
+      await expect(qris()).rejects.toThrow();
+      expect(state()).toBe("pending");
+    }
+    const keys = new Set(money().map((c) => c.body?.idempotencyKey));
+    expect(keys.size).toBe(1);
+    await expect(cash()).rejects.toMatchObject({ code: "PAYMENT_UNRESOLVED" });
+  });
+});
+
+describe("review 3: only the sender stays open while a request is sent", () => {
+  it("is sending from the tap, before the bill is read, until the answer", async () => {
+    let answer: () => void = () => undefined;
+    const respond = net.respond;
+    net.respond = (call) =>
+      call.method === "GET"
+        ? new Promise((resolve) => {
+            answer = () => resolve(respond(call));
+          })
+        : respond(call);
+    const sent = cash();
+    expect(isSendingIntent(scope)).toBe(true);
+    await vi.waitFor(() => expect(net.calls).toHaveLength(1));
+    net.respond = respond;
+    answer();
+    await sent;
+    expect(isSendingIntent(scope)).toBe(false);
+  });
+
+  it("a replay is sending too", async () => {
+    server.onTender = lost;
+    await expect(cash()).rejects.toThrow();
+    server.onTender = () => {
+      expect(isSendingIntent(scope)).toBe(true);
+      return pay(tender({}));
+    };
+    await replayPayment(OUTLET, ORDER, CASHIER);
+    expect(isSendingIntent(scope)).toBe(false);
+  });
+
+  const none = { status: "none", sender: null } as const;
+
+  it("the panel on screen when the request starts is the sender", () => {
+    expect(trackSender(none, "sending", "pay:cash").sender).toBe("pay:cash");
+  });
+
+  it("leaving it loses the sender, also after coming back to it", () => {
+    let s = trackSender(none, "sending", "pay:qris");
+    s = trackSender(s, "sending", "methods");
+    expect(s.sender).toBeNull();
+    s = trackSender(s, "sending", "pay:qris");
+    expect(s.sender).toBeNull();
+    s = trackSender(s, "none", "pay:qris");
+    expect(trackSender(s, "sending", "pay:qris").sender).toBe("pay:qris");
+  });
+
+  it("a screen opened while sending has no sender, nor does a replay", () => {
+    const opened = { status: "sending", sender: null } as const;
+    expect(trackSender(opened, "sending", "pay:cash").sender).toBeNull();
+    const locked = { status: "pending", sender: null } as const;
+    expect(trackSender(locked, "sending", "pay:cash").sender).toBeNull();
+  });
+});
+
+describe("review 4: every payment body states the version it was made for", () => {
+  it.each([
+    ["cash", () => cash()],
+    ["QRIS", () => qris()],
+    ["EDC", () => edc()],
+  ])("%s", async (_name, run) => {
+    server.onTender = refuse(409, "X");
+    await expect(run()).rejects.toThrow();
+    expect(money()[0]?.body?.expectedVersion).toBe(7);
+  });
+
+  it("points", async () => {
+    await expect(
+      redeemPointsValue(OUTLET, ORDER, CASHIER, 10, "k"),
+    ).rejects.toThrow();
+    const redeem = posts().find((c) => c.path.endsWith("/points/redeem"));
+    expect(redeem?.body).toMatchObject({ points: 10, expectedVersion: 7 });
+  });
+
+  it("complete", async () => {
+    server.order = orderOf({ status: "sent", tenders: [tender({})] });
+    await completePaidOrder(OUTLET, ORDER, CASHIER);
+    const sent = posts().find((c) => c.path.endsWith("/complete"));
+    expect(sent?.body?.expectedVersion).toBe(7);
+  });
+
+  it("a repeat keeps the version of the first send", async () => {
+    server.onTender = lost;
+    await expect(cash()).rejects.toThrow();
+    server.order = { ...server.order, version: 9 };
+    server.onTender = refuse(412, "PRECONDITION_FAILED");
+    await expect(cash()).rejects.toThrow();
+    expect(money()[1]?.body?.expectedVersion).toBe(7);
+    expect(state()).toBe("none");
+  });
+});
+
+describe("review 6: one PIN approves one slip", () => {
+  const input = {
+    orderId: ORDER,
+    terminalId: TERMINAL,
+    amountIdr: 100_000,
+    approverId: OTHER,
+    bankRef: "736214805192",
+  };
+
+  it("another bank reference needs another PIN", () => {
+    expect(edcApprovalKey({ ...input, bankRef: "736214805193" })).not.toBe(
+      edcApprovalKey(input),
+    );
+    expect(edcApprovalKey({ ...input, bankRef: " 736214805192 " })).toBe(
+      edcApprovalKey(input),
+    );
+  });
+});
+
+describe("review 6: the note goes once the server proves the bill paid", () => {
+  it.each(["a pending", "an unreadable"])("%s note", async (kind) => {
+    server.onTender = lost;
+    await expect(cash()).rejects.toThrow();
+    if (kind === "an unreadable")
+      for (const key of store.keys()) store.set(key, "{broken");
+    await fetchPaymentSession(OUTLET, ORDER);
+    expect(state()).not.toBe("none");
+    pay(tender({}));
+    await fetchPaymentSession(OUTLET, ORDER);
+    expect(state()).toBe("none");
+  });
+
+  it("authorized money is not proof", async () => {
+    server.onTender = lost;
+    await expect(qris()).rejects.toThrow();
+    server.order = orderOf({
+      tenders: [tender({ method: "qris", status: "authorized" })],
+    });
+    server.qris = hold();
+    await fetchPaymentSession(OUTLET, ORDER);
+    expect(state()).toBe("pending");
   });
 });
 

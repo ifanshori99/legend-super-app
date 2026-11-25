@@ -255,8 +255,8 @@ export type UnresolvedPayment = NonNullable<
 >;
 
 /**
- * The payment request of this bill that has no known answer, from any tab. Null
- * while this tab is still sending it: the panel that sent it shows the progress.
+ * The payment request of this bill that has no known answer, from any tab;
+ * `sending` while this tab still waits for it, whichever screen sent it.
  */
 export function useUnresolvedPayment(orderId: string) {
   const outletId = useOutletId();
@@ -273,7 +273,8 @@ export function useUnresolvedPayment(orderId: string) {
     () => false,
   );
   const state = raw === null ? NO_INTENT : parseIntent(raw);
-  if (state.status === "none" || sending) return null;
+  if (sending) return { status: "sending" as const };
+  if (state.status === "none") return null;
   if (state.status === "corrupt") return { status: "corrupt" as const };
   return {
     status: "pending" as const,

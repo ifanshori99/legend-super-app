@@ -58,6 +58,8 @@ export const redeemPosOrderPoints = defineEndpoint({
   body: clientInputSchema({
     points: pointsAmountSchema,
     idempotencyKey: idempotencyKeySchema,
+    /** The order `version` the cashier saw; a newer bill answers 412. */
+    expectedVersion: z.number().int().nonnegative().safe().optional(),
     /** The member's QR token for this order and amount (weexf). */
     memberToken: z.string().min(1).max(512).optional(),
   }),

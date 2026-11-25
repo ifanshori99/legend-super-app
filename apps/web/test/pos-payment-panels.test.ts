@@ -182,6 +182,22 @@ describe("unresolved payment", () => {
     expect(button(html, "Kirim ulang")).toBeUndefined();
   });
 
+  test("a screen opened while the request is sent has no way to pay", () => {
+    state.unresolved = { status: "sending" };
+    const html = screen();
+    expect(visibleText(html)).toContain("Pembayaran sedang dikirim");
+    for (const label of [
+      "QRIS",
+      "Tunai",
+      "Lanjutkan",
+      "Bayar sebagian",
+      "Pakai voucher",
+      "Tukar poin",
+    ])
+      expect(button(html, label)).toBeUndefined();
+    for (const b of buttonsOf(html)) expect(b.disabled, b.label).toBe(true);
+  });
+
   test("comes before an EDC attempt but not before a paid bill", () => {
     state.unresolved = {
       status: "pending",

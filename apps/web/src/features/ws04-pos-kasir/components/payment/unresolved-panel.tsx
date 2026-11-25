@@ -1,7 +1,7 @@
 import { RotateCw } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
-import { useReplayPayment, type UnresolvedPayment } from "../../hooks";
+import type { useReplayPayment, UnresolvedPayment } from "../../hooks";
 import { Notice, PosPanel, StateBlock, StatusPill } from "../shared";
 
 // A payment request of this bill has no known answer (1268 W2): the customer
@@ -10,14 +10,17 @@ import { Notice, PosPanel, StateBlock, StatusPill } from "../shared";
 export function UnresolvedPanel({
   orderId,
   payment,
+  replay,
   onReload,
 }: {
   orderId: string;
   payment: UnresolvedPayment;
+  /** Owned by the screen: its answer outlives this panel. */
+  replay: ReturnType<typeof useReplayPayment>;
   onReload: () => void;
 }) {
   const t = useT();
-  const replay = useReplayPayment();
+  const sending = payment.status === "sending";
   const mine = payment.status === "pending" && payment.mine;
   return (
     <PosPanel
@@ -29,11 +32,16 @@ export function UnresolvedPanel({
       }
       footer={
         <>
-          <Button type="button" variant="outline" onClick={onReload}>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={sending}
+            onClick={onReload}
+          >
             <RotateCw aria-hidden="true" />
             {t("posKasirPayment.unresolved.reload")}
           </Button>
-          {mine && (
+          {(mine || (sending && replay.isPending)) && (
             <Button
               type="button"
               loading={replay.isPending}
@@ -48,20 +56,29 @@ export function UnresolvedPanel({
       }
     >
       <StateBlock
-        title={t("posKasirPayment.unresolved.title")}
-        description={t("posKasirPayment.unresolved.body")}
+        title={t(
+          sending
+            ? "posKasirPayment.unresolved.sendingTitle"
+            : "posKasirPayment.unresolved.title",
+        )}
+        description={t(
+          sending
+            ? "posKasirPayment.unresolved.sendingBody"
+            : "posKasirPayment.unresolved.body",
+        )}
         aria-live="polite"
         className="py-4"
       >
         <div className="grid w-full max-w-3xl gap-3 text-left">
-          {payment.status === "corrupt" ? (
+          {payment.status === "corrupt" && (
             <Notice
               tone="danger"
               title={t("posKasirPayment.unresolved.corruptTitle")}
             >
               {t("posKasirPayment.unresolved.corruptBody")}
             </Notice>
-          ) : (
+          )}
+          {payment.status === "pending" && (
             <Notice
               tone="warning"
               title={t("posKasirPayment.unresolved.noticeTitle")}
@@ -77,7 +94,7 @@ export function UnresolvedPanel({
               {t("posKasirPayment.unresolved.otherBody")}
             </Notice>
           )}
-          {replay.error != null && (
+          {replay.error != null && !sending && (
             <Notice
               tone="danger"
               title={t("posKasirPayment.unresolved.errorTitle")}

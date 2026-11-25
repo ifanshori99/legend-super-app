@@ -20,6 +20,7 @@ import {
 import type { EdcMode, EdcTerminal, PaymentBill } from "../../types";
 import { Notice, PosPanel, StatusPill } from "../shared";
 import { EdcLayout, useEdcErrorText } from "./edc-side";
+import { edcApprovalKey } from "./payment-helpers";
 
 const PIN_LENGTH = 6;
 /** Same minimum the record endpoint enforces (mock engine). */
@@ -70,8 +71,15 @@ export function EdcStandalone({
     setPinError(undefined);
     record.reset();
     // An approval the record did not consume is reused for the same order,
-    // terminal and amount, so a refused record never costs a second PIN.
-    const approvalKey = `${orderId}:${terminal.id}:${amountIdr}:${approver}`;
+    // terminal, amount and slip, so a refused record never costs a second PIN.
+    // The supervisor approved this slip: another reference asks again.
+    const approvalKey = edcApprovalKey({
+      orderId,
+      terminalId: terminal.id,
+      amountIdr,
+      approverId: approver,
+      bankRef,
+    });
     const kept = approvalRef.current;
     let overrideId: string;
     if (kept && kept.key === approvalKey) {

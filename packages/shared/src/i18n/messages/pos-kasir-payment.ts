@@ -57,6 +57,12 @@ export const posKasirPaymentMessages = {
     resending: "Mengirim ulang…",
     reload: "Muat ulang tagihan",
     errorTitle: "Hasil masih belum pasti",
+    sendingTitle: "Pembayaran sedang dikirim",
+    sendingBody:
+      "Tunggu jawaban server. Semua cara bayar tagihan ini terkunci sampai hasilnya diketahui.",
+    refusedTitle: "Permintaan tadi tidak tercatat",
+    refusedBody:
+      "Bila kartu sudah terdebit di mesin, catat lagi pembayaran EDC itu dengan PIN supervisor sebelum memakai cara lain.",
   },
   dpLunas: {
     title: "Tidak ada pembayaran tambahan",

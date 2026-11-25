@@ -308,7 +308,11 @@ export function StartPanel({
       title={title}
       footer={
         <>
-          <Button variant="outline" onClick={onChangeMethod}>
+          <Button
+            variant="outline"
+            disabled={starting}
+            onClick={onChangeMethod}
+          >
             {t("posKasirGateway.common.otherMethod")}
           </Button>
           <Button onClick={onStart} loading={starting} disabled={startDisabled}>
