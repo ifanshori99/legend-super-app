@@ -334,6 +334,9 @@ describe("duitku env", () => {
       ["https://app.example.test/bayar/kembali#", false],
       ["https://user:pw@app.example.test/bayar/kembali", false],
       ["https://user@app.example.test/bayar/kembali", false],
+      ["not a url example.test", false],
+      ["not a url example.test", true],
+      ["", false],
       ["https://app.example.test/", true],
       ["https://app.example.test/bayar/kembali/", true],
       ["https://app.example.test/bayar/kembali/x", true],
@@ -342,6 +345,7 @@ describe("duitku env", () => {
       expect(result.status).toBe(1);
       expect(result.stderr).toContain("DUITKU_RETURN_URL");
       expect(result.stderr).not.toContain("example.test");
+      expect(result.stderr).not.toContain("TypeError");
     });
 
     it.each([

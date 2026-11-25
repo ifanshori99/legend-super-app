@@ -290,6 +290,8 @@ const schema = z
       .url()
       .max(255)
       .refine((value) => {
+        // Runs after a failed url() too; new URL() would throw with the value.
+        if (!URL.canParse(value)) return false;
         if (value.includes("?") || value.includes("#")) return false;
         const url = new URL(value);
         return url.username === "" && url.password === "";
@@ -819,6 +821,7 @@ const schema = z
     if (
       values.NODE_ENV === "production" &&
       values.DUITKU_RETURN_URL !== undefined &&
+      URL.canParse(values.DUITKU_RETURN_URL) &&
       new URL(values.DUITKU_RETURN_URL).pathname !== "/bayar/kembali"
     )
       ctx.addIssue({
