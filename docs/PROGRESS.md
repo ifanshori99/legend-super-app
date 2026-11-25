@@ -2,15 +2,13 @@
 
 ## CTO 26 Nov (kuota pulih, lanjut)
 
-- `int/rc2` a9307974b = int/rc1 + E8 + F11a + B3 + 1162 (d53f8d10a) + C0 (123715616, bead .1 ditutup). Gerbang gabungan belum dijalankan.
-- B1 `ws/1268-b1` cb84da5c2: perbaikan P1 selesai, 207 test lulus; re-review architect berjalan, lalu gabung, lalu B2 (Opus) dan W0.
-- 1162 `ws/1268-1162` 4738019da: P2 selesai, 74 test lulus (bukti merah tidak terlihat); re-review berjalan, lalu gabung ulang.
-- E2 `ws/1269-e2` fdb477789: typecheck hijau, batch test tetangga berjalan; lalu review architect xhigh, gabung sebelum E1.
-- E1 `ws/1269-e1` fa67d15b8 + perbaikan langkah 1-3 belum commit; antre test.
-- F0 `ws/1269-f0` 1e36a5629: perbaikan review (docs/qa/1269-f0-review.md) berjalan; lalu WFC W1.
-- C2a `ws/1269-c2a` (worktree ../legend-1269-c2a) dimulai, Opus; lalu C4a.
-- W7 mockup WFC berjalan (`design/mockups/wfc/`), lalu review founder. Brief 1270 bagian "Revisi keputusan 28" berlaku; rilis 1 135 jam, W13 (usulan AI, 10 jam) menunggu pilihan founder.
-- Perkiraan 11-17 Des dengan 3 agent.
+- `int/rc2` LOKAL 7705b4bed (worktree `../legend-rc1`) = sebelumnya + B1, B2, W0, F0, C2a, C4a, E2 (0524), E1 (0525). Di remote baru d50fb3b85 (sampai C2a). Pemeriksaan gabungan: tsc api+web hijau, tes edge/kds/device masih jalan; hijau -> push int/rc2. Jangan gabung ke rc1 selagi tes jalan.
+- W1 1268 `ws/1268-w1` 1edad5938: re-review tidak lulus (3 P2 keranjang, `docs/qa/1268-w1-review.md`), sedang diperbaiki; lalu re-review, gabung, W4.
+- W2 1268 `ws/1268-w2` 2e377153d: selesai (web pos 154, tests ws04-pos 207 lulus; belum diuji browser/printer); review uang jalan (`docs/qa/1268-w2-review-brief.md`), lalu gabung, W3.
+- WFC W1 `ws/1270-w1` (migrasi 0526, prevId 0525) jalan; lalu review architect, W1b, W2.
+- Sesudah itu: .40, .41, .42, .44, F1, F2, F11c, E3/E5, E4/E9, E7/E6, E10, E11, W3-W6, WFC W1b-W12; D1->D2->D4/D5; C2b/C4b/W-UI butuh mockup founder. Suite penuh int/rc2 di akhir.
+- Menunggu founder: mockup WFC (`design/mockups/wfc/`, 68 layar) Setuju / Ada perubahan; usulan AI harga WFC W13: sesudah rilis (saran) / wajib rilis 1 (+10 jam).
+- Perkiraan 11-17 Des dengan 3 agent, risiko mundur. Worktree B2, F0, C2a, C4a, E1, E2 sudah dihapus.
 
 ## CTO 25 Nov malam (1268 sambung POS, tanpa GitHub Actions)
 
