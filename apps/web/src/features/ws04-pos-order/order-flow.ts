@@ -71,7 +71,7 @@ function pendingError(): ApiError {
  * cashier's unclear send does not block this one: carts are per cashier, and
  * the screen only tells (`hasForeignIntent`); that intent is left as it is.
  */
-function assertScope(deps: { storage: Storage3; scope: FlowScope }): void {
+export function assertScope(deps: { storage: Storage3; scope: FlowScope }): void {
   const { scope } = deps;
   if (scope.outletId === "" || scope.actorId === "")
     throw new ApiError(
@@ -115,7 +115,7 @@ export async function replayAll<T>(
   return { results, failures };
 }
 
-const scopeOf = (
+export const scopeOf = (
   scope: FlowScope,
   kind: IntentScope["kind"],
   subject = scope.subject,
@@ -126,7 +126,7 @@ const scopeOf = (
   subject,
 });
 
-function forgetOnFinalRefusal(
+export function forgetOnFinalRefusal(
   storage: Storage3,
   scope: IntentScope,
   key: string,
@@ -141,7 +141,7 @@ function forgetOnFinalRefusal(
  * runs before the key is forgotten, so what the answer carries (a consumed
  * parked cart) is saved while a retry is still possible.
  */
-async function keyedSend<T>(
+export async function keyedSend<T>(
   deps: { storage: Storage3; makeKey: () => string },
   scope: IntentScope,
   signature: string,

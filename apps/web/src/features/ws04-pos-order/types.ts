@@ -183,6 +183,8 @@ export interface OrderSnapshot {
 
 export interface SubmitOrderInput {
   channel: SaleChannel;
+  /** A dine-in order taken by the captain: sent on the `captain` channel. */
+  captain?: boolean;
   /** The open table session of the chosen table (dine-in); never the label. */
   tableSessionId: string | null;
   ojol: OjolInput | null;
