@@ -7,8 +7,9 @@
 //                     (product status), the three tax streams and
 //                     floor_zones (service charge per zone).
 //   tax               (legend-osqou.22) a tax stream that was never read to its
-//                     end leaves no tax to compute with: `taxUnsynced` holds
-//                     sales at once and no owner override lifts it.
+//                     end, or is being read again after a rewind (`setTaxOpen`),
+//                     leaves no tax to compute with: `taxUnsynced` holds sales
+//                     at once and no owner override lifts it.
 //   stale             a critical stream failed since its last success (any
 //                     reason, offline included: the prices on screen are old
 //                     either way).
@@ -119,7 +120,7 @@ export type CatalogFreshnessSnapshot = {
     /** Oldest last success (or tracking start) among the offending streams. */
     staleSince: Date | null;
     staleStreams: string[];
-    /** Tax streams never pulled whole: sales are held, whatever the override. */
+    /** Tax streams not proven whole: sales are held, whatever the override. */
     taxUnsynced: string[];
   };
   /** Streams behind `ownerAlarm`; sent to the cloud with the heartbeat. */
@@ -129,6 +130,12 @@ export type CatalogFreshnessSnapshot = {
 export type CatalogFreshnessTracker = {
   /** The same trusted time used to age catalog data and stamp pull checkpoints. */
   now(): Date;
+  /**
+   * The tax streams whose stored rules are not proven whole now (rewound, a
+   * replay not confirmed, a pull cut half way). Replaces the previous set;
+   * sales are held while it is not empty, also after an earlier success.
+   */
+  setTaxOpen(streams: ReadonlySet<string>): void;
   /** `at`: when the stream's last page was stored (default now). */
   recordSuccess(stream: string, at?: Date): void;
   recordFailure(
@@ -210,6 +217,7 @@ export function createCatalogFreshness(
       { lastSuccessAt: null, timeUnproven: false, failure: null },
     ]),
   );
+  let taxOpen: ReadonlySet<string> = new Set();
   let episodeAlarmed = false;
   let observedUnprovenTime = false;
   let unprovenAgeLowerBoundAt: number | null = null;
@@ -254,7 +262,10 @@ export function createCatalogFreshness(
       // Age basis of the sales rule: last success, or tracking start when
       // the stream never succeeded. Independent of any recorded failure.
       const basis = state.lastSuccessAt ?? trackingStartedAt;
-      if (isCatalogTaxStream(stream) && state.lastSuccessAt === null)
+      if (
+        isCatalogTaxStream(stream) &&
+        (state.lastSuccessAt === null || taxOpen.has(stream))
+      )
         taxUnsynced.push(stream);
       // Q62 does not turn unknown downtime into a 24-hour hold, but the age of
       // the saved checkpoint keeps growing on the trusted clock (533 A1): a
@@ -367,6 +378,9 @@ export function createCatalogFreshness(
 
   return {
     now,
+    setTaxOpen(streams) {
+      taxOpen = new Set(streams);
+    },
     recordSuccess(stream, at) {
       const state = isCritical(stream) ? states.get(stream) : undefined;
       if (!state) return;

@@ -160,7 +160,7 @@ const countsWhenWhole = (stream: CatalogSyncStream): boolean =>
 export const CATALOG_REWIND_MARK = "rewind";
 
 /** Durable "full replay pending" marker of a rewound stream (legend-7r7q6). */
-function catalogReplayCheckpoint(
+export function catalogReplayCheckpoint(
   stream: CatalogSyncStream,
 ): `catalog:replay:${CatalogSyncStream}` {
   return `catalog:replay:${stream}`;
@@ -737,7 +737,7 @@ type StreamProgress = {
   backlog: boolean;
   lastSuccessAt: Date | null;
   /**
-   * The promotions stream ended its last page while a replay marker still
+   * The promotions or a tax stream ended its last page while a replay marker still
    * exists (legend-1199 P2-B): the deactivation is not committed yet, so the
    * discount stays closed.
    */
@@ -1023,9 +1023,13 @@ async function pullStream(
       // exists, a promo the cloud no longer has may still be on this edge
       // (the cloud withholds its snapshot fields until a restamp is
       // committed), so the stream's freshness stays closed until the
-      // deactivation above commits and deletes the marker.
+      // deactivation above commits and deletes the marker. Same for a tax
+      // version the cloud no longer has (legend-osqou.22): it would still win.
       let replayOpen = false;
-      if (stream === "promotions" && !page.hasMore) {
+      if (
+        (stream === "promotions" || isCatalogTaxStream(stream)) &&
+        !page.hasMore
+      ) {
         const [open] = await tx
           .select({ watermark: edgePullCheckpoints.watermark })
           .from(edgePullCheckpoints)

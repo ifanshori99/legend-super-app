@@ -4,7 +4,15 @@
 // the tax streams it sells nothing.
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import {
   decodeCursor,
   outletIdSchema,
@@ -19,21 +27,31 @@ import {
   CATALOG_DOCUMENT_STREAMS,
   CATALOG_LINK_STREAMS,
   CATALOG_PROTOCOL_VERSION,
+  CATALOG_TAX_STREAMS,
   catalogRecordUpdatedPayloadSchema,
   catalogSyncQuerySchema,
   type CatalogDocumentStream,
 } from "@starter/shared/edge";
 import { calculateTax, type TaxCalculationInput } from "@starter/shared/tax";
-import { getTableColumns } from "drizzle-orm";
+import { eq, getTableColumns } from "drizzle-orm";
 import type { PgTable } from "drizzle-orm/pg-core";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
+import { floorZones } from "../db/schema/floor.ts";
+import { createCatalogFreshness } from "../edge/catalog-freshness.ts";
 import { pullCatalog } from "../edge/catalog-puller.ts";
+import {
+  seedCatalogFreshness,
+  startEdgeMasterSyncLoop,
+} from "../edge/master-sync.ts";
 import { sweepCatalogPublisher } from "../services/edge-master-data-publisher.ts";
 import { CATALOG_DOCUMENTS } from "../services/edge-catalog-documents.ts";
 import { listCatalogRecordsSince } from "../services/edge-catalog-sync.ts";
 import { registerEdgeNode } from "../services/edge-node.service.ts";
-import { loadTaxConfig } from "../services/qr-order-pricing.ts";
+import {
+  loadTaxConfig,
+  selectServiceChargeRules,
+} from "../services/qr-order-pricing.ts";
 import { settleCloud } from "./helpers/catalog-cloud.ts";
 import {
   createEdgeDatabase,
@@ -51,6 +69,7 @@ type Rec = Record<string, unknown>;
 let tenant: IsolatedTenant;
 let outletB = "";
 let nodeId = "";
+let credential = "";
 let edge: EdgeDatabase;
 let categoryId = "";
 let itemId = "";
@@ -246,6 +265,7 @@ beforeAll(async () => {
     label: "Edge v4",
   } as never);
   nodeId = registered.edgeNode.id;
+  credential = registered.credential;
   edge = await createEdgeDatabase({
     tenantId: tenant.tenantId,
     outletId: tenant.outletId,
@@ -316,15 +336,20 @@ afterAll(async () => {
 });
 
 describe("tax: edge = cloud to the rupiah", () => {
-  const bill = (database: typeof db) =>
+  const bill = (database: typeof db, zoneId: string | null = null) =>
     withTenant(database, scope("device"), async (tx) => {
       const config = await loadTaxConfig(tx, scope("device"), tenant.outletId);
+      const [zoneRow] =
+        zoneId === null
+          ? []
+          : await tx.select().from(floorZones).where(eq(floorZones.id, zoneId));
+      if (zoneId !== null && !zoneRow) throw new Error("zone did not arrive");
       return calculateTax(
         {
           outletId: tenant.outletId,
           businessDate: "2026-11-25",
           channel: "dine_in",
-          zoneId: null,
+          zoneId,
           regionCode: null,
           lines: [33_333, 17_777, 999].map((grossIdr, index) => ({
             lineId: `l${index}`,
@@ -339,7 +364,11 @@ describe("tax: edge = cloud to the rupiah", () => {
         } as unknown as TaxCalculationInput,
         {
           taxRules: config.taxRules,
-          serviceChargeRules: config.serviceChargeRules,
+          serviceChargeRules: selectServiceChargeRules(
+            zoneRow ?? null,
+            scope("device"),
+            config.serviceChargeRules,
+          ),
           settings: config.settings,
         },
       );
@@ -388,6 +417,146 @@ describe("tax: edge = cloud to the rupiah", () => {
     expect(after.taxIdr).not.toBe(before.taxIdr);
     expect(await bill(edge.database)).toEqual(after);
   });
+
+  it("charges the cloud's zone service: zone rate, a rule for the zone, a changed rate", async () => {
+    const priced = await insert(owner, "floor_zones", zone());
+    const plain = await insert(
+      owner,
+      "floor_zones",
+      zone({ service_charge_bp: 0 }),
+    );
+    await insert(owner, "tax_rules", taxRule());
+    await insert(owner, "service_charge_rules", serviceRule());
+    await insert(
+      owner,
+      "service_charge_rules",
+      serviceRule({
+        code: "SC-ZONE",
+        outlet_id: tenant.outletId,
+        zone_id: plain.id,
+        rate_bp: 1250,
+      }),
+    );
+    await insert(owner, "tax_settings", settings());
+    await pull();
+    const none = await bill(db);
+    const byZone = await bill(db, priced.id);
+    const byRule = await bill(db, plain.id);
+    // Three different bills, so a zone that did not travel shows.
+    expect(
+      new Set([
+        none.serviceChargeIdr,
+        byZone.serviceChargeIdr,
+        byRule.serviceChargeIdr,
+      ]).size,
+    ).toBe(3);
+    expect(await bill(edge.database)).toEqual(none);
+    expect(await bill(edge.database, priced.id)).toEqual(byZone);
+    expect(await bill(edge.database, plain.id)).toEqual(byRule);
+
+    await owner.query(
+      "UPDATE floor_zones SET service_charge_bp = 333 WHERE id = $1",
+      [priced.id],
+    );
+    await pull();
+    const after = await bill(db, priced.id);
+    expect(after.serviceChargeIdr).not.toBe(byZone.serviceChargeIdr);
+    expect(await bill(edge.database, priced.id)).toEqual(after);
+  });
+
+  it("a rewind with a version the restored cloud lost: held until it is out of force, then the cloud's rupiah", async () => {
+    await insert(owner, "tax_rules", taxRule());
+    await insert(owner, "tax_settings", settings());
+    const ghostRule = await insert(
+      owner,
+      "tax_rules",
+      taxRule({ version: 2, rate_bp: 4000 }),
+    );
+    const ghostSettings = await insert(
+      owner,
+      "tax_settings",
+      settings({
+        version: 2,
+        bill_rounding: { incrementIdr: 1000, mode: "half_up" },
+      }),
+    );
+    await pull();
+    const live = createCatalogFreshness();
+    const held = () => live.snapshot().salesGate.taxUnsynced;
+    // A restart: the stored state alone decides.
+    const atBoot = async () => {
+      const boot = createCatalogFreshness();
+      await seedCatalogFreshness(boot, scope("device"), nodeId, edge.database);
+      return boot.snapshot().salesGate.taxUnsynced;
+    };
+    // The running loop, offline or with the cloud answering.
+    const tick = async (online: boolean, expected: readonly string[]) => {
+      await settleCloud(owner);
+      const worker = startEdgeMasterSyncLoop({
+        database: edge.database,
+        config: {
+          cloudUrl: new URL("https://cloud.v4.test"),
+          credential,
+        } as never,
+        intervalMs: 60_000,
+        catalogOnStart: true,
+        catalog: {
+          context: scope("device"),
+          edgeNodeId: nodeId,
+          freshness: live,
+          pull: (options) =>
+            pullCatalog({
+              ...options,
+              streams: CATALOG_TAX_STREAMS,
+              fetchPage: (stream, since) =>
+                online
+                  ? page(stream, since ?? undefined)
+                  : Promise.reject(new Error("offline")),
+            }),
+        },
+      });
+      try {
+        await vi.waitFor(() => expect(held()).toEqual(expected), {
+          timeout: 10_000,
+          interval: 50,
+        });
+      } finally {
+        await worker.stop();
+      }
+    };
+    await tick(true, []);
+    expect(await atBoot()).toEqual([]);
+
+    // The restored cloud never had version 2. Runbook: rewind.
+    await owner.query("DELETE FROM tax_rules WHERE id = $1", [ghostRule.id]);
+    await owner.query("DELETE FROM tax_settings WHERE id = $1", [
+      ghostSettings.id,
+    ]);
+    const streams = CATALOG_TAX_STREAMS.map((name) => `catalog:${name}`);
+    await edge.owner.query(
+      "UPDATE edge_pull_checkpoints SET watermark = 'rewind' WHERE stream = ANY($1)",
+      [streams],
+    );
+    const cloud = await bill(db);
+    // The ghost still wins on the edge: exactly why nothing may be sold.
+    expect(await bill(edge.database)).not.toEqual(cloud);
+    expect(await atBoot()).toEqual([...CATALOG_TAX_STREAMS]);
+    await tick(false, CATALOG_TAX_STREAMS);
+
+    // The replay alone proves nothing yet (the ghosts are only confirmed
+    // absent by a later pull).
+    await pull(CATALOG_TAX_STREAMS);
+    expect(await atBoot()).toEqual([...CATALOG_TAX_STREAMS]);
+    expect(await bill(edge.database)).not.toEqual(cloud);
+
+    await pull(CATALOG_TAX_STREAMS);
+    expect(await edgeRow("tax_rules", ghostRule.id)).toMatchObject({
+      status: "archived",
+    });
+    expect(await bill(edge.database)).toEqual(cloud);
+    expect(await atBoot()).toEqual([]);
+    await tick(true, []);
+  }, 60_000);
 
   it("an older copy never replaces a newer rule; a lost version gives up its number", async () => {
     const rule = await insert(owner, "tax_rules", taxRule());

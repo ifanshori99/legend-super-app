@@ -8,6 +8,10 @@
 // `sync_txid` column in the migrated database.
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import {
+  CATALOG_SYNC_STREAMS,
+  CATALOG_TAX_STREAMS,
+} from "@starter/shared/edge";
 import { sql } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { db } from "../db/index.ts";
@@ -27,6 +31,31 @@ function documentedRestampTables(): string[] {
   if (list === undefined) throw new Error("restamp table list not found");
   return [...list.matchAll(/`([a-z_]+)`/g)].map((m) => m[1] as string);
 }
+
+/** Streams of the runbook statement on `edge_pull_checkpoints` with this SET. */
+function documentedCheckpointStreams(set: string): string[] {
+  const doc = readFileSync(DEPLOYMENT_DOC, "utf8");
+  const start = doc.indexOf(
+    `UPDATE edge_pull_checkpoints SET ${set} WHERE stream IN (`,
+  );
+  if (start === -1) throw new Error(`runbook statement not found: ${set}`);
+  const list = doc.slice(start, doc.indexOf(")", start));
+  return [...list.matchAll(/'catalog:([a-z_]+)'/g)].map((m) => m[1] as string);
+}
+
+describe("restore runbook covers every catalog stream (legend-osqou.22)", () => {
+  it("rewinds all of them", () => {
+    expect(documentedCheckpointStreams("watermark = 'rewind'").sort()).toEqual(
+      [...CATALOG_SYNC_STREAMS].sort(),
+    );
+  });
+
+  it("closes promos, vouchers and tax at once", () => {
+    expect(
+      documentedCheckpointStreams("last_success_at = 'epoch'").sort(),
+    ).toEqual(["promotions", "vouchers", ...CATALOG_TAX_STREAMS].sort());
+  });
+});
 
 describe("restamp list covers every catalog table with sync_txid", () => {
   it("lists exactly the tables that have a sync_txid column", async () => {
