@@ -52,6 +52,7 @@ import {
   type WifiPolicy,
 } from "@starter/shared/facility";
 import { ApiError } from "../../lib/api/errors.ts";
+import { mockFacilities } from "../facility/mock-facilities.ts";
 import { paginateFixture } from "../../lib/mock/paginate.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
@@ -69,7 +70,7 @@ type AdminState = {
 
 function seed(): AdminState {
   return {
-    facilities: [...fx.facilities],
+    facilities: mockFacilities(),
     areas: [...fx.areas],
     units: [...fx.units],
     products: [...fx.products],

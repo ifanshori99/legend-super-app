@@ -44,6 +44,7 @@ export const posOrderCartMessages = {
     description: "Pilih meja untuk pesanan dine-in ini.",
     occupied: "Terisi · {count} tamu",
     empty: "Kosong · {seats} kursi",
+    noSession: "Belum ada sesi meja",
     loading: "Memuat meja…",
     emptyTitle: "Belum ada meja",
     emptyDescription: "Daftar meja outlet ini masih kosong.",
@@ -74,10 +75,45 @@ export const posOrderCartMessages = {
     parkedOk:
       "Pesanan ditahan. Buka lewat “Pesanan ditahan” untuk melanjutkan.",
     resumedOk: "Pesanan ditahan dibuka kembali di keranjang.",
+    resumedMissing:
+      "Pesanan ditahan dibuka kembali. {count} item sudah tidak ada di menu dan tidak ikut.",
     heldReleased: "{count} item ditahan akan dikirim bersama pesanan ini.",
     placed: "Pesanan {number} terkirim. Pembayaran dilakukan oleh kasir.",
     lineRemoved: "Item dihapus",
     undo: "Urungkan",
+  },
+  pending: {
+    title: "Ada pesanan yang belum jelas terkirim",
+    body: "{where}: {count} item. Kembalikan pesanan ini lalu kirim ulang. Pesanan tidak akan dobel.",
+    restore: "Kembalikan pesanan tertunda",
+    replaceBody:
+      "Keranjang sekarang ({count} item) akan disimpan dulu ke “Pesanan ditahan”, lalu pesanan tertunda dikembalikan.",
+    replaceConfirm: "Simpan lalu kembalikan",
+    replaceCancel: "Batal",
+  },
+  otherCashier: {
+    title: "Ada pesanan kasir lain yang belum jelas",
+    body: "Periksa tab “Belum selesai” sebelum memasukkan ulang pesanan itu.",
+  },
+  parkPending: {
+    title: "Ada penahanan yang belum jelas",
+    body: "{where}: {count} item. Kirim ulang dengan isi yang sama, atau tutup bila sudah ada di “Pesanan ditahan”.",
+    resend: "Kirim ulang",
+    close: "Sudah saya periksa, tutup",
+  },
+  resumeClose: {
+    title: "Membuka pesanan ditahan belum jelas",
+    body: "Periksa “Pesanan ditahan” dan keranjang, lalu tutup peringatan ini.",
+    confirm: "Sudah saya periksa",
+  },
+  forbidden: {
+    title: "Pengiriman tidak diizinkan",
+    body: "Akun ini tidak boleh mengirim pesanan, atau izinnya sedang berubah. Periksa pesanan terbuka di kasir, lalu tutup peringatan ini.",
+  },
+  reused: {
+    title: "Pengiriman ditolak server",
+    body: "Isi pesanan berbeda dari pengiriman sebelumnya. Periksa pesanan terbuka di kasir dan pastikan tidak ada pesanan dobel, lalu tutup peringatan ini.",
+    confirm: "Sudah saya periksa",
   },
   error: {
     pendingTitle: "Fitur ini belum tersambung ke server",

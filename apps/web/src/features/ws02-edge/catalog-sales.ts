@@ -20,7 +20,12 @@ export const OVERRIDE_REASON_MAX = 500;
 export type SalesGateView = {
   blocked: boolean;
   stale24h: boolean;
-  reason: "CATALOG_STALE_24H" | "CLOCK_REGRESSED" | "GATE_UNAVAILABLE" | null;
+  reason:
+    | "CATALOG_STALE_24H"
+    | "CLOCK_REGRESSED"
+    | "GATE_UNAVAILABLE"
+    | "TAX_NOT_SYNCED"
+    | null;
   staleSince: string | null;
   staleStreams: string[];
   override: { grantedAt: string; untilAt: string } | null;

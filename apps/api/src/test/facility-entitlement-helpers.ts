@@ -123,22 +123,23 @@ export function outletContext(
   );
 }
 
-/** One shower facility, open all day every day. */
+/** One facility (a shower unless `type` says otherwise), open all day every day. */
 export async function seedFacility(
   world: Pick<World, "tenantId" | "outletA">,
   outletId: string = world.outletA,
+  type: "shower" | "locker" | "meeting_room" | "coworking" = "shower",
 ): Promise<string> {
   const facilityId = randomUUID();
   await asTenant(world.tenantId, (client) =>
     client.query(
       `INSERT INTO facilities (id, tenant_id, outlet_id, name, type, session_minutes, cleaning_minutes,
                                arrival_grace_minutes, operating_hours, overtime_policy, cancellation_policy)
-       VALUES ($1, $2, $3, $4, 'shower', 20, 10, 10, $5, $6, $7)`,
+       VALUES ($1, $2, $3, $4, $8, 20, 10, 10, $5, $6, $7)`,
       [
         facilityId,
         world.tenantId,
         outletId,
-        `Shower ${facilityId.slice(0, 8)}`,
+        `${type} ${facilityId.slice(0, 8)}`,
         JSON.stringify([
           {
             daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
@@ -157,6 +158,7 @@ export async function seedFacility(
           lateCancelFeeIdr: 0,
           noShowResolution: "no_refund",
         }),
+        type,
       ],
     ),
   );
@@ -196,6 +198,23 @@ export async function seedRule(
         JSON.stringify(seed.validity ?? { kind: "duration_hours", hours: 24 }),
         seed.isEnabled ?? true,
       ],
+    ),
+  );
+  return id;
+}
+
+/** A single-ticket product of `facilityId` that sells through `menuItemId`. */
+export async function seedTicketProduct(
+  tenantId: string,
+  seed: { facilityId: string; outletId: string; menuItemId: string },
+): Promise<string> {
+  const id = randomUUID();
+  await asTenant(tenantId, (client) =>
+    client.query(
+      `INSERT INTO facility_products
+         (id, tenant_id, outlet_id, facility_id, name, type, price_idr, sessions, is_active, menu_item_id)
+       VALUES ($1, $2, $3, $4, 'Tiket Uji', 'single', 25000, 1, true, $5)`,
+      [id, tenantId, seed.outletId, seed.facilityId, seed.menuItemId],
     ),
   );
   return id;

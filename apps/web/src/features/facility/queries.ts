@@ -11,6 +11,8 @@ export const facilityKeys = {
     [...facilityKeys.all, "availability", facilityId, date] as const,
   catalog: (facilityId: string) =>
     [...facilityKeys.all, "catalog", facilityId] as const,
+  entry: (facilityId: string) =>
+    [...facilityKeys.all, "entry", facilityId] as const,
   queue: (facilityId: string) =>
     [...facilityKeys.all, "queue", facilityId] as const,
   tickets: () => [...facilityKeys.all, "tickets"] as const,
@@ -59,6 +61,14 @@ export function facilityCatalogQuery(facilityId: string) {
   return queryOptions({
     queryKey: facilityKeys.catalog(facilityId),
     queryFn: ({ signal }) => api.fetchFacilityCatalog(facilityId, signal),
+    staleTime: 5 * 60_000,
+  });
+}
+
+export function facilityEntryQuery(facilityId: string) {
+  return queryOptions({
+    queryKey: facilityKeys.entry(facilityId),
+    queryFn: ({ signal }) => api.fetchFacilityEntry(facilityId, signal),
     staleTime: 5 * 60_000,
   });
 }

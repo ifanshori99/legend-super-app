@@ -54,6 +54,8 @@ import {
   getTenantContext,
   requireTenantContext,
 } from "../middleware/tenant.ts";
+import { sessionAcceptedHere } from "../lib/edge-session.ts";
+import { EDGE_STAFF_PIN } from "../lib/request-context.ts";
 import {
   addCartLine as addCartLineService,
   getSessionBill as getSessionBillService,
@@ -259,6 +261,13 @@ async function optionalMemberUserId(req: Request): Promise<string | null> {
     query: { disableCookieCache: true },
   });
   if (!session) return null;
+  // E2 (brief 1269): staff on an edge, or a session of the other side, is no
+  // member; the order stays a guest order.
+  if (
+    session.session.authMethod === EDGE_STAFF_PIN ||
+    !sessionAcceptedHere(session.session)
+  )
+    return null;
   const { sharedDeviceIds } = session.session as {
     sharedDeviceIds?: readonly string[] | null;
   };

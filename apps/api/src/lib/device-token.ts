@@ -11,13 +11,19 @@
 // mints, services/device-registry-check.ts reads) must still list the device as
 // active with `token_issued_at <= issuedAt`, so revocation and reissue take
 // effect even though a token cannot be recalled.
-import { createHmac, timingSafeEqual } from "node:crypto";
+//
+// An outlet edge (E2, brief 1269) never uses the key: it accepts a token by the
+// SHA-256 the cloud stored (devices.token_hash), checked before the handlers by
+// services/edge-device-auth.ts; `verifyDeviceToken` answers from that check.
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import {
   deviceTokenPayloadSchema,
   deviceTokenSchema,
   type DeviceTokenPayload,
 } from "@starter/shared/platform";
 import { env } from "../config/env";
+import { isEdgeNode } from "../edge/mode.ts";
+import { getRequestEdgeDevice } from "./request-context.ts";
 
 const PREFIX = "dv1";
 /** Devices are provisioned once and run for a long time; rotation replaces. */
@@ -51,15 +57,45 @@ export function signDeviceToken(
   return `${signingInput}.${sign(signingInput)}`;
 }
 
+/** SHA-256 (hex) of the whole token: what the registry stores (devices.token_hash). */
+export function hashDeviceToken(token: string): string {
+  return createHash("sha256").update(token, "utf8").digest("hex");
+}
+
+/**
+ * The payload of a well-formed token, WITHOUT any check. Only
+ * services/edge-device-auth.ts may use it, to look up the stored digest.
+ */
+export function decodeDeviceToken(token: string): DeviceTokenPayload | null {
+  if (!deviceTokenSchema.safeParse(token).success) return null;
+  const [prefix, body, signature, extra] = token.split(".");
+  if (prefix !== PREFIX || !body || !signature || extra !== undefined)
+    return null;
+  try {
+    return deviceTokenPayloadSchema.parse(
+      JSON.parse(Buffer.from(body, "base64url").toString("utf8")),
+    );
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Verifies an opaque token and returns its payload, or null. Every failure
  * (malformed, bad signature, expired) is the same null so a caller cannot use
- * the answer as an oracle.
+ * the answer as an oracle. On an edge: the payload of the token verified for
+ * this very request, else null; the signing key is never used.
  */
 export function verifyDeviceToken(
   token: string,
   nowSeconds = Math.floor(Date.now() / 1000),
 ): DeviceTokenPayload | null {
+  if (isEdgeNode()) {
+    const verified = getRequestEdgeDevice();
+    return verified !== undefined && verified.token === token
+      ? verified.payload
+      : null;
+  }
   if (!deviceTokenSchema.safeParse(token).success) return null;
   const [prefix, body, signature, extra] = token.split(".");
   if (prefix !== PREFIX || !body || !signature || extra !== undefined)

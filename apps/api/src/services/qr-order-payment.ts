@@ -58,13 +58,14 @@ import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { openSecret, sealSecret } from "../lib/secrets.ts";
 import type { Tx } from "./menu-internals.ts";
-import {
-  paymentGatewayFor,
-  type PaymentGatewayPort,
-} from "./payment-gateway.ts";
+import { paymentGatewayFor } from "./payment-gateway.ts";
 import { liveCodeWhere } from "./payment-live-code.ts";
 import { outstandingIdr } from "./payment-support.ts";
-import { selectGatewayForNewIntent } from "./payment-gateway-select.ts";
+import {
+  gatewayListsMethod,
+  methodIssuable,
+  selectGatewayForNewIntent,
+} from "./payment-gateway-select.ts";
 import { resolveRoutingRule } from "./payment-routing.service.ts";
 import {
   assertSplitMutableTx,
@@ -315,10 +316,10 @@ export async function assertGuestChannel(
   const port = selected.provider
     ? selected.port
     : paymentGatewayFor(routing.provider);
-  // An e-wallet is checked at the real bill amount (it can be out of limits
+  // Checked at the real bill amount when known (a channel can be out of limits
   // for it); a gateway without `methods()` answers from `channels()`.
   let channels: readonly PaymentChannel[];
-  if (method === "ewallet" && amountIdr !== undefined && port.methods) {
+  if (amountIdr !== undefined && port.methods) {
     const listed = await port.methods(context, outletId, amountIdr);
     channels =
       listed.find((entry) => entry.method === method && entry.enabled)
@@ -331,28 +332,6 @@ export async function assertGuestChannel(
         ? "Bank virtual account ini tidak tersedia; pilih bank lain."
         : "E-wallet ini tidak tersedia; pilih e-wallet lain.",
     );
-}
-
-/**
- * legend-kt3t1: does the gateway list this method as enabled right now? Read
- * from the provider's own `methods()` (PRD §3.13), never from a fixed list.
- * A gateway without `methods()` (a test double) offers QRIS and VA, whose
- * channel list decides, and never e-wallet or card. A failed read is "no".
- */
-async function gatewayListsMethod(
-  context: ScopedTenantContext,
-  port: PaymentGatewayPort,
-  method: GuestPaymentMethod,
-  outletId: string,
-  amountIdr?: number,
-): Promise<boolean> {
-  if (port.methods === undefined) return method === "qris" || method === "va";
-  try {
-    const listed = await port.methods(context, outletId, amountIdr);
-    return listed.some((entry) => entry.method === method && entry.enabled);
-  } catch {
-    return false;
-  }
 }
 
 /**
@@ -383,10 +362,14 @@ async function assertGuestMethodOffered(
       amountIdr,
     ))
   )
-    throw new CoreError(
-      "VALIDATION_ERROR",
-      "Metode pembayaran ini tidak tersedia di outlet ini.",
-    );
+    throw methodNotOffered();
+}
+
+function methodNotOffered(): CoreError {
+  return new CoreError(
+    "VALIDATION_ERROR",
+    "Metode pembayaran ini tidak tersedia di outlet ini.",
+  );
 }
 
 /**
@@ -564,6 +547,7 @@ async function voidOldCodesForChange(
     payerSecret: string | undefined;
     idempotencyKey: string;
   },
+  outletId: string,
   now: Date,
 ): Promise<void> {
   const tenantId = context.tenant.tenantId;
@@ -649,6 +633,31 @@ async function voidOldCodesForChange(
     };
   });
   if (scope === null) return;
+  // 1269 C2a: nothing is voided for a method that cannot be issued at the bill
+  // amount now. Only asked here, where a code would really be voided.
+  const amountIdr = await billAmountIdr(
+    context,
+    credential,
+    sessionId,
+    orderId,
+    splitId,
+    now,
+  );
+  if (amountIdr <= 0) return;
+  const routing = await withTenant(db, context, (tx) =>
+    resolveRoutingRule(tx, context, outletId, request.method),
+  );
+  const issuable = await methodIssuable(context, outletId, routing, {
+    method: request.method,
+    channelCode: request.bankCode,
+    amountIdr,
+  });
+  if (issuable === "not_offered") throw methodNotOffered();
+  if (issuable === "gateway_down")
+    throw new CoreError(
+      "SERVICE_UNAVAILABLE",
+      "Gateway pembayaran sedang tidak tersedia. Bayar di kasir.",
+    );
   // `next` is read again where the candidates are read: a twin request that
   // issued this very choice between the two reads must not be voided.
   await voidLiveCodesForMethodChange(
@@ -895,8 +904,24 @@ export async function createGuestPayment(
         outletId,
         amountIdr,
       );
-  } else if (bankCode !== null && namesChannel(parsed.method))
-    await assertGuestChannel(context, parsed.method, bankCode, outletId);
+  } else if (bankCode !== null && namesChannel(parsed.method)) {
+    const amountIdr = await billAmountIdr(
+      context,
+      credential,
+      sessionId,
+      orderId,
+      splitId,
+      now,
+    );
+    // A paid bill has no amount to ask for; its stored answer is served below.
+    await assertGuestChannel(
+      context,
+      parsed.method,
+      bankCode,
+      outletId,
+      amountIdr > 0 ? amountIdr : undefined,
+    );
+  }
   // legend-9vmit: a changed method or bank voids the old code first.
   await voidOldCodesForChange(
     context,
@@ -910,6 +935,7 @@ export async function createGuestPayment(
       payerSecret: parsed.payerSecret,
       idempotencyKey: parsed.idempotencyKey,
     },
+    outletId,
     now,
   );
   return withTenant(db, context, async (tx) => {

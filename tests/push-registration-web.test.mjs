@@ -475,11 +475,14 @@ describe("legend-ofq4f 791 item 7 PIN recovery returns to the origin facility", 
     source.indexOf("return;", source.indexOf("if (emergency) {")),
   );
 
-  test("the emergency success navigation to /fasilitas carries search params", () => {
+  test("the emergency success navigation to /fasilitas/darurat carries search params", () => {
     assert.match(branch, /navigate\(/);
-    assert.match(branch, /to:\s*"\/fasilitas"/);
+    assert.match(branch, /to:\s*"\/fasilitas\/darurat"/);
     assert.match(branch, /\bsearch\b/);
-    assert.doesNotMatch(branch, /navigate\(\{\s*to:\s*"\/fasilitas"\s*\}\)/);
+    assert.doesNotMatch(
+      branch,
+      /navigate\(\{\s*to:\s*"\/fasilitas\/darurat",?\s*\}\)/,
+    );
   });
 
   test("the destination stays an internal fixed path", () => {

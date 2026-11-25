@@ -44,7 +44,7 @@ import { randomUUID } from "node:crypto";
 import type { Express } from "express";
 import type { PoolClient } from "pg";
 import type { Test } from "supertest";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   idr,
   outletIdSchema,
@@ -65,6 +65,9 @@ import {
 import { accessTicketCredentialSchema } from "@starter/shared/facility";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
+import { env } from "../config/env.ts";
+import { db } from "../db/index.ts";
+import { withTenant } from "../db/tenant.ts";
 import {
   getEdgeRuntimeState,
   setEdgeRuntimeStateForTests,
@@ -79,6 +82,8 @@ import {
   setPosReceiptPort,
   type PosReceiptPort,
 } from "../services/pos-order-ports.ts";
+import { listPosTicketProducts } from "../services/facility-pos-ticket-catalog.ts";
+import { assertPosTicketsIssuableForReference } from "../services/facility-pos-tickets.ts";
 import { sellPosTicket } from "../services/facility-pos-ticket-sale.ts";
 import { openPosShift } from "../services/pos-shift.service.ts";
 import { createPosOverride } from "../services/staff-override.service.ts";
@@ -1542,5 +1547,197 @@ describe("POS-936-TKT tickets of a bill: listing and isolation", () => {
     const response = await credentialCall(first.orderId, second.ticketId);
     expect(response.status, JSON.stringify(response.body)).toBe(404);
     expect(await credentialRow(second.ticketId)).toBeNull();
+  });
+});
+
+describe("1269 F0 shower off: nothing is sold, no money is taken, old bills can still be voided", () => {
+  const flag = env as unknown as { FACILITY_SHOWER_ENABLED?: boolean };
+  const was = flag.FACILITY_SHOWER_ENABLED;
+  afterEach(() => {
+    flag.FACILITY_SHOWER_ENABLED = was;
+  });
+
+  it("F0-01 selling is refused (403 FACILITY_SHOWER_DISABLED) and holds nothing", async () => {
+    const unit = await newUnit();
+    flag.FACILITY_SHOWER_ENABLED = false;
+    const response = await sell(saleBody(unit));
+    expect(response.status, JSON.stringify(response.body)).toBe(403);
+    expect(errorCode(response.body)).toBe("FACILITY_SHOWER_DISABLED");
+    expect(await ticketRowCount(unit)).toBe(0);
+  });
+
+  it("F0-02 a bill sold earlier takes no tender and no credential, and the cashier can still void it", async () => {
+    const bought = await buy();
+    flag.FACILITY_SHOWER_ENABLED = false;
+
+    const status = await readyOrder(bought.orderId);
+    const tender = await posApi().cash(
+      bought.orderId,
+      status,
+      TICKET_TOTAL_IDR,
+    );
+    expect(tender.status, JSON.stringify(tender.body)).toBe(403);
+    expect(errorCode(tender.body)).toBe("FACILITY_SHOWER_DISABLED");
+    expect((await readOrder(bought.orderId)).tenders).toHaveLength(0);
+
+    const credential = await credentialCall(bought.orderId, bought.ticketId);
+    expect(credential.status).toBe(403);
+    expect(errorCode(credential.body)).toBe("FACILITY_SHOWER_DISABLED");
+
+    const voided = await voidUnpaid(bought.orderId);
+    expect(voided.status, JSON.stringify(voided.body)).toBe(200);
+    expect((await onlyTicket(bought.orderId)).ticket.status).toBe("cancelled");
+    // The slot is free again: with the switch on, the same unit sells.
+    flag.FACILITY_SHOWER_ENABLED = true;
+    await expectSlotFree(bought.unitId);
+  });
+
+  it("F0-03 the shower's menu item cannot be rung up as a plain menu line: no order, no tender", async () => {
+    const counts = () =>
+      asOwnerTenant(tenant.tenantId, async (db) => {
+        const { rows } = await db.query<{ orders: number; tenders: number }>(
+          `SELECT (SELECT count(*) FROM orders WHERE tenant_id = $1)::int AS orders,
+                  (SELECT count(*) FROM pos_order_tenders WHERE tenant_id = $1)::int AS tenders`,
+          [tenant.tenantId],
+        );
+        return rows[0]!;
+      });
+    const ring = () =>
+      authed(
+        cashier.client.post(
+          `/api/outlets/${encodeURIComponent(tenant.outletId)}/pos/orders`,
+        ),
+      ).send({
+        channel: "pos",
+        serviceType: "takeaway",
+        items: [{ menuItemId: ids.ticketItem, quantity: 1, modifierIds: [] }],
+        idempotencyKey: randomUUID(),
+      });
+    const before = await counts();
+    flag.FACILITY_SHOWER_ENABLED = false;
+    const refused = await ring();
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(await counts()).toEqual(before);
+
+    // Control: the same body sells once the shower is open.
+    flag.FACILITY_SHOWER_ENABLED = true;
+    const sold = await ring();
+    expect(sold.status, JSON.stringify(sold.body)).toBe(201);
+  });
+
+  it("F0-04 a menu package that gives a shower right is refused, a coworking package still sells", async () => {
+    const coworking = randomUUID();
+    const setRule = (facilityId: string) =>
+      asOwnerTenant(tenant.tenantId, async (db) => {
+        await db.query("DELETE FROM entitlement_rules WHERE tenant_id = $1", [
+          tenant.tenantId,
+        ]);
+        await db.query(
+          `INSERT INTO entitlement_rules (id, tenant_id, outlet_id, facility_id, type, condition, sessions, validity, is_enabled)
+           VALUES (gen_random_uuid(), $1, $2, $3, 'package', $4, 1, '{"kind":"duration_hours","hours":24}', true)`,
+          [
+            tenant.tenantId,
+            tenant.outletId,
+            facilityId,
+            JSON.stringify({ menuItemId: packageItem }),
+          ],
+        );
+      });
+    const packageItem = randomUUID();
+    await asOwnerTenant(tenant.tenantId, async (db) => {
+      await db.query(
+        `INSERT INTO facilities (id, tenant_id, outlet_id, name, type, session_minutes, cleaning_minutes,
+                                 arrival_grace_minutes, operating_hours, overtime_policy, cancellation_policy)
+         SELECT $2, tenant_id, outlet_id, 'Coworking Paket', 'coworking', session_minutes, cleaning_minutes,
+                arrival_grace_minutes, operating_hours, overtime_policy, cancellation_policy
+           FROM facilities WHERE id = $1`,
+        [ids.facility, coworking],
+      );
+      await db.query(
+        `INSERT INTO menu_items (id, tenant_id, brand_id, category_id, name, is_active, media_id)
+         VALUES ($1, $2, $3, $4, 'Paket Uji', true, $5)`,
+        [
+          packageItem,
+          tenant.tenantId,
+          tenant.brandId,
+          ids.category,
+          randomUUID(),
+        ],
+      );
+      await db.query(
+        `INSERT INTO price_list_items (id, tenant_id, price_list_id, item_id, price_idr)
+         SELECT gen_random_uuid(), $1, id, $2, 90000 FROM price_lists WHERE tenant_id = $1`,
+        [tenant.tenantId, packageItem],
+      );
+    });
+    const ring = () =>
+      authed(
+        cashier.client.post(
+          `/api/outlets/${encodeURIComponent(tenant.outletId)}/pos/orders`,
+        ),
+      ).send({
+        channel: "pos",
+        serviceType: "takeaway",
+        items: [{ menuItemId: packageItem, quantity: 1, modifierIds: [] }],
+        idempotencyKey: randomUUID(),
+      });
+    const orderCount = () =>
+      asOwnerTenant(tenant.tenantId, async (db) => {
+        const { rows } = await db.query<{ n: number }>(
+          "SELECT count(*)::int AS n FROM orders WHERE tenant_id = $1",
+          [tenant.tenantId],
+        );
+        return rows[0]!.n;
+      });
+
+    flag.FACILITY_SHOWER_ENABLED = false;
+    await setRule(ids.facility);
+    const before = await orderCount();
+    const refused = await ring();
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(await orderCount()).toBe(before);
+
+    await setRule(coworking);
+    const sold = await ring();
+    expect(sold.status, JSON.stringify(sold.body)).toBe(201);
+  });
+
+  it("F0-05 the cashier's ticket list leaves the shower out and keeps it when the switch is on", async () => {
+    const context = establishScopedTenantContext(sessionContext(), {
+      kind: "tenant",
+    });
+    const listed = async () =>
+      (
+        await listPosTicketProducts(
+          context,
+          outletIdSchema.parse(tenant.outletId),
+        )
+      ).products.map((product) => product.id);
+    expect(await listed()).toContain(ids.product);
+    flag.FACILITY_SHOWER_ENABLED = false;
+    expect(await listed()).not.toContain(ids.product);
+  });
+
+  it("F0-06 a card sale for an earlier shower bill is refused before the terminal is asked", async () => {
+    const bought = await buy();
+    const context = establishScopedTenantContext(sessionContext(), {
+      kind: "tenant",
+    });
+    const { rows } = await owner.query<{ number: string }>(
+      "SELECT number FROM orders WHERE id = $1::uuid",
+      [ulidToUuid(bought.orderId)],
+    );
+    const check = () =>
+      withTenant(db, context, (tx) =>
+        assertPosTicketsIssuableForReference(tx, context, {
+          outletId: outletIdSchema.parse(tenant.outletId),
+          reference: rows[0]!.number,
+        }),
+      );
+    await check();
+    flag.FACILITY_SHOWER_ENABLED = false;
+    await expect(check()).rejects.toMatchObject({
+      code: "FACILITY_SHOWER_DISABLED",
+    });
   });
 });

@@ -66,7 +66,9 @@ export function IncidentScreen({ facilityId }: { facilityId?: string }) {
   const t = useT();
   const toast = useToast();
   const { timeZone } = useOutletClock();
-  const { facilities, facility, config } = useStaffFacility(facilityId);
+  const { facilities, facility, config } = useStaffFacility(facilityId, {
+    releasedOnly: true,
+  });
   const incidents = useIncidents(facility?.id ?? null);
   const raise = useRaiseFacilityIncident();
   const [type, setType] = React.useState<FacilityIncidentType>("assist");

@@ -5,18 +5,35 @@
 // from the hook result alone. Outside mock mode a call without a contract fails
 // with an ApiError whose code is CONTRACT_PENDING (see `isContractPending`).
 import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+} from "react";
+import {
   useMutation,
   useQuery,
   useQueryClient,
   type UseMutationResult,
   type UseQueryResult,
 } from "@tanstack/react-query";
+import { readActingStaffUserId } from "@/lib/api/acting-staff";
 import { ApiError } from "@/lib/api/errors";
 import { API_MOCK } from "@/lib/api/mock-flag";
+import { useRouteContext } from "@tanstack/react-router";
 import { useTenantContext } from "@/lib/tenant-context";
 import { useCloudConnection } from "@/features/ws02-edge/hooks";
+import { useActiveStaff } from "@/features/ws01-device-pin/storage";
 import {
   acknowledgeCall,
+  closePendingOrder,
+  closePendingPark,
+  closePendingResume,
+  otherCashierPending,
+  pendingParkText,
+  pendingOrderText,
+  pendingResumes,
   addToTable,
   fireLines,
   fireTableLines,
@@ -25,7 +42,8 @@ import {
   resumeDraft,
   submitOrder,
 } from "./api";
-import { readDraft, writeDraft } from "./draft-store";
+import { cashierDraftKey, readDraft, writeDraft } from "./draft-store";
+import { parseOrderSnapshot, replayAll } from "./order-flow";
 import {
   callNumberQuery,
   captainTablesQuery,
@@ -42,6 +60,8 @@ import {
   type Catalog,
   type FireLinesInput,
   type FireTableLinesInput,
+  type OrderMeta,
+  type OrderSnapshot,
   type OrderingConnectivity,
   type ParkDraftInput,
   type ParkedDraft,
@@ -53,6 +73,12 @@ import {
 
 export { useDraftCart } from "./draft-store";
 
+/** What the screen sends: the order and the meta kept for a re-send. */
+export type PlaceOrderInput = SubmitOrderInput & { meta?: OrderMeta };
+
+/** A resumed parked cart; `missing` lines left the catalog and were not restored. */
+export type ResumedDraft = ParkedDraft & { missing: number };
+
 /** True when the server has no contract for the call yet (show "belum tersambung"). */
 export function isContractPending(error: unknown): boolean {
   return error instanceof ApiError && error.code === CONTRACT_PENDING;
@@ -61,6 +87,28 @@ export function isContractPending(error: unknown): boolean {
 /** The outlet this screen works in; "" when none (queries stay idle). */
 function useOutletId(): string {
   return useTenantContext().outlet?.id ?? "";
+}
+
+/**
+ * The cashier at the till, as the server names the actor: the active (PIN)
+ * cashier when there is one, else the signed-in user. A keyed send never
+ * shares its key with another actor.
+ */
+function useActorId(): string {
+  const staff = useActiveStaff();
+  const session = (
+    useRouteContext({ strict: false }) as {
+      session?: { user?: { id?: string } } | null;
+    }
+  ).session;
+  // The token's own staff first (what the server records as the actor), then
+  // the device's active staff label, then the signed-in user.
+  return readActingStaffUserId() ?? staff?.userId ?? session?.user?.id ?? "";
+}
+
+/** The key of this cashier's cart in this outlet (see `cashierDraftKey`). */
+export function useCashierDraftKey(): string {
+  return cashierDraftKey(useOutletId(), useActorId());
 }
 
 /** Mock mode needs no outlet; real calls do. */
@@ -137,17 +185,16 @@ export function useSubmitOrder({
   draftKey,
 }: {
   draftKey: string;
-}): UseMutationResult<PosOrderView, Error, SubmitOrderInput> {
+}): UseMutationResult<PosOrderView, Error, PlaceOrderInput> {
   const queryClient = useQueryClient();
   const outletId = useOutletId();
-  return useMutation<PosOrderView, Error, SubmitOrderInput>({
-    mutationFn: (input) =>
-      submitOrder(outletId, {
-        ...input,
-        idempotencyKey: intentKeyFor("order", draftKey, outletId, input),
-      }),
+  const actorId = useActorId();
+  return useMutation<PosOrderView, Error, PlaceOrderInput>({
+    // The keyed intent is persisted by the api call itself (order-flow), so a
+    // refresh after an unknown outcome repeats the same keys.
+    mutationFn: ({ meta, ...input }) =>
+      submitOrder(outletId, actorId, draftKey, input, meta),
     onSuccess: () => {
-      clearIntentKey("order", draftKey);
       writeDraft(draftKey, []);
       // A takeaway order used its call number: the next one moves on.
       void queryClient.invalidateQueries({
@@ -155,6 +202,123 @@ export function useSubmitOrder({
       });
     },
   });
+}
+
+/**
+ * The send of this cart whose answer is not known (lost reply, refresh, copied
+ * tab): its lines and meta as they were sent, or null. `refresh` re-reads it
+ * after a send; `close` ends a refused (reused) key once the cashier has
+ * checked the open orders.
+ */
+export function usePendingOrder(
+  draftKey: string,
+  kind: "order" | "park" = "order",
+): {
+  pending: OrderSnapshot | null;
+  refresh: () => void;
+  close: () => void;
+} {
+  const outletId = useOutletId();
+  const actorId = useActorId();
+  const text = useSyncExternalStore(
+    subscribePending,
+    () =>
+      kind === "order"
+        ? pendingOrderText(outletId, actorId, draftKey)
+        : pendingParkText(outletId, actorId, draftKey),
+    () => null,
+  );
+  const pending = useMemo(() => parseOrderSnapshot(text), [text]);
+  const close = useCallback(() => {
+    if (kind === "order") closePendingOrder(outletId, actorId, draftKey);
+    else closePendingPark(outletId, actorId, draftKey);
+    notifyPending();
+  }, [kind, outletId, actorId, draftKey]);
+  return { pending, refresh: notifyPending, close };
+}
+
+/** Another cashier of this outlet has a send whose answer is not known. */
+export function useOtherCashierPending(): boolean {
+  const outletId = useOutletId();
+  const actorId = useActorId();
+  return useSyncExternalStore(
+    subscribePending,
+    () => otherCashierPending(outletId, actorId),
+    () => false,
+  );
+}
+
+/** Closes an unclear resume of one parked cart after the cashier checked. */
+export function useCloseResume(): (parkedId: string) => void {
+  const outletId = useOutletId();
+  const actorId = useActorId();
+  return useCallback(
+    (parkedId: string) => {
+      closePendingResume(outletId, actorId, parkedId);
+      notifyPending();
+    },
+    [outletId, actorId],
+  );
+}
+
+const pendingListeners = new Set<() => void>();
+function subscribePending(listener: () => void): () => void {
+  pendingListeners.add(listener);
+  // Another tab changed its own storage copy: nothing to do; a copied tab only
+  // shares the keys it started with.
+  return () => {
+    pendingListeners.delete(listener);
+  };
+}
+function notifyPending(): void {
+  pendingListeners.forEach((listener) => listener());
+}
+
+/**
+ * Replays a resume that was sent but not answered, when the screen opens: the
+ * server gives the same parked cart for the same key and it is put back in the
+ * draft. Nothing runs without an outlet and a cashier.
+ */
+export function useReplayPendingResumes({ draftKey }: { draftKey: string }): {
+  data: ResumedDraft | null;
+  failures: { id: string; error: unknown }[];
+  dismiss: (id: string) => void;
+} {
+  const queryClient = useQueryClient();
+  const outletId = useOutletId();
+  const actorId = useActorId();
+  const [state, setState] = useState<{
+    data: ResumedDraft | null;
+    failures: { id: string; error: unknown }[];
+  }>({ data: null, failures: [] });
+  // An order send that is not answered yet comes first: nothing is replayed
+  // over it.
+  const blocked = usePendingOrder(draftKey).pending !== null;
+  useEffect(() => {
+    if (blocked || outletId === "" || actorId === "") return;
+    const ids = pendingResumes(outletId, actorId);
+    if (ids.length === 0) return;
+    void replayAll(ids, (id) =>
+      resumeDraft(outletId, actorId, id, (draft) =>
+        writeDraft(draftKey, [...readDraft(draftKey), ...draft.lines]),
+      ),
+    ).then(({ results, failures }) => {
+      setState({
+        data: results.filter((item) => item !== null).at(-1) ?? null,
+        failures,
+      });
+      void queryClient.invalidateQueries({
+        queryKey: posOrderKeys.parked(outletId),
+      });
+    });
+  }, [blocked, outletId, actorId, draftKey, queryClient]);
+  const dismiss = useCallback((id: string) => {
+    setState((current) => ({
+      ...current,
+      failures: current.failures.filter((failure) => failure.id !== id),
+    }));
+  }, []);
+  return { data: state.data, failures: state.failures, dismiss };
 }
 
 export function useFireLines(): UseMutationResult<
@@ -174,20 +338,26 @@ export function useParkedDrafts(): UseQueryResult<ParkedDraft[]> {
   return useQuery({ ...parkedDraftsQuery(outletId), enabled: ready });
 }
 
-export function useParkDraft(): UseMutationResult<
+export function useParkDraft({
+  draftKey = "kasir",
+}: { draftKey?: string } = {}): UseMutationResult<
   ParkedDraft,
   Error,
-  ParkDraftInput
+  ParkDraftInput & { meta?: OrderMeta }
 > {
   const queryClient = useQueryClient();
   const outletId = useOutletId();
-  return useMutation<ParkedDraft, Error, ParkDraftInput>({
-    mutationFn: (input) => parkDraft(outletId, input),
-    onSuccess: () =>
-      void queryClient.invalidateQueries({
-        queryKey: posOrderKeys.parked(outletId),
-      }),
-  });
+  const actorId = useActorId();
+  return useMutation<ParkedDraft, Error, ParkDraftInput & { meta?: OrderMeta }>(
+    {
+      mutationFn: ({ meta, ...input }) =>
+        parkDraft(outletId, actorId, draftKey, input, meta),
+      onSuccess: () =>
+        void queryClient.invalidateQueries({
+          queryKey: posOrderKeys.parked(outletId),
+        }),
+    },
+  );
 }
 
 /**
@@ -199,13 +369,17 @@ export function useResumeDraft({
   draftKey,
 }: {
   draftKey: string;
-}): UseMutationResult<ParkedDraft, Error, { id: string }> {
+}): UseMutationResult<ResumedDraft | null, Error, { id: string }> {
   const queryClient = useQueryClient();
   const outletId = useOutletId();
-  return useMutation<ParkedDraft, Error, { id: string }>({
-    mutationFn: ({ id }) => resumeDraft(outletId, id),
-    onSuccess: (resumed) =>
-      writeDraft(draftKey, [...readDraft(draftKey), ...resumed.lines]),
+  const actorId = useActorId();
+  return useMutation<ResumedDraft | null, Error, { id: string }>({
+    // The lines go into the draft inside the call, before its key is
+    // forgotten: a lost reply or a refresh cannot lose the parked cart.
+    mutationFn: ({ id }) =>
+      resumeDraft(outletId, actorId, id, (draft) =>
+        writeDraft(draftKey, [...readDraft(draftKey), ...draft.lines]),
+      ),
     // Taken or already gone: either way the list must be read again.
     onSettled: () =>
       void queryClient.invalidateQueries({

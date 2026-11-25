@@ -134,7 +134,8 @@ export async function getGatewaySettlementReconRows(
         .select({
           refId: bankStatementLineMatches.refId,
           lineId: bankStatementLines.id,
-          amountIdr: bankStatementLines.amountIdr,
+          // This settlement's share: one line may pay several outlets.
+          amountIdr: bankStatementLineMatches.amountIdr,
         })
         .from(bankStatementLineMatches)
         .innerJoin(

@@ -31,6 +31,7 @@ import { PosError } from "@starter/shared/pos";
 import {
   customerPaymentIntentSchema,
   createPaymentIntentInputSchema,
+  customerPaymentIntentMethodCodeSchema,
   paymentLinkTokenSchema,
   paymentLinkViewSchema,
   paymentMethodSchema,
@@ -116,6 +117,9 @@ import {
   type OnlinePaymentMethod,
 } from "./payment-gateway";
 import {
+  gatewayListsMethod,
+  methodIssuable,
+  ONLINE_METHODS,
   outletGatewayHealth,
   selectGatewayForNewIntent,
 } from "./payment-gateway-select";
@@ -127,7 +131,6 @@ import {
   providerAnswerFinal,
 } from "./payment-live-code";
 import {
-  onlinePaymentMethodSchema,
   resolveRoutingRule,
   type ResolvedRouting,
 } from "./payment-routing.service";
@@ -385,7 +388,7 @@ async function routeOnlineMethods(
 ): Promise<Array<{ method: OnlinePaymentMethod; routing: ResolvedRouting }>> {
   return withTenant(db, context, async (tx) => {
     const routed = [];
-    for (const method of ["qris", "va", "bank_transfer"] as const) {
+    for (const method of ONLINE_METHODS) {
       const routing = await resolveRoutingRule(
         tx,
         context,
@@ -417,22 +420,32 @@ async function onlineMethods(
     const port = selection.provider
       ? selection.port
       : paymentGatewayFor(entry.routing.provider);
-    // A down gateway is not asked for channels: its adapter may throw, and the
-    // view must still render so the bill can fail over to the cashier.
+    // A down gateway is asked for nothing: its adapter may throw, and the view
+    // must still render so the bill can fail over to the cashier. A method the
+    // gateway does not list (locked, or a failed read) is off (1269 C2a).
+    const listed =
+      entry.routing.enabled &&
+      gatewayUsable &&
+      (await gatewayListsMethod(context, port, entry.method, link.outletId));
+    const needsChannel = entry.method !== "qris" && entry.method !== "card";
     const channels =
-      entry.method === "qris" || !gatewayUsable
-        ? []
-        : await port.channels(context, entry.method, link.outletId);
-    const configured = entry.method === "qris" || channels.length > 0;
+      needsChannel && listed
+        ? await port.channels(context, entry.method, link.outletId)
+        : [];
+    const configured = listed && (!needsChannel || channels.length > 0);
     const enabled = entry.routing.enabled && gatewayUsable && configured;
     const unavailableReason = !entry.routing.enabled
       ? ("routing_disabled" as const)
       : enabled
         ? null
         : gatewayUsable
-          ? // Routing is on but no bank/channel is configured for the method.
+          ? // Routing is on but the gateway does not list the method or has no
+            // bank/channel for it.
             ("routing_disabled" as const)
           : ("gateway_down" as const);
+    // E-wallet and card are shown only while they can be paid with.
+    if (!enabled && (entry.method === "ewallet" || entry.method === "card"))
+      continue;
     result.push({
       method: entry.method,
       provider: selection.provider ?? entry.routing.provider,
@@ -1135,6 +1148,30 @@ async function keepRefusedCodeAsOrphan(
   }
 }
 
+/** No usable gateway for this outlet: records the outlet-level reading and
+ * answers the refusal. */
+async function gatewayDownRefusal(
+  context: ScopedTenantContext,
+  link: PaymentLinkRow,
+  now: Date,
+): Promise<HttpError> {
+  const health = await outletGatewayHealth(context, link.outletId);
+  const incident = await syncGatewayHealthSafely(
+    context,
+    link.outletId,
+    health,
+    now,
+    health.provider,
+  );
+  if (incident?.openIncident != null)
+    await failOverLinkSafely(context, link, incident.openIncident, now);
+  return new HttpError(
+    503,
+    "SERVICE_UNAVAILABLE",
+    "The payment gateway is unavailable; pay at the cashier.",
+  );
+}
+
 async function createIntentCore(
   context: ScopedTenantContext,
   token: string,
@@ -1190,6 +1227,20 @@ async function createIntentCore(
       (error.code === "ORDER_CODE_ACTIVE" || error.code === "SPLIT_CODE_ACTIVE")
     ))
       throw error;
+    // 1269 C2a: a method that cannot be issued voids nothing.
+    const issuable = await methodIssuable(
+      context,
+      plan.link.outletId,
+      plan.routing,
+      {
+        method: parsed.method,
+        channelCode: parsed.channelCode,
+        amountIdr,
+      },
+    );
+    if (issuable === "gateway_down")
+      throw await gatewayDownRefusal(context, plan.link, now);
+    if (issuable === "not_offered") throw error;
     const { voided } = await options.voidLiveCodesForChange({
       paymentLinkId: plan.link.id,
       billSplitId: part?.billSplitId ?? null,
@@ -1219,24 +1270,8 @@ async function createIntentCore(
     plan.link.outletId,
     plan.routing,
   );
-  if (selected.provider === null) {
-    // No usable gateway for this outlet: record the outlet-level reading.
-    const health = await outletGatewayHealth(context, plan.link.outletId);
-    const incident = await syncGatewayHealthSafely(
-      context,
-      plan.link.outletId,
-      health,
-      now,
-      health.provider,
-    );
-    if (incident?.openIncident != null)
-      await failOverLinkSafely(context, plan.link, incident.openIncident, now);
-    throw new HttpError(
-      503,
-      "SERVICE_UNAVAILABLE",
-      "The payment gateway is unavailable; pay at the cashier.",
-    );
-  }
+  if (selected.provider === null)
+    throw await gatewayDownRefusal(context, plan.link, now);
 
   // The caller may shorten the lifetime (a QR guest's session ends sooner);
   // never lengthen it past the method default.
@@ -2537,7 +2572,7 @@ export async function refreshIntent(
     return toCustomerIntent(current);
   if ((SETTLED_STATUSES as readonly string[]).includes(current.status))
     throw new HttpError(409, "CONFLICT", "This bill is already paid.");
-  const method = onlinePaymentMethodSchema.parse(current.method);
+  const method = customerPaymentIntentMethodCodeSchema.parse(current.method);
   const count = await withTenant(db, context, async (tx) => {
     const [row] = await tx
       .select({ count: sql<number>`count(*)::int` })

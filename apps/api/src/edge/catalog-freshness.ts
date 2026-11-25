@@ -3,8 +3,13 @@
 // or product status on the edge had stopped updating.
 //
 //   critical streams  price_lists, item_variants and modifiers (prices: a
-//                     variant or modifier price is money) and menu_items
-//                     (product status).
+//                     variant or modifier price is money), menu_items
+//                     (product status), the three tax streams and
+//                     floor_zones (service charge per zone).
+//   tax               (legend-osqou.22) a tax stream that was never read to its
+//                     end, or is being read again after a rewind (`setTaxOpen`),
+//                     leaves no tax to compute with: `taxUnsynced` holds sales
+//                     at once and no owner override lifts it.
 //   stale             a critical stream failed since its last success (any
 //                     reason, offline included: the prices on screen are old
 //                     either way).
@@ -38,7 +43,11 @@
 // success from the pull checkpoint at boot (`edge_pull_checkpoints`), so a
 // restart does not hide a stale catalog. No checkpoint (a new edge): the
 // stream starts without a success, and a failure counts from its first one.
-import type { CatalogFreshness } from "@starter/shared/edge";
+import {
+  CATALOG_TAX_STREAMS,
+  isCatalogTaxStream,
+  type CatalogFreshness,
+} from "@starter/shared/edge";
 import type { CatalogStale } from "./protocol.ts";
 import { promosEnabled } from "./promo-gate.ts";
 import {
@@ -53,6 +62,9 @@ export const CRITICAL_CATALOG_STREAMS = [
   "item_variants",
   "modifiers",
   "menu_items",
+  ...CATALOG_TAX_STREAMS,
+  // The zone's service charge is part of the bill.
+  "floor_zones",
 ] as const;
 export type CriticalCatalogStream = (typeof CRITICAL_CATALOG_STREAMS)[number];
 
@@ -100,7 +112,7 @@ export type CatalogFreshnessSnapshot = {
   stale: boolean;
   ownerAlarm: boolean;
   cashierWarning: string | null;
-  /** Same as `salesGate.stale24h`; the owner override is applied later. */
+  /** `stale24h` or `taxUnsynced`; the owner override is applied later. */
   salesBlocked: boolean;
   salesGate: {
     /** A critical stream is older than `blockAfterMs` (override ignored). */
@@ -108,6 +120,8 @@ export type CatalogFreshnessSnapshot = {
     /** Oldest last success (or tracking start) among the offending streams. */
     staleSince: Date | null;
     staleStreams: string[];
+    /** Tax streams not proven whole: sales are held, whatever the override. */
+    taxUnsynced: string[];
   };
   /** Streams behind `ownerAlarm`; sent to the cloud with the heartbeat. */
   alarmStreams: CatalogStaleStream[];
@@ -116,6 +130,12 @@ export type CatalogFreshnessSnapshot = {
 export type CatalogFreshnessTracker = {
   /** The same trusted time used to age catalog data and stamp pull checkpoints. */
   now(): Date;
+  /**
+   * The tax streams whose stored rules are not proven whole now (rewound, a
+   * replay not confirmed, a pull cut half way). Replaces the previous set;
+   * sales are held while it is not empty, also after an earlier success.
+   */
+  setTaxOpen(streams: ReadonlySet<string>): void;
   /** `at`: when the stream's last page was stored (default now). */
   recordSuccess(stream: string, at?: Date): void;
   recordFailure(
@@ -197,6 +217,7 @@ export function createCatalogFreshness(
       { lastSuccessAt: null, timeUnproven: false, failure: null },
     ]),
   );
+  let taxOpen: ReadonlySet<string> = new Set();
   let episodeAlarmed = false;
   let observedUnprovenTime = false;
   let unprovenAgeLowerBoundAt: number | null = null;
@@ -236,10 +257,16 @@ export function createCatalogFreshness(
     const staleStates: StreamState[] = [];
     const alarmStreams: CatalogStaleStream[] = [];
     const blockedStreams: { stream: string; since: Date }[] = [];
+    const taxUnsynced: string[] = [];
     for (const [stream, state] of states) {
       // Age basis of the sales rule: last success, or tracking start when
       // the stream never succeeded. Independent of any recorded failure.
       const basis = state.lastSuccessAt ?? trackingStartedAt;
+      if (
+        isCatalogTaxStream(stream) &&
+        (state.lastSuccessAt === null || taxOpen.has(stream))
+      )
+        taxUnsynced.push(stream);
       // Q62 does not turn unknown downtime into a 24-hour hold, but the age of
       // the saved checkpoint keeps growing on the trusted clock (533 A1): a
       // catalog 20 hours old at an offline restart blocks sales 4 hours later,
@@ -311,11 +338,12 @@ export function createCatalogFreshness(
           : neverSynced || !oldest
             ? "katalog belum pernah diperbarui sejak edge menyala"
             : `katalog belum diperbarui sejak ${clock.format(oldest)}`,
-      salesBlocked: stale24h,
+      salesBlocked: stale24h || taxUnsynced.length > 0,
       salesGate: {
         stale24h,
         staleSince: blockedSince,
         staleStreams: blockedStreams.map((entry) => entry.stream),
+        taxUnsynced,
       },
       alarmStreams,
     };
@@ -350,6 +378,9 @@ export function createCatalogFreshness(
 
   return {
     now,
+    setTaxOpen(streams) {
+      taxOpen = new Set(streams);
+    },
     recordSuccess(stream, at) {
       const state = isCritical(stream) ? states.get(stream) : undefined;
       if (!state) return;
@@ -377,6 +408,8 @@ export function createCatalogFreshness(
     seedLastSuccess(stream, at) {
       const state = isCritical(stream) ? states.get(stream) : undefined;
       if (!state) return;
+      // The epoch marks a pull that never reached its end (catalog-puller.ts).
+      if (isCatalogTaxStream(stream) && at.getTime() === 0) return;
       const seeded = clampToNow(at);
       if (
         state.lastSuccessAt &&

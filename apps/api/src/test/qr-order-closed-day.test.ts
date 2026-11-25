@@ -15,9 +15,10 @@
 
 import { randomBytes, randomUUID } from "node:crypto";
 import type { Client } from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { Express } from "express";
 import { createApp } from "../app.ts";
+import { env } from "../config/env.ts";
 import {
   setPaymentGateway,
   type GatewayIntentRequest,
@@ -26,6 +27,11 @@ import {
 import { qrOrderSettlementLookup } from "../services/qr-order.service.ts";
 import { setTableSessionSettlementLookup } from "../services/table-session.service.ts";
 import { agent, originHeader } from "./helpers.ts";
+import {
+  seedFacility,
+  seedTicketProduct,
+} from "./facility-entitlement-helpers.ts";
+import { owner as memberOwner } from "./member-loyalty-helpers.ts";
 import {
   createIsolatedTenant,
   createTable,
@@ -315,6 +321,7 @@ afterAll(async () => {
       tenantId,
       randomUUID(),
     ]);
+  await memberOwner.end();
   await owner.end();
 });
 
@@ -403,5 +410,61 @@ describe("QR order after Tutup Hari (legend-2o1b)", () => {
 
     expect(await orderCount(guest)).toBe(0);
     expect(await usageOf(world)).toBe(usageBefore);
+  });
+});
+
+describe("1269 F0 a shower menu item is not sold over QR while the shower is off", () => {
+  const flag = env as unknown as { FACILITY_SHOWER_ENABLED?: boolean };
+  const was = flag.FACILITY_SHOWER_ENABLED;
+  afterEach(() => {
+    flag.FACILITY_SHOWER_ENABLED = was;
+  });
+  const linkTo = async (world: World, type: "shower" | "coworking") =>
+    seedTicketProduct(world.tenant.tenantId, {
+      facilityId: await seedFacility(
+        { tenantId: world.tenant.tenantId, outletA: world.tenant.outletId },
+        world.tenant.outletId,
+        type,
+      ),
+      outletId: world.tenant.outletId,
+      menuItemId: world.menuItemId,
+    });
+
+  it("a new cart line and a cart filled earlier are both refused: no order, no stock used", async () => {
+    const world = await newWorld();
+    await linkTo(world, "shower");
+    // The cart was filled before the switch went off.
+    const { guest, version } = await guestWithCart(world);
+    flag.FACILITY_SHOWER_ENABLED = false;
+
+    const added = await as(guest).add({
+      menuItemId: world.menuItemId,
+      quantity: 1,
+      expectedCartVersion: version,
+    });
+    expect(added.status, JSON.stringify(added.body)).toBe(409);
+    const placed = await as(guest).checkout({
+      expectedCartVersion: version,
+      idempotencyKey: randomUUID(),
+    });
+    expect(placed.status, JSON.stringify(placed.body)).toBeGreaterThanOrEqual(
+      400,
+    );
+    expect(placed.status).toBeLessThan(500);
+    expect(await orderCount(guest)).toBe(0);
+    expect(await usageOf(world)).toBe(0);
+  });
+
+  it("a coworking item is still sold", async () => {
+    const world = await newWorld();
+    await linkTo(world, "coworking");
+    flag.FACILITY_SHOWER_ENABLED = false;
+    const { guest, version } = await guestWithCart(world);
+    const placed = await as(guest).checkout({
+      expectedCartVersion: version,
+      idempotencyKey: randomUUID(),
+    });
+    expect(placed.status, JSON.stringify(placed.body)).toBe(201);
+    expect(await orderCount(guest)).toBe(1);
   });
 });

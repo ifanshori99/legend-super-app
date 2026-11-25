@@ -76,6 +76,7 @@ import {
   type PromotionRow,
 } from "./crm-promo-engine";
 import { promoIdempotentCommand } from "./crm-promo-idempotency";
+import { assertFacilityProductOpen } from "./facility-shower-gate";
 import { promotionDisabledAtOutlet } from "./crm-promo-outlets";
 import {
   loadTenantAccessInTransaction,
@@ -311,6 +312,23 @@ export async function listPromotions(
   });
 }
 
+/** 1269 F0: a promotion whose reward is a closed shower may be saved but not be active. */
+async function assertNoShowerPromoActive(
+  tx: Tx,
+  context: ScopedTenantContext,
+  promotion: Pick<Promotion, "status" | "benefit">,
+): Promise<void> {
+  if (
+    promotion.status === "active" &&
+    promotion.benefit.kind === "facility_entitlement"
+  )
+    await assertFacilityProductOpen(
+      tx,
+      context.tenant.tenantId,
+      promotion.benefit.facilityProductId,
+    );
+}
+
 export async function createPromotion(
   context: ScopedTenantContext,
   actorUserId: string,
@@ -352,6 +370,7 @@ async function insertPromotion(
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
     });
+    await assertNoShowerPromoActive(tx, context, promotion);
     if (promotion.codeHash !== null)
       await assertCodeFree(tx, context, promotion.codeHash);
     let row: PromotionRow | undefined;
@@ -444,6 +463,7 @@ export async function updatePromotion(
       updatedAt: now.toISOString(),
     });
     assertStatusChange(current.status, next.status);
+    await assertNoShowerPromoActive(tx, context, next);
     if (next.quotaTotal !== null && next.quotaTotal < row.usesTotal)
       throw new HttpError(
         422,

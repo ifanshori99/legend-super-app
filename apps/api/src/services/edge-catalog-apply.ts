@@ -64,7 +64,11 @@
 //   concurrent pulls do not interleave.
 // - No audit, no outbox: this mirrors cloud state; an event would echo back.
 import {
+  CATALOG_DOCUMENT_FIELDS,
+  CATALOG_DOCUMENT_STREAMS,
   catalogSyncRecordSchemas,
+  isCatalogDocumentStream,
+  type CatalogDocumentStream,
   type CatalogSyncRecordOf,
   type CatalogSyncStream,
   type MenuCategorySyncRecord,
@@ -80,6 +84,7 @@ import { defaultPromoStackingPolicy } from "@starter/shared/crm";
 import {
   and,
   eq,
+  getTableColumns,
   inArray,
   isNull,
   notInArray,
@@ -88,12 +93,14 @@ import {
   type SQL,
 } from "drizzle-orm";
 import type { AnyPgColumn, PgTable } from "drizzle-orm/pg-core";
+import { edgeCatalogTombstones } from "../db/schema/edge-catalog-tombstone.ts";
 import { inventoryItems, uoms } from "../db/schema/inventory.ts";
 import {
   edgePrintJobs,
   edgePrinterDeleteVersions,
   edgePrinters,
 } from "../db/schema/edge-print.ts";
+import { roles } from "../db/schema/platform-access.ts";
 import { brands } from "../db/schema/platform-org.ts";
 import { user } from "../db/schema/user.ts";
 import {
@@ -114,7 +121,13 @@ import {
   promotions,
   promoSettings,
 } from "../db/schema/crm-promo.ts";
+import { DETACHED_ROLE_PREFIX } from "../edge/detached-role.ts";
 import { receiptAfterCatalogFloor } from "../edge/catalog-receipt-floor.ts";
+import {
+  CATALOG_DOCUMENTS,
+  type CatalogDocumentSpec,
+  type DocumentRecord,
+} from "./edge-catalog-documents.ts";
 import type { Tx } from "./menu-internals.ts";
 import { catalogRecordIdFromKeys } from "../lib/edge-catalog-identity.ts";
 
@@ -437,6 +450,12 @@ function tally(
 
 /** Promotion documents must name this edge's single outlet, including removals. */
 async function requirePromotionOutlet(tx: Tx, outletId: string): Promise<void> {
+  if (!(await isEdgeOutlet(tx, outletId)))
+    refuse("Catalog promotion belongs to another outlet.");
+}
+
+/** Whether the transaction's scope is exactly this one outlet. */
+async function isEdgeOutlet(tx: Tx, outletId: string): Promise<boolean> {
   const result = await tx.execute(
     sql`SELECT current_setting('app.outlet_ids', true) AS outlet_ids`,
   );
@@ -444,15 +463,14 @@ async function requirePromotionOutlet(tx: Tx, outletId: string): Promise<void> {
   try {
     ids = JSON.parse(String(result.rows[0]?.outlet_ids ?? "null"));
   } catch {
-    refuse("Catalog promotion has no outlet scope.");
+    return false;
   }
-  if (
-    !Array.isArray(ids) ||
-    ids.length !== 1 ||
-    typeof ids[0] !== "string" ||
-    ids[0].toLowerCase() !== outletId.toLowerCase()
-  )
-    refuse("Catalog promotion belongs to another outlet.");
+  return (
+    Array.isArray(ids) &&
+    ids.length === 1 &&
+    typeof ids[0] === "string" &&
+    ids[0].toLowerCase() === outletId.toLowerCase()
+  );
 }
 
 export const STREAM_TABLES: Readonly<Record<CatalogSyncStream, PgTable>> = {
@@ -469,6 +487,12 @@ export const STREAM_TABLES: Readonly<Record<CatalogSyncStream, PgTable>> = {
   recipes,
   promotions,
   vouchers: edgeVoucherCatalog,
+  ...(Object.fromEntries(
+    CATALOG_DOCUMENT_STREAMS.map((stream) => [
+      stream,
+      CATALOG_DOCUMENTS[stream].table,
+    ]),
+  ) as unknown as Record<CatalogDocumentStream, PgTable>),
 };
 
 /**
@@ -599,6 +623,21 @@ export async function resetCatalogSyncTxid(
       sql`UPDATE ${edgePrinterDeleteVersions} AS target SET version = 0 WHERE target.tenant_id = ${tenantId}::uuid AND target.version <> 0 AND NOT (target.printer_id = ANY(${`{${heldIds.join(",")}}`}::uuid[]))`,
     );
   }
+  if (
+    isCatalogDocumentStream(stream) &&
+    CATALOG_DOCUMENTS[stream].deletes === "marker"
+  )
+    // Same for the deletions this edge applied: a restored cloud may have the row again.
+    await tx
+      .update(edgeCatalogTombstones)
+      .set({ syncTxid: "0" })
+      .where(
+        and(
+          eq(edgeCatalogTombstones.tenantId, tenantId),
+          eq(edgeCatalogTombstones.stream, stream),
+          eq(edgeCatalogTombstones.received, true),
+        ),
+      );
   if (stream === "promotions" && protectedKeys.length === 0)
     await tx.execute(
       sql`UPDATE ${promoSettings} SET sync_txid = 0 WHERE tenant_id = ${tenantId}::uuid AND sync_txid <> 0`,
@@ -829,6 +868,13 @@ export async function applyCatalogRecords(
 ): Promise<CatalogApplyResult> {
   const { tenantId } = input;
   await lockCatalogStream(tx, tenantId, input.stream);
+  if (isCatalogDocumentStream(input.stream))
+    return applyDocuments(
+      tx,
+      tenantId,
+      input.stream,
+      parseRecords(input.stream, tenantId, input.records, (r) => r.id),
+    );
   switch (input.stream) {
     case "promotions": {
       const t = promotions;
@@ -1851,4 +1897,217 @@ async function applyRecipes(
     },
   );
   return tally(applied, parsed.length, { deleted, nulledRefs });
+}
+
+/**
+ * A protocol 4 stream (edge-catalog-documents.ts): rows copied field by field,
+ * deletions removed. Same rules as above: newer stamp only, deletions first,
+ * cloud wins a unique key.
+ */
+async function applyDocuments(
+  tx: Tx,
+  tenantId: TenantId,
+  stream: CatalogDocumentStream,
+  parsed: readonly DocumentRecord[],
+): Promise<CatalogApplyResult> {
+  const spec = CATALOG_DOCUMENTS[stream];
+  const t = spec.table;
+  const ids = parsed.map((record) => record.id);
+  for (const record of parsed) {
+    const outletId = record.outletId ?? null;
+    if (outletId === null ? spec.scope === "own" : spec.scope === "tenant")
+      refuse("Catalog record has the wrong outlet scope.");
+    if (outletId !== null && !(await isEdgeOutlet(tx, outletId)))
+      refuse("Catalog record belongs to another outlet.");
+  }
+  const removed = new Map<string, bigint>();
+  if (spec.deletes === "marker" && ids.length > 0) {
+    const rows = await tx
+      .select({
+        id: edgeCatalogTombstones.id,
+        syncTxid: edgeCatalogTombstones.syncTxid,
+      })
+      .from(edgeCatalogTombstones)
+      .where(
+        and(
+          eq(edgeCatalogTombstones.tenantId, tenantId),
+          eq(edgeCatalogTombstones.stream, stream),
+          eq(edgeCatalogTombstones.received, true),
+          inArray(edgeCatalogTombstones.id, ids),
+        ),
+      );
+    for (const row of rows)
+      removed.set(row.id.toLowerCase(), BigInt(row.syncTxid));
+  }
+  const ordered = inApplyOrder(parsed, (r) => r.id).filter((record) => {
+    const gone = removed.get(record.id.toLowerCase());
+    return gone === undefined || gone < BigInt(record.syncTxid);
+  });
+  if (stream === "approval_policies")
+    await holdApproverRoles(tx, tenantId, ordered);
+  let deleted = 0;
+  const applied = await applyOrdered(tx, t, tenantId, ordered, {
+    write: async (record) => {
+      if (
+        spec.deletes === "marker" &&
+        record.deletedAt !== null &&
+        record.deletedAt !== undefined
+      ) {
+        if (await removeDocument(tx, tenantId, stream, record)) deleted += 1;
+        return true;
+      }
+      if (!(await claimDocumentKey(tx, tenantId, spec, record))) return false;
+      return writeDocument(tx, stream, record);
+    },
+  });
+  return tally(applied, parsed.length, { deleted });
+}
+
+async function writeDocument(
+  tx: Tx,
+  stream: CatalogDocumentStream,
+  record: DocumentRecord,
+): Promise<boolean> {
+  const spec = CATALOG_DOCUMENTS[stream];
+  const t = spec.table;
+  const columns = getTableColumns(t as PgTable) as Record<string, AnyPgColumn>;
+  const values: Record<string, unknown> = { syncTxid: record.syncTxid };
+  for (const field of CATALOG_DOCUMENT_FIELDS[stream]) {
+    const column = columns[field];
+    if (column === undefined) continue;
+    const value = record[field];
+    values[field] =
+      column.dataType === "date" && typeof value === "string"
+        ? date(value)
+        : value;
+  }
+  const own = spec.fromRecord?.(record);
+  const rows = await tx
+    .insert(t as PgTable)
+    .values({ ...values, ...own?.insert })
+    .onConflictDoUpdate({
+      target: t.id,
+      set: { ...values, ...own?.update },
+      setWhere: olderThanExcluded(t),
+    })
+    .returning({ id: t.id });
+  return rows.length > 0;
+}
+
+/**
+ * Frees the record's unique key. False when the other row is the newer one:
+ * the record is stale and its newer version arrives later in the stream.
+ */
+async function claimDocumentKey(
+  tx: Tx,
+  tenantId: string,
+  spec: CatalogDocumentSpec,
+  record: DocumentRecord,
+): Promise<boolean> {
+  if (
+    spec.unique === undefined ||
+    (spec.deletes === "soft" && record.deletedAt !== null)
+  )
+    return true;
+  const t = spec.table;
+  const clash = sql`${t.tenantId} = ${tenantId}::uuid AND ${t.id} <> ${record.id}::uuid AND ${spec.unique.sameKey(record)}`;
+  const newer = await tx.execute(
+    sql`SELECT 1 AS found FROM ${t} WHERE ${clash} AND ${t.syncTxid} > ${record.syncTxid}::bigint LIMIT 1`,
+  );
+  if (newer.rows.length > 0) return false;
+  await tx.execute(
+    spec.unique.give === null
+      ? sql`DELETE FROM ${t} WHERE ${clash}`
+      : sql`UPDATE ${t} SET ${spec.unique.give} WHERE ${clash}`,
+  );
+  return true;
+}
+
+/**
+ * Removes the row the cloud deleted and remembers the deletion's version. A row
+ * local history still refers to stays, out of use.
+ */
+async function removeDocument(
+  tx: Tx,
+  tenantId: TenantId,
+  stream: CatalogDocumentStream,
+  record: DocumentRecord,
+): Promise<boolean> {
+  const { table: t, keepReferenced } = CATALOG_DOCUMENTS[stream];
+  const row = sql`${t.tenantId} = ${tenantId}::uuid AND ${t.id} = ${record.id}::uuid`;
+  const remove = sql`DELETE FROM ${t} WHERE ${row}`;
+  let count: number;
+  if (keepReferenced === undefined)
+    count = (await tx.execute(remove)).rowCount ?? 0;
+  else
+    try {
+      count = await tx.transaction(
+        async (inner) => (await inner.execute(remove)).rowCount ?? 0,
+      );
+    } catch (error) {
+      if (pgCode(error) !== "23503") throw error;
+      await tx.execute(
+        sql`UPDATE ${t} SET ${keepReferenced}, sync_txid = ${record.syncTxid}::bigint WHERE ${row}`,
+      );
+      count = 0;
+    }
+  const version = {
+    outletId: record.outletId ?? null,
+    deletedAt: date(String(record.deletedAt)),
+    syncTxid: record.syncTxid,
+  };
+  await tx
+    .insert(edgeCatalogTombstones)
+    .values({ tenantId, stream, id: record.id, received: true, ...version })
+    .onConflictDoUpdate({
+      target: [
+        edgeCatalogTombstones.tenantId,
+        edgeCatalogTombstones.stream,
+        edgeCatalogTombstones.id,
+        edgeCatalogTombstones.received,
+      ],
+      set: version,
+      setWhere: olderThanExcluded(edgeCatalogTombstones),
+    });
+  return count > 0;
+}
+
+function pgCode(error: unknown): unknown {
+  let cause: unknown = error;
+  for (let depth = 0; depth < 4 && cause instanceof Error; depth += 1) {
+    const { code } = cause as { code?: unknown };
+    if (code !== undefined) return code;
+    cause = cause.cause;
+  }
+  return undefined;
+}
+
+/**
+ * The people snapshot only carries roles somebody at this outlet holds, but a
+ * tier whose approver role is unknown must still be in force: leaving it out
+ * would let the action pass without approval. Such a role is held as a name
+ * without any permission that nobody has (the same form the people snapshot
+ * gives a detached role, so it fills it in when the role arrives).
+ */
+async function holdApproverRoles(
+  tx: Tx,
+  tenantId: TenantId,
+  records: readonly DocumentRecord[],
+): Promise<void> {
+  const wanted = new Set(
+    records.flatMap((r) =>
+      typeof r.approverRoleId === "string" ? [r.approverRoleId] : [],
+    ),
+  );
+  for (const id of [...wanted].sort())
+    await tx
+      .insert(roles)
+      .values({
+        id,
+        tenantId,
+        name: `${DETACHED_ROLE_PREFIX}${id.toLowerCase()}`,
+        permissions: [],
+        allowedScopeTypes: ["outlet"],
+      })
+      .onConflictDoNothing({ target: roles.id });
 }

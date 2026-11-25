@@ -191,32 +191,39 @@ export function CatalogSalesNotice() {
 
   if (gate?.blocked) {
     const clockRegressed = gate.reason === "CLOCK_REGRESSED";
+    const taxNotSynced = gate.reason === "TAX_NOT_SYNCED";
     const unavailable = gate.reason === "GATE_UNAVAILABLE" || clockRegressed;
     const since = formatHourMinute(gate.staleSince);
     return (
       <Notice
         tone="danger"
         title={
-          clockRegressed
-            ? t("catalogSales.clockRegressedTitle")
-            : unavailable
-              ? t("catalogSales.unavailableTitle")
-              : t("catalogSales.blockedTitle")
+          taxNotSynced
+            ? t("catalogSales.taxNotSyncedTitle")
+            : clockRegressed
+              ? t("catalogSales.clockRegressedTitle")
+              : unavailable
+                ? t("catalogSales.unavailableTitle")
+                : t("catalogSales.blockedTitle")
         }
         className="mb-4"
         data-catalog-sales="blocked"
       >
         <p>
-          {clockRegressed
-            ? t("catalogSales.clockRegressedHint")
-            : unavailable
-              ? t("catalogSales.unavailableHint")
-              : t("catalogSales.blockedHint")}
-          {since && !unavailable
+          {taxNotSynced
+            ? t("catalogSales.taxNotSyncedHint")
+            : clockRegressed
+              ? t("catalogSales.clockRegressedHint")
+              : unavailable
+                ? t("catalogSales.unavailableHint")
+                : t("catalogSales.blockedHint")}
+          {since && !unavailable && !taxNotSynced
             ? ` ${t("catalogSales.sinceLine", { time: since })}`
             : ""}
         </p>
-        {canGrant && gate.reason !== "GATE_UNAVAILABLE" && <OverrideAction />}
+        {canGrant && gate.reason !== "GATE_UNAVAILABLE" && !taxNotSynced && (
+          <OverrideAction />
+        )}
       </Notice>
     );
   }

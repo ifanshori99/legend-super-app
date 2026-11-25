@@ -67,6 +67,7 @@ import { outlets } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
   DEVICE_TOKEN_TTL_SECONDS,
+  hashDeviceToken,
   signDeviceToken,
   verifyDeviceToken,
 } from "../lib/device-token.ts";
@@ -209,6 +210,26 @@ function mintForRow(
   );
 }
 
+/**
+ * E2 (brief 1269): keeps the digest of the token just minted, which the device
+ * stream hands to the outlet's edge. Cloud only: an edge accepts no token it
+ * minted itself. The row is locked by the caller. A replay of the same token
+ * changes nothing (and wakes no pull) once the digest is stored.
+ */
+async function storeTokenHash(
+  tx: Tx,
+  row: DeviceRow,
+  token: string,
+): Promise<void> {
+  if (isEdgeNode()) return;
+  const tokenHash = hashDeviceToken(token);
+  if (row.tokenHash === tokenHash) return;
+  await tx
+    .update(devices)
+    .set({ tokenHash, updatedAt: dbClock })
+    .where(eq(devices.id, row.id));
+}
+
 export { EDGE_DEVICE_REGISTRY_STALE_CODE };
 
 /**
@@ -339,6 +360,7 @@ export async function enrollDevice(
       brandId,
       Math.floor(row.tokenIssuedAt.getTime() / 1000),
     );
+    await storeTokenHash(tx, row, token);
     await recordAudit(
       {
         tenantId,
@@ -404,6 +426,7 @@ export async function issueDeviceToken(
     );
     const brandId = await outletBrandId(tx, updated.outletId);
     const token = mintForRow(updated, tenantId, brandId, issuedAt);
+    await storeTokenHash(tx, updated, token);
     await recordAudit(
       {
         tenantId,

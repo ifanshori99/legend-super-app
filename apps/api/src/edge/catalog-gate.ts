@@ -267,14 +267,18 @@ export async function startCatalogGate(options: {
     // A wall clock set back while running shows up here, so report it too.
     reportRegression(clock.highWater());
     const regressed = clock.regressed();
+    // The owner may sell on old prices, not without knowing the tax.
+    const taxUnsynced = snap.salesGate.taxUnsynced.length > 0;
     return {
-      blocked: (stale24h || regressed) && !active,
+      blocked: taxUnsynced || ((stale24h || regressed) && !active),
       stale24h,
-      reason: regressed
-        ? "CLOCK_REGRESSED"
-        : stale24h
-          ? "CATALOG_STALE_24H"
-          : null,
+      reason: taxUnsynced
+        ? "TAX_NOT_SYNCED"
+        : regressed
+          ? "CLOCK_REGRESSED"
+          : stale24h
+            ? "CATALOG_STALE_24H"
+            : null,
       staleSince: snap.salesGate.staleSince,
       staleStreams: snap.salesGate.staleStreams,
       override: active,
@@ -291,6 +295,7 @@ export async function startCatalogGate(options: {
       observed &&
       !snapshot.stale &&
       !snapshot.salesGate.stale24h &&
+      snapshot.salesGate.taxUnsynced.length === 0 &&
       !clock.regressed()
     ) {
       try {
@@ -307,11 +312,18 @@ export async function startCatalogGate(options: {
     await persist();
   };
 
-  const seedFreshness = async () => {
+  // A failed read is tried again: unseeded tax holds sales, and an offline
+  // edge has no pull that could release it.
+  const seedFreshness = async (): Promise<void> => {
+    if (stopped) return;
     try {
       await options.seed?.(freshness);
     } catch (error) {
       onError(error);
+      if (stopped) return;
+      const timer = setTimeout(() => void seedFreshness(), retryMs);
+      timer.unref?.();
+      retryTimer = timer;
     }
   };
   // Boot: record the tracking start, then load an override that survived.

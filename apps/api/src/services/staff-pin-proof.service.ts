@@ -50,6 +50,7 @@ import {
   type PinAttemptOutcome,
 } from "./device-pin.service";
 import { outletContext } from "./device-pin-support";
+import { assertEdgeIdentityFresh } from "../edge/identity-freshness";
 import { getEdgeRuntimeState } from "../edge/runtime";
 import { enqueueEdgeEvent } from "./edge-queue.service";
 import { notifyOutletSupervisors } from "./edge-sync-conflict-alert";
@@ -771,6 +772,8 @@ export async function attemptApproverPin(
     readonly now: Date;
   },
 ): Promise<void> {
+  // E2 (brief 1269): no override on an edge past 72 h without a sync.
+  await assertEdgeIdentityFresh();
   const outletId = outletIdSchema.parse(input.outletId);
   const context = outletContext(tenant, outletId);
   const { deviceId, now } = input;

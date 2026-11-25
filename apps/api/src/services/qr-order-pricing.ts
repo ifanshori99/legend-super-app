@@ -56,6 +56,7 @@ import {
 } from "../db/schema/index.ts";
 import type { CartLineModifierSnapshot } from "../db/schema/qr-order.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { closedShowerMenuItemIds } from "./facility-shower-gate.ts";
 import { guestMenuItemCondition, type Tx } from "./menu-internals.ts";
 import { isLinePaused } from "./kds-pacing.service.ts";
 import { readAvailabilityDecisions } from "./menu-availability.ts";
@@ -250,6 +251,13 @@ export async function loadCatalogue(
     timeZone: input.timeZone,
     businessDate: input.businessDate,
   });
+  // 1269 F0: an item that sells a closed shower is not sellable (ORD-05 path).
+  const closedShower = await closedShowerMenuItemIds(
+    tx,
+    tenantId,
+    input.outletId,
+    itemIds,
+  );
 
   for (const row of items) {
     const variants = new Map<
@@ -306,7 +314,7 @@ export async function loadCatalogue(
       variants,
       groups,
       modifiers: itemModifiers,
-      sellable: decision?.sellable ?? true,
+      sellable: !closedShower.has(row.id) && (decision?.sellable ?? true),
     });
   }
   return catalogue;

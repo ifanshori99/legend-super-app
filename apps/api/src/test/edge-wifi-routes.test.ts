@@ -44,9 +44,13 @@ import {
   seededTenantId,
   staffWithRole,
 } from "./floor-test-helpers.ts";
-import { agent, originHeader, verifySessionMfa } from "./helpers.ts";
+import {
+  cloudSignIn,
+  agent,
+  originHeader,
+  verifySessionMfa,
+} from "./helpers.ts";
 
-const PASSWORD = "Test-password-123!";
 const MAC = "aa:bb:cc:dd:ee:ff";
 
 const owner = new Pool({
@@ -165,7 +169,7 @@ async function seedGrant(outletId: string, wifiSessionId: string) {
   );
 }
 
-/** Staff of the node's outlet, signed in on the edge app with MFA verified. */
+/** Staff of the node's outlet, signed in (cloud only) with MFA verified. */
 async function edgeStaff(
   template: "owner" | "cashier",
   outletId: string = seededOutletA,
@@ -176,11 +180,7 @@ async function edgeStaff(
     scopeId: template === "owner" ? null : outletId,
   });
   const client = agent(edgeApp);
-  const signIn = await client
-    .post("/api/auth/sign-in/email")
-    .set(originHeader)
-    .send({ email: staff.email, password: PASSWORD });
-  expect(signIn.status).toBe(200);
+  client.set("Cookie", await cloudSignIn(staff.email));
   await verifySessionMfa(staff.email);
   return { client, userId: staff.userId };
 }

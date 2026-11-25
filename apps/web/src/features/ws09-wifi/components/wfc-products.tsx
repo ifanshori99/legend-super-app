@@ -8,7 +8,7 @@ import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { Money } from "@/components/ui/money";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { PublicSubscriptionPlan } from "@starter/shared/facility";
+import { type PublicSubscriptionPlan } from "@starter/shared/facility";
 import { useWfcPlans } from "../hooks";
 
 function ProductRow({ name, hint }: { name: string; hint: string }) {

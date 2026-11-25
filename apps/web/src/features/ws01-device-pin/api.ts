@@ -85,6 +85,7 @@ export async function startPosSessionCall(
   writeActingStaffToken({
     token: answer.data.token,
     expiresAt: answer.data.expiresAt,
+    staffUserId: answer.data.staff.id,
   });
   return answer;
 }

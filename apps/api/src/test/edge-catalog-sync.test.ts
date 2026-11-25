@@ -109,6 +109,8 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 import {
+  CATALOG_DOCUMENT_STREAMS,
+  CATALOG_LINK_STREAMS,
   CATALOG_SYNC_STREAMS,
   catalogSyncPageSchema,
   CATALOG_PROTOCOL_VERSION,
@@ -144,7 +146,8 @@ const cloud = await vi.hoisted(async () => {
   return createCatalogCloud();
 });
 
-type Stream = (typeof CATALOG_SYNC_STREAMS)[number];
+/** The relational streams; v4 documents: edge-catalog-v4-streams.test.ts. */
+type Stream = (typeof CATALOG_LINK_STREAMS)[number];
 /** Streams plus the two child tables that now travel inside their parent record. */
 type Table = Stream | "price_list_items" | "recipe_lines";
 type Rec = Record<string, unknown>;
@@ -733,7 +736,7 @@ const edgePriceRows = async () =>
     [MINE.price_list_items],
   );
 
-const catalogCursorStreams = CATALOG_SYNC_STREAMS.map(catalogCheckpointStream);
+const catalogCursorStreams = CATALOG_LINK_STREAMS.map(catalogCheckpointStream);
 const checkpoints = () =>
   edge.rows(
     "SELECT stream, watermark FROM edge_pull_checkpoints WHERE edge_node_id = $1 AND stream = ANY($2::varchar[])",
@@ -1077,7 +1080,11 @@ describe("97p cloud export: paging, tombstones, commit-safe boundary", () => {
   });
 
   it("24318/528 the 13 parent-first streams put promotions before vouchers and keep child documents inline", () => {
-    expect([...CATALOG_SYNC_STREAMS]).toEqual(ORDER);
+    expect([...CATALOG_LINK_STREAMS]).toEqual(ORDER);
+    expect([...CATALOG_SYNC_STREAMS]).toEqual([
+      ...ORDER,
+      ...CATALOG_DOCUMENT_STREAMS,
+    ]);
     expect(CATALOG_SYNC_STREAMS).not.toContain("recipe_lines");
     expect(CATALOG_SYNC_STREAMS).not.toContain("price_list_items");
   });
@@ -1197,7 +1204,7 @@ describe("97p query contract", () => {
 
   it("97p rejects an unknown stream, a limit outside 1..100 and unknown keys", () => {
     const bad = [
-      { stream: "tax_rules" },
+      { stream: "payments" },
       { limit: 10 },
       { stream: "menu_items", limit: 0 },
       { stream: "menu_items", limit: 101 },
@@ -3004,7 +3011,7 @@ describe("97p HTTP: GET /api/edge-sync/catalog", () => {
 
   it("97p refuses an invalid stream or limit with a 4xx", async () => {
     for (const query of [
-      { stream: "tax_rules" },
+      { stream: "payments" },
       { stream: "menu_items", limit: 101 },
       { stream: "menu_items", since: "bukan-cursor" },
       { stream: "price_list_items" },

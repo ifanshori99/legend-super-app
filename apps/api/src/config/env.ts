@@ -265,6 +265,19 @@ const schema = z
       .enum(["true", "false", "1", "0"])
       .optional()
       .transform((value) => value === "true" || value === "1"),
+    // Gate for the paid shower room (1269 F0, founder 25 Nov 2026: deferred
+    // past release 1). Off by default and fail closed. It closes ONLY
+    // facilities whose `facilities.type` is 'shower' (read from the database,
+    // not from the request): ticket sale, slot hold, subscription quota,
+    // entitlement issue (package, minimum spend, tier, promo) and claim,
+    // ticket breakfast and the booth queue answer 403 FACILITY_SHOWER_DISABLED,
+    // write nothing and take no money. Coworking (paid WFC), meeting rooms,
+    // lockers and guest Wi-Fi are not gated. Refunds and cancellations of old
+    // transactions and the staff emergency unit button still work.
+    FACILITY_SHOWER_ENABLED: z
+      .enum(["true", "false", "1", "0"])
+      .optional()
+      .transform((value) => value === "true" || value === "1"),
     // Gate for the DOIT recurring billing back office, /api/payments/recurring
     // (legend-6c6). Off by default: the adapter calls /v1/recurring/*, but the
     // DOIT docs publish /v1/billing/*, so a live call would hit a path DOIT does
@@ -284,7 +297,19 @@ const schema = z
     DUITKU_CALLBACK_BASE_URL: origin(
       "Use the API's public origin, e.g. https://api.example.com.",
     ).optional(),
-    DUITKU_RETURN_URL: z.url().max(255).optional(),
+    // One page for every payment: no query, hash or userinfo, so it can never
+    // carry a token (1269 C2a). Production: the `/bayar/kembali` page.
+    DUITKU_RETURN_URL: z
+      .url()
+      .max(255)
+      .refine((value) => {
+        // Runs after a failed url() too; new URL() would throw with the value.
+        if (!URL.canParse(value)) return false;
+        if (value.includes("?") || value.includes("#")) return false;
+        const url = new URL(value);
+        return url.username === "" && url.password === "";
+      }, "Use a URL without query, hash or user info.")
+      .optional(),
     // 1269 C0: Duitku methods that may take money, comma-separated (qris, va,
     // ewallet, card). Empty by default: every method stays locked until its
     // sandbox proof exists. Status reads of codes already out are not gated.
@@ -806,6 +831,17 @@ const schema = z
           message: "Use an https URL in production (http only on localhost).",
         });
     }
+    if (
+      values.NODE_ENV === "production" &&
+      values.DUITKU_RETURN_URL !== undefined &&
+      URL.canParse(values.DUITKU_RETURN_URL) &&
+      new URL(values.DUITKU_RETURN_URL).pathname !== "/bayar/kembali"
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["DUITKU_RETURN_URL"],
+        message: "Use the /bayar/kembali page in production.",
+      });
     for (const key of [
       "DUITKU_CALLBACK_BASE_URL",
       "DUITKU_RETURN_URL",

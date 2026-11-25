@@ -5,7 +5,8 @@
 // An existing intent never comes through here: it resolves by its own
 // `payment_intents.provider` (PAY-05).
 
-import type { ScopedTenantContext } from "@starter/shared/core";
+import { CoreError, type ScopedTenantContext } from "@starter/shared/core";
+import type { PaymentChannel } from "@starter/shared/payment";
 import {
   integrationProviderSchema,
   isIntegrationProviderAvailable,
@@ -19,6 +20,7 @@ import {
   paymentGatewayFor,
   paymentGatewayLegacyMode,
   type GatewayHealth,
+  type GatewayPaymentMethod,
   type PaymentGatewayPort,
 } from "./payment-gateway";
 import {
@@ -35,7 +37,15 @@ export type GatewaySelection =
     }
   | { readonly provider: null; readonly health: GatewayHealth };
 
-const ONLINE_METHODS = ["qris", "va", "bank_transfer"] as const;
+/** E-wallet and card have no default route, so they count only where a rule
+ * switches them on. */
+export const ONLINE_METHODS = [
+  "qris",
+  "va",
+  "bank_transfer",
+  "ewallet",
+  "card",
+] as const;
 
 /** Platform "enabled" switch. Legacy test mode (one port for every provider)
  * has no platform rows to read, so it counts as enabled. */
@@ -134,6 +144,84 @@ export async function selectGatewayForNewIntent(
       };
   }
   return { provider: null, health: primaryHealth ?? DISABLED_HEALTH };
+}
+
+/**
+ * Does the gateway list this method as enabled right now? Read from the
+ * provider's own `methods()` (PRD §3.13), never from a fixed list, so a locked
+ * method (1269 C0) answers no. A gateway without `methods()` (a test double)
+ * offers QRIS, VA and bank transfer, whose channel list decides, and never
+ * e-wallet or card. A failed read is "no". With `amountIdr` the answer is for
+ * that bill amount.
+ */
+export async function gatewayListsMethod(
+  context: ScopedTenantContext,
+  port: PaymentGatewayPort,
+  method: GatewayPaymentMethod,
+  outletId: string,
+  amountIdr?: number,
+): Promise<boolean> {
+  if (port.methods === undefined)
+    return method !== "ewallet" && method !== "card";
+  try {
+    const listed = await port.methods(context, outletId, amountIdr);
+    return listed.some((entry) => entry.method === method && entry.enabled);
+  } catch {
+    return false;
+  }
+}
+
+export type MethodIssuable = "yes" | "not_offered" | "gateway_down";
+
+/**
+ * Can a new code of this method (and channel) be issued for the amount now?
+ * Asked before an old live code is voided for it (1269 C2a): a refused method
+ * must leave the old code payable. Method and channel are both read at the bill
+ * amount (a bank can be listed at a small amount and be out of limits for this
+ * one). A failed read is unknown, never "no": it throws 503.
+ */
+export async function methodIssuable(
+  context: ScopedTenantContext,
+  outletId: string,
+  routing: ResolvedRouting,
+  choice: {
+    readonly method: GatewayPaymentMethod;
+    readonly channelCode: string | null;
+    readonly amountIdr: number;
+  },
+): Promise<MethodIssuable> {
+  const { method, channelCode, amountIdr } = choice;
+  if (!routing.enabled) return "not_offered";
+  const selected = await selectGatewayForNewIntent(context, outletId, routing);
+  if (selected.provider === null) return "gateway_down";
+  const { port } = selected;
+  let listed: boolean;
+  let channels: readonly PaymentChannel[];
+  try {
+    if (port.methods) {
+      const entry = (await port.methods(context, outletId, amountIdr)).find(
+        (candidate) => candidate.method === method && candidate.enabled,
+      );
+      listed = entry !== undefined;
+      channels = entry?.channels ?? [];
+    } else {
+      listed = await gatewayListsMethod(context, port, method, outletId);
+      channels =
+        listed && channelCode !== null
+          ? await port.channels(context, method, outletId)
+          : [];
+    }
+  } catch {
+    throw new CoreError(
+      "SERVICE_UNAVAILABLE",
+      "Metode pembayaran belum dapat diperiksa. Coba lagi.",
+    );
+  }
+  return listed &&
+    (channelCode === null ||
+      channels.some((channel) => channel.code === channelCode))
+    ? "yes"
+    : "not_offered";
 }
 
 const RANK: Record<GatewayHealth["status"], number> = {

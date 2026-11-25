@@ -34,6 +34,7 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 import {
+  CATALOG_LINK_STREAMS,
   CATALOG_SYNC_STREAMS,
   catalogSyncQuerySchema,
 } from "@starter/shared/edge";
@@ -53,7 +54,7 @@ import {
   type EdgeDatabase,
 } from "./helpers/edge-database.ts";
 
-type Stream = (typeof CATALOG_SYNC_STREAMS)[number];
+type Stream = (typeof CATALOG_LINK_STREAMS)[number];
 type Rec = Record<string, unknown>;
 type Page = {
   stream: Stream;
@@ -117,7 +118,7 @@ const MINE: Record<Stream, string[]> = {
   promotions: [],
   vouchers: [],
 };
-const ORDER: Stream[] = [...CATALOG_SYNC_STREAMS];
+const ORDER: Stream[] = [...CATALOG_LINK_STREAMS];
 const isMine = (stream: Stream, rec: Rec) =>
   MINE[stream].includes(String(rec.id));
 

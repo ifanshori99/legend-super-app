@@ -124,12 +124,12 @@ import {
   removeEdgeNodeForTests,
   withEdgeModeEnv,
 } from "./edge-mode-env.ts";
+import { edgeStaffAgent } from "./edge-staff-session-fixture.ts";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers.ts";
 
 const PROOF_HEADER = "X-Pin-Proof";
 const PIN = "582914";
 const WRONG = "907153";
-const PASSWORD = "Test-password-123!"; // the helpers.ts sign-up password
 const KID = "pin-proof-kid-1";
 
 const edge = createApp({ edgeMode: true });
@@ -655,14 +655,11 @@ describe("(a) the staff who typed the PIN is the staff who is clocked", () => {
     const cashierA = await newStaff("Kasir A Sesi");
     const staffB = await newStaff("Staf B PIN");
     // A is signed in on the shared screen (the edge app).
-    const sessionA = agent(edge);
-    const signIn = await withEdgeModeEnv(async () =>
-      sessionA
-        .post("/api/auth/sign-in/email")
-        .set(originHeader)
-        .send({ email: cashierA.email, password: PASSWORD }),
-    );
-    expect(signIn.status, JSON.stringify(signIn.body)).toBe(200);
+    const sessionA = await edgeStaffAgent(owner, edge, {
+      tenantId: tenant.id,
+      userId: cashierA.userId,
+      device: { id: deviceId, token: deviceToken },
+    });
 
     const proofB = await issueProof(staffB);
     const upload = await uploadSelfie(proofB, { client: sessionA });
@@ -1296,14 +1293,11 @@ describe("(h) the selfie belongs to the proof", () => {
   it("(h) the stored selfie is owned by the proof's staff, whatever session the screen holds", async () => {
     const cashier = await newStaff("Kasir Pemilik Sesi");
     const staff = await newStaff("Staf Pemilik Selfie");
-    const session = agent(edge);
-    const signIn = await withEdgeModeEnv(async () =>
-      session
-        .post("/api/auth/sign-in/email")
-        .set(originHeader)
-        .send({ email: cashier.email, password: PASSWORD }),
-    );
-    expect(signIn.status, JSON.stringify(signIn.body)).toBe(200);
+    const session = await edgeStaffAgent(owner, edge, {
+      tenantId: tenant.id,
+      userId: cashier.userId,
+      device: { id: deviceId, token: deviceToken },
+    });
 
     const proof = await issueProof(staff);
     const upload = await uploadSelfie(proof, { client: session });

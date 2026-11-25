@@ -46,6 +46,7 @@ import {
   tenantIdColumn,
 } from "../columns";
 import { outlets, tenants } from "./platform-org";
+import { syncTxidColumn } from "./sync-txid";
 
 /** One version of a tax rule (§6.C `tax_rules`, D13 PBJT default). */
 export const taxRules = pgTable(
@@ -80,8 +81,14 @@ export const taxRules = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+    syncTxid: syncTxidColumn(),
   },
   (table) => [
+    index("tax_rules_sync_txid_idx").on(
+      table.tenantId,
+      table.syncTxid,
+      table.id,
+    ),
     // Parent key for tax_snapshots' composite foreign key (TEN-01).
     unique("tax_rules_tenant_id_id_key").on(table.tenantId, table.id),
     // One version number per (outlet | tenant-wide) + code. PostgreSQL treats
@@ -159,8 +166,14 @@ export const serviceChargeRules = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+    syncTxid: syncTxidColumn(),
   },
   (table) => [
+    index("service_charge_rules_sync_txid_idx").on(
+      table.tenantId,
+      table.syncTxid,
+      table.id,
+    ),
     unique("service_charge_rules_tenant_id_id_key").on(
       table.tenantId,
       table.id,
@@ -257,8 +270,14 @@ export const taxSettings = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+    syncTxid: syncTxidColumn(),
   },
   (table) => [
+    index("tax_settings_sync_txid_idx").on(
+      table.tenantId,
+      table.syncTxid,
+      table.id,
+    ),
     unique("tax_settings_tenant_id_id_key").on(table.tenantId, table.id),
     uniqueIndex("tax_settings_tenant_outlet_version_key")
       .on(table.tenantId, table.outletId, table.version)

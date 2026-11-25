@@ -5,13 +5,10 @@
 // session is 401; neither the response nor the process logs ever carry the
 // selfie bytes or a PIN.
 //
-// Session helper (assumption): no PIN login route is mounted on the edge, so
-// there is no HTTP way to obtain a "staff PIN" session. The most faithful
-// stand-in is the edge sign-in path (POST /api/auth/sign-in/email, which the
-// edge serves) for a user that has an active employee row and a role with
-// self.attendance.clock scoped to the outlet. The user itself is created on a
-// cloud app instance because sign-up is cloud only. The device token is not
-// involved: the design (section 5) gives the upload route no device check.
+// Session helper: an `edge_staff_pin` session (E2, the only session an edge
+// accepts) of a user that has an active employee row and a role with
+// self.attendance.clock scoped to the outlet, sent with its device's token. The
+// user itself is created on a cloud process because sign-up is cloud only.
 //
 // Other assumptions:
 // - The edge app is createApp({ edgeMode: true }) with EDGE_MODE=true in the
@@ -73,15 +70,16 @@ import {
 } from "@starter/shared/platform";
 import { FakeObjectStorage } from "@starter/shared/adapters";
 import { createApp } from "../app.ts";
-import { signDeviceToken } from "../lib/device-token.ts";
+import { hashDeviceToken, signDeviceToken } from "../lib/device-token.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { edgeStaffAgent } from "./edge-staff-session-fixture.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
 import {
   installEdgeNodeForTests,
   removeEdgeNodeForTests,
+  withCloudModeEnv,
 } from "./edge-mode-env.ts";
 
-const PASSWORD = "Test-password-123!"; // the helpers.ts sign-up password
 const PIN = "482915";
 const EXIF_MARKER = "selfie-marker-5d1e7c";
 const tenant = cafeLegendPlatformFixtures.tenant;
@@ -178,14 +176,21 @@ async function seedOutlet() {
 }
 
 /**
- * A staff member of both outlets who may clock, signed in on the EDGE app.
- * The user is created on the cloud app (sign-up is cloud only).
+ * A staff member of both outlets who may clock, signed in on the EDGE app at
+ * `device` (a new one by default). The user is created on the cloud app
+ * (sign-up is cloud only).
  */
-async function edgeStaff(name: string, app = edge) {
-  const signUpClient = agent(cloud);
-  const email = await signUp(signUpClient, name);
-  const session = await signUpClient.get("/api/auth/get-session");
-  const userId = session.body.user.id as string;
+async function edgeStaff(
+  name: string,
+  app = edge,
+  device?: Awaited<ReturnType<typeof seedDevice>>,
+) {
+  const userId = await withCloudModeEnv(async () => {
+    const signUpClient = agent(cloud);
+    await signUp(signUpClient, name);
+    const session = await signUpClient.get("/api/auth/get-session");
+    return session.body.user.id as string;
+  });
   createdUsers.push(userId);
 
   const roleId = randomUUID();
@@ -225,12 +230,12 @@ async function edgeStaff(name: string, app = edge) {
     );
   });
 
-  const client = agent(app);
-  const signIn = await client
-    .post("/api/auth/sign-in/email")
-    .set(originHeader)
-    .send({ email, password: PASSWORD });
-  expect(signIn.status, JSON.stringify(signIn.body)).toBe(200);
+  const at = device ?? (await seedDevice(sealedOutlet));
+  const client = await edgeStaffAgent(owner, app, {
+    tenantId: tenant.id,
+    userId,
+    device: { id: at.deviceId, token: at.token },
+  });
   return { client, userId };
 }
 
@@ -241,23 +246,27 @@ async function seedDevice(outletId: string) {
   const deviceId = randomUUID();
   createdDevices.push(deviceId);
   const issuedAt = Math.floor(Date.now() / 1000);
+  const token = signDeviceToken({
+    version: 1,
+    tenantId: tenant.id,
+    brandId: null,
+    deviceId,
+    issuedAt,
+  });
   await asTenant((client) =>
     client.query(
-      `INSERT INTO devices (id, tenant_id, outlet_id, type, label, token_issued_at)
-       VALUES ($1, $2, $3, 'pos', 'Layar absen', $4)`,
-      [deviceId, tenant.id, outletId, new Date(issuedAt * 1000)],
+      `INSERT INTO devices (id, tenant_id, outlet_id, type, label, token_issued_at, token_hash)
+       VALUES ($1, $2, $3, 'pos', 'Layar absen', $4, $5)`,
+      [
+        deviceId,
+        tenant.id,
+        outletId,
+        new Date(issuedAt * 1000),
+        hashDeviceToken(token),
+      ],
     ),
   );
-  return {
-    deviceId,
-    token: signDeviceToken({
-      version: 1,
-      tenantId: tenant.id,
-      brandId: null,
-      deviceId,
-      issuedAt,
-    }),
-  };
+  return { deviceId, token };
 }
 
 /** A PIN proof row for (device, user), as /api/staff-pins/verify would issue. */
@@ -452,70 +461,36 @@ afterAll(async () => {
 });
 
 describe("T8 POST /api/storage/uploads on the edge (HTTP)", () => {
-  it.each(scannerCases)(
-    "normalizes $label for session uploads and stores nothing",
-    async ({ app, status, code }) => {
-      const staff = await edgeStaff("Staf Pemindai Sesi", app);
-      const before = filesIn(edgeDir).length;
-      const rowsBefore = await owner.query(
-        "SELECT id FROM core_storage_objects WHERE tenant_id = $1 AND uploaded_by = $2",
-        [tenant.id, staff.userId],
-      );
-      const response = await upload(staff.client, {
-        purpose: "selfie",
-        outletId: sealedOutlet,
-      });
-      expect(response.status, JSON.stringify(response.body)).toBe(status);
-      expect(codeOf(response.body)).toBe(code);
-      expect(JSON.stringify(response.body)).not.toContain(SCANNER_DIAGNOSTIC);
+  // Decision 4: an edge PIN session does not carry self.attendance.clock. The
+  // outlet screen uploads with a PIN proof (below).
+  it.each([
+    ["an outlet with a seal key", () => sealedOutlet],
+    ["an outlet without a seal key", () => keylessOutlet],
+  ] as const)(
+    "refuses a session selfie for %s (403) and stores no file and no row",
+    async (_label, outlet) => {
+      const apps = [edge, ...scannerCases.map((entry) => entry.app)];
+      for (const app of apps) {
+        const staff = await edgeStaff("Staf Unggah Sesi", app);
+        const before = filesIn(edgeDir).length;
+        const response = await upload(staff.client, {
+          purpose: "selfie",
+          outletId: outlet(),
+        });
+        expect(response.status, JSON.stringify(response.body)).toBe(403);
+        expect(codeOf(response.body)).toBe("PERMISSION_DENIED");
+        expect(filesIn(edgeDir)).toHaveLength(before);
+        const rows = await owner.query(
+          "SELECT id FROM core_storage_objects WHERE tenant_id = $1 AND uploaded_by = $2",
+          [tenant.id, staff.userId],
+        );
+        expect(rows.rows).toHaveLength(0);
+        expectNoSecrets(JSON.stringify(response.body), "response");
+      }
       expect(captured.join("\n")).not.toContain(SCANNER_DIAGNOSTIC);
-      expect(filesIn(edgeDir)).toHaveLength(before);
-      const rowsAfter = await owner.query(
-        "SELECT id FROM core_storage_objects WHERE tenant_id = $1 AND uploaded_by = $2",
-        [tenant.id, staff.userId],
-      );
-      expect(rowsAfter.rows).toEqual(rowsBefore.rows);
+      expectNoSecrets(captured.join("\n"), "log output");
     },
   );
-
-  it("accepts a selfie for an outlet with a seal key and keeps only a sealed file", async () => {
-    const staff = await edgeStaff("Staf Unggah Selfie");
-    const response = await upload(staff.client, {
-      purpose: "selfie",
-      outletId: sealedOutlet,
-    });
-    expect(response.status, JSON.stringify(response.body)).toBe(201);
-    expect(response.body.data).toMatchObject({
-      purpose: "selfie",
-      contentType: "image/webp",
-    });
-    expect(typeof response.body.data.id).toBe("string");
-
-    const files = filesIn(edgeDir).filter((file) =>
-      file.includes(response.body.data.id as string),
-    );
-    expect(files).toHaveLength(1);
-    expect(files[0]!.endsWith(".lss")).toBe(true);
-
-    expectNoSecrets(JSON.stringify(response.body), "response");
-    expectNoSecrets(JSON.stringify(response.headers), "response headers");
-    expectNoSecrets(captured.join("\n"), "log output");
-  });
-
-  it("answers 503 SELFIE_SEAL_KEY_MISSING for an outlet without a seal key and stores nothing", async () => {
-    const staff = await edgeStaff("Staf Unggah Tanpa Kunci");
-    const before = filesIn(edgeDir).length;
-    const response = await upload(staff.client, {
-      purpose: "selfie",
-      outletId: keylessOutlet,
-    });
-    expect(response.status, JSON.stringify(response.body)).toBe(503);
-    expect(codeOf(response.body)).toBe("SELFIE_SEAL_KEY_MISSING");
-    expect(filesIn(edgeDir)).toHaveLength(before);
-
-    expectNoSecrets(JSON.stringify(response.body), "response");
-    expectNoSecrets(captured.join("\n"), "log output");
-  });
 
   it("refuses every purpose other than selfie (403 when the staff role lacks it, else 503) and stores nothing", async () => {
     const staff = await edgeStaff("Staf Unggah Purpose Lain");
@@ -636,14 +611,46 @@ describe("legend-u7g9w POST /api/storage/uploads with X-Pin-Proof (HTTP)", () =>
       file.includes(response.body.data.id as string),
     );
     expect(files).toHaveLength(1);
+    expect(files[0]!.endsWith(".lss")).toBe(true);
+    expect(response.body.data).toMatchObject({
+      purpose: "selfie",
+      contentType: "image/webp",
+    });
     expectNoSecrets(JSON.stringify(response.body), "response");
+    expectNoSecrets(JSON.stringify(response.headers), "response headers");
     expectNoSecrets(captured.join("\n"), "log output");
   });
 
+  it("answers 503 SELFIE_SEAL_KEY_MISSING for an outlet without a seal key and stores nothing", async () => {
+    installEdgeNodeForTests({ tenantId: tenant.id, outletId: keylessOutlet });
+    try {
+      const staff = await edgeStaff("Staf Unggah Tanpa Kunci");
+      const device = await seedDevice(keylessOutlet);
+      const proof = await seedProof(device, keylessOutlet, staff.userId);
+      const before = filesIn(edgeDir).length;
+      const response = await proofUpload(
+        { deviceToken: device.token, proof: proof.token },
+        { purpose: "selfie", outletId: keylessOutlet },
+      );
+      expect(response.status, JSON.stringify(response.body)).toBe(503);
+      expect(codeOf(response.body)).toBe("SELFIE_SEAL_KEY_MISSING");
+      expect(filesIn(edgeDir)).toHaveLength(before);
+      const objects = await owner.query(
+        "SELECT id FROM core_storage_objects WHERE tenant_id = $1 AND pin_proof_id = $2",
+        [tenant.id, proof.id],
+      );
+      expect(objects.rows).toHaveLength(0);
+      expectNoSecrets(JSON.stringify(response.body), "response");
+      expectNoSecrets(captured.join("\n"), "log output");
+    } finally {
+      installEdgeNodeForTests({ tenantId: tenant.id, outletId: sealedOutlet });
+    }
+  });
+
   it("owner is the proof's staff even when another user's session cookie is sent", async () => {
-    const cashier = await edgeStaff("Kasir Sesi Unggah");
-    const staff = await edgeStaff("Staf Bukti Unggah");
     const device = await seedDevice(sealedOutlet);
+    const cashier = await edgeStaff("Kasir Sesi Unggah", edge, device);
+    const staff = await edgeStaff("Staf Bukti Unggah");
     const proof = await seedProof(device, sealedOutlet, staff.userId);
     const response = await proofUpload(
       { deviceToken: device.token, proof: proof.token },

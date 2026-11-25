@@ -319,6 +319,10 @@ export function createDeviceRecordsFetcher(
       // (only a bound primary applies them); every retry stage drops it.
       if (withWriteoffs && options.edgeInstanceId !== undefined)
         query.set("receiptWriteoffs", "1");
+      // E2 (brief 1269): opt in to the device token digests, with the same
+      // first attempt and the same fallback for an older cloud.
+      if (withWriteoffs && options.edgeInstanceId !== undefined)
+        query.set("deviceTokenHashes", "1");
     }
     return `${DEVICE_RECORDS_PATH}?${query.toString()}`;
   };

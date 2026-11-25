@@ -58,6 +58,12 @@ import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
 import { signDeviceToken } from "../lib/device-token.ts";
 import {
+  getRequestContext,
+  runWithEdgeDevice,
+  setRequestAuthMethod,
+  setRequestUser,
+} from "../lib/request-context.ts";
+import {
   setDeviceOutletResolver,
   setStaffPin,
 } from "../services/device-pin.service.ts";
@@ -303,6 +309,25 @@ describe("KDS socket: personal device is unaffected", () => {
       upgrade({ cookie: session.cookie }),
     );
     expect(result?.userId).toBe(personal.userId);
+  });
+
+  // `recheckKdsSockets` resolves every open screen inside the request of the
+  // manager who revoked a device.
+  it("a recheck inside another user's request leaves that request's identity alone", async () => {
+    const session = await login(personal);
+    const manager = randomUUID();
+    await runWithEdgeDevice(undefined, async () => {
+      setRequestUser(manager);
+      setRequestAuthMethod("magic_link");
+      const result = await resolveKdsStaffConnection(
+        upgrade({ cookie: session.cookie }),
+      );
+      expect(result?.userId).toBe(personal.userId);
+      expect(getRequestContext()).toMatchObject({
+        userId: manager,
+        authMethod: "magic_link",
+      });
+    });
   });
 
   it("an unflagged registered device token needs no acting token", async () => {

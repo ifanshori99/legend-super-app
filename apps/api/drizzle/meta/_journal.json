@@ -3571,6 +3571,20 @@
       "when": 1795170290617,
       "tag": "0523_period_close_override_grants",
       "breakpoints": true
+    },
+    {
+      "idx": 524,
+      "version": "7",
+      "when": 1795617218155,
+      "tag": "0524_edge_staff_pin_sessions",
+      "breakpoints": true
+    },
+    {
+      "idx": 525,
+      "version": "7",
+      "when": 1795617701872,
+      "tag": "0525_edge_catalog_v4",
+      "breakpoints": true
     }
   ]
 }

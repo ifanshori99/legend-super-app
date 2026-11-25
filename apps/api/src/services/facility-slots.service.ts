@@ -81,6 +81,7 @@ import { unitAcceptsSlot, unitIsBookable } from "./facility-rules.ts";
 import { resolveOperatingHoursOn } from "./facility-hours-versions.service.ts";
 import { outlets } from "../db/schema/platform-org.ts";
 import { outletBusinessDayClock } from "./outlet-clock.ts";
+import { assertFacilityOpen } from "./facility-shower-gate.ts";
 
 /** Time zone + business day cutoff of the outlet (hours versions are keyed by business date). */
 async function outletClock(tx: Tx, tenantId: TenantId, outletId: string) {
@@ -302,6 +303,7 @@ async function buildFacilityAvailability(
     const tenantId = context.tenant.tenantId;
     const facility = await loadFacility(tx, context, query.facilityId);
     await authorize?.(tx, facility);
+    assertFacilityOpen(facility);
     const timeZone = await outletTimeZone(tx, context, facility.outletId);
     if (query.areaId) {
       const area = await loadArea(tx, context, query.areaId);
@@ -492,6 +494,7 @@ export async function holdFacilitySlot(
   const input = holdSlotInputSchema.parse(rawInput);
   const tenantId = context.tenant.tenantId;
   const facility = await loadFacility(tx, context, input.facilityId);
+  assertFacilityOpen(facility);
   assertOutletInScope(context.outletScope, facility.outletId);
   const area = await loadArea(tx, context, input.areaId);
   if (area.facilityId !== facility.id)

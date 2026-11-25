@@ -419,6 +419,56 @@ describe("legend-tkycp T2 people snapshot apply on the edge", () => {
     ]);
   });
 
+  it("E2 a user who stays but holds no assignment any more loses the edge PIN session; others and other sessions stay", async () => {
+    const demoted = person();
+    const ended = person();
+    const other = person();
+    const role = build.role();
+    const people = {
+      users: [demoted.user, ended.user, other.user],
+      roles: [role],
+      employees: [demoted.employee, ended.employee, other.employee],
+    };
+    const otherAssignment = build.assignment(id(other.user), id(role));
+    const endedAssignment = build.assignment(id(ended.user), id(role));
+    await apply(
+      build.snapshot({
+        ...people,
+        roleAssignments: [
+          build.assignment(id(demoted.user), id(role)),
+          endedAssignment,
+          otherAssignment,
+        ],
+      }),
+    );
+    for (const who of [demoted, ended, other]) {
+      await addSession(id(who.user));
+      await edge.rows(
+        `INSERT INTO session (id, expires_at, token, user_id, tenant_id, auth_method, edge_device_id)
+         VALUES ($1, now() + interval '1 day', $2, $3, $4, 'edge_staff_pin', $5)`,
+        [randomUUID(), randomUUID(), id(who.user), tenantId, randomUUID()],
+      );
+    }
+    await apply(
+      build.snapshot({
+        ...people,
+        roleAssignments: [
+          {
+            ...endedAssignment,
+            validFrom: "2026-01-01T00:00:00.000Z",
+            validUntil: "2026-01-02T00:00:00.000Z",
+          },
+          otherAssignment,
+        ],
+      }),
+      '"etag-2"',
+      T2,
+    );
+    expect(await sessionCount(id(demoted.user))).toBe(1);
+    expect(await sessionCount(id(ended.user))).toBe(1);
+    expect(await sessionCount(id(other.user))).toBe(2);
+  });
+
   it("an employee moved out of the outlet is detached, their user banned and sessions gone", async () => {
     const gone = person();
     const stays = person();

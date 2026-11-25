@@ -146,15 +146,13 @@ async function asTenant<T>(run: (client: PoolClient) => Promise<T>) {
 
 /** A real press on the edge: returns the alert id (read from the press link). */
 async function pressAlert(): Promise<string> {
-  const enrolled = await withEdgeModeEnv(() =>
-    enrollDevice(scope(), actor, {
-      outletId,
-      type: "panic_button",
-      label: `Tombol ${randomUUID().slice(0, 6)}`,
-      stationId: null,
-      idempotencyKey: randomUUID(),
-    }),
-  );
+  const enrolled = await enrollDevice(scope(), actor, {
+    outletId,
+    type: "panic_button",
+    label: `Tombol ${randomUUID().slice(0, 6)}`,
+    stationId: null,
+    idempotencyKey: randomUUID(),
+  });
   const eventId = `evt-${randomUUID()}`;
   const response = await withEdgeModeEnv(() =>
     agent(edge)
@@ -306,17 +304,14 @@ beforeAll(async () => {
   const authenticated = await authenticateEdgeCredential(registered.credential);
   if (!authenticated) throw new Error("Edge node did not authenticate");
   node = authenticated;
-  // legend-91u09: enrolling is refused on an edge whose device registry is not
-  // judged yet, so enroll as the registered edge node (registry loaded).
-  const enrolled = await withEdgeModeEnv(() =>
-    enrollDevice(scope(), actor, {
-      outletId,
-      type: "pos",
-      label: `Layar darurat ${randomUUID().slice(0, 6)}`,
-      stationId: null,
-      idempotencyKey: randomUUID(),
-    }),
-  );
+  // E2: devices are enrolled on the cloud, which stores the token digest.
+  const enrolled = await enrollDevice(scope(), actor, {
+    outletId,
+    type: "pos",
+    label: `Layar darurat ${randomUUID().slice(0, 6)}`,
+    stationId: null,
+    idempotencyKey: randomUUID(),
+  });
   posDevice = { id: enrolled.device.id, token: enrolled.token };
 }, 120_000);
 

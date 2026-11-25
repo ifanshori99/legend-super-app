@@ -64,6 +64,8 @@ import { and, eq, inArray, notInArray, sql } from "drizzle-orm";
 import {
   CATALOG_PROTOCOL_MIN_VERSION,
   CATALOG_PROTOCOL_VERSION,
+  CATALOG_TAX_STREAMS,
+  isCatalogTaxStream,
   CATALOG_SYNC_LIMIT_DEFAULT,
   EDGE_CATALOG_SYNC_PATH,
   type CatalogSyncStream,
@@ -100,7 +102,9 @@ import {
 import type { EdgeBootstrapConfig, EdgeBootstrapOptions } from "./bootstrap.ts";
 import { cloudGetJson, EdgeCloudHttpError } from "./cloud-http.ts";
 import {
+  CATALOG_REWIND_MARK,
   catalogCheckpointStream,
+  catalogReplayCheckpoint,
   pullCatalog,
   type PullCatalogOptions,
 } from "./catalog-puller.ts";
@@ -211,9 +215,54 @@ export async function loadCatalogLastSuccess(
 }
 
 /**
+ * Tax streams whose stored rules are not proven whole: rewound, a replay not
+ * confirmed, or a pull cut half way (epoch). Throws when unreadable.
+ */
+async function loadOpenTaxStreams(
+  context: ScopedTenantContext,
+  edgeNodeId: string,
+  database: typeof db = db,
+): Promise<Set<string>> {
+  const rows = await withTenant(database, context, (tx) =>
+    tx
+      .select({
+        stream: edgePullCheckpoints.stream,
+        watermark: edgePullCheckpoints.watermark,
+        lastSuccessAt: edgePullCheckpoints.lastSuccessAt,
+      })
+      .from(edgePullCheckpoints)
+      .where(
+        and(
+          eq(edgePullCheckpoints.edgeNodeId, edgeNodeId),
+          inArray(
+            edgePullCheckpoints.stream,
+            CATALOG_TAX_STREAMS.flatMap((stream) => [
+              catalogCheckpointStream(stream),
+              catalogReplayCheckpoint(stream),
+            ]),
+          ),
+        ),
+      ),
+  );
+  return new Set(
+    CATALOG_TAX_STREAMS.filter((stream) =>
+      rows.some(
+        (row) =>
+          row.stream === catalogReplayCheckpoint(stream) ||
+          (row.stream === catalogCheckpointStream(stream) &&
+            (row.watermark === CATALOG_REWIND_MARK ||
+              row.lastSuccessAt.getTime() === 0)),
+      ),
+    ),
+  );
+}
+
+/**
  * Boot: seed the freshness tracker with each critical stream's last success
  * from the pull checkpoint, so a restart neither hides a stale catalog nor
- * dates it differently from the pull (same `last_success_at` value).
+ * dates it differently from the pull (same `last_success_at` value). A tax
+ * stream that is rewound or half read stays held. Nothing is seeded unless both
+ * reads succeed: an unreadable checkpoint leaves the tax unsynced (held).
  */
 export async function seedCatalogFreshness(
   freshness: CatalogFreshnessTracker,
@@ -221,12 +270,10 @@ export async function seedCatalogFreshness(
   edgeNodeId: string,
   database: typeof db = db,
 ): Promise<void> {
-  for (const [stream, at] of await loadCatalogLastSuccess(
-    context,
-    edgeNodeId,
-    database,
-  ))
-    freshness.seedLastSuccess(stream, at);
+  const seeded = await loadCatalogLastSuccess(context, edgeNodeId, database);
+  const open = await loadOpenTaxStreams(context, edgeNodeId, database);
+  freshness.setTaxOpen(open);
+  for (const [stream, at] of seeded) freshness.seedLastSuccess(stream, at);
 }
 
 export type EdgeMasterSyncCounts = {
@@ -878,14 +925,29 @@ export function startEdgeMasterSyncLoop(input: {
   const pullCatalogRounds = async (): Promise<void> => {
     const claims = parseEdgeCredential(input.config.credential);
     if (!claims) throw new EdgeMasterSyncError("EDGE_NODE_CREDENTIAL");
-    if (masterCapabilities.get(input.config)?.pending)
-      throw new EdgeMasterSyncError("MASTERS_INCOMPLETE");
-    guardMasterImport();
     const catalog = input.catalog;
     const context = catalog?.context ?? edgeNodeContext(claims);
     const edgeNodeId = catalog?.edgeNodeId ?? claims.edgeNodeId;
     const pull = catalog?.pull ?? pullCatalog;
     const freshness = catalog?.freshness;
+    const holdOpenTax = async () => {
+      if (!freshness) return;
+      try {
+        freshness.setTaxOpen(
+          await loadOpenTaxStreams(context, edgeNodeId, input.database),
+        );
+      } catch (error) {
+        // A passing read error neither holds nor releases: the last known set
+        // stays until the next read (boot is the one that fails closed).
+        report(error);
+      }
+    };
+    // Before anything that can fail: an operator's rewind holds sales even
+    // when the cloud cannot be reached.
+    await holdOpenTax();
+    if (masterCapabilities.get(input.config)?.pending)
+      throw new EdgeMasterSyncError("MASTERS_INCOMPLETE");
+    guardMasterImport();
     for (let round = 0; round < MAX_CATALOG_ROUNDS && !stopped; round += 1) {
       const result = await pull({
         context,
@@ -897,6 +959,7 @@ export function startEdgeMasterSyncLoop(input: {
         // catalog immediately, including after the next restart.
         now: freshness ? () => freshness.now() : undefined,
       });
+      await holdOpenTax();
       const entries = Object.entries(result.streams);
       // A stream skipped after its parent failed (CATALOG_PARENT_FAILED) is
       // unreachable only when every root failure of the round was.
@@ -921,7 +984,11 @@ export function startEdgeMasterSyncLoop(input: {
                 : isOfflineFailureCode(code)),
             });
           report(new EdgeCatalogSyncError(stream, code));
-        } else if (!stopped)
+        } else if (
+          !stopped &&
+          // Half a tax rule set (a backlog) is not a success.
+          !(isCatalogTaxStream(stream) && outcome.lastSuccessAt === null)
+        )
           freshness?.recordSuccess(stream, outcome.lastSuccessAt ?? undefined);
       }
       if (!result.backlog) break;

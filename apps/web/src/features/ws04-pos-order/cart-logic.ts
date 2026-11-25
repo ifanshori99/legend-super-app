@@ -7,6 +7,7 @@
 import type {
   CartLine,
   MenuItem,
+  MenuVariant,
   OrderLine,
   SelectedModifier,
 } from "./types.ts";
@@ -14,6 +15,8 @@ import type {
 export const MAX_LINE_QUANTITY = 99;
 
 export interface AddLineOptions {
+  /** Required when the item has variants; ignored (null) otherwise. */
+  variant?: MenuVariant | null;
   modifiers: SelectedModifier[];
   note: string;
   quantity: number;
@@ -31,6 +34,7 @@ function clampQuantity(quantity: number): number {
  */
 function lineSignature(
   menuItemId: string,
+  variantId: string | null,
   modifiers: readonly SelectedModifier[],
   note: string,
   hold: boolean,
@@ -39,11 +43,30 @@ function lineSignature(
     .map((modifier) => `${modifier.groupId}:${modifier.optionId}`)
     .sort()
     .join("|");
-  return `${menuItemId}#${picked}#${note.trim()}#${hold ? "held" : "now"}`;
+  return `${menuItemId}@${variantId ?? ""}#${picked}#${note.trim()}#${hold ? "held" : "now"}`;
 }
 
 function newLineId(): string {
   return `line-${globalThis.crypto.randomUUID()}`;
+}
+
+/** True when the cashier must choose a variant or a modifier before adding. */
+export function needsChoice(
+  item: Pick<MenuItem, "variants" | "modifierGroups">,
+): boolean {
+  return item.variants.length > 0 || item.modifierGroups.length > 0;
+}
+
+/**
+ * An item with variants needs one of its own variants; an item without
+ * variants takes none. The server refuses a missing variant too.
+ */
+export function validateVariant(
+  item: Pick<MenuItem, "variants">,
+  variantId: string | null,
+): boolean {
+  if (item.variants.length === 0) return variantId === null;
+  return item.variants.some((variant) => variant.id === variantId);
 }
 
 /** Base price plus the price delta of every chosen option; whole rupiah. */
@@ -68,13 +91,27 @@ export function addLine(
   item: MenuItem,
   opts: AddLineOptions,
 ): CartLine[] {
+  const variant = item.variants.length > 0 ? (opts.variant ?? null) : null;
+  // A variant item without a valid variant is not added: the dialog asks for it.
+  if (!validateVariant(item, variant?.id ?? null)) return [...lines];
   const quantity = clampQuantity(opts.quantity);
   const note = opts.note.trim();
-  const signature = lineSignature(item.id, opts.modifiers, note, false);
+  const signature = lineSignature(
+    item.id,
+    variant?.id ?? null,
+    opts.modifiers,
+    note,
+    false,
+  );
   const existing = lines.find(
     (line) =>
-      lineSignature(line.menuItemId, line.modifiers, line.note, line.hold) ===
-      signature,
+      lineSignature(
+        line.menuItemId,
+        line.variantId,
+        line.modifiers,
+        line.note,
+        line.hold,
+      ) === signature,
   );
   if (existing)
     return lines.map((line) =>
@@ -90,8 +127,10 @@ export function addLine(
     {
       lineId: newLineId(),
       menuItemId: item.id,
+      variantId: variant?.id ?? null,
+      variantName: variant?.name ?? null,
       name: item.name,
-      unitPriceIdr: item.priceIdr,
+      unitPriceIdr: variant?.priceIdr ?? item.priceIdr,
       quantity,
       modifiers: opts.modifiers.map((modifier) => ({ ...modifier })),
       note,

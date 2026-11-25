@@ -7,9 +7,9 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 import {
-  CATALOG_SYNC_STREAMS,
+  CATALOG_LINK_STREAMS,
   catalogRecordUpdatedEvent,
-  type CatalogSyncStream,
+  type CatalogLinkStream,
 } from "@starter/shared/edge";
 import { db } from "../db/index.ts";
 import { edgeNodes } from "../db/schema/edge-node.ts";
@@ -32,7 +32,7 @@ type PublisherNode = {
   tenantId: VerifiedEdgeNode["tenantId"];
   outletId: VerifiedEdgeNode["outletId"];
   edgeNodeId: string;
-  stream: CatalogSyncStream;
+  stream: CatalogLinkStream;
 };
 
 class PublisherBrandChanged extends Error {}
@@ -229,7 +229,7 @@ export async function sweepCatalogPublisher(database: Database): Promise<void> {
       return [];
     });
     for (const node of nodes)
-      for (const stream of CATALOG_SYNC_STREAMS) {
+      for (const stream of CATALOG_LINK_STREAMS) {
         try {
           let count: number;
           do {

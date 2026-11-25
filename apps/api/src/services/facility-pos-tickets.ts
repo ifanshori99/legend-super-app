@@ -58,6 +58,7 @@ import {
   facilityTicketPosLines,
 } from "../db/schema/facility-pos-ticket.ts";
 import { orders } from "../db/schema/qr-order.ts";
+import { assertFacilityIdsOpen } from "./facility-shower-gate.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { enqueueTicketOnEdge } from "./facility-pos-ticket-print.ts";
@@ -279,6 +280,15 @@ export async function assertPosTicketsIssuable(
   orderId: string,
 ): Promise<void> {
   const linked = await lockLinked(tx, context.tenant.tenantId, orderId, null);
+  // 1269 F0: a bill still holding a pending shower ticket takes no money while
+  // the shower is deferred; the cashier voids the ticket line to go on.
+  await assertFacilityIdsOpen(
+    tx,
+    context.tenant.tenantId,
+    linked
+      .filter(({ line }) => line.status === "pending")
+      .map(({ ticket }) => ticket.facilityId),
+  );
   for (const { line, ticket } of linked)
     if (line.status === "pending" && ticket.status !== "pending_payment")
       throw new HttpError(
@@ -323,6 +333,13 @@ export async function issuePosTicketsForPaidOrder(
 ): Promise<void> {
   const tenantId = context.tenant.tenantId;
   const linked = await lockLinked(tx, tenantId, input.orderId, null);
+  await assertFacilityIdsOpen(
+    tx,
+    tenantId,
+    linked
+      .filter(({ line }) => line.status === "pending")
+      .map(({ ticket }) => ticket.facilityId),
+  );
   for (const { line, ticket } of linked) {
     if (line.status !== "pending") continue;
     const status = transitionTicket(ticket.status, "mark_paid");
@@ -579,6 +596,7 @@ export async function issuePosTicketCredential(
       .limit(1)
       .for("update");
     if (!row) throw new HttpError(404, "NOT_FOUND", "Tiket tidak ditemukan.");
+    await assertFacilityIdsOpen(tx, tenantId, [row.facilityId]);
     if (row.status === "pending_payment")
       throw new HttpError(
         409,

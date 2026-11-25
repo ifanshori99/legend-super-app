@@ -34,6 +34,7 @@ import {
   sortActiveAlerts,
   useElapsedSeconds,
 } from "../view.ts";
+import { boardFacility } from "../staff-facility.ts";
 import {
   OfflineNotice,
   StaffEmpty,
@@ -146,6 +147,10 @@ export function EmergencyScreen({ facilityId }: { facilityId?: string }) {
   const toast = useToast();
   const { timeZone } = useOutletClock();
   const { facilities, facility, config } = useStaffFacility(facilityId);
+  // 1269 F0: the board and incident links never lead to a deferred shower.
+  const list = facilities.data?.data ?? [];
+  const boardTarget = boardFacility(list, facility);
+  const boardsOpen = list.length === 0 || boardTarget !== null;
   const board = useUnitBoard(facility?.id ?? null);
   const incidents = useIncidents(facility?.id ?? null);
   const raise = useRaiseFacilityIncident();
@@ -258,7 +263,12 @@ export function EmergencyScreen({ facilityId }: { facilityId?: string }) {
         }
       />
 
-      <StaffSubNav current="emergency" facilityId={facility?.id} />
+      <StaffSubNav
+        current="emergency"
+        facilityId={facility?.id}
+        boardFacilityId={boardTarget?.id}
+        boardsOpen={boardsOpen}
+      />
       <OfflineNotice hintKey="facilityStaff.emergency.offlineHint" />
 
       {loading && (
@@ -292,11 +302,13 @@ export function EmergencyScreen({ facilityId }: { facilityId?: string }) {
           hintKey="facilityStaff.emergency.empty.hint"
           icon={ShieldAlert}
           action={
-            <Button asChild variant="outline" size="sm">
-              <Link to="/fasilitas" search={{ facilityId }}>
-                {t("facilityStaff.common.openBoard")}
-              </Link>
-            </Button>
+            boardsOpen && (
+              <Button asChild variant="outline" size="sm">
+                <Link to="/fasilitas" search={{ facilityId: boardTarget?.id }}>
+                  {t("facilityStaff.common.openBoard")}
+                </Link>
+              </Button>
+            )
           }
         />
       )}
@@ -307,11 +319,13 @@ export function EmergencyScreen({ facilityId }: { facilityId?: string }) {
           hintKey="facilityStaff.emergency.empty.hint"
           icon={ShieldAlert}
           action={
-            <Button asChild variant="outline" size="sm">
-              <Link to="/fasilitas" search={{ facilityId: facility.id }}>
-                {t("facilityStaff.common.openBoard")}
-              </Link>
-            </Button>
+            boardsOpen && (
+              <Button asChild variant="outline" size="sm">
+                <Link to="/fasilitas" search={{ facilityId: boardTarget?.id }}>
+                  {t("facilityStaff.common.openBoard")}
+                </Link>
+              </Button>
+            )
           }
         />
       )}
@@ -537,15 +551,17 @@ export function EmergencyScreen({ facilityId }: { facilityId?: string }) {
                   {t("facilityStaff.emergency.logHint")}
                 </p>
               </div>
-              <Button asChild variant="outline" size="sm">
-                <Link
-                  to="/fasilitas/insiden"
-                  search={{ facilityId: facility.id }}
-                >
-                  <ShieldAlert aria-hidden="true" />
-                  {t("facilityStaff.common.openIncidents")}
-                </Link>
-              </Button>
+              {boardsOpen && (
+                <Button asChild variant="outline" size="sm">
+                  <Link
+                    to="/fasilitas/insiden"
+                    search={{ facilityId: boardTarget?.id }}
+                  >
+                    <ShieldAlert aria-hidden="true" />
+                    {t("facilityStaff.common.openIncidents")}
+                  </Link>
+                </Button>
+              )}
             </div>
           </Card>
         </>

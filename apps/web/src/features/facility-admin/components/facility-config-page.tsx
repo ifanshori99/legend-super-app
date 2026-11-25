@@ -6,6 +6,7 @@ import * as React from "react";
 import { Link } from "@tanstack/react-router";
 import { ArrowLeft } from "lucide-react";
 import type { MessageKey } from "@starter/shared/i18n";
+import { isFacilityTypeReleased } from "@starter/shared/facility";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -127,6 +128,10 @@ export function FacilityConfigPage({ facilityId }: { facilityId: string }) {
 
   const hours = summarizeOperatingHours(config.facility.operatingHours, t);
   const menuItems = menuQuery.data ?? [];
+  // 1269 F0: a deferred shower keeps only its guest Wi-Fi policy editable.
+  const released = isFacilityTypeReleased(config.facility.type);
+  const tabs = released ? TABS : TABS.filter((item) => item.key === "wifi");
+  const activeTab = released ? tab : "wifi";
 
   return (
     <div
@@ -151,11 +156,11 @@ export function FacilityConfigPage({ facilityId }: { facilityId: string }) {
       </div>
 
       <Tabs
-        value={tab}
+        value={activeTab}
         onValueChange={(value) => setTab(value as ConfigTabKey)}
       >
         <TabsList aria-label={t("facilityAdmin.config.tabsLabel")}>
-          {TABS.map((item) => (
+          {tabs.map((item) => (
             <TabsTrigger key={item.key} value={item.key}>
               {t(item.labelKey)}
             </TabsTrigger>

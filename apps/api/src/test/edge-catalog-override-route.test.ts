@@ -40,6 +40,7 @@ import {
 import { setCatalogOverrideClock } from "../edge/catalog-override.ts";
 import { registerEdgeNode } from "../services/edge-node.service.ts";
 import {
+  cloudSignIn,
   agent,
   originHeader,
   setRole,
@@ -61,7 +62,7 @@ const REASON = "Internet toko mati sejak pagi";
 type Staff = { client: ReturnType<typeof agent>; userId: string };
 
 /**
- * Sign-up is cloud only (edgeRouteGuard); the edge app only signs in. Same
+ * Sign-up and password sign-in are cloud only (edgeRouteGuard). Same
  * pattern as edge-print-api.test.ts. One seeded role template, tenant scope.
  */
 async function staffWithRole(
@@ -78,11 +79,7 @@ async function staffWithRole(
   const email = await signUp(agent(createApp()), input.label);
   await setRole(email, null);
   const client = agent(app);
-  const signIn = await client
-    .post("/api/auth/sign-in/email")
-    .set(originHeader)
-    .send({ email, password: "Test-password-123!" });
-  expect(signIn.status).toBe(200);
+  client.set("Cookie", await cloudSignIn(email));
   if (input.mfa !== false) await verifySessionMfa(email);
   const session = await client.get("/api/auth/get-session");
   const userId = session.body.user.id as string;

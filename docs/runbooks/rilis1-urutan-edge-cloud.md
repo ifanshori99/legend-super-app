@@ -20,8 +20,9 @@ Perilaku edge lama terhadap event katalog dan field `sharedMode` belum diverifik
 Build edge dan cloud yang sama, dari commit rilis yang sama. Belum ada edge lama di lapangan dan belum ada katalog tersinkron di edge, jadi tidak ada pihak yang menolak record dari pihak lain. Urutan:
 
 1. Cloud: jalankan pre-deploy check dan migrasi (`docs/deployment.md`, bagian "Gerbang rilis 1"), lalu naikkan API, web, dan worker.
-2. Edge outlet percobaan dengan image yang sama, lalu outlet lain satu per satu setelah sync outlet percobaan sehat.
-3. Selesaikan daftar cek push alarm di bawah sebelum alarm panik dianggap aktif.
+2. Impor konfigurasi tenant, lalu pastikan data shower nol (`docs/runbooks/rilis1-shower-nol-data.md`, 1269 F0). Jangan lanjut dan jangan membuka outlet bila ada angka yang tidak 0.
+3. Edge outlet percobaan dengan image yang sama, lalu outlet lain satu per satu setelah sync outlet percobaan sehat.
+4. Selesaikan daftar cek push alarm di bawah sebelum alarm panik dianggap aktif.
 
 Catatan: pada instalasi pertama, jangan memindahkan brand outlet sebelum semua edge berversi `EDGE_NODE_VERSION` >= `EDGE_LINK_PLACEHOLDER_MIN_VERSION` (lihat bagian "Edge host" di `docs/deployment.md`, legend-3k41y).
 

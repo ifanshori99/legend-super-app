@@ -178,6 +178,8 @@ export async function resolvePosPaymentIntent(
         key?.startsWith("edc_standalone:") ? "edc_standalone" : "void",
         outletId,
         now,
+        // Settled only after this approver's own PIN (step 2).
+        true,
       ))
     )
       throw new AccessError(

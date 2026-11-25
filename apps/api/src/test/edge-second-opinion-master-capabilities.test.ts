@@ -20,6 +20,7 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
+import { CATALOG_PROTOCOL_VERSION } from "@starter/shared/edge";
 import { edgeMasterSnapshotResponseSchema } from "@starter/shared/edge/master-sync";
 import { uomIdSchema } from "@starter/shared/inventory";
 import { createApp } from "../app.ts";
@@ -515,7 +516,7 @@ describe("#818 P1-2 master/catalog capability pairing", () => {
     const via = proxy(small, "strip-header");
     await runRounds(small, edge, via);
     expect(via.masterVersions).toContain(2);
-    expect(via.catalogVersions).toContain(3);
+    expect(via.catalogVersions).toContain(CATALOG_PROTOCOL_VERSION);
     expect(
       await edge.rows("SELECT id FROM brands WHERE id=$1", [small.recipeBrand]),
     ).toHaveLength(1);
@@ -768,7 +769,11 @@ describe("#818 P1-2 master/catalog capability pairing", () => {
     await settleCloud(owner);
     via.catalogVersions.splice(0);
     await runRounds(f, edge, via);
-    expect(via.catalogVersions.every((version) => version === 3)).toBe(true);
+    expect(
+      via.catalogVersions.every(
+        (version) => version === CATALOG_PROTOCOL_VERSION,
+      ),
+    ).toBe(true);
     expect(
       await edge.rows("SELECT id FROM brands WHERE tenant_id=$1", [
         f.world.tenantId,
@@ -792,7 +797,7 @@ describe("#818 P1-2 master/catalog capability pairing", () => {
     const edge = await makeEdge(f);
     const via = proxy(f, "strip-header");
     await runRounds(f, edge, via, 1);
-    expect(via.catalogVersions).toContain(3);
+    expect(via.catalogVersions).toContain(CATALOG_PROTOCOL_VERSION);
     via.catalogVersions.splice(0);
     const rig = await salesRig(f, edge);
     const claims = parseEdgeCredential(f.credential);
@@ -838,7 +843,7 @@ describe("#818 P1-2 master/catalog capability pairing", () => {
     ).toEqual([{ recipe_id: f.crossRecipe }]);
     via.catalogVersions.splice(0);
     await runRounds(f, edge, via, 1);
-    expect(via.catalogVersions).toContain(3);
+    expect(via.catalogVersions).toContain(CATALOG_PROTOCOL_VERSION);
   }, 120_000);
 
   it("verifies the signed continuation cursor before following it", async () => {

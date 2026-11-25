@@ -14,6 +14,15 @@ const mockWebUrl = process.env.LEGEND_MOCK_WEB_URL;
 test.skip(!mockWebUrl, "Requires the mock-mode web server");
 test.use({ baseURL: mockWebUrl ?? "http://localhost:3320" });
 
+// 1269 F0: showers are deferred, so the booth fixture is served as an open
+// facility type (features/facility/mock-facilities.ts). `?mock=browser` is the
+// normal data without the SSR prefetch: the server cannot read localStorage.
+test.beforeEach(({ page }) =>
+  page.addInitScript(() =>
+    window.localStorage.setItem("legend.mock.boothType", "coworking"),
+  ),
+);
+
 /** The first test on a new route pays Vite's cold compile (frontend guide §6). */
 const COLD_START_TIMEOUT_MS = 30_000;
 const SHOWER_FACILITY_ID = "00000000-0000-4000-8000-000000009001";
@@ -66,7 +75,7 @@ test("legend-er32 F25: the list shows facility metrics and opens the config edit
 }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await setTheme(page, "light");
-  await page.goto(`/kelola/fasilitas?mock=normal`);
+  await page.goto(`/kelola/fasilitas?mock=browser`);
 
   // The management topbar owns the page title (DESIGN.md v3 §5).
   await expect(
@@ -105,7 +114,7 @@ test("legend-er32 F25 Konfigurasi Legend: session and cleaning minutes save", as
   page,
 }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto(`/kelola/fasilitas?mock=normal`);
+  await page.goto(`/kelola/fasilitas?mock=browser`);
   await openConfig(page);
 
   const session = page.getByLabel("Durasi sesi (menit)");
@@ -126,7 +135,7 @@ test("legend-er32 F25 Model Generik: an area and a unit are added", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto(`/kelola/fasilitas?mock=normal`);
+  await page.goto(`/kelola/fasilitas?mock=browser`);
   await openConfig(page);
   await page.getByRole("tab", { name: "Area & Unit" }).click();
 
@@ -157,7 +166,7 @@ test("legend-er32 F25 Produk & Hak Akses: product and rule toggles persist", asy
   page,
 }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto(`/kelola/fasilitas?mock=normal`);
+  await page.goto(`/kelola/fasilitas?mock=browser`);
   await openConfig(page);
 
   await page.getByRole("tab", { name: "Produk" }).click();
@@ -196,7 +205,7 @@ test("legend-er32 F25 Add-on Opsional: an add-on price update is saved", async (
   page,
 }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto(`/kelola/fasilitas?mock=normal`);
+  await page.goto(`/kelola/fasilitas?mock=browser`);
   await openConfig(page);
   await page.getByRole("tab", { name: "Add-on" }).click();
 
@@ -244,7 +253,7 @@ test("legend-er32 visual: facility list and config 390 light", async ({
 }) => {
   await page.setViewportSize({ width: 390, height: 900 });
   await setTheme(page, "light");
-  await page.goto(`/kelola/fasilitas?mock=normal`);
+  await page.goto(`/kelola/fasilitas?mock=browser`);
   await expect(
     page.getByRole("heading", { level: 2, name: "Konfigurasi fasilitas" }),
   ).toBeVisible({ timeout: COLD_START_TIMEOUT_MS });
@@ -259,7 +268,7 @@ test("legend-er32 visual: facility list and config 390 dark", async ({
 }) => {
   await page.setViewportSize({ width: 390, height: 900 });
   await setTheme(page, "dark");
-  await page.goto(`/kelola/fasilitas?mock=normal`);
+  await page.goto(`/kelola/fasilitas?mock=browser`);
   await expect(
     page.getByRole("heading", { level: 2, name: "Konfigurasi fasilitas" }),
   ).toBeVisible({ timeout: COLD_START_TIMEOUT_MS });
@@ -274,7 +283,7 @@ test("legend-er32 visual: facility list and config 1440 light", async ({
 }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await setTheme(page, "light");
-  await page.goto(`/kelola/fasilitas?mock=normal`);
+  await page.goto(`/kelola/fasilitas?mock=browser`);
   await expect(
     page.getByRole("heading", { level: 2, name: "Konfigurasi fasilitas" }),
   ).toBeVisible({ timeout: COLD_START_TIMEOUT_MS });
@@ -289,7 +298,7 @@ test("legend-er32 visual: facility list and config 1440 dark", async ({
 }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await setTheme(page, "dark");
-  await page.goto(`/kelola/fasilitas?mock=normal`);
+  await page.goto(`/kelola/fasilitas?mock=browser`);
   await expect(
     page.getByRole("heading", { level: 2, name: "Konfigurasi fasilitas" }),
   ).toBeVisible({ timeout: COLD_START_TIMEOUT_MS });

@@ -24,6 +24,14 @@ test.skip(
   "Needs a VITE_API_MOCK=true server (pnpm test:e2e:mock); see the header of this file.",
 );
 
+// 1269 F0: showers are deferred, so the booth fixture is served as an open
+// facility type (features/facility/mock-facilities.ts).
+test.beforeEach(({ page }) =>
+  page.addInitScript(() =>
+    window.localStorage.setItem("legend.mock.boothType", "coworking"),
+  ),
+);
+
 /**
  * The first hit on a cold Vite dev server paints the server HTML before React
  * hydrates; a click in that window is lost. React attests a hydrated node with
