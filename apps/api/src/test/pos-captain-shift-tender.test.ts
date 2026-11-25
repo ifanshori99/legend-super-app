@@ -5,8 +5,11 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { outletIdSchema, ulidToUuid } from "@starter/shared/core";
 import { formatReceiptNumber } from "@starter/shared/pos";
+import { eventEnvelopeSchema } from "@starter/shared/events";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { signDeviceToken } from "../lib/device-token.ts";
+import { confirmPayment } from "../services/payment.service.ts";
+import { handlePosPaymentPaid } from "../services/pos-order-payment.ts";
 import { setDeviceOutletResolver } from "../services/device-pin.service.ts";
 import { getReceiptDocument } from "../services/pos-receipt-delivery.service.ts";
 import { registerTestDevice } from "./device-seed.ts";
@@ -61,6 +64,58 @@ describe("1268 W3 captain order non-cash tender shift", () => {
     expect(await shiftOfTenders(order.id)).toEqual([
       { method: "qris", shift_id: shifts[0]!.id },
     ]);
+  });
+
+  it("keeps the shift when the QRIS is paid later by webhook, and counts it once", async () => {
+    const order = await waiterOrder();
+    const paid = await fixture.tender(order.id, order.status, "qris");
+    expect(paid.status, JSON.stringify(paid.body)).toBe(201);
+    const { rows: shifts } = await owner.query<{ id: string }>(
+      "SELECT id FROM pos_shifts WHERE tenant_id = $1 AND cashier_id = $2 AND status = 'open'",
+      [fixture.tenant.tenantId, fixture.staff.userId],
+    );
+    const { rows: links } = await owner.query<{
+      payment_link_id: string;
+      payment_intent_id: string;
+    }>(
+      "SELECT payment_link_id, payment_intent_id FROM pos_order_tenders WHERE tenant_id = $1 AND order_id = $2",
+      [fixture.tenant.tenantId, ulidToUuid(order.id)],
+    );
+    const intentId = links[0]!.payment_intent_id;
+    await confirmPayment(
+      fixture.context,
+      intentId,
+      {
+        source: "verified_webhook",
+        method: "qris",
+        amountIdr: 33_000,
+        providerRef: `CAPTAIN-PAID-${randomUUID()}`,
+        at: new Date().toISOString(),
+      },
+      { type: "system" },
+    );
+    const { rows: events } = await owner.query<{ event: unknown }>(
+      `SELECT event FROM domain_event_outbox WHERE tenant_id = $1
+         AND event->>'name' = 'payment.paid' AND event->'payload'->>'intentId' = $2
+        ORDER BY created_at, id`,
+      [fixture.tenant.tenantId, intentId],
+    );
+    expect(events.length).toBeGreaterThan(0);
+    // A consumer replay must not capture or move it twice.
+    for (const row of events)
+      for (let i = 0; i < 2; i += 1)
+        await handlePosPaymentPaid(
+          fixture.context,
+          eventEnvelopeSchema.parse(row.event),
+        );
+    const { rows } = await owner.query<{
+      status: string;
+      shift_id: string | null;
+    }>(
+      "SELECT status, shift_id FROM pos_order_tenders WHERE tenant_id = $1 AND order_id = $2",
+      [fixture.tenant.tenantId, ulidToUuid(order.id)],
+    );
+    expect(rows).toEqual([{ status: "captured", shift_id: shifts[0]!.id }]);
   });
 
   it("refuses a non-cash tender when the cashier has no open shift, before any QR", async () => {

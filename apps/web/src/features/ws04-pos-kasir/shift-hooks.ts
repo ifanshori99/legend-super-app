@@ -2,13 +2,15 @@
 // ./hooks.ts, brief 1268 W0). Same rules as ./hooks.ts: components import
 // hooks and never touch the api or the query cache directly.
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 import { businessDateOf } from "@starter/shared/core";
 import { useOutletClock } from "@/lib/tenant-context";
 import { useIntentKey, useOutletId, useReady } from "./hooks";
 import {
   approveShiftClose,
   closeDay,
+  closeShiftWithApproval,
+  discardOwnCount,
   openShift,
   recordCashMovement,
   requestOverride,
@@ -42,11 +44,14 @@ import type {
 import type {
   ApproveShiftCloseInput,
   CloseDayInput,
+  CloseShiftWithApprovalInput,
   OpenShiftInput,
+  OverrideAction,
   RecordCashMovementInput,
   RequestOverrideInput,
   SubmitBlindCountInput,
 } from "./types";
+import { ApiError } from "@/lib/api/errors";
 
 // ---- Shift -----------------------------------------------------------------
 
@@ -105,9 +110,91 @@ export function useRecordCashMovement() {
 export function useSubmitBlindCount() {
   const outletId = useOutletId();
   const queryClient = useQueryClient();
+  const intent = useIntentKey("shift-count");
   return useMutation({
-    mutationFn: (input: SubmitBlindCountInput) => submitBlindCount(input),
+    mutationFn: async (input: SubmitBlindCountInput) => {
+      const receipt = await submitBlindCount(
+        outletId,
+        input,
+        intent.keyFor(input),
+      );
+      intent.clear();
+      return receipt;
+    },
     onSuccess: (_receipt, input) => {
+      void queryClient.invalidateQueries({
+        queryKey: posKasirKeys.ownCount(outletId, input.shiftId),
+      });
+      return queryClient.invalidateQueries({
+        queryKey: posKasirKeys.shift(outletId),
+      });
+    },
+  });
+}
+
+/** The cashier starts a new count; the one on this device stops counting. */
+export function useStartRecount() {
+  const outletId = useOutletId();
+  const queryClient = useQueryClient();
+  return (shiftId: string) => {
+    discardOwnCount(outletId, shiftId);
+    void queryClient.invalidateQueries({
+      queryKey: posKasirKeys.ownCount(outletId, shiftId),
+    });
+    void queryClient.invalidateQueries({
+      queryKey: posKasirKeys.shift(outletId),
+    });
+  };
+}
+
+/** Answers that mean the stored count or approval cannot be used any more. */
+const CLOSE_STALE_CODES = new Set([
+  "SHIFT_COUNT_STALE",
+  "SHIFT_COUNT_SUPERSEDED",
+]);
+export const isCloseStale = (error: unknown): boolean =>
+  error instanceof ApiError && CLOSE_STALE_CODES.has(error.code);
+export const isQrisHoldBlock = (error: unknown): boolean =>
+  error instanceof ApiError && error.code === "QRIS_HOLD_ACTIVE";
+
+/**
+ * The supervisor closes the shift on the cashier's device: PIN override of the
+ * count, then the close. Retries repeat the same close key and reuse the
+ * approval that was already given (a lost answer closes once, never twice, and
+ * does not ask for the PIN again). A stale count drops both, so the next try
+ * needs a fresh count and a fresh approval.
+ */
+export function useCloseShiftWithApproval() {
+  const outletId = useOutletId();
+  const queryClient = useQueryClient();
+  const intent = useIntentKey("shift-close");
+  const approval = useRef<{ countId: string; overrideId: string } | null>(null);
+  return useMutation({
+    mutationFn: async (input: CloseShiftWithApprovalInput) => {
+      const reuse =
+        approval.current?.countId === input.countId
+          ? { overrideId: approval.current.overrideId }
+          : null;
+      await closeShiftWithApproval(
+        outletId,
+        input,
+        reuse,
+        intent.keyFor({ shiftId: input.shiftId, countId: input.countId }),
+        (overrideId) => {
+          approval.current = { countId: input.countId, overrideId };
+        },
+      );
+      intent.clear();
+      approval.current = null;
+    },
+    onError: (error) => {
+      // A refusal is final for this count; only a lost answer may repeat.
+      if (error instanceof ApiError && error.status < 500 && error.status > 0) {
+        intent.clear();
+        approval.current = null;
+      }
+    },
+    onSuccess: (_result, input) => {
       void queryClient.invalidateQueries({
         queryKey: posKasirKeys.ownCount(outletId, input.shiftId),
       });
@@ -134,8 +221,8 @@ export function useRegisteredTerminals() {
 
 // ---- Supervisor ------------------------------------------------------------
 
-export function useSupervisorOptions() {
-  return useQuery(supervisorsQuery(useOutletId()));
+export function useSupervisorOptions(action?: OverrideAction) {
+  return useQuery(supervisorsQuery(useOutletId(), action));
 }
 
 /** After the cashier sent the count: counted, system figure and variance. */

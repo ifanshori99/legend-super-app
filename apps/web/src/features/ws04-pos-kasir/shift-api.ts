@@ -11,25 +11,31 @@ import {
   listPosShifts,
   openPosShift,
   recordPosCashMovement,
+  submitPosShiftCount,
   type EndOfDayRecapView,
   type PosShift,
 } from "@starter/shared/pos";
 import {
   createPosOverride,
   getPosOverride,
+  listPosOverrideApprovers,
 } from "@starter/shared/access/override";
 import { callEndpoint } from "@/lib/api/endpoint";
+import { ApiError } from "@/lib/api/errors";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { contractPending, local, METHOD_LABELS } from "./api";
 import { runPosKasirMock } from "./mock-engine";
+import { clearStoredCount, readStoredCount, writeStoredCount } from "./shift-count-store";
 import {
   type ActiveShift,
   type ApproveShiftCloseInput,
   type BlindCountReceipt,
   type CashMovement,
   type CloseDayInput,
+  type CloseShiftWithApprovalInput,
   type DayCloseRecap,
   type OpenShiftInput,
+  type OverrideAction,
   type OverrideResult,
   type RecordCashMovementInput,
   type RegisteredTerminal,
@@ -175,7 +181,13 @@ export async function fetchActiveShift(
   if (API_MOCK) return runPosKasirMock((engine) => engine.activeShift());
   const shifts = await fetchShifts(outletId, signal);
   const open = shifts.find((shift) => shift.status === "open");
-  return open ? activeShiftFrom(open) : null;
+  if (!open) return null;
+  // A count the cashier already sent is kept on this device (the server never
+  // reads one back to a cashier): the shift then waits for the supervisor.
+  return {
+    ...activeShiftFrom(open),
+    countSubmitted: readStoredCount(outletId, open.id) !== null,
+  };
 }
 
 export async function openShift(
@@ -240,18 +252,83 @@ export async function recordCashMovement(
   };
 }
 
-export const submitBlindCount = (
+/**
+ * The blind count, per denomination (the contract has no lump sum: the cashier
+ * form lists every denomination). The answer is blind too; the receipt is kept
+ * so the close can name the count.
+ */
+export async function submitBlindCount(
+  outletId: string,
   input: SubmitBlindCountInput,
-): Promise<BlindCountReceipt> =>
-  local("hitungan kas buta", (engine) => engine.submitBlindCount(input));
+  idempotencyKey: string,
+): Promise<BlindCountReceipt> {
+  if (API_MOCK)
+    return runPosKasirMock((engine) => engine.submitBlindCount(input));
+  if (input.otherAmountIdr !== 0)
+    throw new ApiError(
+      400,
+      "VALIDATION_ERROR",
+      "Hitung semua pecahan satu per satu sebelum mengirim.",
+    );
+  const counted = input.counts.filter((line) => line.quantity > 0);
+  const [first] = input.counts;
+  const lines = counted.length > 0 ? counted : first ? [first] : [];
+  const { data } = await callEndpoint(submitPosShiftCount, {
+    params: { outletId, shiftId: input.shiftId },
+    body: {
+      counts: lines.map((line) => ({
+        denominationIdr: line.denominationIdr,
+        quantity: line.quantity,
+      })),
+      idempotencyKey,
+    },
+  });
+  const count = {
+    countId: data.id,
+    sequence: data.sequence,
+    countedIdr: Number(data.countedIdr),
+    noteRequired: data.noteRequired,
+  };
+  writeStoredCount(outletId, input.shiftId, {
+    ...count,
+    submittedAt: data.submittedAt,
+  });
+  return {
+    shiftId: data.shiftId,
+    status: "awaiting_supervisor",
+    submittedAt: data.submittedAt,
+    count,
+  };
+}
+
+/** The cashier starts a new count: the stored one no longer counts. */
+export function discardOwnCount(outletId: string, shiftId: string): void {
+  clearStoredCount(outletId, shiftId);
+}
 
 export const fetchRegisteredTerminals = (): Promise<RegisteredTerminal[]> =>
   local("terminal terdaftar", (engine) => engine.registeredTerminals());
 
 // ---- Supervisor ------------------------------------------------------------
 
-export const fetchSupervisors = (): Promise<SupervisorOption[]> =>
-  local("daftar supervisor", (engine) => engine.supervisors());
+/**
+ * Supervisors who may approve `action` here (server-filtered, 1268 B3). Without
+ * an action the call has no contract yet (corrections still use the mock).
+ */
+export async function fetchSupervisors(
+  outletId: string,
+  action?: OverrideAction,
+): Promise<SupervisorOption[]> {
+  if (API_MOCK) return runPosKasirMock((engine) => engine.supervisors());
+  const endpointAction = action
+    ? OVERRIDE_ENDPOINT_ACTIONS.find((item) => item === action)
+    : undefined;
+  if (!endpointAction) throw contractPending("daftar supervisor");
+  const { data } = await callEndpoint(listPosOverrideApprovers, {
+    query: { outletId, action: endpointAction },
+  });
+  return data.map((row) => ({ userId: row.userId, name: row.displayName }));
+}
 
 export const fetchShiftReview = (shiftId: string): Promise<ShiftReview> =>
   local("tinjauan tutup shift", (engine) => engine.shiftReview(shiftId));
@@ -262,6 +339,7 @@ const OVERRIDE_ENDPOINT_ACTIONS = [
   "refund",
   "cash_drawer_open",
   "price_correction",
+  "cash_shift_close",
 ] as const;
 
 export async function requestOverride(
@@ -273,7 +351,7 @@ export async function requestOverride(
   const action = OVERRIDE_ENDPOINT_ACTIONS.find(
     (item) => item === input.action,
   );
-  // `cash_shift_close` and `edc_standalone` are not override actions yet (gap).
+  // `edc_standalone` has its own call in ./api.ts (gap).
   if (!action) throw contractPending(`persetujuan ${input.action}`);
   const { data } = await callEndpoint(createPosOverride, {
     body: {
@@ -299,6 +377,67 @@ export const approveShiftClose = (
   local("persetujuan tutup shift (overrideId)", (engine) =>
     engine.approveShiftClose(input),
   );
+
+/**
+ * Close from the cashier's device (1268 W3): the supervisor's PIN decision is
+ * the override of this exact count (objectType `pos_shift_count`, requested by
+ * the cashier), then the close names it. The cashier never sees expected or
+ * variance. `overrideId` of an earlier try is reused: only the close repeats.
+ */
+export async function closeShiftWithApproval(
+  outletId: string,
+  input: CloseShiftWithApprovalInput,
+  existing: { overrideId: string } | null,
+  closeKey: string,
+  onApproved: (overrideId: string) => void,
+): Promise<void> {
+  const reason = input.reason.trim();
+  if (API_MOCK) {
+    const approved =
+      existing ??
+      (await requestOverride(outletId, {
+        action: "cash_shift_close",
+        valueIdr: 0,
+        reason,
+        objectType: "cash_shift",
+        objectId: input.shiftId,
+        approverUserId: input.approverUserId,
+        pin: input.pin,
+      }));
+    onApproved(approved.overrideId);
+    await runPosKasirMock((engine) =>
+      engine.approveShiftClose({
+        shiftId: input.shiftId,
+        overrideId: approved.overrideId,
+        reason,
+      }),
+    );
+    return;
+  }
+  const approved =
+    existing ??
+    (await requestOverride(outletId, {
+      action: "cash_shift_close",
+      valueIdr: 0,
+      reason,
+      objectType: "pos_shift_count",
+      objectId: input.countId,
+      approverUserId: input.approverUserId,
+      pin: input.pin,
+    }));
+  onApproved(approved.overrideId);
+  await callEndpoint(closePosShift, {
+    params: { outletId, shiftId: input.shiftId },
+    body: {
+      countId: input.countId,
+      ...(input.noteRequired ? { varianceNote: reason } : {}),
+      approvedBy: input.approverUserId,
+      approvalRequestId: approved.overrideId,
+      idempotencyKey: closeKey,
+    },
+  });
+  clearStoredCount(outletId, input.shiftId);
+}
 
 // ---- End of day ------------------------------------------------------------
 
