@@ -6,14 +6,16 @@ import { TriangleAlert } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import {
-  Dialog,
   DialogClose,
-  DialogContent,
   DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  PendingDialog,
+  PendingDialogContent,
+} from "@/components/ui/pending-dialog";
 import { ApiError } from "@/lib/api/errors";
 
 export function PublishDialog({
@@ -39,8 +41,8 @@ export function PublishDialog({
 }) {
   const t = useT();
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+    <PendingDialog pending={pending} open={open} onOpenChange={onOpenChange}>
+      <PendingDialogContent>
         <DialogHeader>
           <DialogTitle>{t("roster.publish.title")}</DialogTitle>
           <DialogDescription>
@@ -89,7 +91,7 @@ export function PublishDialog({
             {t("roster.publish.confirm")}
           </Button>
         </DialogFooter>
-      </DialogContent>
-    </Dialog>
+      </PendingDialogContent>
+    </PendingDialog>
   );
 }

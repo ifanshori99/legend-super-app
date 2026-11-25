@@ -49,14 +49,18 @@ function CloseButton({ className }: { className?: string }) {
   );
 }
 
+type DialogContentProps = React.ComponentProps<
+  typeof DialogPrimitive.Content
+> & {
+  hideClose?: boolean;
+};
+
 function DialogContent({
   className,
   children,
   hideClose = false,
   ...props
-}: React.ComponentProps<typeof DialogPrimitive.Content> & {
-  hideClose?: boolean;
-}) {
+}: DialogContentProps) {
   return (
     <DialogPortal>
       <DialogOverlay />
@@ -129,6 +133,7 @@ function DialogDescription({
   );
 }
 
+export type { DialogContentProps };
 export {
   CloseButton as DialogCloseButton,
   Dialog,

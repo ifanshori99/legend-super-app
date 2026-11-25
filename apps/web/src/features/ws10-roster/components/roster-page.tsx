@@ -30,7 +30,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { StatStrip, StatTile } from "@/components/ui/stat-tile";
 import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
-import { newIdempotencyKey } from "@/lib/idempotency";
+import { retainedAttempt } from "@/lib/retained-attempt-key";
 import { useTenantContext } from "@/lib/tenant-context";
 import { rosterTemplatesFor, stationName } from "../fixtures";
 import {
@@ -121,7 +121,9 @@ function RosterContent({
   const [publishOpen, setPublishOpen] = React.useState(false);
   // One key per dialog attempt: a double click/retry replays the same request;
   // closing the dialog starts a new attempt (the week's drafts may change).
-  const publishKey = React.useRef<string | null>(null);
+  // Kept for the same outlet and week across close and reopen: a lost
+  // response then replays instead of publishing twice.
+  const publishAttempt = retainedAttempt("roster.publish");
   const confirmedPublication = React.useRef<string | null>(null);
 
   const days = weekDays(weekStart);
@@ -309,21 +311,16 @@ function RosterContent({
 
   const openPublish = () => {
     publish.reset();
-    publishKey.current = publishKey.current ?? newIdempotencyKey();
     setPublishOpen(true);
   };
 
   const handlePublishOpenChange = (open: boolean) => {
     setPublishOpen(open);
-    if (!open) {
-      publish.reset();
-      publishKey.current = null;
-    }
+    if (!open) publish.reset();
   };
 
   const confirmPublish = () => {
-    const idempotencyKey = publishKey.current ?? newIdempotencyKey();
-    publishKey.current = idempotencyKey;
+    const idempotencyKey = publishAttempt.keyFor({ outletId, weekStart });
     publish.mutate(
       {
         outletId,
@@ -339,7 +336,7 @@ function RosterContent({
           if (confirmedPublication.current === identity) return;
           confirmedPublication.current = identity;
           local.recordPublication(publication);
-          publishKey.current = null;
+          publishAttempt.settle();
           setPublishOpen(false);
           toast({
             title: t("roster.publish.success", {

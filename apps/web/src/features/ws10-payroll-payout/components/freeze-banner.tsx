@@ -10,13 +10,15 @@ import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
-  Dialog,
-  DialogContent,
   DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  PendingDialog,
+  PendingDialogContent,
+} from "@/components/ui/pending-dialog";
 import { FormField } from "@/components/ui/form-field";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
@@ -190,8 +192,12 @@ function UnfreezeDialog({
   );
 
   return (
-    <Dialog open onOpenChange={(next) => !next && onClose()}>
-      <DialogContent data-testid="payout-unfreeze-dialog">
+    <PendingDialog
+      pending={unfreeze.isPending}
+      open
+      onOpenChange={(next) => !next && onClose()}
+    >
+      <PendingDialogContent data-testid="payout-unfreeze-dialog">
         <DialogHeader>
           <DialogTitle>{t("payrollPayout.freeze.unfreeze.title")}</DialogTitle>
           <DialogDescription>
@@ -230,6 +236,7 @@ function UnfreezeDialog({
                 type="button"
                 variant="outline"
                 className="min-h-11"
+                disabled={unfreeze.isPending}
                 onClick={onClose}
               >
                 {t("payrollPayout.freeze.unfreeze.cancel")}
@@ -246,7 +253,7 @@ function UnfreezeDialog({
             </DialogFooter>
           </form>
         )}
-      </DialogContent>
-    </Dialog>
+      </PendingDialogContent>
+    </PendingDialog>
   );
 }

@@ -7,13 +7,15 @@ import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { DataTableShell } from "@/components/ui/data-table-shell";
 import {
-  Dialog,
-  DialogContent,
   DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  PendingDialog,
+  PendingDialogContent,
+} from "@/components/ui/pending-dialog";
 import { EmptyState } from "@/components/ui/feedback-state";
 import { FormField } from "@/components/ui/form-field";
 import { Input } from "@/components/ui/input";
@@ -51,7 +53,7 @@ import {
   useRefunds,
 } from "../hooks";
 import { ApiError } from "../../../lib/api/errors.ts";
-import { newIdempotencyKey } from "../../../lib/idempotency.ts";
+import { retainedAttempt } from "../../../lib/retained-attempt-key.ts";
 
 const ALL = "all";
 
@@ -209,8 +211,9 @@ function CreateRefundDialog({ onClose }: { onClose: () => void }) {
   const [amount, setAmount] = React.useState("");
   const [reason, setReason] = React.useState("");
   const [note, setNote] = React.useState("");
-  // One key per dialog: a retry or double submit replays, never refunds twice.
-  const [idempotencyKey] = React.useState(() => newIdempotencyKey());
+  // One key per request, kept across close and reopen: a retry or double
+  // submit replays, never refunds twice.
+  const attempt = retainedAttempt("refund.create");
   const [errors, setErrors] = React.useState<
     Record<string, string | undefined>
   >({});
@@ -237,16 +240,17 @@ function CreateRefundDialog({ onClose }: { onClose: () => void }) {
       next.amount = t("paymentAdmin.refunds.overAmount");
     setErrors(next);
     if (!selected || Object.keys(next).length > 0) return;
+    const body = {
+      paymentIntentId: selected.paymentIntentId,
+      amountIdr: idr(amountIdr),
+      reason: reason.trim(),
+      ...(note.trim() === "" ? {} : { note: note.trim() }),
+    };
     create.mutate(
-      {
-        idempotencyKey,
-        paymentIntentId: selected.paymentIntentId,
-        amountIdr: idr(amountIdr),
-        reason: reason.trim(),
-        ...(note.trim() === "" ? {} : { note: note.trim() }),
-      },
+      { idempotencyKey: attempt.keyFor(body), ...body },
       {
         onSuccess: () => {
+          attempt.settle();
           toast({ title: t("paymentAdmin.refunds.created") });
           onClose();
         },
@@ -260,8 +264,12 @@ function CreateRefundDialog({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <Dialog open onOpenChange={(open) => (!open ? onClose() : undefined)}>
-      <DialogContent>
+    <PendingDialog
+      pending={create.isPending}
+      open
+      onOpenChange={(open) => (!open ? onClose() : undefined)}
+    >
+      <PendingDialogContent>
         <DialogHeader>
           <DialogTitle>{t("paymentAdmin.refunds.create")}</DialogTitle>
           <DialogDescription>
@@ -348,7 +356,12 @@ function CreateRefundDialog({ onClose }: { onClose: () => void }) {
               </p>
             )}
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={onClose}>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={create.isPending}
+                onClick={onClose}
+              >
                 {t("common.cancel")}
               </Button>
               <Button type="submit" loading={create.isPending}>
@@ -364,8 +377,8 @@ function CreateRefundDialog({ onClose }: { onClose: () => void }) {
             </Button>
           </DialogFooter>
         )}
-      </DialogContent>
-    </Dialog>
+      </PendingDialogContent>
+    </PendingDialog>
   );
 }
 
@@ -380,10 +393,11 @@ function ApproveRefundDialog({
   const toast = useToast();
   const approve = useApproveRefund();
   const [note, setNote] = React.useState("");
-  const [idempotencyKey] = React.useState(() => newIdempotencyKey());
+  const attempt = retainedAttempt(`refund.approve.${refund.id}`);
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
+    const idempotencyKey = attempt.keyFor({ note: note.trim() });
     approve.mutate(
       {
         refundId: refund.id,
@@ -394,6 +408,7 @@ function ApproveRefundDialog({
       },
       {
         onSuccess: () => {
+          attempt.settle();
           toast({
             title: t("paymentAdmin.refunds.approved", {
               reference: refund.paymentReference,
@@ -407,8 +422,12 @@ function ApproveRefundDialog({
   };
 
   return (
-    <Dialog open onOpenChange={(open) => (!open ? onClose() : undefined)}>
-      <DialogContent>
+    <PendingDialog
+      pending={approve.isPending}
+      open
+      onOpenChange={(open) => (!open ? onClose() : undefined)}
+    >
+      <PendingDialogContent>
         <DialogHeader>
           <DialogTitle>{t("paymentAdmin.refunds.approveTitle")}</DialogTitle>
           <DialogDescription>
@@ -428,7 +447,12 @@ function ApproveRefundDialog({
             />
           </FormField>
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={onClose}>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={approve.isPending}
+              onClick={onClose}
+            >
               {t("common.cancel")}
             </Button>
             <Button type="submit" loading={approve.isPending}>
@@ -436,7 +460,7 @@ function ApproveRefundDialog({
             </Button>
           </DialogFooter>
         </form>
-      </DialogContent>
-    </Dialog>
+      </PendingDialogContent>
+    </PendingDialog>
   );
 }

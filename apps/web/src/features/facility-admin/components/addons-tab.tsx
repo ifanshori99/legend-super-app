@@ -13,14 +13,16 @@ import type { Translate } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import {
-  Dialog,
   DialogClose,
-  DialogContent,
   DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  PendingDialog,
+  PendingDialogContent,
+} from "@/components/ui/pending-dialog";
 import { EmptyState } from "@/components/ui/feedback-state";
 import { FormField } from "@/components/ui/form-field";
 import { Input } from "@/components/ui/input";
@@ -361,8 +363,8 @@ function AddonDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+    <PendingDialog pending={pending} open={open} onOpenChange={onOpenChange}>
+      <PendingDialogContent>
         <DialogHeader>
           <DialogTitle>
             {addon
@@ -439,7 +441,7 @@ function AddonDialog({
             </Button>
           </DialogFooter>
         </form>
-      </DialogContent>
-    </Dialog>
+      </PendingDialogContent>
+    </PendingDialog>
   );
 }

@@ -7,13 +7,15 @@ import { StatusPill } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DataTableShell } from "@/components/ui/data-table-shell";
 import {
-  Dialog,
-  DialogContent,
   DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  PendingDialog,
+  PendingDialogContent,
+} from "@/components/ui/pending-dialog";
 import { FormField } from "@/components/ui/form-field";
 import { Money } from "@/components/ui/money";
 import { SegmentedControl } from "@/components/ui/segmented-control";
@@ -39,7 +41,7 @@ import {
   unallocatedTone,
 } from "../format";
 import { useResolveUnallocatedFund, useUnallocatedFunds } from "../hooks";
-import { newIdempotencyKey } from "../../../lib/idempotency.ts";
+import { retainedAttempt } from "../../../lib/retained-attempt-key.ts";
 
 const ALL = "all";
 
@@ -188,8 +190,9 @@ function ResolveFundDialog({
     "refund",
   );
   const [note, setNote] = React.useState("");
-  // One key per dialog so a retry never books the refund/credit twice.
-  const [idempotencyKey] = React.useState(() => newIdempotencyKey());
+  // One key per request, kept across close and reopen, so a retry never books
+  // the refund/credit twice.
+  const attempt = retainedAttempt(`unallocated.resolve.${fund.id}`);
   const [error, setError] = React.useState<string | undefined>();
 
   const submit = (event: React.FormEvent) => {
@@ -201,10 +204,15 @@ function ResolveFundDialog({
     resolve.mutate(
       {
         fundId: fund.id,
-        body: { idempotencyKey, resolution, note: note.trim() },
+        body: {
+          idempotencyKey: attempt.keyFor({ resolution, note: note.trim() }),
+          resolution,
+          note: note.trim(),
+        },
       },
       {
         onSuccess: () => {
+          attempt.settle();
           toast({
             title: t("paymentAdmin.unallocated.resolved", {
               amount: formatRupiah(fund.amountIdr),
@@ -218,8 +226,12 @@ function ResolveFundDialog({
   };
 
   return (
-    <Dialog open onOpenChange={(open) => (!open ? onClose() : undefined)}>
-      <DialogContent>
+    <PendingDialog
+      pending={resolve.isPending}
+      open
+      onOpenChange={(open) => (!open ? onClose() : undefined)}
+    >
+      <PendingDialogContent>
         <DialogHeader>
           <DialogTitle>
             {t("paymentAdmin.unallocated.resolveTitle", {
@@ -261,7 +273,12 @@ function ResolveFundDialog({
             />
           </FormField>
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={onClose}>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={resolve.isPending}
+              onClick={onClose}
+            >
               {t("common.cancel")}
             </Button>
             <Button type="submit" loading={resolve.isPending}>
@@ -269,7 +286,7 @@ function ResolveFundDialog({
             </Button>
           </DialogFooter>
         </form>
-      </DialogContent>
-    </Dialog>
+      </PendingDialogContent>
+    </PendingDialog>
   );
 }

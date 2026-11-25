@@ -14,13 +14,15 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { DataTableShell } from "@/components/ui/data-table-shell";
 import {
-  Dialog,
-  DialogContent,
   DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  PendingDialog,
+  PendingDialogContent,
+} from "@/components/ui/pending-dialog";
 import { ErrorState } from "@/components/ui/feedback-state";
 import { FormField } from "@/components/ui/form-field";
 import { Input } from "@/components/ui/input";
@@ -447,8 +449,12 @@ function TerminalDialog({
   };
 
   return (
-    <Dialog open onOpenChange={(open) => (!open ? onClose() : undefined)}>
-      <DialogContent className="sm:max-w-2xl">
+    <PendingDialog
+      pending={pending}
+      open
+      onOpenChange={(open) => (!open ? onClose() : undefined)}
+    >
+      <PendingDialogContent className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>
             {terminal ? t("paymentAdmin.edc.edit") : t("paymentAdmin.edc.add")}
@@ -596,7 +602,12 @@ function TerminalDialog({
           )}
 
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={onClose}>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={pending}
+              onClick={onClose}
+            >
               {t("common.cancel")}
             </Button>
             <Button type="submit" loading={pending}>
@@ -604,8 +615,8 @@ function TerminalDialog({
             </Button>
           </DialogFooter>
         </form>
-      </DialogContent>
-    </Dialog>
+      </PendingDialogContent>
+    </PendingDialog>
   );
 }
 

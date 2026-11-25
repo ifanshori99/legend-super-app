@@ -3,20 +3,22 @@
 // becomes a case and is closed with a written note. Gateway and EDC batches
 // (per bank) live in the same queue.
 import * as React from "react";
-import { useAttemptKey } from "../use-attempt-key";
+import { retainedAttempt } from "../../../lib/retained-attempt-key.ts";
 import { useT } from "@/components/i18n";
 import { ApiError } from "@/lib/api/errors";
 import { Badge, StatusPill } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DataTableShell } from "@/components/ui/data-table-shell";
 import {
-  Dialog,
-  DialogContent,
   DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  PendingDialog,
+  PendingDialogContent,
+} from "@/components/ui/pending-dialog";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { FormField } from "@/components/ui/form-field";
 import { Money } from "@/components/ui/money";
@@ -342,7 +344,7 @@ function ResolveCaseDialog({
   const t = useT();
   const toast = useToast();
   const resolve = useResolveReconciliationCase();
-  const attempt = useAttemptKey();
+  const attempt = retainedAttempt(`recon.resolve.${entry.id}`);
   const [note, setNote] = React.useState("");
   const [error, setError] = React.useState<string | undefined>();
 
@@ -371,8 +373,12 @@ function ResolveCaseDialog({
   };
 
   return (
-    <Dialog open onOpenChange={(open) => (!open ? onClose() : undefined)}>
-      <DialogContent>
+    <PendingDialog
+      pending={resolve.isPending}
+      open
+      onOpenChange={(open) => (!open ? onClose() : undefined)}
+    >
+      <PendingDialogContent>
         <DialogHeader>
           <DialogTitle>
             {t("paymentAdmin.reconciliation.resolveTitle")}
@@ -406,7 +412,12 @@ function ResolveCaseDialog({
             />
           </FormField>
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={onClose}>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={resolve.isPending}
+              onClick={onClose}
+            >
               {t("common.cancel")}
             </Button>
             <Button type="submit" loading={resolve.isPending}>
@@ -414,7 +425,7 @@ function ResolveCaseDialog({
             </Button>
           </DialogFooter>
         </form>
-      </DialogContent>
-    </Dialog>
+      </PendingDialogContent>
+    </PendingDialog>
   );
 }

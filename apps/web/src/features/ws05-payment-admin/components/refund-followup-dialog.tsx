@@ -4,17 +4,20 @@
 // ("Periksa status"), never retried; every write carries one idempotency key
 // per dialog or attempt and its button is disabled while pending.
 import * as React from "react";
+import { useIsMutating } from "@tanstack/react-query";
 import { Link, useRouteContext } from "@tanstack/react-router";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import {
-  Dialog,
-  DialogContent,
   DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  PendingDialog,
+  PendingDialogContent,
+} from "@/components/ui/pending-dialog";
 import { FormField } from "@/components/ui/form-field";
 import { Money } from "@/components/ui/money";
 import { StatusPill } from "@/components/ui/badge";
@@ -60,9 +63,8 @@ import {
   refundUiTone,
   type RefundUiState,
 } from "../refund-actions.ts";
-import { useAttemptKey } from "../use-attempt-key.ts";
 import { ApiError } from "../../../lib/api/errors.ts";
-import { newIdempotencyKey } from "../../../lib/idempotency.ts";
+import { retainedAttempt } from "../../../lib/retained-attempt-key.ts";
 
 const P = "paymentAdmin.refundFollowup";
 const key = (suffix: string) => `${P}.${suffix}` as MessageKey;
@@ -103,6 +105,9 @@ export function RefundFollowupDialog({
 }) {
   const t = useT();
   const refunds = useRefunds();
+  // Retry, release, re-open and manual settle each run their own mutation in
+  // this dialog: none may be cut off by closing it.
+  const mutating = useIsMutating() > 0;
   const refund = refunds.data?.data.find((entry) => entry.id === refundId);
   const [rejecting, setRejecting] = React.useState(false);
   // "Catat refund manual" is a two-step form inside this dialog. Presentation
@@ -155,8 +160,12 @@ export function RefundFollowupDialog({
 
   return (
     <>
-      <Dialog open onOpenChange={(open) => (!open ? onClose() : undefined)}>
-        <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-2xl">
+      <PendingDialog
+        pending={mutating}
+        open
+        onOpenChange={(open) => (!open ? onClose() : undefined)}
+      >
+        <PendingDialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-2xl">
           {settling ? (
             <ManualSettleStep
               refund={refund}
@@ -290,7 +299,12 @@ export function RefundFollowupDialog({
               {showTrail && <Trail refund={refund} sectionRef={trailRef} />}
 
               <DialogFooter className="flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-                <Button type="button" variant="outline" onClick={onClose}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={mutating}
+                  onClick={onClose}
+                >
                   {t(key(finalState ? "action.backToList" : "action.close"))}
                 </Button>
                 {showTrail && (
@@ -379,8 +393,8 @@ export function RefundFollowupDialog({
               <FootnoteFor state={state} />
             </>
           )}
-        </DialogContent>
-      </Dialog>
+        </PendingDialogContent>
+      </PendingDialog>
 
       {rejecting && (
         <RejectRefundDialog
@@ -562,7 +576,7 @@ function RetryButton({
   const t = useT();
   const toast = useToast();
   const retry = useRetryRefundPayout();
-  const attempt = useAttemptKey();
+  const attempt = retainedAttempt(`refund.${mode}.${refund.id}`);
   const [error, setError] = React.useState<string | null>(null);
 
   const run = () => {
@@ -608,7 +622,8 @@ function RejectRefundDialog({
   const reject = useRejectRefund();
   const [reason, setReason] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
-  const [idempotencyKey] = React.useState(() => newIdempotencyKey());
+  // Kept per refund across close and reopen: a lost response then replays.
+  const attempt = retainedAttempt(`refund.reject.${refund.id}`);
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
@@ -619,9 +634,16 @@ function RejectRefundDialog({
     }
     setError(null);
     reject.mutate(
-      { refundId: refund.id, body: { idempotencyKey, reason: trimmed } },
+      {
+        refundId: refund.id,
+        body: {
+          idempotencyKey: attempt.keyFor({ reason: trimmed }),
+          reason: trimmed,
+        },
+      },
       {
         onSuccess: () => {
+          attempt.settle();
           toast({
             title: t(key("rejectDialog.done"), {
               reference: refund.paymentReference,
@@ -635,8 +657,12 @@ function RejectRefundDialog({
   };
 
   return (
-    <Dialog open onOpenChange={(open) => (!open ? onClose() : undefined)}>
-      <DialogContent>
+    <PendingDialog
+      pending={reject.isPending}
+      open
+      onOpenChange={(open) => (!open ? onClose() : undefined)}
+    >
+      <PendingDialogContent>
         <DialogHeader>
           <DialogTitle>{t(key("rejectDialog.title"))}</DialogTitle>
           <DialogDescription>{t(key("rejectDialog.body"))}</DialogDescription>
@@ -654,7 +680,12 @@ function RejectRefundDialog({
             />
           </FormField>
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={onClose}>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={reject.isPending}
+              onClick={onClose}
+            >
               {t("common.cancel")}
             </Button>
             <Button type="submit" loading={reject.isPending}>
@@ -662,8 +693,8 @@ function RejectRefundDialog({
             </Button>
           </DialogFooter>
         </form>
-      </DialogContent>
-    </Dialog>
+      </PendingDialogContent>
+    </PendingDialog>
   );
 }
 
@@ -691,8 +722,9 @@ function QuarantineStep({
   const mutation = action === "release" ? release : reopen;
   const [note, setNote] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
-  // One key per step: a double click or retry replays, never acts twice.
-  const [idempotencyKey] = React.useState(() => newIdempotencyKey());
+  // One key per step, kept across close and reopen: a double click or retry
+  // replays, never acts twice.
+  const attempt = retainedAttempt(`refund.${action}.${refund.id}`);
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
@@ -704,9 +736,16 @@ function QuarantineStep({
     }
     setError(null);
     mutation.mutate(
-      { refundId: refund.id, body: { idempotencyKey, note: trimmed } },
+      {
+        refundId: refund.id,
+        body: {
+          idempotencyKey: attempt.keyFor({ note: trimmed }),
+          note: trimmed,
+        },
+      },
       {
         onSuccess: () => {
+          attempt.settle();
           if (action === "release") {
             onReleased({ note: trimmed, at: new Date().toISOString() });
             return;
@@ -828,7 +867,7 @@ function ManualSettleStep({
   const t = useT();
   const toast = useToast();
   const settle = useSettleRefundManually();
-  const attempt = useAttemptKey();
+  const attempt = retainedAttempt(`refund.settle.${refund.id}`);
   const [form, setForm] =
     React.useState<ManualSettlementForm>(EMPTY_SETTLEMENT);
   const [confirming, setConfirming] = React.useState(false);
