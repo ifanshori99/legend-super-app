@@ -16,6 +16,7 @@ import { isEdgeNode } from "../edge/mode.ts";
 import { getEdgeRuntimeState } from "../edge/runtime.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { verifyDeviceToken } from "../lib/device-token.ts";
+import { getRequestEdgeDeviceRefusal } from "../lib/request-context.ts";
 import { getTenantContext } from "../middleware/tenant.ts";
 import { deviceTenantCredential } from "../services/platform-tenant.service.ts";
 
@@ -77,6 +78,22 @@ async function deviceRegistryUnavailable(req: Request): Promise<boolean> {
 }
 
 /**
+ * E2 (brief 1269, decision C): an edge judges a token by its own replica and
+ * clock. Unknown (not synced yet), expired (a clock that jumped), another
+ * outlet's or a digest mismatch is refused, but the client keeps the token:
+ * only a revocation or a reissue ends it.
+ */
+function edgeKeepsToken(req: Request): boolean {
+  if (!isEdgeNode()) return false;
+  const refusal = getRequestEdgeDeviceRefusal();
+  if (refusal !== undefined)
+    return refusal !== "revoked" && refusal !== "rotated";
+  // Verified for this edge: the registry's answer stands, unless the token
+  // names another tenant than the request.
+  return deviceIdOf(req) === null;
+}
+
+/**
  * The device a POS request acts on (PIN throttle, shift and order audit): null
  * without a device token; 401 when one is sent but the registry no longer
  * accepts it, checked on every request so an old-generation token cannot be
@@ -84,13 +101,16 @@ async function deviceRegistryUnavailable(req: Request): Promise<boolean> {
  * client then clears its token) only for a token that is badly signed, expired,
  * of another tenant, or whose device is revoked, rotated out or unknown; an
  * inactive tenant or an edge process without identity stays UNAUTHORIZED and
- * the token is kept.
+ * the token is kept. On an edge node only a revoked or rotated-out token gets it.
  */
 export async function currentDeviceIdOf(req: Request): Promise<string | null> {
   if (req.get(DEVICE_TOKEN_HEADER) === undefined) return null;
   const deviceId = await registeredDeviceIdOf(req);
   if (deviceId !== null) return deviceId;
-  if (deviceIdOf(req) !== null && (await deviceRegistryUnavailable(req)))
+  if (
+    edgeKeepsToken(req) ||
+    (deviceIdOf(req) !== null && (await deviceRegistryUnavailable(req)))
+  )
     throw new HttpError(
       401,
       "UNAUTHORIZED",

@@ -29,6 +29,8 @@ import { HttpError } from "../lib/http-error.ts";
 import {
   runWithEdgeDevice,
   setRequestEdgeDevice,
+  setRequestEdgeDeviceRefusal,
+  type EdgeDeviceRefusal,
 } from "../lib/request-context.ts";
 
 /**
@@ -38,24 +40,28 @@ import {
  */
 export type EdgeDeviceCheck =
   | { readonly status: "verified"; readonly payload: DeviceTokenPayload }
-  | { readonly status: "refused" }
+  | { readonly status: "refused"; readonly reason: EdgeDeviceRefusal }
   | { readonly status: "unavailable" };
 
-const REFUSED: EdgeDeviceCheck = { status: "refused" };
+const refused = (reason: EdgeDeviceRefusal): EdgeDeviceCheck => ({
+  status: "refused",
+  reason,
+});
 const UNAVAILABLE: EdgeDeviceCheck = { status: "unavailable" };
 
 export async function checkEdgeDeviceToken(
   token: string,
 ): Promise<EdgeDeviceCheck> {
   const payload = decodeDeviceToken(token);
-  if (payload === null) return REFUSED;
+  if (payload === null) return refused("malformed");
   const { edgeMode, identity } = getEdgeRuntimeState();
   if (!edgeMode || !identity || !isCatalogOverrideClockReady())
     return UNAVAILABLE;
   const { tenantId, outletId } = identity.scope;
-  if (payload.tenantId.toLowerCase() !== tenantId.toLowerCase()) return REFUSED;
+  if (payload.tenantId.toLowerCase() !== tenantId.toLowerCase())
+    return refused("other_outlet");
   if (payload.expiresAt * 1000 <= catalogOverrideNow().getTime())
-    return REFUSED;
+    return refused("expired");
   const [row] = await withTenant(db, identity.context, (tx) =>
     tx
       .select({
@@ -75,23 +81,21 @@ export async function checkEdgeDeviceToken(
       .limit(1),
   );
   // An unknown device gets the registry's own answer (device-registry-check.ts).
-  if (!row) return REFUSED;
-  if (
-    row.outletId.toLowerCase() !== outletId.toLowerCase() ||
-    row.status !== "active" ||
-    row.revokedAt !== null
-  )
-    return REFUSED;
+  if (!row) return refused("unknown");
+  if (row.outletId.toLowerCase() !== outletId.toLowerCase())
+    return refused("other_outlet");
+  if (row.status !== "active" || row.revokedAt !== null)
+    return refused("revoked");
   if (row.tokenIssuedAt === null || row.tokenHash === null) return UNAVAILABLE;
   const floor = Math.floor(row.tokenIssuedAt.getTime() / 1000);
-  if (payload.issuedAt < floor) return REFUSED;
+  if (payload.issuedAt < floor) return refused("rotated");
   if (payload.issuedAt > floor) return UNAVAILABLE;
   return timingSafeEqual(
     Buffer.from(hashDeviceToken(token), "hex"),
     Buffer.from(row.tokenHash, "hex"),
   )
     ? { status: "verified", payload }
-    : REFUSED;
+    : refused("mismatch");
 }
 
 /** Monitoring reads the health route with or without a token. */
@@ -99,8 +103,9 @@ const HEALTH_PATH = /^\/api\/(edge\/)?health(\/|$)/i;
 
 /**
  * Mounted once, before anything that reads a device token. No-op on the cloud.
- * A refused token is left unverified (same as no token); one this edge cannot
- * judge answers 503, so the client keeps its token and retries.
+ * A refused token is left unverified (same as no token) with its reason kept
+ * (`currentDeviceIdOf`: the client drops its token only when it is revoked or
+ * rotated out); one this edge cannot judge answers 503, so the client keeps its token and retries.
  */
 export const edgeDeviceAuth: RequestHandler = async (req, _res, next) => {
   if (!isEdgeNode()) return next();
@@ -115,6 +120,7 @@ export const edgeDeviceAuth: RequestHandler = async (req, _res, next) => {
     );
   if (check.status === "verified")
     setRequestEdgeDevice({ token, payload: check.payload });
+  else setRequestEdgeDeviceRefusal(check.reason);
   next();
 };
 
@@ -129,9 +135,9 @@ export async function withEdgeDeviceOfHeaders<T>(
   if (!isEdgeNode()) return run();
   const raw = headers[DEVICE_TOKEN_HEADER.toLowerCase()];
   const token = Array.isArray(raw) ? raw[0] : raw;
-  const check = token ? await checkEdgeDeviceToken(token) : REFUSED;
+  const check = token ? await checkEdgeDeviceToken(token) : null;
   return runWithEdgeDevice(
-    token && check.status === "verified"
+    token && check?.status === "verified"
       ? { token, payload: check.payload }
       : undefined,
     run,

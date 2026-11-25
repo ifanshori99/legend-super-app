@@ -38,6 +38,16 @@ export type RequestEdgeDevice = {
   readonly payload: DeviceTokenPayload;
 };
 
+/** Why an edge refused the request's device token (services/edge-device-auth.ts). */
+export type EdgeDeviceRefusal =
+  | "malformed"
+  | "expired"
+  | "unknown"
+  | "other_outlet"
+  | "mismatch"
+  | "revoked"
+  | "rotated";
+
 type RequestContext = {
   reqId: string;
   userId?: string;
@@ -46,6 +56,7 @@ type RequestContext = {
   authMethod?: string;
   actingStaff?: RequestActingStaff;
   edgeDevice?: RequestEdgeDevice;
+  edgeDeviceRefusal?: EdgeDeviceRefusal;
 };
 
 const storage = new AsyncLocalStorage<RequestContext>();
@@ -75,6 +86,15 @@ export function setRequestEdgeDevice(value: RequestEdgeDevice) {
 
 export function getRequestEdgeDevice(): RequestEdgeDevice | undefined {
   return storage.getStore()?.edgeDevice;
+}
+
+export function setRequestEdgeDeviceRefusal(value: EdgeDeviceRefusal) {
+  const store = storage.getStore();
+  if (store) store.edgeDeviceRefusal = value;
+}
+
+export function getRequestEdgeDeviceRefusal(): EdgeDeviceRefusal | undefined {
+  return storage.getStore()?.edgeDeviceRefusal;
 }
 
 /** Runs `run` with this device verified (WebSocket upgrades have no request context). */
