@@ -254,6 +254,8 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "appends payroll.payout.configure, payroll.disburse.request and payroll.disburse.approve to the stored owner, finance and hr template role rows of existing tenants (legend-wnkep.1; configure: owner+finance, request: owner+hr, approve: owner+finance+hr); idempotent, no duplicates, never touches tenant_admin, another template or a custom role; each tenant is named (app.tenant_id) before its roles rows are touched, FORCE RLS stays on",
   "0508_sealed_reseal_frozen.sql":
     "creates the app.reseal_frozen_sealed SECURITY DEFINER function, the legend_sealed_reseal group role and the frozen-column guard exception; the migration itself rewrites no existing row, and the only row effect is the compare-and-set re-seal UPDATE of the sealed column inside the function body when the reseal job calls it (legend-4vfmn, legend-49onu); no amount or journal touched, imports nothing",
+  "0525_edge_catalog_v4.sql":
+    "trigger function bodies only: stamp sync_txid on the v4 catalog tables and write a row of edge_catalog_tombstones when one of their rows is deleted at runtime (legend-osqou.22); the migration itself rewrites no existing row and imports nothing",
   "0523_period_close_override_grants.sql":
     "appends accounting.period.close_override to the stored owner and finance template role rows of existing tenants (card 1263, founder no. 19); idempotent, no duplicates, never touches another template or a custom role; each tenant is named (app.tenant_id) before its roles rows are touched, FORCE RLS stays on; no table added, no amount or journal touched, imports nothing",
   "0505_payout_gl_resolve_grants.sql":

@@ -4,7 +4,8 @@
 //
 //   critical streams  price_lists, item_variants and modifiers (prices: a
 //                     variant or modifier price is money), menu_items
-//                     (product status) and the three tax streams.
+//                     (product status), the three tax streams and
+//                     floor_zones (service charge per zone).
 //   tax               (legend-osqou.22) a tax stream that was never read to its
 //                     end leaves no tax to compute with: `taxUnsynced` holds
 //                     sales at once and no owner override lifts it.
@@ -61,6 +62,8 @@ export const CRITICAL_CATALOG_STREAMS = [
   "modifiers",
   "menu_items",
   ...CATALOG_TAX_STREAMS,
+  // The zone's service charge is part of the bill.
+  "floor_zones",
 ] as const;
 export type CriticalCatalogStream = (typeof CRITICAL_CATALOG_STREAMS)[number];
 
