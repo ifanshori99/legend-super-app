@@ -8,6 +8,7 @@ export * from "./errors.ts";
 export * from "./reports.ts";
 export * from "./metric-catalog.ts";
 export * from "./catalog.ts";
+export * from "./source-availability.ts";
 export * from "./dashboards.ts";
 export * from "./builder.ts";
 export * from "./exports.ts";

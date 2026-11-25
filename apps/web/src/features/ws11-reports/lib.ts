@@ -11,6 +11,8 @@ import {
   PERSONAL_DATA_DIMENSIONS,
   reportExportContainsPersonalData,
   type CreateReportExportInput,
+  reportCatalog,
+  reportHasSource,
   type ReportDefinition,
   type ReportExportFormat,
   type ReportPeriodPreset,
@@ -33,37 +35,35 @@ export function reportExportOffered(options: { mock: boolean }): boolean {
 }
 
 /**
- * Families whose metric sources are still empty on the server: finance
- * (legend-qlirp) and hr (legend-y3huu: attendance, payroll, performance). The
- * catalog lists their reports as "Segera hadir" instead of linking to an empty
- * screen. Remove a family from this list when its source lands.
+ * Whether a report has data on the server. One source of truth: the shared
+ * list of metric codes the server registry has no source for
+ * (`METRIC_CODES_WITHOUT_SOURCE`, kept equal to the registry by
+ * apps/api/src/test/ms-source-availability.test.ts). A report whose metrics
+ * are all unbuilt is listed as "Segera hadir" instead of linking to an empty
+ * screen. Mock mode keeps every report clickable.
  */
-const FAMILIES_WITHOUT_SOURCE: readonly string[] = [
-  "finance",
-  "attendance",
-  "payroll",
-  "performance",
-];
-
-export function reportFamilyHasData(
-  family: string,
+export function reportHasData(
+  report: { readonly metrics: readonly string[] },
   options: { mock: boolean },
 ): boolean {
-  return options.mock || !FAMILIES_WITHOUT_SOURCE.includes(family);
+  return options.mock || reportHasSource(report);
 }
 
+const reportByRoute: ReadonlyMap<string, ReportDefinition> = new Map(
+  reportCatalog.map((report) => [report.route, report]),
+);
+
 /**
- * Whether an app path points at a report whose family has no data yet, e.g.
- * `/reports/payroll/gross?startDate=...`. Report routes are
- * `/reports/<family>/<code>` and the first segment is the family. Dashboard
- * tiles use it to show "Segera hadir" instead of a link to an empty screen.
+ * Whether an app path points at a report with no data yet, e.g.
+ * `/reports/payroll/gross?startDate=...`. Dashboard tiles use it to show
+ * "Segera hadir" instead of a link to an empty screen.
  */
 export function reportPathIsComingSoon(
   path: string,
   options: { mock: boolean },
 ): boolean {
-  const match = /^\/reports\/([a-z]+)\//.exec(path);
-  return match !== null && !reportFamilyHasData(match[1] ?? "", options);
+  const report = reportByRoute.get(path.split(/[?#]/, 1)[0] ?? path);
+  return report !== undefined && !reportHasData(report, options);
 }
 
 // ---- URL contract ------------------------------------------------------------

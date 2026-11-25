@@ -18,6 +18,7 @@ import {
   useDimensionLabel,
   usePresetLabel,
 } from "@/features/ws11-reports/components/labels";
+import { reportHasData } from "@/features/ws11-reports/lib";
 import { facilityReportDefinitions, missingFacilityReportCount } from "../lib";
 
 function DetailLine({ label, value }: { label: string; value: string }) {
@@ -43,41 +44,55 @@ function ReportCard({ report }: { report: ReportDefinition }) {
   const periods = report.periodPresets
     .map((preset) => presetLabel(preset))
     .join(" · ");
+  // Same rule as the report catalog: no metric source on the server yet means
+  // "Segera hadir", not a link to an empty screen.
+  const available = reportHasData(report, { mock: API_MOCK });
+  const cardClass =
+    "flex h-full min-w-0 flex-col gap-3 rounded-container p-card";
+  const content = (
+    <>
+      <div className="flex items-start justify-between gap-3">
+        <div className="grid min-w-0 gap-1">
+          <h3 className="type-title">{report.name}</h3>
+          <p className="text-sm leading-5 text-muted-foreground">
+            {report.description}
+          </p>
+        </div>
+      </div>
+      <dl className="grid gap-2">
+        <DetailLine label={t("facilityReport.hub.metrics")} value={metrics} />
+        <DetailLine
+          label={t("facilityReport.hub.dimensions")}
+          value={dimensions}
+        />
+        <DetailLine label={t("facilityReport.hub.periods")} value={periods} />
+      </dl>
+      {available ? (
+        <span className="mt-auto inline-flex items-center gap-1.5 text-sm font-semibold text-primary">
+          {t("facilityReport.hub.open")}
+          <ChevronRight className="size-4" aria-hidden="true" />
+        </span>
+      ) : (
+        <span className="mt-auto">
+          <Badge tone="info">{t("reportViewer.catalog.soon")}</Badge>
+        </span>
+      )}
+    </>
+  );
   return (
     <li data-slot="facility-report-card" className="min-w-0">
       <CardShell className="h-full">
         <CardShellBody className="h-full">
-          <Link
-            to={report.route as "/"}
-            className="flex h-full min-w-0 flex-col gap-3 rounded-container p-card transition-colors hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div className="grid min-w-0 gap-1">
-                <h3 className="type-title">{report.name}</h3>
-                <p className="text-sm leading-5 text-muted-foreground">
-                  {report.description}
-                </p>
-              </div>
-            </div>
-            <dl className="grid gap-2">
-              <DetailLine
-                label={t("facilityReport.hub.metrics")}
-                value={metrics}
-              />
-              <DetailLine
-                label={t("facilityReport.hub.dimensions")}
-                value={dimensions}
-              />
-              <DetailLine
-                label={t("facilityReport.hub.periods")}
-                value={periods}
-              />
-            </dl>
-            <span className="mt-auto inline-flex items-center gap-1.5 text-sm font-semibold text-primary">
-              {t("facilityReport.hub.open")}
-              <ChevronRight className="size-4" aria-hidden="true" />
-            </span>
-          </Link>
+          {available ? (
+            <Link
+              to={report.route as "/"}
+              className={`${cardClass} transition-colors hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring`}
+            >
+              {content}
+            </Link>
+          ) : (
+            <div className={cardClass}>{content}</div>
+          )}
         </CardShellBody>
       </CardShell>
     </li>

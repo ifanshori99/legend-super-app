@@ -29,7 +29,7 @@ import {
   type ReportDefinition,
 } from "@starter/shared/dashboard";
 import { useReportCatalog } from "../hooks";
-import { reportFamilyHasData } from "../lib";
+import { reportHasData } from "../lib";
 
 const ALL = "all";
 
@@ -37,7 +37,7 @@ function ReportRow({ report }: { report: ReportDefinition }) {
   const t = useT();
   const available =
     useRouteAvailable()(report.route) &&
-    reportFamilyHasData(report.family, { mock: API_MOCK });
+    reportHasData(report, { mock: API_MOCK });
   const body = (
     <>
       <span className="min-w-0">

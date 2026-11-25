@@ -49,7 +49,7 @@ import {
   isChartable,
   isResultEmpty,
   reportExportOffered,
-  reportFamilyHasData,
+  reportHasData,
   resolvePeriod,
   resolveSplit,
   resultFinality,
@@ -196,10 +196,9 @@ export function ReportViewerPage({ reportCode }: { reportCode: string }) {
     : null;
   const split = definition ? resolveSplit(definition, search) : null;
   const outletIds = search.outletId ?? [];
-  // A family without server data yet is never run (legend-x73li).
+  // A report without server data yet is never run (legend-x73li).
   const comingSoon =
-    definition !== undefined &&
-    !reportFamilyHasData(definition.family, { mock: API_MOCK });
+    definition !== undefined && !reportHasData(definition, { mock: API_MOCK });
   const selection: ReportQuerySelection | null =
     period && !comingSoon
       ? { period: period.range, outletIds, groupBy: split }
