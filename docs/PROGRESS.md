@@ -1,5 +1,13 @@
 # PROGRESS — Legend Super App
 
+## CTO 25 Nov malam (1268 sambung POS, tanpa GitHub Actions)
+
+- Founder: tidak mau bayar GitHub Actions. Pengganti: `node scripts/test-shards.mjs --chunks 8 --lanes 2 --heavy` (cabang `int/rc1` f9dea5f98, push), bisa dilanjutkan; log `../legend-rc1/.test-shards/`. Suite penuh di f9dea5f98 sedang jalan (root+web, api-1, api-2 lulus).
+- TEMUAN P0: layar kasir/captain (`ws04-pos-order/api.ts`) dan sebagian bayar/shift hanya jalan di mode mock. Epic legend-9yw78, rencana `docs/briefs/1268-pos-wire.md` (sekitar 70 jam agent).
+- Jalan: B1 `ws/1268-b1`, B3 `ws/1268-b3`, nilai 1162 `ws/1268-1162`. Mockup W5 `design/mockups/pos/1268-pesanan-terbuka/` menunggu founder (tab jadi "Belum selesai").
+- Berikut: B2 (Opus, sesudah 1162), W0, lalu W1-W3, W4-W6.
+- Triase bead uang: tidak ada pemblokir baru; `DOIT_REFUNDS_ENABLED` dan `DOIT_RECURRING_ENABLED` harus tetap false. Cek dulu iojd1 (tukar item tiket fasilitas) bila tiket dijual. q7jj F2 menunggu putusan akuntansi CTO.
+
 ## CTO 25 Nov (batch107 mendarat)
 
 - `milestone/m1` = c52680ee0 (int/batch107: 1265 latihan rilis + 1267 bagian B; tanpa migrasi). Bukti di head itu: tsc api+web hijau, root 3775/3776 (1 dilewati), web 497/497, api terarah 76 berkas 1383 lulus 5 dilewati. Suite API penuh BELUM selesai di batch107 (run terhenti di sekitar 225 dari 1.749 berkas; satu temuan nyata, daftar perintah di data-import-registry, dibetulkan c52680ee0). Wajib suite penuh sekali di kandidat rilis sebelum merge main.

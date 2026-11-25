@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Legend · Pesanan terbuka (mockup W5)</title>
+<style>
+@font-face{font-family:Jakarta;src:url('../../assets/plus-jakarta-sans-latin.woff2');font-weight:200 800;font-display:swap}
+*{box-sizing:border-box}
+/* Nilai token: tokens.css, light + data-density="kontras". */
+:root{--background:#fff;--foreground:#000;--card:#fff;--shell:#fbfaf9;--surface-2:#f7f6f4;--surface-3:#f1efec;--muted-foreground:#3d3a35;--border:#8a857d;--input:#3d3a35;--primary:#0f5e68;--success:#147a41;--success-subtle:#e4f5eb;--warning:#8f5800;--warning-subtle:#fcf1dc;--danger:#c02c31;--danger-subtle:#fdebeb;--info:#245bd1;--info-subtle:#e9f0fd;--skeleton:#8a857d;--scrim:rgb(28 27 25/.48)}
+body{margin:0;background:var(--background);color:var(--foreground);font:18px/1.5 Jakarta,sans-serif;font-variant-numeric:tabular-nums}
+h1,h2,h3,p,ul,dl,dd{margin:0;padding:0}ul{list-style:none}
+h1{font-size:26px;line-height:32px;letter-spacing:-.02em}
+h2{font-size:21px;line-height:28px;letter-spacing:-.015em}
+svg{width:24px;height:24px;flex:none;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.muted{color:var(--muted-foreground)}.base{font-size:16px;line-height:24px}.strong{font-weight:600}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+header.ops{display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:64px;padding:8px 16px;background:var(--shell);border-bottom:2px solid var(--border)}
+header.ops strong{display:block;font-size:21px;line-height:28px}
+header.ops small{font-size:14px;line-height:20px;color:var(--muted-foreground)}
+header.ops .right{display:flex;align-items:center;gap:12px}
+header.ops time{font-size:20px;font-weight:700}
+main{padding:16px;display:grid;gap:16px;min-width:0}
+.heading{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:12px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:60px;padding:8px 24px;border:2px solid var(--border);border-radius:8px;background:var(--card);color:var(--foreground);font:600 18px/24px Jakarta,sans-serif;text-decoration:none;text-align:center;cursor:pointer}
+.btn:hover{background:var(--surface-2)}
+.btn.primary{min-height:64px;background:var(--primary);border-color:var(--primary);color:#fff}
+.btn.primary:hover{background:#0b4b53}
+.btn:focus-visible{outline:3px solid var(--primary);outline-offset:2px}
+.full{width:100%}
+.pill{display:inline-flex;align-items:center;gap:6px;width:fit-content;padding:4px 12px;border-radius:999px;background:var(--surface-3);color:var(--muted-foreground);font-size:14px;line-height:20px;font-weight:600;white-space:nowrap}
+.pill svg{width:16px;height:16px}
+.pill.success{background:var(--success-subtle);color:var(--success)}
+.pill.warning{background:var(--warning-subtle);color:var(--warning)}
+.notice{border:2px solid;border-radius:8px;padding:12px 16px}
+.notice b{display:flex;align-items:center;gap:8px;font-weight:600;line-height:24px}
+.notice b svg{width:20px;height:20px}
+.notice div{margin-top:4px;color:var(--foreground);font-size:16px;line-height:24px}
+.notice .btn{margin-top:12px}
+.notice.warning{color:var(--warning);background:var(--warning-subtle)}
+.notice.info{color:var(--info);background:var(--info-subtle)}
+.notice.success{color:var(--success);background:var(--success-subtle)}
+.seg{display:grid;grid-template-columns:repeat(2,minmax(0,220px));gap:8px}
+.seg .btn{padding:8px 12px}
+.seg .btn[aria-current]{border-color:#000;background:var(--surface-3)}
+.seg .n{min-width:28px;padding:0 8px;border-radius:999px;background:var(--surface-3);font-size:16px;line-height:26px}
+.seg .btn[aria-current] .n{background:#000;color:#fff}
+.rows{display:grid;gap:12px}
+.order{display:grid;grid-template-columns:minmax(0,1fr) auto 150px auto;align-items:center;gap:24px;padding:16px 20px;border:2px solid var(--border);border-radius:12px;background:var(--card)}
+.order h3{font-size:18px;line-height:26px;font-weight:700}
+.order .pills{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}
+.order .sum{text-align:right}.order .sum span{display:block;font-size:14px;line-height:20px;color:var(--muted-foreground)}
+.order .sum b{font-weight:700;white-space:nowrap}
+.order.parked{grid-template-columns:minmax(0,1fr) auto}
+.state{display:grid;justify-items:center;gap:12px;padding:56px 16px;border:2px solid var(--border);border-radius:12px;text-align:center}
+.state .ic{display:grid;place-items:center;width:48px;height:48px;border:2px solid var(--border);border-radius:12px;background:var(--shell)}
+.state.err .ic{border-color:transparent;background:var(--danger-subtle);color:var(--danger)}
+.state .tx{display:grid;gap:4px;max-width:440px}
+.state .acts{display:flex;flex-wrap:wrap;justify-content:center;gap:12px;margin-top:8px}
+.sk{border-radius:12px;background:var(--skeleton);opacity:.55;height:96px}.sk.pillish{width:min(448px,100%);height:60px;border-radius:8px}
+.two{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,400px);gap:16px;align-items:stretch}
+.panel{display:flex;flex-direction:column;gap:16px;padding:20px;border:2px solid var(--border);border-radius:12px;background:var(--card);min-width:0}
+.panel>header{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px}
+.lines{border-top:1px solid var(--border)}
+.lines li{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:16px 0;border-bottom:1px solid var(--border)}
+.lines li:last-child{border-bottom:0;padding-bottom:0}
+.lines li>div{display:grid;gap:4px;min-width:0}.lines .amt{font-weight:600;white-space:nowrap}
+.bill div{display:flex;justify-content:space-between;gap:12px;padding:6px 0}
+.bill dd{font-weight:600;white-space:nowrap}
+.bill .total{margin-top:8px;padding-top:16px;border-top:2px solid var(--border);font-size:20px;font-weight:600}
+.bill .rest{font-size:20px;font-weight:600}
+.actions{display:grid;gap:12px;margin-top:auto}
+.bar{display:none}
+dialog{width:calc(100% - 32px);max-width:512px;max-height:90dvh;padding:20px;border:1px solid var(--border);border-radius:18px;background:var(--card);color:inherit;box-shadow:0 16px 48px rgb(28 27 25/.22);overflow:auto}
+dialog::backdrop{background:var(--scrim)}
+dialog:focus{outline:none}
+dialog .in{display:grid;gap:16px}
+dialog .foot{display:flex;justify-content:flex-end;gap:12px}
+dialog .lines li,dialog .lines li:last-child{padding:12px 0}
+dialog .lines{border-bottom:1px solid var(--border)}
+@media(max-width:767px){
+ header.ops{min-height:56px;padding:4px 16px}header.ops .pill span{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}header.ops .pill{padding:4px 8px}header.ops time{font-size:16px}
+ .seg{grid-template-columns:1fr 1fr}.wide{display:none}
+ .order,.order.parked{grid-template-columns:minmax(0,1fr) auto;gap:12px;padding:16px}
+ .order .pills{grid-column:1/-1;grid-row:2;justify-content:flex-start}
+ .order .btn{grid-column:1/-1}
+ .order .sum{align-self:start}
+ .two{grid-template-columns:minmax(0,1fr)}
+ .heading .btn{width:100%}.heading>div:last-child:not(:first-child){width:100%}
+ .panel .actions .send{display:none}
+ .bar{display:grid;position:sticky;bottom:0;margin:0 -16px -16px;padding:12px 16px;gap:12px;background:var(--card);border-top:2px solid var(--border)}
+ dialog{position:fixed;inset:auto 0 0 0;width:100%;max-width:none;margin:0;border-radius:24px 24px 0 0}
+ dialog .foot{flex-direction:column-reverse}
+ .state .acts,.state .acts .btn{width:100%}
+}
+@media(max-width:359px){.seg .btn{font-size:16px;gap:6px}.btn{padding-inline:12px}}
+@media(prefers-contrast:more){.notice,.panel,.order{border-color:#000}}
+</style>
+</head>
+<body>
+<header class="ops">
+ <div><strong>Kasir &amp; operasional</strong><small>Cafe Legend Bandung · Contoh data</small></div>
+ <div class="right"><span class="pill success" role="status"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h.01M2 8.8a15 15 0 0 1 20 0M5 12.9a10 10 0 0 1 14 0M8.5 16.4a5 5 0 0 1 7 0"/></svg><span>Terhubung</span></span><time>14.32</time></div>
+</header>
+<main id="app"></main>
+<script>
+// Mockup statis kartu W5. Keadaan dipilih lewat ?screen=.
+const screen = new URLSearchParams(location.search).get('screen') || 'isi';
+const I = {
+  back: '<path d="m12 19-7-7 7-7M19 12H5"/>',
+  plus: '<path d="M5 12h14M12 5v14"/>',
+  reload: '<path d="M21 12a9 9 0 1 1-9-9c2.5 0 4.9 1 6.7 2.7L21 8"/><path d="M21 3v5h-5"/>',
+  warn: '<path d="m21.7 18-8-14a2 2 0 0 0-3.5 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3M12 9v4M12 17h.01"/>',
+  info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/>',
+  ok: '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>',
+  clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
+  dot: '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="1"/>',
+  pause: '<circle cx="12" cy="12" r="10"/><path d="M10 15V9M14 15V9"/>',
+  inbox: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.5 5.1 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.8 4H7.2a2 2 0 0 0-1.7 1.1"/>',
+  chef: '<path d="M17 21a1 1 0 0 0 1-1v-5.4c0-.4.3-.8.7-1a4 4 0 0 0-2.1-7.6 5 5 0 0 0-9.2 0 4 4 0 0 0-2.1 7.6c.4.2.7.6.7 1V20a1 1 0 0 0 1 1ZM6 17h12"/>',
+};
+const ic = (n) => `<svg viewBox="0 0 24 24" aria-hidden="true">${I[n]}</svg>`;
+const rp = (n) => 'Rp ' + n.toLocaleString('id-ID');
+const pill = (tone, icon, text) => `<span class="pill ${tone}">${ic(icon)}${text}</span>`;
+const notice = (tone, icon, title, body = '') => `<div class="notice ${tone}" role="${tone === 'warning' ? 'alert' : 'status'}"><b>${ic(icon)}${title}</b>${body ? `<div>${body}</div>` : ''}</div>`;
+const link = (to, text, cls = '') => `<a class="btn ${cls}" href="${to ? '?screen=' + to : '#'}">${text}</a>`;
+
+const orders = [
+  { no: 1046, place: 'Takeaway', time: '14.28', ago: '4 menit', status: 'awaiting', items: 2, held: 2, total: 71500 },
+  { no: 1045, place: 'Meja 3', time: '14.19', ago: '13 menit', status: 'sent', items: 5, held: 0, total: 248000 },
+  { no: 1042, place: 'Meja 7', time: '14.05', ago: '27 menit', status: 'sent', items: 4, held: 2, total: 192900 },
+  { no: 1039, place: 'Delivery', time: '13.51', ago: '41 menit', status: 'sent', items: 3, held: 0, total: 136500 },
+  { no: 1036, place: 'Meja 12', time: '13.32', ago: '1 jam', status: 'sent', items: 6, held: 0, total: 318200 },
+];
+const parked = [
+  { label: 'Meja 5', channel: 'Dine-in', items: 3, time: '14.24' },
+  { label: 'Takeaway', channel: 'Takeaway', items: 2, time: '14.11' },
+];
+
+function listHead(tab, open, held, create = true) {
+  return `<div class="heading"><div><h1>Pesanan terbuka</h1><p class="muted">Pesanan yang belum selesai di outlet ini</p></div>${create ? `<div>${link('', ic('plus') + 'Pesanan baru')}</div>` : ''}</div>
+  <nav class="seg" aria-label="Jenis pesanan">
+   <a class="btn" href="?screen=isi" ${tab === 'open' ? 'aria-current="page"' : ''}>Belum lunas${open === null ? '' : `<span class="n">${open}</span>`}</a>
+   <a class="btn" href="?screen=ditahan" ${tab === 'parked' ? 'aria-current="page"' : ''}>Ditahan${held === null ? '' : `<span class="n">${held}</span>`}</a>
+  </nav>`;
+}
+function orderRow(o) {
+  const status = o.status === 'awaiting' ? pill('warning', 'clock', 'Menunggu pembayaran') : pill('', 'dot', 'Pesanan terbuka');
+  return `<li class="order"><div><h3>${o.place} · #${o.no}</h3><p class="base muted">${o.items} item<span class="wide"> · Dibuka ${o.time}</span> · ${o.ago} lalu</p></div>
+  <div class="pills">${o.held ? pill('warning', 'pause', `${o.held} item ditahan`) : ''}${status}</div>
+  <div class="sum"><span>Total</span><b>${rp(o.total)}</b></div>
+  <a class="btn" href="?screen=detail" aria-label="Buka pesanan ${o.no}">Buka</a></li>`;
+}
+function parkedRow(p) {
+  return `<li class="order parked"><div><h3>${p.label}</h3><p class="base muted">${p.items} item · ${p.channel} · Ditahan ${p.time}</p></div><a class="btn" href="#" aria-label="Lanjutkan pesanan ${p.label}">Lanjutkan</a></li>`;
+}
+const state = (cls, icon, title, body, acts) => `<div class="state ${cls}" ${cls ? 'role="alert"' : ''}><span class="ic">${ic(icon)}</span><div class="tx"><p class="strong">${title}</p><p class="base muted">${body}</p></div><div class="acts">${acts}</div></div>`;
+
+const items = [
+  { name: 'Nasi goreng kampung', qty: 2, price: 38000 },
+  { name: 'Es teh manis', qty: 2, price: 12000 },
+  { name: 'Ayam geprek', qty: 1, price: 42000, held: true },
+  { name: 'Kentang goreng', qty: 1, price: 25000, held: true },
+];
+const itemLine = (i, sent) => `<li><div><span class="strong">${i.name}</span><span class="base muted">${i.qty} × ${rp(i.price)}${i.held && !sent ? '' : ' · Dikirim ke dapur'}</span>${i.held && !sent ? pill('warning', 'pause', 'Ditahan') : ''}</div><span class="amt">${rp(i.qty * i.price)}</span></li>`;
+function detail(mode) {
+  const sent = mode === 'terkirim', unsure = mode === 'belum-pasti';
+  const send = sent
+    ? link('', 'Lanjut ke pembayaran', 'primary full send')
+    : unsure
+      ? link('terkirim', ic('reload') + 'Periksa lagi', 'primary full send')
+      : link('konfirmasi', ic('chef') + 'Kirim ke dapur', 'primary full send');
+  const bar = send.replace(' send', '');
+  const top = sent
+    ? notice('success', 'ok', '2 item dikirim ke dapur')
+    : unsure
+      ? notice('warning', 'warn', 'Belum pasti terkirim', 'Jawaban server tidak diterima. Tekan Periksa lagi; permintaan yang sama diulang, jadi item tidak terkirim dua kali.')
+      : '';
+  const bill = [['Subtotal', 167000], ['Biaya layanan', 8350], ['Pajak', 17535], ['Pembulatan', 15]];
+  return `<div class="heading"><div><h1>Pesanan #1042</h1><p class="muted">Meja 7 · Dine-in · Dibuka 14.05</p></div><div>${link('isi', ic('back') + 'Daftar pesanan')}</div></div>
+  ${top}
+  <div class="two">
+   <section class="panel"><header><h2>Rincian pesanan</h2>${pill('', 'dot', 'Pesanan terbuka')}</header><p class="base muted">4 item${sent ? ' · Semua sudah dikirim' : ' · 2 ditahan'}</p><ul class="lines">${items.map((i) => itemLine(i, sent)).join('')}</ul></section>
+   <section class="panel"><header><h2>Ringkasan tagihan</h2>${pill('warning', 'clock', 'Belum lunas')}</header>
+    <dl class="bill">${bill.map(([k, v]) => `<div><dt>${k}</dt><dd>${rp(v)}</dd></div>`).join('')}<div class="total"><dt>Total</dt><dd>${rp(192900)}</dd></div><div class="rest"><dt>Sisa tagihan</dt><dd>${rp(192900)}</dd></div></dl>
+    <div class="actions">${sent ? '' : '<p class="base muted">Pesanan baru bisa diselesaikan setelah semua item dikirim.</p>'}${send}${sent || unsure ? '' : link('', 'Lanjut ke pembayaran', 'full')}${unsure ? '' : link('', 'Ajukan void item', 'full')}</div>
+   </section>
+  </div>
+  <div class="bar">${bar}</div>`;
+}
+const confirm = `<dialog id="dlg" aria-labelledby="dt" aria-describedby="dd"><div class="in"><div><h2 id="dt">Kirim 2 item ke dapur?</h2><p id="dd" class="base muted">Pesanan #1042 · Meja 7. Setelah dikirim, item tidak bisa ditahan lagi.</p></div>
+ <ul class="lines">${items.filter((i) => i.held).map((i) => `<li><span class="strong">${i.name}</span><span class="amt">${i.qty} ×</span></li>`).join('')}</ul>
+ <div class="foot">${link('detail', 'Kembali')}${link('terkirim', ic('chef') + 'Kirim 2 item', 'primary')}</div></div></dialog>`;
+
+const heldOrders = orders.filter((o) => o.held).length;
+const views = {
+  isi: () => listHead('open', 5, 2) + notice('warning', 'pause', `${heldOrders} pesanan punya item ditahan`, 'Item ini belum dikirim ke dapur. Buka pesanannya untuk mengirim.') + `<ul class="rows">${orders.map(orderRow).join('')}</ul>`,
+  ditahan: () => listHead('parked', 5, 2) + notice('info', 'info', 'Pesanan ditahan belum masuk tagihan', 'Lanjutkan untuk memeriksa stok dan harga terbaru.') + `<ul class="rows">${parked.map(parkedRow).join('')}</ul>`,
+  kosong: () => listHead('open', 0, 0, false) + state('', 'inbox', 'Tidak ada pesanan belum lunas', 'Pesanan yang dibuat dan belum dibayar akan muncul di sini.', link('', ic('plus') + 'Buat pesanan', 'primary')),
+  galat: () => listHead('open', null, null) + state('err', 'warn', 'Daftar pesanan belum bisa dimuat', 'Periksa koneksi, lalu coba lagi. Pesanan tetap tersimpan.', link('isi', ic('reload') + 'Coba lagi', 'primary')),
+  memuat: () => listHead('open', null, null) + `<div class="rows" role="status" aria-busy="true"><span class="sr">Memuat pesanan…</span>${'<div class="sk"></div>'.repeat(4)}</div>`,
+  detail: () => detail('detail'),
+  konfirmasi: () => detail('detail') + confirm,
+  terkirim: () => detail('terkirim'),
+  'belum-pasti': () => detail('belum-pasti'),
+};
+document.getElementById('app').innerHTML = (views[screen] || views.isi)();
+document.getElementById('dlg')?.showModal();
+document.body.dataset.ready = screen;
+</script>
+</body>
+</html>
