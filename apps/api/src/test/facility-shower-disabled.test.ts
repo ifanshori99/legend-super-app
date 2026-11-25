@@ -330,7 +330,7 @@ describe("1269 F0 the facility type is frozen around the shower", () => {
         idempotencyKey,
       } as never);
     const types = () =>
-      asTenant(world, async (client) => {
+      asTenant(world.tenantId, async (client) => {
         const { rows } = await client.query<{ type: string }>(
           "SELECT type FROM facilities WHERE tenant_id = $1 ORDER BY type",
           [world.tenantId],
