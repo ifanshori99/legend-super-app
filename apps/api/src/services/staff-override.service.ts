@@ -131,7 +131,7 @@ function toView(row: Row, viewerId?: string): PosOverrideView {
  * own PIN; otherwise the edge PIN session of the caller cuts their role as on
  * any other request (E2, brief 1269).
  */
-async function holdsOverridePermission(
+export async function holdsOverridePermission(
   tx: Tx,
   tenant: TenantContext,
   context: ScopedTenantContext,

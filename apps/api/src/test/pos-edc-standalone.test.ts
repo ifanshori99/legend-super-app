@@ -569,6 +569,120 @@ describe("POS standalone EDC tender (legend-m4fv, EDC-04)", () => {
     ]);
   });
 
+  // 1268 W2 review 1: the till treats EDC_STANDALONE_APPROVAL_REQUIRED of a
+  // repeat as proof that nothing was recorded under its key, so the key is
+  // looked up before the approval is.
+  it("EDC-04 a recorded key replays after its PIN window; an unrecorded one is refused", async () => {
+    const expire = (overrideId: string) =>
+      asOwnerTenant(tenant.tenantId, (client) =>
+        client.query(
+          `UPDATE pos_overrides SET resolved_at = now() - interval '16 minutes',
+                  created_at = now() - interval '16 minutes' WHERE id = $1`,
+          [ulidToUuid(overrideId)],
+        ),
+      );
+    const order = await newOrder();
+    const overrideId = await standaloneOverride({
+      objectId: order.orderId,
+      valueIdr: order.totalIdr,
+    });
+    const standalone = { terminalId, bankRef: "445566778899", overrideId };
+    const key = { idempotencyKey: randomUUID() };
+    const paid = await payStandalone(order, standalone, key);
+    expect(paid.status, JSON.stringify(paid.body)).toBe(201);
+    await expire(overrideId);
+    const replay = await payStandalone(order, standalone, key);
+    expect(replay.status, JSON.stringify(replay.body)).toBe(201);
+    expect(replay.body.data.tender.id).toBe(paid.body.data.tender.id);
+    expect(await standaloneRows(order.number)).toHaveLength(1);
+
+    const second = await newOrder();
+    const late = await standaloneOverride({
+      objectId: second.orderId,
+      valueIdr: second.totalIdr,
+    });
+    await expire(late);
+    const refused = await payStandalone(second, {
+      terminalId,
+      bankRef: "445566778800",
+      overrideId: late,
+    });
+    expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+    expect(refused.body.error.code).toBe("EDC_STANDALONE_APPROVAL_REQUIRED");
+    await noTender(second.orderId);
+    expect(await standaloneRows(second.number)).toHaveLength(0);
+  });
+
+  // 1268 W2: the supervisor of an unsettled request may not void a slip that
+  // paid the bill: the books would stay paid and the money would be gone.
+  it("EDC-04 a slip that paid the bill is closed as recorded, never as voided", async () => {
+    const order = await newOrder();
+    const overrideId = await standaloneOverride({
+      objectId: order.orderId,
+      valueIdr: order.totalIdr,
+    });
+    const bankRef = "44556677-88AB";
+    const paid = await payStandalone(order, {
+      terminalId,
+      bankRef,
+      overrideId,
+    });
+    expect(paid.status, JSON.stringify(paid.body)).toBe(201);
+    const resolve = (key: string | null, over: Record<string, unknown>) =>
+      cashier.client
+        .post(`${pos().base}/${order.orderId}/payment-intents/resolve`)
+        .set(headers)
+        .set(originHeader)
+        .send({
+          key,
+          reason: "Catatan rusak",
+          approverUserId: supervisor.userId,
+          pin: PIN,
+          ...over,
+        });
+    const lostKey = `edc_standalone:${randomUUID()}`;
+    for (const key of [null, lostKey])
+      for (const typed of [bankRef, "44556677-88ab", "4455667788AB"]) {
+        const voided = await resolve(key, {
+          card: "voided",
+          voidRef: "000123",
+          bankRef: typed,
+        });
+        expect(voided.status, JSON.stringify(voided.body)).toBe(409);
+      }
+    const recorded = await resolve(null, { card: "recording", bankRef });
+    expect(recorded.status, JSON.stringify(recorded.body)).toBe(200);
+    expect(recorded.body.data.outcome).toBe("recorded");
+    // Another slip charged for a paid bill is the one to void.
+    const other = await resolve(lostKey, {
+      card: "voided",
+      voidRef: "000123",
+      bankRef: "998877665511",
+    });
+    expect(other.status, JSON.stringify(other.body)).toBe(200);
+    expect(other.body.data.outcome).toBe("closed");
+    expect(await standaloneRows(order.number)).toHaveLength(1);
+  });
+
+  // The order lock comes before the approval: a repeat that arrives while the
+  // first send holds the bill waits for it and answers the recorded payment.
+  it("EDC-04 a repeat sent together with the first answers the same payment", async () => {
+    const order = await newOrder();
+    const overrideId = await standaloneOverride({
+      objectId: order.orderId,
+      valueIdr: order.totalIdr,
+    });
+    const standalone = { terminalId, bankRef: "445566778811", overrideId };
+    const key = { idempotencyKey: randomUUID() };
+    const [a, b] = await Promise.all([
+      payStandalone(order, standalone, key),
+      payStandalone(order, standalone, key),
+    ]);
+    expect([a.status, b.status]).toEqual([201, 201]);
+    expect(a.body.data.tender.id).toBe(b.body.data.tender.id);
+    expect(await standaloneRows(order.number)).toHaveLength(1);
+  });
+
   it("EDC-04 a missing or wrong supervisor PIN cannot authorize a standalone payment", async () => {
     const order = await newOrder();
     for (const pin of [undefined, "000000"]) {

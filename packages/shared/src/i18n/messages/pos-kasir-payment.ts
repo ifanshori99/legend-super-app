@@ -39,6 +39,56 @@ export const posKasirPaymentMessages = {
     title:
       "Pembayaran QR sedang dikonfirmasi penyedia. Tunggu konfirmasi sebelum menerima pembayaran lain.",
   },
+  unresolved: {
+    panelTitle: "Pembayaran belum pasti",
+    pill: "Terkunci",
+    title: "Hasil pembayaran belum diketahui",
+    body: "Jawaban server belum diterima. Pembayaran ini mungkin sudah tercatat.",
+    noticeTitle: "Jangan terima pembayaran lain dulu",
+    noticeBody:
+      "Semua cara bayar tagihan ini terkunci. Kirim ulang permintaan yang sama: pembayaran tidak akan tercatat dua kali.",
+    otherTitle: "Dikirim oleh kasir lain",
+    otherBody:
+      "Kasir yang mengirim permintaan ini perlu masuk dengan PIN lalu mengirim ulang.",
+    corruptTitle: "Permintaan sebelumnya tidak bisa dibaca",
+    corruptBody:
+      "Semua cara bayar tagihan ini terkunci. Muat ulang tagihan, lalu hubungi supervisor bila tetap terkunci.",
+    resend: "Kirim ulang permintaan yang sama",
+    resending: "Mengirim ulang…",
+    reload: "Muat ulang tagihan",
+    errorTitle: "Hasil masih belum pasti",
+    resolve: "Selesaikan dengan PIN supervisor",
+    resolveTitle: "Selesaikan pembayaran yang belum pasti",
+    resolveSummary:
+      "Server memeriksa permintaan ini. Bila sudah tercatat, hasilnya dimuat. Bila belum, permintaan ditutup dan tidak bisa tercatat lagi.",
+    cardLabel: "Keadaan kartu pelanggan",
+    cardHint: "Periksa slip dan mesin EDC sebelum memilih.",
+    cardPlaceholder: "Pilih keadaan kartu",
+    cardNotDebited: "Kartu tidak terdebit",
+    cardRecording: "Kartu sudah terdebit, catat pembayarannya",
+    cardRequired: "Pilih keadaan kartu lebih dulu.",
+    cardRecorded: "Kartu sudah terdebit, slip ini sudah tercatat di tagihan",
+    cardPaidHint: "Cocokkan slip dulu; jangan void bila sudah tercatat.",
+    cardVoided: "Kartu terdebit, sudah di-void atau refund di mesin EDC",
+    voidRef: "Nomor void atau refund",
+    voidRefHint: "Salin dari struk void mesin EDC, minimal 4 karakter.",
+    voidRefRequired: "Isi nomor void dari mesin EDC.",
+    slip: "Slip EDC {amount}, referensi bank {ref}. Data slip tidak bisa diubah.",
+    slipRequired: "Lengkapi data slip EDC lebih dulu.",
+    slipAmount: "Nominal di slip EDC",
+    slipAmountHint: "Salin nominal persis seperti di slip.",
+    slipTerminal: "Pilih terminal EDC",
+    edcBody:
+      "Kartu mungkin sudah terdebit. Semua cara bayar tagihan ini terkunci sampai pembayaran EDC ini tercatat atau diselesaikan dengan PIN supervisor.",
+    paidCardTitle: "Kartu mungkin terdebit",
+    paidCardBody:
+      "Tagihan sudah lunas. Cocokkan slip dulu; jangan void bila sudah tercatat. Bila slip ini tidak tercatat di tagihan, void di mesin EDC, lalu selesaikan dengan PIN supervisor.",
+    sendingTitle: "Pembayaran sedang dikirim",
+    sendingBody:
+      "Tunggu jawaban server. Semua cara bayar tagihan ini terkunci sampai hasilnya diketahui.",
+    refusedTitle: "Permintaan tadi tidak tercatat",
+    refusedBody: "Tidak ada pembayaran yang tercatat dari permintaan itu.",
+  },
   dpLunas: {
     title: "Tidak ada pembayaran tambahan",
     body: "DP reservasi {amount} sudah dialokasikan ke seluruh tagihan. Tidak perlu menerima pembayaran lagi.",
@@ -60,6 +110,9 @@ export const posKasirPaymentMessages = {
     paid: "Tagihan lunas",
     paidHint: "Pastikan pelanggan menerima kembalian dan struk.",
     paidDeposit: "DP reservasi telah menutup seluruh tagihan.",
+    unresolved: "Pembayaran belum pasti",
+    unresolvedHint:
+      "Kirim ulang permintaan yang sama sebelum memakai cara lain.",
     qris: "Pembayaran QRIS",
     qrisHint: "Tunggu konfirmasi sebelum menyelesaikan tagihan.",
     qrisExpiredHint: "Status pembayaran diperbarui otomatis.",
@@ -75,6 +128,7 @@ export const posKasirPaymentMessages = {
   methods: {
     title: "Pilih metode pembayaran",
     hint: "Semua metode dapat dipakai untuk pembayaran gabungan.",
+    hintFull: "Setiap metode melunasi seluruh sisa tagihan.",
     count: "{count} pembayaran",
     groupLabel: "Metode pembayaran",
     selected: "dipilih",
@@ -122,7 +176,11 @@ export const posKasirPaymentMessages = {
     noChange: "Tagihan sudah lunas",
     total: "Total {amount} sudah lunas.",
     receipt: "Struk {receiptNo} siap dicetak.",
-    receiptPrinted: "Struk {receiptNo} sudah dicetak.",
+    receiptPrinted: "Struk {receiptNo} dikirim ke printer.",
+    receiptNotPrinted: "Struk {receiptNo} tidak tercetak.",
+    heldTitle: "Lunas, ada item ditahan",
+    heldHint:
+      "Pesanan masih terbuka. Kirim item yang ditahan ke dapur dulu, lalu cetak struk.",
     deposit: "DP reservasi",
     cashForBill: "Tunai untuk tagihan",
     received: "Uang diterima",

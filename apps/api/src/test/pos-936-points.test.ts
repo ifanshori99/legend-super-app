@@ -485,7 +485,12 @@ const quote = (
 const redeem = async (
   order: CreatedOrder,
   points: unknown,
-  options: { key?: string; who?: Caller; headers?: { Host: string } } = {},
+  options: {
+    key?: string;
+    who?: Caller;
+    headers?: { Host: string };
+    expectedVersion?: number;
+  } = {},
 ) => {
   const memberToken = await memberQrFor(
     world.tenant.tenantId,
@@ -500,6 +505,9 @@ const redeem = async (
       points,
       idempotencyKey: options.key ?? randomUUID(),
       ...(memberToken ? { memberToken } : {}),
+      ...(options.expectedVersion === undefined
+        ? {}
+        : { expectedVersion: options.expectedVersion }),
     });
 };
 
@@ -817,6 +825,24 @@ describe("POS-936-PTS one effect for replays and parallel requests", () => {
       await ledgerOf(world.tenant.tenantId, member.id)
     ).filter((row) => row.type === "redeem");
     expect(redeemRows).toHaveLength(1);
+  });
+
+  it("POS-936-PTS-34 a stale version is refused and spends nothing; a replay ignores the moved version", async () => {
+    const member = await memberWith(1_000);
+    const order = await newOrder({ member });
+    const before = (await orderDetail(order)).body.data.version as number;
+    const stale = await redeem(order, 100, { expectedVersion: before + 1 });
+    expect(stale.status, JSON.stringify(stale.body)).toBe(412);
+    expect(await pointsTenders(order)).toHaveLength(0);
+    expect(await balanceOf(world.tenant.tenantId, member.id)).toBe(1_000);
+    const key = randomUUID();
+    const options = { key, expectedVersion: before };
+    const first = await redeem(order, 100, options);
+    expect(redeemed(first.status), JSON.stringify(first.body)).toBe(true);
+    const again = await redeem(order, 100, options);
+    expect(redeemed(again.status), JSON.stringify(again.body)).toBe(true);
+    expect(await pointsTenders(order)).toHaveLength(1);
+    expect(await balanceOf(world.tenant.tenantId, member.id)).toBe(900);
   });
 
   it("POS-936-PTS-31 two parallel requests with the same key give one effect", async () => {

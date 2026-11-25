@@ -23,3 +23,15 @@ export function formatClock(iso: string, timeZone: string): string {
     timeZone,
   }).format(new Date(iso));
 }
+
+/** What one supervisor PIN of a hand-keyed EDC payment was given for. */
+export function edcApprovalKey(input: {
+  orderId: string;
+  terminalId: string;
+  amountIdr: number;
+  approverId: string;
+  bankRef: string;
+}): string {
+  const { orderId, terminalId, amountIdr, approverId, bankRef } = input;
+  return [orderId, terminalId, amountIdr, approverId, bankRef.trim()].join(":");
+}

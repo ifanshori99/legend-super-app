@@ -38,6 +38,8 @@ export type MethodGridProps = {
   onContinue: (method: PaymentMethodCode) => void;
   /** Open the amount step to pay only part of the balance. */
   onPartial: (method: PaymentMethodCode) => void;
+  /** False: every method settles the whole balance, so no amount step. */
+  partialAllowed: boolean;
 };
 
 // The method choice. The active methods come from data (`usePaymentMethods`),
@@ -49,6 +51,7 @@ export function MethodGrid({
   onSelect,
   onContinue,
   onPartial,
+  partialAllowed,
 }: MethodGridProps) {
   const t = useT();
   const methods = usePaymentMethods(orderId);
@@ -69,7 +72,7 @@ export function MethodGrid({
           <Button
             type="button"
             variant="outline"
-            disabled={!current}
+            disabled={!current || !partialAllowed}
             onClick={() => current && onPartial(current.code)}
           >
             {t("posKasirPayment.methods.partial")}
@@ -88,7 +91,11 @@ export function MethodGrid({
       }
     >
       <p className="text-base text-muted-foreground">
-        {t("posKasirPayment.methods.hint")}
+        {t(
+          partialAllowed
+            ? "posKasirPayment.methods.hint"
+            : "posKasirPayment.methods.hintFull",
+        )}
       </p>
       {methods.isLoading ? (
         <div
@@ -164,7 +171,12 @@ export function MethodGrid({
                     )}
                   </span>
                   <span className="text-base text-muted-foreground">
-                    {method.hint}
+                    {method.unavailableReason
+                      ? t(
+                          `posKasirGateway.grid.locked.${method.unavailableReason}`,
+                        )
+                      : method.hint ||
+                        t(`posKasirGateway.grid.hint.${method.code}`)}
                   </span>
                 </span>
               </button>
