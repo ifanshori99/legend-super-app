@@ -48,6 +48,7 @@ import {
   clockBusinessDate,
   isChartable,
   isResultEmpty,
+  isResultSourceMissing,
   reportExportOffered,
   reportHasData,
   resolvePeriod,
@@ -400,10 +401,17 @@ export function ReportViewerPage({ reportCode }: { reportCode: string }) {
             result={result}
             state={tableState}
             onRetry={refresh}
-            empty={{
-              title: t("reportViewer.empty.title"),
-              description: t("reportViewer.empty.hint"),
-            }}
+            empty={
+              result && isResultSourceMissing(result)
+                ? {
+                    title: t("reportViewer.empty.noSourceTitle"),
+                    description: t("reportViewer.empty.noSourceHint"),
+                  }
+                : {
+                    title: t("reportViewer.empty.title"),
+                    description: t("reportViewer.empty.hint"),
+                  }
+            }
           />
         </>
       )}

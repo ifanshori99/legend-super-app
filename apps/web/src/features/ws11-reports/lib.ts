@@ -422,6 +422,21 @@ export function isResultEmpty(result: ReportResult): boolean {
   );
 }
 
+/**
+ * True when the server says no requested metric has a data source yet
+ * (`unavailable` with `source_not_built` for every one). The viewer then says
+ * the source is not connected instead of "try again after transactions".
+ */
+export function isResultSourceMissing(result: ReportResult): boolean {
+  return (
+    result.availability.length > 0 &&
+    result.availability.every(
+      (entry) =>
+        entry.status === "unavailable" && entry.reason === "source_not_built",
+    )
+  );
+}
+
 export type ResultFinality = "final" | "estimate" | "none";
 
 /**

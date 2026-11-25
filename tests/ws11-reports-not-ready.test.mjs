@@ -75,3 +75,33 @@ test("the facility report hub uses the same availability rule as the catalog", (
   );
   assert.match(hub, /reportHasData\(report, \{ mock: API_MOCK \}\)/);
 });
+
+test("1267 F2: a result whose metrics all lack a source says so instead of blaming the period", () => {
+  const unavailable = { status: "unavailable", reason: "source_not_built" };
+  const result = (availability) => ({ availability });
+  assert.equal(
+    lib.isResultSourceMissing(result([{ metricCode: "a", ...unavailable }])),
+    true,
+  );
+  assert.equal(
+    lib.isResultSourceMissing(
+      result([
+        { metricCode: "a", ...unavailable },
+        { metricCode: "b", status: "available" },
+      ]),
+    ),
+    false,
+  );
+  assert.equal(
+    lib.isResultSourceMissing(
+      result([
+        {
+          metricCode: "a",
+          status: "unavailable",
+          reason: "dimension_not_supported",
+        },
+      ]),
+    ),
+    false,
+  );
+});

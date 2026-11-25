@@ -93,6 +93,9 @@ export const reportViewerMessages = {
   empty: {
     title: "Belum ada data untuk periode ini",
     hint: "Ubah periode atau pemecahan, atau coba lagi setelah ada transaksi.",
+    noSourceTitle: "Sumber data belum tersambung",
+    noSourceHint:
+      "Laporan ini belum punya sumber data di server, jadi angkanya belum bisa ditampilkan. Mengubah periode tidak akan membantu.",
   },
   offline: {
     title: "Anda sedang offline",
