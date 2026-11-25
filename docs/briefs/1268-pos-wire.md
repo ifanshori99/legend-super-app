@@ -6,6 +6,7 @@ Dasar: `int/rc1` (= milestone/m1 + `pnpm test:shards`). Rencana dari architect 2
 
 - Urutan: B1, 1162, mockup W5 (paralel); lalu B2, B3, W0; lalu W1-W3; lalu W4, W5, W6. Maks 3 agent mengedit.
 - EDC rilis 1: manual (PIN supervisor + nomor referensi bank). ECR, VA, e-wallet, kartu online, kode kasir, tunai sebagian, tutup paksa tetap terkunci.
+- W5: mockup `design/mockups/pos/1268-pesanan-terbuka/` disetujui founder 25 Nov; tab "Belum selesai". B2 menambah untuk W5: sisa tagihan, label meja, filter beberapa status, jumlah, jumlah item ditahan di ringkasan `listPosOrders`; pesanan diparkir tidak punya harga (tampilkan tanpa harga, jangan ditebak).
 - "Jangan sampai rugi": hasil tak diketahui = kunci semua cara bayar tagihan itu, ulang permintaan yang sama persis.
 - Aturan agent: satu worktree per kartu (`../legend-1268-<kartu>`), test gagal-dulu, test lewat `heavy` dengan `LEGEND_TEST_FILES`, pra-gate AGENTS.md, commit per langkah dan push ke `ws/1268-<kartu>` (`command git push origin HEAD:refs/heads/ws/1268-<kartu>`), tanpa stash, tanpa baca `.env*`, laporan maks 10 baris.
 

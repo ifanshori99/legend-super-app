@@ -4,7 +4,7 @@
 
 - Founder: tidak mau bayar GitHub Actions. Pengganti: `node scripts/test-shards.mjs --chunks 8 --lanes 2 --heavy` (cabang `int/rc1` f9dea5f98, push), bisa dilanjutkan; log `../legend-rc1/.test-shards/`. Suite penuh di f9dea5f98 sedang jalan (root+web, api-1, api-2 lulus).
 - TEMUAN P0: layar kasir/captain (`ws04-pos-order/api.ts`) dan sebagian bayar/shift hanya jalan di mode mock. Epic legend-9yw78, rencana `docs/briefs/1268-pos-wire.md` (sekitar 70 jam agent).
-- Jalan: B1 `ws/1268-b1`, B3 `ws/1268-b3`, nilai 1162 `ws/1268-1162`. Mockup W5 `design/mockups/pos/1268-pesanan-terbuka/` menunggu founder (tab jadi "Belum selesai").
+- Jalan: B1 `ws/1268-b1`, B3 `ws/1268-b3`, nilai 1162 `ws/1268-1162`. Mockup W5 `design/mockups/pos/1268-pesanan-terbuka/` DISETUJUI founder 25 Nov (tab jadi "Belum selesai").
 - Berikut: B2 (Opus, sesudah 1162), W0, lalu W1-W3, W4-W6.
 - Triase bead uang: tidak ada pemblokir baru; `DOIT_REFUNDS_ENABLED` dan `DOIT_RECURRING_ENABLED` harus tetap false. Cek dulu iojd1 (tukar item tiket fasilitas) bila tiket dijual. q7jj F2 menunggu putusan akuntansi CTO.
 
