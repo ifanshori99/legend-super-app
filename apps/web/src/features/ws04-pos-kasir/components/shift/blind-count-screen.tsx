@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Money } from "@/components/ui/money";
 import { ApiError } from "@/lib/api/errors";
-import { useActiveShift, useSubmitBlindCount } from "../../hooks";
+import { useActiveShift, useSubmitBlindCount } from "../../shift-hooks";
 import { SHIFT_COUNT_LIMIT_CODE } from "../../shift-extra-types";
 import { CASH_DENOMINATIONS_IDR, type ActiveShift } from "../../types";
 import {

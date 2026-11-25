@@ -6,7 +6,7 @@ import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useOutletClock } from "@/lib/tenant-context";
-import { useOpenShift, useRegisteredTerminals } from "../../hooks";
+import { useOpenShift, useRegisteredTerminals } from "../../shift-hooks";
 import {
   AmountKeypad,
   Notice,

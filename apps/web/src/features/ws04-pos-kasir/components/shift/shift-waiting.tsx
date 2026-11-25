@@ -4,7 +4,7 @@ import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { Money } from "@/components/ui/money";
 import { useOutletClock } from "@/lib/tenant-context";
-import { useActiveShift, useOwnCountSummary } from "../../hooks";
+import { useActiveShift, useOwnCountSummary } from "../../shift-hooks";
 import { SHIFT_CASHIER_COUNT_LIMIT } from "../../shift-extra-types";
 import type { ActiveShift } from "../../types";
 import {

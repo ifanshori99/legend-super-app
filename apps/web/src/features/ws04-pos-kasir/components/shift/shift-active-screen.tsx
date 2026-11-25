@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { ErrorState } from "@/components/ui/feedback-state";
 import { Money } from "@/components/ui/money";
 import { useOutletClock } from "@/lib/tenant-context";
-import { useActiveShift } from "../../hooks";
+import { useActiveShift } from "../../shift-hooks";
 import type { ActiveShift } from "../../types";
 import { PosPageHeading, PosPanel, PosTwoPane, StatusPill } from "../shared";
 import { CashMovementPanel } from "./cash-movement-panel";

@@ -11,7 +11,8 @@ import { Money } from "@/components/ui/money";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ApiError } from "@/lib/api/errors";
 import { useOutletClock, useTenantContext } from "@/lib/tenant-context";
-import { isContractPending, useCloseDay, useDayCloseRecap } from "../../hooks";
+import { isContractPending } from "../../hooks";
+import { useCloseDay, useDayCloseRecap } from "../../shift-hooks";
 import type { DayCloseRecap, DayCloseResult } from "../../types";
 import {
   Notice,
