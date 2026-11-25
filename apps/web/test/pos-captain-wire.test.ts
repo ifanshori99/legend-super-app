@@ -734,6 +734,7 @@ test("a draft whose submit was lost goes on with the same key, and no second ord
       },
     },
     "order-1",
+    SESSION,
   );
   assert.equal(continued.status, "awaiting_payment");
   assert.equal(server.state.orders.size, 1);
@@ -756,10 +757,55 @@ test("a draft with no stored intent is submitted on its own key, repeated as it 
       return { id: orderId, status: "awaiting_payment" };
     },
   });
-  await assert.rejects(continueDraft(deps(storage), "order-9"));
-  await continueDraft(deps(storage.clone()), "order-9");
+  await assert.rejects(continueDraft(deps(storage), "order-9", SESSION));
+  await continueDraft(deps(storage.clone()), "order-9", SESSION);
   assert.equal(keys.length, 2);
   assert.equal(keys[0], keys[1]);
+});
+
+test("create lost, then Continue, then Resend: one order, nothing left to resend", async () => {
+  const server = orderServer();
+  const storage = new MemoryStorage();
+  const draftKey = captainDraftKey(WHO.outletId, WHO.actorId, SESSION);
+  const meta = captainMeta({ label: "A1", sessionId: SESSION });
+  server.state.loseCreate = 1;
+  await assert.rejects(
+    placeCaptainOrder(server.deps(storage, draftKey), SESSION, LINES, meta),
+  );
+  // The order exists on the server as a draft; the create intent is stored.
+  assert.equal(server.state.orders.size, 1);
+  assert.equal(pendingCaptainOrders(storage, WHO).length, 1);
+  const submitBodies: string[] = [];
+  await continueDraft(
+    {
+      storage,
+      makeKey,
+      scope: WHO,
+      submit: async (orderId, body) => {
+        submitBodies.push(body.idempotencyKey);
+        return server.deps(storage, draftKey).submit(orderId, body);
+      },
+      // The same create key and the stored snapshot: the replay, not a new key.
+      resend: async (key) => {
+        const found = pendingCaptainOrders(storage, WHO).find(
+          (entry) => entry.draftKey === key,
+        )!;
+        return placeCaptainOrder(
+          server.deps(storage, key),
+          found.snapshot.meta.tableSessionId!,
+          found.snapshot.lines,
+          found.snapshot.meta,
+        );
+      },
+    },
+    "order-1",
+    SESSION,
+  );
+  assert.equal(server.state.orders.size, 1);
+  assert.equal(server.state.orders.get("order-1")!.status, "awaiting_payment");
+  // Nothing is left to resend, so a resend cannot create or submit again.
+  assert.deepEqual(pendingCaptainOrders(storage, WHO), []);
+  assert.equal(submitBodies.length, 0);
 });
 
 test("a captain draft is listed on the table; another channel's draft is not", () => {

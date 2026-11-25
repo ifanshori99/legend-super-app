@@ -25,7 +25,11 @@ import {
   type FlowDeps,
   type SubmitBody,
 } from "./order-flow.ts";
-import { NO_TABLE_SESSION, captainInput } from "./captain-wire.ts";
+import {
+  NO_TABLE_SESSION,
+  captainDraftKey,
+  captainInput,
+} from "./captain-wire.ts";
 import { submitBodyOf } from "./order-wire.ts";
 import type { CartLine, OrderMeta, OrderSnapshot } from "./types.ts";
 
@@ -100,6 +104,8 @@ export interface ContinueDeps<Order> {
   makeKey: () => string;
   scope: Who;
   submit: (orderId: string, body: SubmitBody) => Promise<Order>;
+  /** Sends the unclear captain order of a cart again (same keys, snapshot). */
+  resend?: (draftKey: string) => Promise<Order>;
 }
 
 /** The cart whose unclear submit belongs to this order (null: none stored). */
@@ -122,15 +128,32 @@ export function submitIntentOf(
 
 /**
  * Submit an order that was created but never submitted (its submit reply was
- * lost, or the page was left). The stored submit key is used when there is
- * one, else the draft gets its own key kept until answered: never a second
+ * lost, or the page was left). An unclear send of the same table session is
+ * resent first. The stored submit key is used when there is one, else the draft gets its own key kept until answered: never a second
  * create, so never a second order.
  */
 export async function continueDraft<Order>(
   deps: ContinueDeps<Order>,
   orderId: string,
+  tableSessionId: string | null,
 ): Promise<Order> {
   checkWho(deps.storage, deps.scope);
+  // A create or submit of this table session is still unclear: the draft is
+  // very likely its order. Go on with that send (same keys), so its stored
+  // intent is answered and cleared; a second key would leave it to be resent
+  // later over an order that is already sent.
+  if (deps.resend && tableSessionId !== null) {
+    const cart = captainDraftKey(
+      deps.scope.outletId,
+      deps.scope.actorId,
+      tableSessionId,
+    );
+    if (
+      peekIntent(deps.storage, scopeFor(deps.scope, "create", cart)) ||
+      peekIntent(deps.storage, scopeFor(deps.scope, "submit", cart))
+    )
+      return deps.resend(cart);
+  }
   const draftKey = submitIntentOf(deps.storage, deps.scope, orderId);
   if (draftKey !== null) {
     const scope = scopeFor(deps.scope, "submit", draftKey);

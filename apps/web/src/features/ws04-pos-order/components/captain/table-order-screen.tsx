@@ -178,7 +178,11 @@ export function TableOrderScreen({ tableId }: { tableId: string }) {
                   onContinue={
                     payFirst
                       ? undefined
-                      : () => continueDraft.mutate({ orderId: order.orderId })
+                      : () =>
+                          continueDraft.mutate({
+                            orderId: order.orderId,
+                            tableSessionId: view?.table.sessionId ?? null,
+                          })
                   }
                   continuing={
                     continueDraft.isPending &&

@@ -520,12 +520,21 @@ export function usePendingOpen(tableId: string): {
 /** Submit an order of the table that was created but not submitted. */
 export function useContinueDraft(
   tableId: string,
-): UseMutationResult<void, Error, { orderId: string }> {
+): UseMutationResult<
+  void,
+  Error,
+  { orderId: string; tableSessionId: string | null }
+> {
   const queryClient = useQueryClient();
   const outletId = useOutletId();
   const actorId = useCaptainActorId();
-  return useMutation<void, Error, { orderId: string }>({
-    mutationFn: ({ orderId }) => continueDraftOrder(outletId, actorId, orderId),
+  return useMutation<
+    void,
+    Error,
+    { orderId: string; tableSessionId: string | null }
+  >({
+    mutationFn: ({ orderId, tableSessionId }) =>
+      continueDraftOrder(outletId, actorId, orderId, tableSessionId),
     onSettled: () => {
       notifyPending();
       void queryClient.invalidateQueries({
@@ -610,7 +619,9 @@ export function useUnclearSends() {
   >({
     mutationFn: (target) =>
       target.kind === "order"
-        ? resendCaptainOrder(outletId, actorId, target.draftKey)
+        ? resendCaptainOrder(outletId, actorId, target.draftKey).then(
+            () => undefined,
+          )
         : target.kind === "seat"
           ? openTable(outletId, actorId, target.tableId, target.pax).then(
               () => undefined,

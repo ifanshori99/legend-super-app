@@ -246,7 +246,11 @@ async function assertCaptainWithinOpenBill(
   });
 }
 
-/** The session of a captain order, read under the order lock (share). */
+/**
+ * The session of a captain order. Read without a lock: the order is already
+ * locked, and the session lock comes first elsewhere (table, session, order),
+ * so locking it here would invert that order and could deadlock.
+ */
 async function captainSessionOf(
   tx: Tx,
   context: ScopedTenantContext,
@@ -262,8 +266,7 @@ async function captainSessionOf(
         eq(tableSessions.outletId, order.outletId),
         eq(tableSessions.id, order.tableSessionId),
       ),
-    )
-    .for("share");
+    );
   return session ?? null;
 }
 

@@ -677,6 +677,7 @@ export async function continueDraftOrder(
   outletId: string,
   actorId: string,
   orderId: string,
+  tableSessionId: string | null,
 ): Promise<void> {
   if (API_MOCK) return;
   const who = { outletId, actorId };
@@ -698,8 +699,10 @@ export async function continueDraftOrder(
         });
         return data;
       },
+      resend: (key) => resendCaptainOrder(outletId, actorId, key),
     },
     orderId,
+    tableSessionId,
   );
   if (draftKey && lines)
     writeDraft(draftKey, removeSentLines(readDraft(draftKey), lines));
@@ -710,20 +713,22 @@ export async function resendCaptainOrder(
   outletId: string,
   actorId: string,
   draftKey: string,
-): Promise<void> {
+): Promise<PosOrderDetail> {
   const found = pendingCaptainOrders(window.sessionStorage, {
     outletId,
     actorId,
   }).find((entry) => entry.draftKey === draftKey);
-  if (!found) return;
+  if (!found)
+    throw new ApiError(404, "NOT_FOUND", "Tidak ada pengiriman yang tertunda.");
   const { lines, meta } = found.snapshot;
-  await placeCaptainOrder(
+  const sent = await placeCaptainOrder(
     flowDeps(outletId, actorId, draftKey),
     meta.tableSessionId ?? "",
     lines,
     meta,
   );
   writeDraft(draftKey, removeSentLines(readDraft(draftKey), lines));
+  return sent;
 }
 
 // ---- Waiter calls ----------------------------------------------------------
