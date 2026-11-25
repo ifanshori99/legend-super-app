@@ -60,6 +60,7 @@ import { sealSecret, openSecret } from "../lib/secrets";
 import { recordAudit } from "./core-audit";
 import { qrTokenHash, signTableQrToken } from "./qr-token";
 import { qrOrderSettlementLookup } from "./qr-order.service";
+import { businessDateFor, loadOutlet } from "./pos-order-support";
 import { lockTableLiveState } from "./table-session.service";
 
 type Database = NodePgDatabase<typeof schema>;
@@ -386,9 +387,17 @@ export async function listFloorBoard(
         ),
       )
       .orderBy(asc(schema.reservationTables.startsAt));
+    // Only a hold that starts by the end of the outlet's current business day
+    // counts: tomorrow's booking does not hold the table today.
+    const outletRow = await loadOutlet(tx, context, outlet);
+    const today = businessDateFor(outletRow, now);
     const holdByTable = new Map<string, (typeof holdRows)[number]>();
     for (const row of holdRows)
-      if (!holdByTable.has(row.tableId)) holdByTable.set(row.tableId, row);
+      if (
+        !holdByTable.has(row.tableId) &&
+        businessDateFor(outletRow, row.startsAt) <= today
+      )
+        holdByTable.set(row.tableId, row);
     const linkGroups = await linkGroupsForTables(
       tx,
       context.tenant.tenantId,

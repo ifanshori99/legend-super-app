@@ -85,6 +85,9 @@ import {
 import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
+// Loaded when used: open-bill-control reads constants from modules that load
+// this one, so a top-level import would see them undefined (import cycle).
+const openBill = () => import("./open-bill-control.service.ts");
 import { settleOrderVouchersForVoid } from "./order-voucher-void.ts";
 import { logger } from "../lib/logger.ts";
 import {
@@ -191,6 +194,75 @@ function assertCaptainOnly(caller: PosCaller, channel: string): void {
     );
 }
 
+export const CAPTAIN_PAY_FIRST = "CAPTAIN_PAY_FIRST";
+
+/**
+ * Pay first means the kitchen starts after the bill is paid (PRD D10), and a
+ * captain-only caller cannot take payment: such a table is the cashier's.
+ * The payment mode is the session's own, read under the lock.
+ */
+function assertSessionPaysLater(session: { paymentMode: string }): void {
+  if (session.paymentMode === "pay_first")
+    throw new HttpError(
+      409,
+      CAPTAIN_PAY_FIRST,
+      "Meja ini bayar di muka. Arahkan tamu ke kasir.",
+    );
+}
+
+async function assertCaptainWithinOpenBill(
+  tx: Tx,
+  context: ScopedTenantContext,
+  order: { outletId: string; tableSessionId: string | null; totalIdr: unknown },
+  now: Date,
+): Promise<void> {
+  const session = await captainSessionOf(tx, context, order);
+  if (!session) return;
+  const [table] = await tx
+    .select({ zoneId: tables.zoneId })
+    .from(tables)
+    .where(
+      and(
+        eq(tables.tenantId, context.tenant.tenantId),
+        eq(tables.id, session.tableId),
+      ),
+    );
+  if (!table) return;
+  await (
+    await openBill()
+  ).assertOpenBillWithinLimit(tx, context, {
+    sessionId: session.id,
+    outletId: order.outletId,
+    tableId: session.tableId,
+    zoneId: table.zoneId,
+    paymentMode: session.paymentMode,
+    cartVersion: 0,
+    orderTotalIdr: Number(order.totalIdr),
+    now,
+  });
+}
+
+/** The session of a captain order, read under the order lock (share). */
+async function captainSessionOf(
+  tx: Tx,
+  context: ScopedTenantContext,
+  order: { outletId: string; tableSessionId: string | null },
+) {
+  if (order.tableSessionId === null) return null;
+  const [session] = await tx
+    .select()
+    .from(tableSessions)
+    .where(
+      and(
+        eq(tableSessions.tenantId, context.tenant.tenantId),
+        eq(tableSessions.outletId, order.outletId),
+        eq(tableSessions.id, order.tableSessionId),
+      ),
+    )
+    .for("share");
+  return session ?? null;
+}
+
 /**
  * A POS mutation: one tenant transaction, idempotent under the request key,
  * the order locked, the client's version checked. `run` returns the stored
@@ -240,6 +312,10 @@ export async function mutatePosOrder<T>(
           input.orderId,
         );
         assertCaptainOnly(caller, locked.order.channel);
+        if (caller.captainOnly === true) {
+          const session = await captainSessionOf(tx, context, locked.order);
+          if (session) assertSessionPaysLater(session);
+        }
         if (
           input.requireActiveSession &&
           locked.order.tableSessionId !== sessionId
@@ -695,6 +771,12 @@ export async function createPosOrder(
 ): Promise<PosOrderDetail> {
   const { idempotencyKey, ...request } = input;
   assertCaptainOnly(caller, input.channel);
+  // Points would be earned on another account's profile: the cashier's call.
+  if (caller.captainOnly === true && input.customerProfileId)
+    throw new AccessError(
+      "PERMISSION_DENIED",
+      "Akun ini tidak boleh mengaitkan pelanggan ke pesanan captain.",
+    );
   if (input.channel === "qr")
     throw new CoreError(
       "VALIDATION_ERROR",
@@ -808,6 +890,7 @@ export async function createPosOrderInTx(
       .for("share");
     if (!session || !ACTIVE_SESSION_STATUSES.has(session.status))
       throw new CoreError("CONFLICT", "Sesi meja ini tidak sedang berjalan.");
+    if (caller.captainOnly === true) assertSessionPaysLater(session);
   }
   if (externalRef !== null) {
     const [duplicate] = await tx
@@ -1264,6 +1347,10 @@ export async function submitPosOrder(
       assertExpectedStatus(order, input.expectedStatus);
       assertMutable(order);
       await assertNoActiveQrisHold(tx, context, order.id);
+      // A captain-only caller is bound by the open-bill limit, as the guest's
+      // own QR order is (the cashier settles and may raise it).
+      if (caller.captainOnly === true)
+        await assertCaptainWithinOpenBill(tx, context, order, now);
       const next = transitionPosOrder(order.status, "submit");
       const shiftId = await posShiftLookup()(tx, context, {
         outletId,
@@ -1351,7 +1438,13 @@ export async function submitPosOrder(
       );
       return freshDetail(tx, context, outletId, orderId);
     },
-  );
+  ).catch(async (error: unknown) => {
+    // The transaction rolled back; the breach is recorded and answered 409.
+    const { OpenBillLimitExceeded, refuseOpenBillBreach } = await openBill();
+    if (error instanceof OpenBillLimitExceeded)
+      return refuseOpenBillBreach(context, error);
+    throw error;
+  });
 }
 
 /** POST .../fire: explicit held items, or every held item of one course. */

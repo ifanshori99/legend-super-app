@@ -112,7 +112,7 @@ const newTable = async () =>
 describe("floor board reservation hold marker", () => {
   it("marks a table a live reservation still holds, without PII", async () => {
     const tableId = await newTable();
-    await hold(tableId, { pax: 6 });
+    await hold(tableId, { pax: 6, startsInMin: -5 });
     const row = (await board()).find((entry) => entry.table.id === tableId);
     expect(row?.reservationHold).toEqual({
       startsAt: expect.any(String),
@@ -122,16 +122,19 @@ describe("floor board reservation hold marker", () => {
     expect(JSON.stringify(row)).not.toMatch(/Rahasia|catatan|contact|guest/i);
   });
 
-  it("does not mark a released, ended or cancelled hold", async () => {
+  it("does not mark a released, ended, cancelled or next-day hold", async () => {
     const released = await newTable();
     await hold(released, { released: true });
     const ended = await newTable();
     await hold(ended, { startsInMin: -180, endsInMin: -90 });
     const cancelled = await newTable();
     await hold(cancelled, { status: "cancelled" });
+    // Tomorrow's booking does not hold the table today (business day).
+    const tomorrow = await newTable();
+    await hold(tomorrow, { startsInMin: 30 * 60, endsInMin: 32 * 60 });
     const plain = await newTable();
     const rows = await board();
-    for (const id of [released, ended, cancelled, plain])
+    for (const id of [released, ended, cancelled, tomorrow, plain])
       expect(
         rows.find((entry) => entry.table.id === id)?.reservationHold ?? null,
       ).toBeNull();
@@ -139,8 +142,8 @@ describe("floor board reservation hold marker", () => {
 
   it("shows the earliest of two holds", async () => {
     const tableId = await newTable();
-    await hold(tableId, { startsInMin: 300, endsInMin: 390, pax: 2 });
-    await hold(tableId, { startsInMin: 30, endsInMin: 120, pax: 3 });
+    await hold(tableId, { startsInMin: 70, endsInMin: 120, pax: 2 });
+    await hold(tableId, { startsInMin: -5, endsInMin: 60, pax: 3 });
     const row = (await board()).find((entry) => entry.table.id === tableId);
     expect(row?.reservationHold).toMatchObject({ pax: 3 });
   });
