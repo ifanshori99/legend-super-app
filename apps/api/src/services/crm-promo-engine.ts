@@ -83,6 +83,7 @@ import {
   assertFacilityProductOpen,
   closedShowerProductIds,
 } from "./facility-shower-gate";
+import { wfcProductIds, wfcProductNotReward } from "./wfc-product-guard";
 import { FacilityError } from "@starter/shared/facility";
 import {
   domainEventOutbox,
@@ -870,16 +871,29 @@ async function prepare(
   // 1269 F0: a promotion whose reward is a closed shower (the facility type is
   // read from the product's facility row) never applies; a code or voucher for
   // one is refused outright.
+  const rewardProducts = candidates.flatMap((promotion) =>
+    promotion.benefit.kind === "facility_entitlement"
+      ? [promotion.benefit.facilityProductId]
+      : [],
+  );
   const closedProducts = await closedShowerProductIds(
     tx,
     context.tenant.tenantId,
-    candidates.flatMap((promotion) =>
-      promotion.benefit.kind === "facility_entitlement"
-        ? [promotion.benefit.facilityProductId]
-        : [],
-    ),
+    rewardProducts,
   );
-  if (closedProducts.size > 0) {
+  // 1270 W1: nor does one whose reward is a WFC product (seat and credit are
+  // only ever bought).
+  const wfcProducts = await wfcProductIds(
+    tx,
+    context.tenant.tenantId,
+    rewardProducts,
+  );
+  if (
+    codePromotion?.benefit.kind === "facility_entitlement" &&
+    wfcProducts.has(codePromotion.benefit.facilityProductId)
+  )
+    throw wfcProductNotReward();
+  if (closedProducts.size > 0 || wfcProducts.size > 0) {
     if (
       codePromotion?.benefit.kind === "facility_entitlement" &&
       closedProducts.has(codePromotion.benefit.facilityProductId)
@@ -889,7 +903,8 @@ async function prepare(
       const benefit = candidates[index]!.benefit;
       if (
         benefit.kind === "facility_entitlement" &&
-        closedProducts.has(benefit.facilityProductId)
+        (closedProducts.has(benefit.facilityProductId) ||
+          wfcProducts.has(benefit.facilityProductId))
       )
         candidates.splice(index, 1);
     }
@@ -1598,6 +1613,14 @@ export async function redeemPromotions(
         tenantId,
         evaluation.facilityEntitlement.facilityProductId,
       );
+      if (
+        (
+          await wfcProductIds(tx, tenantId, [
+            evaluation.facilityEntitlement.facilityProductId,
+          ])
+        ).size > 0
+      )
+        throw wfcProductNotReward();
       // The evaluator only grants a facility reward to an identified customer.
       if (customerId === null)
         throw new Error("Facility reward without a customer");

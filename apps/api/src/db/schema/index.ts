@@ -225,3 +225,8 @@ export * from "./sealed-secret-reseal";
 
 // legend-vqicf customer reviews (migration 0455).
 export * from "./customer-reviews";
+
+// Brief 1270 W1 paid WFC: seats, hourly quota, seat claims, business settings
+// (migration 0527).
+export * from "./wfc-seat";
+export * from "./wfc-settings";

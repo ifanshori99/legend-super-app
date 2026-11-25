@@ -18,6 +18,7 @@ import {
   type FacilityUnit,
   type SubscriptionPlan,
 } from "./schemas.ts";
+import { wfcProductSplitSchema } from "../wfc/index.ts";
 
 const keySchema = z.string().regex(/^[a-z0-9][a-z0-9_.-]{0,99}$/);
 const rowFields = {
@@ -66,6 +67,8 @@ const productItem = facilityProductSchema
     kind: z.literal("product"),
     facilityKey: keySchema,
     taxRuleKey: keySchema.nullable(),
+    /** Present only for a WFC product (1270); older exports omit it. */
+    wfc: wfcProductSplitSchema.optional(),
   });
 const addonItem = facilityAddonSchema
   .omit({ ...childFields, inventoryItemId: true })
