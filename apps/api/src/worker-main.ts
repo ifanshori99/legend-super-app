@@ -66,6 +66,7 @@ import { deliverFacilityEntitlementEvent } from "./services/facility-entitlement
 import { deliverLoyaltyEarnEvent } from "./services/loyalty-earn-consumer.ts";
 import { deliverWifiQuotaEvent } from "./services/wifi-quota-consumer.ts";
 import { runLoyaltyBalanceCheckSweep } from "./worker/loyalty-balance-check.job.ts";
+import { sweepEdgeCommandResults } from "./worker/edge-command-retention.job.ts";
 import { redriveEdgeOrderRefusalsForTenant } from "./worker/edge-order-redrive.job.ts";
 import { runLoyaltyClaimRecoverySweep } from "./worker/loyalty-claim-recovery.job.ts";
 import { runRedemptionExpirySweep } from "./worker/redemption-expiry.job.ts";
@@ -578,6 +579,15 @@ const relay = createRelayRuntime({
         await redriveEdgeOrderRefusalsForTenant(context);
       } catch {
         console.error("Edge order redrive sweep failed");
+      }
+    }
+    // Card F1: forget edge command results past their retention. Cloud only;
+    // throttled per tenant; a sweep error never blocks the relay.
+    if (sweepsCloudOwnedData) {
+      try {
+        await sweepEdgeCommandResults(context);
+      } catch {
+        console.error("Edge command retention sweep failed");
       }
     }
     // FAC-02 (legend-nm4f): cancel facility slot holds whose payment TTL
