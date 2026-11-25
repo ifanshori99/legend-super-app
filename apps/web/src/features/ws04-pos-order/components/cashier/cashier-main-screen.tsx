@@ -306,7 +306,12 @@ export function CashierMainScreen() {
     park.mutate(
       { ...inputOfMeta(snapshot.meta, snapshot.lines), meta: snapshot.meta },
       {
-        onSuccess: () => setStatus({ key: "parkedOk" }),
+        onSuccess: () => {
+          // Same cart as the one parked: it is on the held list now, so it
+          // leaves the screen. A different cart stays: it is a new order.
+          if (sameOrder(cart.lines, meta, snapshot)) cart.clear();
+          setStatus({ key: "parkedOk" });
+        },
         onSettled: pendingPark.refresh,
       },
     );
@@ -503,23 +508,29 @@ export function CashierMainScreen() {
           </div>
         </Notice>
       )}
-      {replay.isError && needsCashierClose(replay.error) && (
-        <Notice tone="danger" title={t("posOrderCart.resumeClose.title")}>
-          <div className="grid gap-2">
-            <p>{t("posOrderCart.resumeClose.body")}</p>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => {
-                if (replay.variables) closeResume(replay.variables.id);
-                replay.reset();
-              }}
-            >
-              {t("posOrderCart.resumeClose.confirm")}
-            </Button>
-          </div>
-        </Notice>
-      )}
+      {replay.failures
+        .filter((failure) => needsCashierClose(failure.error))
+        .map((failure) => (
+          <Notice
+            key={failure.id}
+            tone="danger"
+            title={t("posOrderCart.resumeClose.title")}
+          >
+            <div className="grid gap-2">
+              <p>{t("posOrderCart.resumeClose.body")}</p>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  closeResume(failure.id);
+                  replay.dismiss(failure.id);
+                }}
+              >
+                {t("posOrderCart.resumeClose.confirm")}
+              </Button>
+            </div>
+          </Notice>
+        ))}
       {park.isError && !parkConflict && (
         <ActionError
           pending={isContractPending(park.error)}

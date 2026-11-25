@@ -4,7 +4,13 @@
 // so the list is `.data`. Mutations update the cache, so a screen rerenders
 // from the hook result alone. Outside mock mode a call without a contract fails
 // with an ApiError whose code is CONTRACT_PENDING (see `isContractPending`).
-import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import {
   useMutation,
   useQuery,
@@ -37,7 +43,7 @@ import {
   submitOrder,
 } from "./api";
 import { cashierDraftKey, readDraft, writeDraft } from "./draft-store";
-import { parseOrderSnapshot } from "./order-flow";
+import { parseOrderSnapshot, replayAll } from "./order-flow";
 import {
   callNumberQuery,
   captainTablesQuery,
@@ -273,19 +279,46 @@ function notifyPending(): void {
  * server gives the same parked cart for the same key and it is put back in the
  * draft. Nothing runs without an outlet and a cashier.
  */
-export function useReplayPendingResumes({ draftKey }: { draftKey: string }) {
+export function useReplayPendingResumes({ draftKey }: { draftKey: string }): {
+  data: ResumedDraft | null;
+  failures: { id: string; error: unknown }[];
+  dismiss: (id: string) => void;
+} {
+  const queryClient = useQueryClient();
   const outletId = useOutletId();
   const actorId = useActorId();
-  const resume = useResumeDraft({ draftKey });
-  const { mutate } = resume;
+  const [state, setState] = useState<{
+    data: ResumedDraft | null;
+    failures: { id: string; error: unknown }[];
+  }>({ data: null, failures: [] });
   // An order send that is not answered yet comes first: nothing is replayed
   // over it.
   const blocked = usePendingOrder(draftKey).pending !== null;
   useEffect(() => {
     if (blocked || outletId === "" || actorId === "") return;
-    for (const id of pendingResumes(outletId, actorId)) mutate({ id });
-  }, [blocked, outletId, actorId, mutate]);
-  return resume;
+    const ids = pendingResumes(outletId, actorId);
+    if (ids.length === 0) return;
+    void replayAll(ids, (id) =>
+      resumeDraft(outletId, actorId, id, (draft) =>
+        writeDraft(draftKey, [...readDraft(draftKey), ...draft.lines]),
+      ),
+    ).then(({ results, failures }) => {
+      setState({
+        data: results.filter((item) => item !== null).at(-1) ?? null,
+        failures,
+      });
+      void queryClient.invalidateQueries({
+        queryKey: posOrderKeys.parked(outletId),
+      });
+    });
+  }, [blocked, outletId, actorId, draftKey, queryClient]);
+  const dismiss = useCallback((id: string) => {
+    setState((current) => ({
+      ...current,
+      failures: current.failures.filter((failure) => failure.id !== id),
+    }));
+  }, []);
+  return { data: state.data, failures: state.failures, dismiss };
 }
 
 export function useFireLines(): UseMutationResult<

@@ -93,6 +93,28 @@ export function needsCashierClose(error: unknown): boolean {
   );
 }
 
+/**
+ * Runs every unanswered resume and keeps each one's own outcome: a refusal on
+ * one parked cart must not hide the refusal on another, so each gets its own
+ * close action.
+ */
+export async function replayAll<T>(
+  ids: readonly string[],
+  run: (id: string) => Promise<T>,
+): Promise<{
+  results: T[];
+  failures: { id: string; error: unknown }[];
+}> {
+  const settled = await Promise.allSettled(ids.map((id) => run(id)));
+  const results: T[] = [];
+  const failures: { id: string; error: unknown }[] = [];
+  settled.forEach((outcome, index) => {
+    if (outcome.status === "fulfilled") results.push(outcome.value);
+    else failures.push({ id: ids[index], error: outcome.reason });
+  });
+  return { results, failures };
+}
+
 const scopeOf = (
   scope: FlowScope,
   kind: IntentScope["kind"],

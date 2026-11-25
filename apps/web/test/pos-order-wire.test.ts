@@ -21,6 +21,7 @@ import {
   closeResumeIntent,
   ORDER_INTENT_PENDING,
   type FlowDeps,
+  replayAll,
 } from "@/features/ws04-pos-order/order-flow";
 import {
   hasForeignIntent,
@@ -824,4 +825,18 @@ test("a refused key and a 403 are closed only by the cashier", () => {
   assert.equal(needsCashierClose(new ApiError(500, "X", "x")), false);
   assert.equal(needsCashierClose(new ApiError(422, "X", "x")), false);
   assert.equal(needsCashierClose(new Error("x")), false);
+});
+
+test("a replay keeps every refusal: each parked cart has its own close action", async () => {
+  const outcome = await replayAll(["a", "b", "c", "d"], async (id) => {
+    if (id === "a") throw new ApiError(403, "FORBIDDEN", "x");
+    if (id === "b") return "ok";
+    if (id === "c") throw new ApiError(409, "IDEMPOTENCY_KEY_REUSED", "x");
+    throw new ApiError(500, "X", "x");
+  });
+  assert.deepEqual(outcome.results, ["ok"]);
+  assert.deepEqual(
+    outcome.failures.filter((f) => needsCashierClose(f.error)).map((f) => f.id),
+    ["a", "c"],
+  );
 });
