@@ -101,3 +101,94 @@ Total 86 jam, di luar review architect xhigh untuk W2, W3, dan W4.
 - W1 mulai sesudah F0 mendarat (berkas `env.ts`, `facility.ts`). Migrasi W1: 0526, W4: 0527 (konfirmasi ke CTO saat mulai).
 - Kursi WFC hanya diterbitkan sesudah lunas terkonfirmasi; tidak ada jalur tender kasir di rilis 1.
 - Founder (25 Nov malam): WFC harus menjaga penjualan makanan/minuman, biaya, dan target okupansi. Default bagian 6 no. 2 (tanpa minuman) DITANGGUHKAN: PRD 871 memuat minuman. Usulan CTO yang dikirim: kredit makan/minum hangus hari itu (lewat voucher F4), jam sepi vs sepanjang hari, kuota kursi per jam, no-show melepas kursi, pagar laba kotor per jam-kursi. Menunggu jawaban founder dan angka bisnis; W1 jangan mulai skema produk sebelum dijawab, lalu architect menghitung ulang jam.
+
+# Revisi keputusan 28 (brief 1270)
+
+Bukti API relatif ke `/Users/ifanshori99/Projects/legend super app/legend-rc1/apps/api/src`. Hanya dibaca, tanpa test. Jam adalah estimasi.
+
+**Rekomendasi:** rilis 1 berisi kredit sebagai tender baru, config dan harga terendah, kuota per jam, jam sepi/sepanjang hari, no-show, dan laporan mingguan. Alat usulan AI (W13) menyusul. Total 86 → **135 jam**, atau 145 dengan AI, belum termasuk review K. Penjualan tetap mati sampai W1b, W11, dan W12 masuk serta jawaban pajak ada.
+
+## 1. Kredit makan/minum
+- Harga = `seat_fee_idr` + `credit_idr`, dikunci di penjualan (CHECK jumlah). Seluruh pembayaran masuk `customer_deposit`. Biaya kursi diakui saat slot mulai.
+- Kredit adalah ledger append-only (`grant/redeem/restore/expire`). Aktif setelah check-in. Syarat: member, outlet, dan hari bisnis sama; hanya F&B; boleh beberapa order. Tanpa uang tunai, kembalian, atau poin dari porsi kredit.
+- Pemakaian lewat tender **`wfc_credit`**: Dr `customer_deposit`, order dipajaki harga penuh. Kredit tidak dipajaki saat pass dijual, jadi tidak dobel (menunggu konsultan).
+- Potong di cloud dulu, pola F1/F3 (`services/pos-points.service.ts`, `edge/benefit/points.ts`). Timeout = bill terkunci sampai status jelas.
+- Offline: kredit ditolak, tamu bayar biasa. Gagal karena gangguan: catatan Finance, tanpa uang otomatis.
+- Hangus: tidak diakui pendapatan di rilis 1. Tetap di `customer_deposit`, ditahan dari refund.
+- Refund pass hanya sebelum mulai (kredit utuh, penuh). Salah outlet setelah mulai: Finance manual, maksimal total − kredit terpakai. Tahan di `refundableBalance` (`services/payment-admin.service.ts:89`) dan `createRefund` (:591).
+- Void order: kredit kembali sekali, hanya hari itu; lewat hari ditahan Finance. Chargeback/refund provider membekukan pass dan sisa kredit.
+- Ditolak: voucher F4 (`services/crm-promo-engine.ts:262-281`) karena diskon menurunkan omset dan pajak, dan F4 calon dipotong. DP F5 ditolak karena terikat reservasi/sesi meja.
+
+## 2. Config dan harga terendah
+- `wfc_business_settings`: per outlet, berversi, append-only, `effective_from`, pengusul ≠ penyetuju, izin khusus. Isi: kursi total/WFC, jam buka, biaya tetap, target omset/laba/okupansi, belanja per orang dan % modal, lama duduk (default 1 jam).
+- Angka awal dari `tables.capacity` (`db/schema/floor.ts:127`), `avg_ticket`, `avg_dwell_minutes`, dan `hpp-report` hanya saran; tetap harus disetujui.
+- Belum lengkap: 409 `WFC_CONFIG_INCOMPLETE`.
+- Simbol: F biaya tetap, L target laba, R target omset, c modal bahan, S kursi, H jam buka/bulan, o okupansi, A belanja/orang, d lama duduk.
+```
+M  = max(F + L, R × (1 − c))
+B1 = M / (S × H × o)          B2 = A × (1 − c) / d
+lantai ramai = max(B1, B2)    lantai sepi = max(B1, B2 × o)
+kontribusi per jam = (kursi bersih pajak + kredit × (1 − c) − biaya gateway) / jam
+```
+- BigInt, lantai dibulatkan ke atas ke Rp1.000. Kasus terburuk: kredit habis, semua jam dipakai, semua kunjungan bulanan dipakai. Slot campuran: lantai ditimbang per jam.
+- Contoh rekaan: F+L 150 jt, S 60, H 420, o 50% → B1 ±Rp11.905. A 60 rb, c 35%, d 1 → B2 Rp39.000. Dengan d=1, day pass 12 jam penuh perlu kontribusi ±Rp468 rb, jadi praktis tak terjual. Lama duduk nyata perlu diisi.
+- Ditegakkan oleh satu fungsi `packages/shared/src/wfc/pricing.ts`: simpan/aktifkan produk (422), hold (baca ulang versi), eksekutor AI. Penjualan menyimpan `settings_version_id`, lantai, kursi, dan kredit. Pass terjual tidak berubah.
+
+## 3. Kuota, jenis, no-show
+- Kuota per hari dan jam, kosong = 0, ≤ kursi WFC. Dicek di bawah advisory lock outlet+tanggal untuk tiap jam slot, menghitung ketiga produk. EXCLUDE per kursi tetap.
+- `off_peak` harus seluruhnya di luar `wifi_policies.peak_schedule` (`isPeakAt`, `packages/shared/src/facility/wifi.ts:36`). `all_day` bebas. Bulanan hanya sepi, kredit per kunjungan.
+- No-show 30 menit (config): status `no_show`, kursi lepas dari EXCLUDE, uang tidak kembali. Datang telat: tanpa jaminan kursi, kredit hari itu masih berlaku. Tak dijual ulang bila sisa waktu < durasi produk.
+- Lepas otomatis hanya bila tautan edge sehat sepanjang 30 menit; selain itu staf menekan lepas. `last_heartbeat_at` (`db/schema/edge-node.ts:102`) hanya nilai terakhir, jadi sweep harus mencatat celah. Check-in vs lepas: row lock.
+- Minimum belanja tetap untuk tamu tanpa pass. Pemegang pass aktif dikecualikan dari pengingat (`services/wfc-min-spend.service.ts`).
+
+## 4. Saran AI (W13)
+- Tambah TL-22 `draft_wfc_scheme` di `packages/shared/src/ai/{ids,tools,tool-io,schemas}.ts` dan `proposer("TL-22")` di `services/ai-tools/write/index.ts` (handler hanya mengusulkan).
+- Di `services/ai-action-request.service.ts`, tambah kasus `moduleAction: "price_change"` seperti TL-17. `pickApprovalAction` (:356) memilih kebijakannya.
+- Eksekutor baru `services/ai-action-executors/wfc-scheme.ts` memanggil service yang sama dengan perubahan manual, tanggal depan, sekali per actionRequestId. Cek juga CHECK `tool_code` di `db/schema/ai.ts`.
+- Baca okupansi: perluas `ai-tools/read-b/tl-20-facility-utilization.ts`. AI tidak mengubah lima angka; itu manual + orang kedua.
+
+## 5. Kartu dan urutan
+| Kartu | Jam | Isi/perubahan |
+|---|---|---|
+| W1 (0526) | 8→11 | kursi/kredit, jenis, kuota, tabel config |
+| W1b baru, K | 8 | rumus, `services/wfc-settings.service.ts`, `routes/wfc-admin.routes.ts`, approval |
+| W2 | 14→16 | kuota, cek lantai, snapshot |
+| W3 | 14→16 | tahan kredit di refund |
+| W4 (0527) | 8→9 | sepi saja, kredit per kunjungan |
+| W5 | 5→7 | no-show, kesehatan edge |
+| W6 | 4→6 | + pengecualian minimum belanja |
+| W7 | 5→7 | mockup: kredit, config, kuota |
+| W8 / W9 | 12→13 / 10→13 | pelanggan / admin |
+| W10 | 6→8 | e2e, laporan mingguan |
+| W11 baru, K (0528*) | 16 | ledger, tender, command F1, jurnal, restore |
+| W12 baru | 5 | UI kasir (bareng F10) |
+| W13 baru, K (0529*) | 10 | AI; potongan pertama |
+
+*Nomor diusulkan, konfirmasi CTO.
+
+W11 menyentuh `db/schema/pos-order.ts:299`, `packages/shared/src/pos/{events,schemas,calculations}.ts`, `packages/shared/src/payment/index.ts`, `edge/order-ingest.ts` (:404, :609), dan di `services/`: `pos-order-payment.ts`, `pos-order-corrections.ts`, `pos-order-ports.ts`, `order-issue-manual-refund.ts`, `missions.service.ts`, `point-ledger.service.ts`, `accounting-auto-journal-{amounts,consumer,guards}.ts`. Satu penulis per file bersama F1/F3/E9.
+
+Urutan: F0 → W1 + W7 → W1b → W2 → W3, W4, W5, W6, W8, W9 (UI setelah W7 disetujui) → W11 (setelah F1, F2, F3, E9) → W12 → W10. W13 boleh setelah W1b, paling akhir.
+Potong bila telat: W13, otomasi laporan, W6 (kecuali pengecualian minimum belanja), lalu W4 (izin founder). Jangan potong W1b, W2, W3, W11, W12.
+
+**Risiko:** +49 jam di atas ±500 jam tersisa, sedangkan perkiraan sudah lewat freeze 6 Des. W11 tertahan F1/F2/F3/E9. Salah input config menggeser lantai (perlu orang kedua).
+
+## 6. Test wajib
+- Kredit: dua kasir/timeout/retry = satu potong; POST telat ditolak; non-F&B, outlet/hari/member lain, belum check-in, hangus, offline ditolak.
+- Uang: void kembali sekali, bukan tunai; diterima = refund + kursi (diakui/ditangguhkan) + kredit terpakai/sisa/hangus; pajak = order tunai; tanpa poin; chargeback membekukan.
+- Lantai: kurang Rp1 ditolak di simpan, hold, eksekutor AI; config kosong; balapan ubah config vs hold; pass lama tetap.
+- Kursi: kursi terakhir diperebutkan tiga produk; batas sepi dan tengah malam; check-in vs no-show; edge mati tak lepas otomatis; jual ulang tak dobel.
+- AI: pengusul tak bisa menyetujui; ditolak/kedaluwarsa tak jalan; replay sekali; akses dicabut gagal; tak menembus config kosong.
+- Minimum belanja: pemegang pass tidak diingatkan, tamu lain diingatkan.
+
+## 7. Pertanyaan founder
+1. Ke konsultan pajak (1 Des): pajak biaya kursi dan kredit hangus? Default: penjualan mati, hangus tidak diakui.
+2. Bila F3/E9 telat, boleh jual pass tanpa kredit? Default: tidak.
+3. Bulanan berisi kredit kecil per kunjungan? Default: ya, hangus hari itu.
+4. Siapa penyetuju kedua harga/skema? Default: GM bila Owner mengusulkan, Owner bila GM.
+
+### Keputusan CTO atas revisi (26 Nov)
+
+- Diterima. Bagian ini mengalahkan bagian 1-6 bila berbeda. Rilis 1 = W1-W12 tanpa W13 (founder: "nantinya"); W13 sesudah rilis kecuali founder minta.
+- Migrasi: 0526 W1, 0527 W4, 0528 W11, 0529 W13. Default pertanyaan 2 (tidak jual tanpa kredit), 3 (ya), 4 (GM/Owner silang) dipakai sampai founder mengubah.
+- Rumus: lama duduk `d` wajib diisi nyata; default 1 jam membuat day pass ramai praktis tak terjual (aman, sengaja).
