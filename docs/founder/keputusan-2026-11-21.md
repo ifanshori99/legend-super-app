@@ -61,3 +61,5 @@ Cara menjawab: cukup tulis nomor dan "setuju usulan" atau pilihan lain.
     **Jawaban founder (21 Nov): "Boleh dengan alasan tertulis."** Dikerjakan di kartu 1263.
 
 20. **Layar refund manual Duitku (1259) dan tutup buku dengan alasan tertulis (1263).** **Jawaban founder (25 Nov): "Setuju keduanya."** Bagian B butir lain tidak termasuk jawaban ini.
+
+21. **Bagian B nomor 15 sampai 18.** **Jawaban founder (25 Nov): "kerjakan sesuai rekomendasi kamu."** Dikerjakan di kartu 1267: 15 audit lalu perbaiki, 16 mockup dan layar QRIS/EDC, 17 dan 18 diterima bila audit tidak menemukan masalah berat. Tiga tugas rilis (dry-run PPh21, latihan deploy, review Caddy) di kartu 1265. Tidak termasuk izin merge ke main atau deploy.
