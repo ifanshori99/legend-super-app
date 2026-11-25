@@ -38,6 +38,7 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 import { env } from "../config/env.ts";
+import { isEdgeNode } from "../edge/mode.ts";
 import { sessionAcceptedHere } from "../lib/edge-session.ts";
 import {
   EDGE_STAFF_PIN,
@@ -219,10 +220,14 @@ async function resolveConnection(
       }
     }
     // E2: no requireAuth on an upgrade; the resolver cuts an edge PIN session
-    // to the edge list only when the request context names it (edge only: the
-    // cloud opens no context here).
-    setRequestUser(userId);
-    setRequestAuthMethod(authMethod);
+    // to the edge list only when the request context names it. Edge only:
+    // `withEdgeDeviceOfHeaders` opened this call's own context there. On the
+    // cloud a recheck runs in the context of the HTTP request that revoked the
+    // device (device.service.ts), whose identity must stay.
+    if (isEdgeNode()) {
+      setRequestUser(userId);
+      setRequestAuthMethod(authMethod);
+    }
     const data = await loadTenantAccess(
       establishScopedTenantContext(tenant, { kind: "tenant" }),
       userId,
