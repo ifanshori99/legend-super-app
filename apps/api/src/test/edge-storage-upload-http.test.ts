@@ -461,70 +461,36 @@ afterAll(async () => {
 });
 
 describe("T8 POST /api/storage/uploads on the edge (HTTP)", () => {
-  it.each(scannerCases)(
-    "normalizes $label for session uploads and stores nothing",
-    async ({ app, status, code }) => {
-      const staff = await edgeStaff("Staf Pemindai Sesi", app);
-      const before = filesIn(edgeDir).length;
-      const rowsBefore = await owner.query(
-        "SELECT id FROM core_storage_objects WHERE tenant_id = $1 AND uploaded_by = $2",
-        [tenant.id, staff.userId],
-      );
-      const response = await upload(staff.client, {
-        purpose: "selfie",
-        outletId: sealedOutlet,
-      });
-      expect(response.status, JSON.stringify(response.body)).toBe(status);
-      expect(codeOf(response.body)).toBe(code);
-      expect(JSON.stringify(response.body)).not.toContain(SCANNER_DIAGNOSTIC);
+  // Decision 4: an edge PIN session does not carry self.attendance.clock. The
+  // outlet screen uploads with a PIN proof (below).
+  it.each([
+    ["an outlet with a seal key", () => sealedOutlet],
+    ["an outlet without a seal key", () => keylessOutlet],
+  ] as const)(
+    "refuses a session selfie for %s (403) and stores no file and no row",
+    async (_label, outlet) => {
+      const apps = [edge, ...scannerCases.map((entry) => entry.app)];
+      for (const app of apps) {
+        const staff = await edgeStaff("Staf Unggah Sesi", app);
+        const before = filesIn(edgeDir).length;
+        const response = await upload(staff.client, {
+          purpose: "selfie",
+          outletId: outlet(),
+        });
+        expect(response.status, JSON.stringify(response.body)).toBe(403);
+        expect(codeOf(response.body)).toBe("PERMISSION_DENIED");
+        expect(filesIn(edgeDir)).toHaveLength(before);
+        const rows = await owner.query(
+          "SELECT id FROM core_storage_objects WHERE tenant_id = $1 AND uploaded_by = $2",
+          [tenant.id, staff.userId],
+        );
+        expect(rows.rows).toHaveLength(0);
+        expectNoSecrets(JSON.stringify(response.body), "response");
+      }
       expect(captured.join("\n")).not.toContain(SCANNER_DIAGNOSTIC);
-      expect(filesIn(edgeDir)).toHaveLength(before);
-      const rowsAfter = await owner.query(
-        "SELECT id FROM core_storage_objects WHERE tenant_id = $1 AND uploaded_by = $2",
-        [tenant.id, staff.userId],
-      );
-      expect(rowsAfter.rows).toEqual(rowsBefore.rows);
+      expectNoSecrets(captured.join("\n"), "log output");
     },
   );
-
-  it("accepts a selfie for an outlet with a seal key and keeps only a sealed file", async () => {
-    const staff = await edgeStaff("Staf Unggah Selfie");
-    const response = await upload(staff.client, {
-      purpose: "selfie",
-      outletId: sealedOutlet,
-    });
-    expect(response.status, JSON.stringify(response.body)).toBe(201);
-    expect(response.body.data).toMatchObject({
-      purpose: "selfie",
-      contentType: "image/webp",
-    });
-    expect(typeof response.body.data.id).toBe("string");
-
-    const files = filesIn(edgeDir).filter((file) =>
-      file.includes(response.body.data.id as string),
-    );
-    expect(files).toHaveLength(1);
-    expect(files[0]!.endsWith(".lss")).toBe(true);
-
-    expectNoSecrets(JSON.stringify(response.body), "response");
-    expectNoSecrets(JSON.stringify(response.headers), "response headers");
-    expectNoSecrets(captured.join("\n"), "log output");
-  });
-
-  it("answers 503 SELFIE_SEAL_KEY_MISSING for an outlet without a seal key and stores nothing", async () => {
-    const staff = await edgeStaff("Staf Unggah Tanpa Kunci");
-    const before = filesIn(edgeDir).length;
-    const response = await upload(staff.client, {
-      purpose: "selfie",
-      outletId: keylessOutlet,
-    });
-    expect(response.status, JSON.stringify(response.body)).toBe(503);
-    expect(codeOf(response.body)).toBe("SELFIE_SEAL_KEY_MISSING");
-    expect(filesIn(edgeDir)).toHaveLength(before);
-
-    expectNoSecrets(JSON.stringify(response.body), "response");
-    expectNoSecrets(captured.join("\n"), "log output");
-  });
 
   it("refuses every purpose other than selfie (403 when the staff role lacks it, else 503) and stores nothing", async () => {
     const staff = await edgeStaff("Staf Unggah Purpose Lain");
@@ -645,8 +611,40 @@ describe("legend-u7g9w POST /api/storage/uploads with X-Pin-Proof (HTTP)", () =>
       file.includes(response.body.data.id as string),
     );
     expect(files).toHaveLength(1);
+    expect(files[0]!.endsWith(".lss")).toBe(true);
+    expect(response.body.data).toMatchObject({
+      purpose: "selfie",
+      contentType: "image/webp",
+    });
     expectNoSecrets(JSON.stringify(response.body), "response");
+    expectNoSecrets(JSON.stringify(response.headers), "response headers");
     expectNoSecrets(captured.join("\n"), "log output");
+  });
+
+  it("answers 503 SELFIE_SEAL_KEY_MISSING for an outlet without a seal key and stores nothing", async () => {
+    installEdgeNodeForTests({ tenantId: tenant.id, outletId: keylessOutlet });
+    try {
+      const staff = await edgeStaff("Staf Unggah Tanpa Kunci");
+      const device = await seedDevice(keylessOutlet);
+      const proof = await seedProof(device, keylessOutlet, staff.userId);
+      const before = filesIn(edgeDir).length;
+      const response = await proofUpload(
+        { deviceToken: device.token, proof: proof.token },
+        { purpose: "selfie", outletId: keylessOutlet },
+      );
+      expect(response.status, JSON.stringify(response.body)).toBe(503);
+      expect(codeOf(response.body)).toBe("SELFIE_SEAL_KEY_MISSING");
+      expect(filesIn(edgeDir)).toHaveLength(before);
+      const objects = await owner.query(
+        "SELECT id FROM core_storage_objects WHERE tenant_id = $1 AND pin_proof_id = $2",
+        [tenant.id, proof.id],
+      );
+      expect(objects.rows).toHaveLength(0);
+      expectNoSecrets(JSON.stringify(response.body), "response");
+      expectNoSecrets(captured.join("\n"), "log output");
+    } finally {
+      installEdgeNodeForTests({ tenantId: tenant.id, outletId: sealedOutlet });
+    }
   });
 
   it("owner is the proof's staff even when another user's session cookie is sent", async () => {
