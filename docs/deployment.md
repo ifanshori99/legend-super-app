@@ -203,6 +203,32 @@ pnpm exec tsx src/db/backfill-ptkp-history.ts            # running tax year (Jak
 pnpm exec tsx src/db/backfill-ptkp-history.ts --year 2026 # an explicit year
 ```
 
+On the production VM there is no tsx or pnpm; run the built command in the
+`api` service (it imports the payroll sealing code, so it needs the full API
+env; the migrator env alone stops with "Invalid API environment"). Wrong
+arguments exit non-zero with a usage line before any database connection:
+
+```sh
+docker compose ... run --rm --no-deps -T api node dist/backfill-ptkp-history.js [--year YYYY] [--force]
+```
+
+`api.env` holds no `MIGRATION_DATABASE_URL`, so the command then uses the app
+login (smoke-tested only against an empty database). Before real data, confirm
+with the CTO that the app login may write the PTKP history, or add the owner URL
+for this one run.
+
+All one-off operator commands are built into `dist/` (`apps/api/tsup.config.ts`)
+and always run; a wrong argument is never a silent exit 0:
+`payroll-pph21-receivable-backfill`, `backfill-ptkp-history`,
+`backfill-tenant-defaults`, `metrics-daily-backfill`,
+`backfill-employee-managers`, `rotate-data-key`, `set-role`,
+`purchase-return-variance-check`, `repair-supplier-invoice-npwp`. Run any of
+them as `docker compose ... run --rm --no-deps -T api node dist/<name>.js <args>`
+with the same arguments as its `pnpm` script. `backfill-employee-managers`
+requires `MIGRATION_DATABASE_URL` (or `_FILE`) and imports no API env, so it
+runs as `--profile migration run --rm --no-deps -T migrate node
+dist/backfill-employee-managers.js`.
+
 For every employee with a locked or paid payslip in that year it writes the
 status of his first payslip of the year on 1 January (or his join date), and,
 when his status today differs, today's status from the deploy date (in force
@@ -506,7 +532,7 @@ Rotasi dua rollout. Alasannya: proses yang ring-nya belum mengenal versi N tidak
 1. Buat kunci dengan `openssl rand -base64 32`. Jangan cetak atau tempel nilainya di chat, log, atau berkas repo.
 2. Rollout 1: tambahkan `N:<base64>` ke `DATA_ENCRYPTION_KEYS` di SEMUA proses (api, worker, dan job), lalu tunggu semuanya berjalan dengan env baru. `DATA_ENCRYPTION_ACTIVE_KEY_VERSION` tetap versi lama. Jangan lanjut sebelum tidak ada proses lama yang hidup.
 3. Rollout 2: set `DATA_ENCRYPTION_ACTIVE_KEY_VERSION=N` di semua proses, restart, lalu segel ulang kredensial yang sudah tersimpan dengan skrip rotasi:
-   `pnpm db:rotate-data-key [--tenant <id>] [--force] [--dry-run]`.
+   `pnpm db:rotate-data-key [--tenant <id>] [--force] [--dry-run]` (di VM produksi: `docker compose ... run --rm --no-deps -T api node dist/rotate-data-key.js [--tenant <id>] [--force] [--dry-run]`).
    Skrip berjalan atas semua tenant (termasuk yang suspended atau archived), memanggil `rotateIntegrationCredentials` (integrasi platform) dan `rotateAiProviderKeys` (kunci penyedia AI) dengan aktor `system`, dan mencetak laporan JSON (jumlah per tenant, `totals`, `remaining`, `remainingComplete`; tanpa nilai rahasia, galat non-database memakai pesan tetap). Tenant yang galat dicatat di `totals.failedTenants` dan tenant lain tetap jalan. `--dry-run` hanya menghitung baris yang masih di versi lama dan tidak menulis apa pun. Baris yang sudah di versi aktif dilewati, jadi aman diulang. Kode keluar 1 bila ada tenant gagal, `remainingComplete` false (hitungan sisa satu tenant gagal; tenant itu masuk `failedTenants` dan `remaining` hanya batas bawah), atau `remaining` > 0 setelah jalan sungguhan. Kunci AI yang tidak bisa dibuka dilewati dan dilaporkan di `error` tenantnya. `remaining` menghitung baris semua tenant, juga saat `--tenant` dipakai.
 4. Jangan membuang kunci lama dari ring selama masih ada nilai tersegel di bawahnya, termasuk backup yang mungkin dipulihkan. Jangan menurunkan versi aktif.
 
