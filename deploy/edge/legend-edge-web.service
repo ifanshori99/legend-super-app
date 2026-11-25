@@ -1,0 +1,30 @@
+# Example systemd unit for the outlet edge web app (legend 1269 E8).
+# Copy to /etc/systemd/system/legend-edge-web.service and adapt paths and user.
+#
+# The web build is the cloud build made with VITE_API_URL=same-origin, so the
+# browser calls the origin it was served from (Caddy sends /api/* to the edge
+# API). The web server reaches the API over loopback.
+[Unit]
+Description=Legend edge web (outlet)
+After=network-online.target legend-edge.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+User=legend
+Group=legend
+WorkingDirectory=/opt/legend
+EnvironmentFile=/etc/legend/edge/web.env
+Environment=EDGE_MODE=true
+Environment=NODE_ENV=production
+Environment=HOST=127.0.0.1
+Environment=PORT=3000
+Environment=API_INTERNAL_URL=http://127.0.0.1:4000
+# One proxy (Caddy) sits in front of this server; the default is 2 (Cloudflare + Caddy).
+Environment=WEB_TRUST_PROXY_HOPS=1
+ExecStart=/usr/bin/node apps/web/.output/server/index.mjs
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

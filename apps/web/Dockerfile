@@ -3,6 +3,9 @@
 #
 #   docker build -f apps/web/Dockerfile --build-arg VITE_API_URL=https://api.example.com -t my-web .
 #
+# Edge hosts serve web and API from one origin: build once with
+# --build-arg VITE_API_URL=same-origin (see deploy/edge/README.md).
+#
 # At runtime, set API_INTERNAL_URL when the web server reaches the API over a
 # private address (e.g. http://api:4000). See docs/deployment.md.
 

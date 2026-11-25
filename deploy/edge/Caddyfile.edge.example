@@ -23,13 +23,25 @@ https://edge.outlet.example.invalid {
 	handle @internal {
 		respond 404
 	}
+	# The web app and the API share this one origin (the web build uses
+	# VITE_API_URL=same-origin), so cookies and CORS need no second host.
 	# Same body cap as the cloud front: above the API's own caps (10 MiB file,
 	# 6 MiB sealed selfie), so the API still answers its typed errors.
-	request_body {
-		max_size 12MB
-	}
 	# The edge API listens on loopback only (default API port 4000). Caddy
 	# overwrites X-Forwarded-For with the device's address (no trusted proxy is
-	# configured), so run the API with TRUST_PROXY=1.
-	reverse_proxy 127.0.0.1:4000
+	# configured), so run the API with TRUST_PROXY=1 and the web with
+	# WEB_TRUST_PROXY_HOPS=1.
+	handle /api/* {
+		request_body {
+			max_size 12MB
+		}
+		reverse_proxy 127.0.0.1:4000
+	}
+	# Everything else is the web app (loopback port 3000).
+	handle {
+		request_body {
+			max_size 2MB
+		}
+		reverse_proxy 127.0.0.1:3000
+	}
 }

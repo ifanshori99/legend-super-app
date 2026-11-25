@@ -1,0 +1,27 @@
+# Example systemd unit for the outlet edge worker (legend 1269 E8).
+# Copy to /etc/systemd/system/legend-edge-worker.service and adapt paths and user.
+#
+# Runs the same bundle as the cloud worker (apps/api/dist/worker.js) with
+# EDGE_MODE=true, so the cloud-only jobs (inventory GL, receipt e-mail, refunds,
+# approvals, depreciation) stay off and the print queue and edge sweeps run.
+# Use the same env file as legend-edge.service plus WORKER_DATABASE_URL (the
+# isolated queue login); the worker refuses to start without it.
+[Unit]
+Description=Legend edge worker (outlet)
+After=network-online.target postgresql.service legend-edge.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+User=legend
+Group=legend
+WorkingDirectory=/opt/legend
+EnvironmentFile=/etc/legend/edge/api.env
+Environment=EDGE_MODE=true
+ExecStart=/usr/bin/node --enable-source-maps apps/api/dist/worker.js
+Restart=always
+RestartSec=5
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target
