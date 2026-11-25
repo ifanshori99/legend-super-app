@@ -96,7 +96,10 @@ import {
   type PosCaller,
 } from "./pos-order-support.ts";
 import { requestPosRefundGatewayPart } from "./pos-refund-gateway.ts";
-import { refundPosTicketsOfRefundedLines } from "./facility-pos-tickets.ts";
+import {
+  assertPosTicketRefundAmount,
+  refundPosTicketsOfRefundedLines,
+} from "./facility-pos-tickets.ts";
 import {
   depositRefundedByPosRefund,
   depositRefundedOfOrder,
@@ -1108,10 +1111,18 @@ export async function refundPosOrder(
         refundedNow.set(entry.itemId, entry.quantity);
       }
       // 936 D: a returned ticket line refunds its ticket (a used one refuses);
-      // money without any item on a bill with an issued ticket is refused.
-      await refundPosTicketsOfRefundedLines(tx, context, {
+      // money without any item on a bill with an issued ticket is refused. A
+      // swap replacement stands for its original line (F6a).
+      const tickets = await refundPosTicketsOfRefundedLines(tx, context, {
         orderId: order.id,
-        itemIds: [...refundedNow.keys()],
+        itemIds: [
+          ...new Set(
+            [...refundedNow.keys()].flatMap((itemId) => [
+              itemId,
+              given.toOriginal(itemId),
+            ]),
+          ),
+        ],
         moneyRefund: Number(input.amountIdr) > 0,
         now,
         actorUserId: caller.userId,
@@ -1384,6 +1395,33 @@ export async function refundPosOrder(
           idr(Math.min(paid, refunded + recoveryGivenIdr + providerOutIdr)),
           idr(payout),
         );
+      // F6a: a returned ticket line is paid back in full, and no refund on a
+      // bill with an issued ticket pays more than the lines it names. A
+      // re-priced promo order (`promoRefundedSubtotalIdr`) has its exact amount
+      // due enforced above.
+      if (tickets.hadIssuedTicket && promoRefundedSubtotalIdr === null) {
+        const depositOfRefund = await depositRefundedByPosRefund(
+          tx,
+          context,
+          order.id,
+        );
+        const roomOfLines = (itemIds: readonly string[]) =>
+          lineRoomIdr(
+            order,
+            allItems,
+            refunds.map((row) => ({
+              ...row,
+              amountIdr: row.amountIdr + (depositOfRefund.get(row.id) ?? 0),
+            })),
+            given,
+            itemIds.map((itemId) => ({ itemId })),
+          );
+        assertPosTicketRefundAmount({
+          returnIdr: totalReturnIdr,
+          ticketRoomIdr: roomOfLines(tickets.refundedItemIds),
+          namedRoomIdr: roomOfLines([...refundedNow.keys()]),
+        });
+      }
       const override = await consumeApproval(tx, context, {
         action: "refund",
         purpose: "refund",

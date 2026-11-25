@@ -80,6 +80,7 @@ import {
   assertLineHasNoOtherCompensation,
   assertLineNotManuallyRefunded,
   assertNoLiveTicketOnLine,
+  assertNoTicketCompensation,
   manualRefundAmountIdr,
 } from "./order-issue-manual-refund.ts";
 import { voucherRoomIdr } from "./order-voucher-room.ts";
@@ -572,6 +573,15 @@ async function storeOrderIssue(
           );
       }
     }
+    // F6a: a live ticket line is not swapped (a voucher is refused above, a
+    // manual refund below).
+    if (input.resolution === "swap")
+      await assertNoTicketCompensation(
+        tx,
+        tenantId,
+        orderId,
+        input.orderItemId,
+      );
     await assertResolutionTargets(tx, context, outletId, input, now);
 
     const lineVoided = line.status === "voided" || line.posVoidedAt !== null;

@@ -77,7 +77,10 @@ import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import type { Tx } from "./menu-internals.ts";
 import { accessSnapshotInTransaction } from "./permission-resolver.ts";
-import { assertLineNotManuallyRefunded } from "./order-issue-manual-refund.ts";
+import {
+  assertLineNotManuallyRefunded,
+  assertNoTicketCompensation,
+} from "./order-issue-manual-refund.ts";
 import { lockOrderAndAssertManualRefundFits } from "./order-recovery-refund.ts";
 import { voucherRoomIdr } from "./order-voucher-room.ts";
 import { estimateDeductionCostIdr } from "./recipe-deduction.service.ts";
@@ -1361,6 +1364,12 @@ export async function chooseOrderIssueResolution(
         "Laporan ini sudah diselesaikan dengan pilihan lain.",
       );
     }
+    await assertNoTicketCompensation(
+      tx,
+      guest.tenant.tenantId,
+      issue.orderId,
+      issue.orderItemId,
+    );
     const settlement =
       input.choice === "swap"
         ? await swapSettlement(
@@ -1476,6 +1485,13 @@ export async function resolveOrderIssue(
         );
       }
 
+      // F6a: a live ticket line takes no swap, voucher or ORD-09 refund.
+      await assertNoTicketCompensation(
+        tx,
+        tenantId,
+        issue.orderId,
+        issue.orderItemId,
+      );
       let settlement: Settlement;
       if (input.resolution === "swap") {
         const swapped = await swapSettlement(

@@ -12,12 +12,15 @@
 //   the correction void and the refund): the ticket becomes `refunded`, the
 //   slot is released and the credential revoked. A ticket already in use,
 //   completed or no-show is refused (409 TICKET_ALREADY_USED) BEFORE money moves
-//   (the guest got the service). A refund with money but no item on a bill with
-//   an issued ticket is refused too (the guest would be paid and keep the
-//   ticket).
+//   (the guest got the service), and so is one whose session has started (409
+//   TICKET_ALREADY_STARTED: the slot can no longer be sold). A refund with money
+//   but no item on a bill with an issued ticket is refused too (the guest would
+//   be paid and keep the ticket). On such a bill a refund pays no more than the
+//   lines it names, and a returned ticket line is paid back in full
+//   (`assertPosTicketRefundAmount`, F6a).
 // - CREDENTIAL (`issuePosTicketCredential`): QR token and PIN are minted when
 //   the cashier shows or prints the ticket, only for a paid ticket; only
-//   digests are stored (a mint rotates the pair, a replay of ANY key ever used
+//   digests are stored (the PIN as an HMAC, lib/ticket-pin-digest.ts) (a mint rotates the pair, a replay of ANY key ever used
 //   for the ticket is refused because the plaintext cannot be shown twice; the
 //   key digests live in access_ticket_credential_keys). The door check is
 //   facility-door-check.ts.
@@ -26,7 +29,7 @@
 // POS tickets are source `purchase`, so no ledger row backs them; a ledger id
 // (never set by this flow) is left to the entitlement cancel path.
 import { createHash, randomBytes, randomInt } from "node:crypto";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type {
   OutletId,
   ScopedTenantContext,
@@ -60,6 +63,7 @@ import {
 import { orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { ticketPinDigest } from "../lib/ticket-pin-digest.ts";
 import { enqueueTicketOnEdge } from "./facility-pos-ticket-print.ts";
 import { notifyNextInQueue } from "./facility-slots.service.ts";
 import { auditFacility, toTicket, type Tx } from "./facility-shared.ts";
@@ -424,8 +428,11 @@ export async function releasePosTicketsOfVoidedLines(
  * Correction void / refund of a paid bill: the issued tickets of the returned
  * lines (`itemIds`, null = the whole bill) become `refunded`, the slot is
  * released and the credential revoked. Throws before any money moves (the
- * caller's transaction rolls back) when a ticket was already used.
- * `moneyRefund` + no item on a bill with an issued ticket is refused.
+ * caller's transaction rolls back) when a ticket was already used or its
+ * session has started (the later of `now` and the database clock, read after
+ * the ticket lock). `moneyRefund` + no item on a bill with an issued ticket is
+ * refused. Returns the ticket lines refunded here and whether the bill had an
+ * issued ticket at all.
  */
 export async function refundPosTicketsOfRefundedLines(
   tx: Tx,
@@ -437,22 +444,27 @@ export async function refundPosTicketsOfRefundedLines(
     now: Date;
     actorUserId: UserId;
   },
-): Promise<void> {
+): Promise<{ refundedItemIds: string[]; hadIssuedTicket: boolean }> {
   const tenantId = context.tenant.tenantId;
-  if (input.itemIds !== null && input.itemIds.length === 0) {
-    if (!input.moneyRefund) return;
-    const all = await lockLinked(tx, tenantId, input.orderId, null);
-    if (all.some(({ line }) => line.status === "issued"))
-      throw new HttpError(
-        422,
-        "TICKET_REFUND_NEEDS_ITEM",
-        "Refund tiket harus memilih item tiketnya.",
-      );
-    return;
-  }
-  const linked = await lockLinked(tx, tenantId, input.orderId, input.itemIds);
-  for (const { line, ticket } of linked) {
-    if (line.status !== "issued") continue;
+  const refundedItemIds: string[] = [];
+  const issued = (await lockLinked(tx, tenantId, input.orderId, null)).filter(
+    ({ line }) => line.status === "issued",
+  );
+  if (issued.length === 0) return { refundedItemIds, hadIssuedTicket: false };
+  if (input.itemIds !== null && input.itemIds.length === 0 && input.moneyRefund)
+    throw new HttpError(
+      422,
+      "TICKET_REFUND_NEEDS_ITEM",
+      "Refund tiket harus memilih item tiketnya.",
+    );
+  const clock = await tx.execute(sql`SELECT clock_timestamp() AS now`);
+  const startLimit = Math.max(
+    input.now.getTime(),
+    new Date((clock.rows[0] as { now: Date | string }).now).getTime(),
+  );
+  for (const { line, ticket } of issued) {
+    if (input.itemIds !== null && !input.itemIds.includes(line.orderItemId))
+      continue;
     if (
       ticket.status === "in_use" ||
       ticket.status === "completed" ||
@@ -463,6 +475,13 @@ export async function refundPosTicketsOfRefundedLines(
         "TICKET_ALREADY_USED",
         "Tiket ini sudah dipakai; tidak bisa direfund.",
       );
+    if (ticket.startsAt.getTime() <= startLimit)
+      throw new HttpError(
+        409,
+        "TICKET_ALREADY_STARTED",
+        "Sesi tiket ini sudah mulai; tidak bisa direfund.",
+      );
+    refundedItemIds.push(line.orderItemId);
     const status = transitionTicket(ticket.status, "refund");
     await tx
       .update(accessTickets)
@@ -508,6 +527,35 @@ export async function refundPosTicketsOfRefundedLines(
       input.now,
     );
   }
+  return { refundedItemIds, hadIssuedTicket: true };
+}
+
+/**
+ * Amount rule of a refund on a bill with an issued ticket (F6a). `ticketRoomIdr`
+ * is what the returned ticket lines still hold, `namedRoomIdr` what all named
+ * lines still hold. Less than the ticket's value would take the ticket for
+ * less than the guest paid; more than the named lines would pay out the money
+ * of a ticket the guest keeps.
+ */
+export function assertPosTicketRefundAmount(input: {
+  returnIdr: number;
+  ticketRoomIdr: number;
+  namedRoomIdr: number;
+}): void {
+  const rupiah = (value: number) =>
+    `Rp${new Intl.NumberFormat("id-ID").format(value)}`;
+  if (input.returnIdr < input.ticketRoomIdr)
+    throw new HttpError(
+      422,
+      "TICKET_REFUND_FULL_LINE_REQUIRED",
+      `Refund tiket harus senilai penuh baris tiketnya, yaitu ${rupiah(input.ticketRoomIdr)}.`,
+    );
+  if (input.returnIdr > input.namedRoomIdr)
+    throw new HttpError(
+      422,
+      "TICKET_REFUND_OVER_LINES",
+      `Refund pada tagihan bertiket tidak boleh melebihi nilai item yang dipilih, maks ${rupiah(input.namedRoomIdr)}.`,
+    );
 }
 
 // ---- Credential and print -------------------------------------------------------
@@ -627,7 +675,7 @@ export async function issuePosTicketCredential(
     const pin = mintPin();
     const values = {
       qrDigest: sha256(qrToken),
-      pinDigest: sha256(`${row.id}:${pin}`),
+      pinDigest: ticketPinDigest(tenantId, row.id, pin),
       validFrom: new Date(window.validFrom),
       validUntil: new Date(window.validUntil),
       mintedKey: input.idempotencyKey,

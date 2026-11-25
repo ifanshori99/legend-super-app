@@ -116,7 +116,7 @@ export const accessTicketCredentials = pgTable(
     accessTicketId: ulidInUuid("access_ticket_id").notNull(),
     /** SHA-256 hex of the QR token; the token itself is never stored. */
     qrDigest: varchar("qr_digest", { length: 64 }).notNull(),
-    /** SHA-256 hex of the PIN bound to the ticket id (never the bare PIN). */
+    /** HMAC-SHA-256 hex of the PIN bound to tenant and ticket (lib/ticket-pin-digest.ts). */
     pinDigest: varchar("pin_digest", { length: 64 }).notNull(),
     /** Bumped by every mint; the previous pair stops working. */
     version: integer("version").notNull(),

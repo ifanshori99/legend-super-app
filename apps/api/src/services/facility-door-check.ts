@@ -39,6 +39,7 @@ import {
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { logger } from "../lib/logger.ts";
+import { ticketPinDigest } from "../lib/ticket-pin-digest.ts";
 import { auditFacility, toTicket } from "./facility-shared.ts";
 
 const sha256 = (value: string) =>
@@ -223,14 +224,15 @@ async function checkCredential(
 ): Promise<{ ticket: AccessTicket }> {
   const tenantId = context.tenant.tenantId;
   // Same digests as the mint (facility-pos-tickets.ts): the QR token alone, or
-  // the PIN bound to its ticket id.
+  // the keyed digest of the PIN bound to its ticket. A PIN stored the old way
+  // (plain SHA-256) matches nothing: it expired, the QR still works.
   const presented =
     "qrToken" in input
       ? ({ kind: "qr", digest: sha256(input.qrToken) } as const)
       : ({
           kind: "pin",
           ticketId: input.ticketId,
-          digest: sha256(`${input.ticketId}:${input.pin}`),
+          digest: ticketPinDigest(tenantId, input.ticketId, input.pin),
         } as const);
   return withTenant(db, context, async (tx) => {
     // R3-02 (legend-9c76n): the calling device is locked FOR SHARE BEFORE the

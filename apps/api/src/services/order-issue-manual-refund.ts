@@ -80,6 +80,11 @@ export async function assertNoLiveTicketOnLine(
   tx: Tx,
   tenantId: TenantId,
   orderItemId: string,
+  refusal: { code: string; message: string } = {
+    code: "TICKET_LIVE_NO_MANUAL_REFUND",
+    message:
+      "Tiket fasilitas pada item ini masih berlaku. Refund manual ditolak; batalkan tiketnya lewat refund kasir.",
+  },
 ): Promise<void> {
   const [linked] = await tx
     .select({ accessTicketId: facilityTicketPosLines.accessTicketId })
@@ -105,11 +110,32 @@ export async function assertNoLiveTicketOnLine(
     .limit(1)
     .for("update");
   if (ticket && ticket.status !== "refunded" && ticket.status !== "cancelled")
-    throw new HttpError(
-      409,
-      "TICKET_LIVE_NO_MANUAL_REFUND",
-      "Tiket fasilitas pada item ini masih berlaku. Refund manual ditolak; batalkan tiketnya lewat refund kasir.",
-    );
+    throw new HttpError(409, refusal.code, refusal.message);
+}
+
+/**
+ * F6a (legend-iojd1): a line with a live ticket is never a failed item. A
+ * report, swap, voucher or ORD-09 refund on it would give the guest value while
+ * the ticket still opens the door; the ticket goes back through the cashier
+ * refund only. Locks the order row first (the order the cashier refund uses),
+ * then the ticket line and its ticket.
+ */
+export async function assertNoTicketCompensation(
+  tx: Tx,
+  tenantId: TenantId,
+  orderId: string,
+  orderItemId: string,
+): Promise<void> {
+  await tx
+    .select({ id: orders.id })
+    .from(orders)
+    .where(and(eq(orders.tenantId, tenantId), eq(orders.id, orderId)))
+    .for("update");
+  await assertNoLiveTicketOnLine(tx, tenantId, orderItemId, {
+    code: "TICKET_LIVE_NO_COMPENSATION",
+    message:
+      "Tiket fasilitas pada item ini masih berlaku, jadi tidak bisa ditukar atau diganti voucher. Batalkan tiketnya lewat refund kasir.",
+  });
 }
 
 /**
@@ -421,7 +447,8 @@ export async function manualRefundAmountIdr(
  * cancelled, refund not rejected (a rejected one gave nothing back). Locks the
  * order row, the lock `manualRefundAmountIdr` takes, so a manual refund
  * racing this check is serialized with it. Shared by the ORD-08 settlement and
- * the staff apology voucher.
+ * the staff apology voucher. A live facility ticket on the line refuses too
+ * (F6a, `assertNoTicketCompensation`, same order lock).
  */
 export async function assertLineNotManuallyRefunded(
   tx: Tx,
@@ -452,6 +479,7 @@ export async function assertLineNotManuallyRefunded(
       "CONFLICT",
       "Item ini sudah direfund manual; tidak bisa dilaporkan lagi atau diganti voucher atau swap.",
     );
+  await assertNoTicketCompensation(tx, tenantId, orderId, orderItemId);
 }
 
 /**
