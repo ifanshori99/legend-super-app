@@ -1,6 +1,5 @@
 // Release-only replay of source-backed outlet days. Reuse the metric service's
 // locks/upserts; never fabricate an empty historical day from metrics_daily.
-import { pathToFileURL } from "node:url";
 import { sql, type SQL } from "drizzle-orm";
 import {
   addBusinessDays,
@@ -286,11 +285,3 @@ export async function cli(args: string[]): Promise<number> {
     await pool?.end();
   }
 }
-
-const entry = process.argv[1];
-if (
-  entry &&
-  /metrics-daily-backfill\.ts$/.test(entry) &&
-  import.meta.url === pathToFileURL(entry).href
-)
-  process.exitCode = await cli(process.argv.slice(2));

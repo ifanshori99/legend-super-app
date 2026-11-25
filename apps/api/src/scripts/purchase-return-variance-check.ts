@@ -6,7 +6,6 @@
 // have stored (billed value of the returned quantity minus the stored invoiced
 // value, the rule of purchase-return.service.ts) and reports the mismatches.
 // It never writes: the transaction is READ ONLY. An empty report means safe.
-import { pathToFileURL } from "node:url";
 import { and, asc, eq, gt, inArray, sql } from "drizzle-orm";
 import {
   idr,
@@ -571,11 +570,3 @@ export async function cli(args: string[]): Promise<number> {
     await pool?.end();
   }
 }
-
-const entry = process.argv[1];
-if (
-  entry &&
-  /purchase-return-variance-check\.ts$/.test(entry) &&
-  import.meta.url === pathToFileURL(entry).href
-)
-  process.exitCode = await cli(process.argv.slice(2));
