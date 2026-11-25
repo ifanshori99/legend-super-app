@@ -16,13 +16,16 @@ import {
   endAttempt,
   hasUnresolved,
   markChecked,
+  markRefused,
   type ChargeKeyScope,
 } from "./charge-key-store";
-import { chargeFailureKind } from "./charge-logic";
+import { chargeFailureKind, collectKeyAfter } from "./charge-logic";
 import {
   answerSettles,
   canCollect,
+  COLLECT_DEADLINE_MS,
   requestSignature,
+  withDeadline,
 } from "./charge-method-logic";
 import { issueChargeKeys, issueChargeQuery } from "./charge-queries";
 
@@ -82,6 +85,9 @@ export function useCollectIssueCharge(chargeId: string) {
   const outletId = useOutletId();
   const queryClient = useQueryClient();
   const sending = useRef(false);
+  // The key of the request in flight, so a late answer never clears the key of
+  // another tab's attempt.
+  const attemptKey = useRef<string | null>(null);
   const scope: ChargeKeyScope = { outletId, chargeId };
   const queryKey = issueChargeKeys.charge(outletId, chargeId);
 
@@ -102,19 +108,30 @@ export function useCollectIssueCharge(chargeId: string) {
           throw new NotSentError(error instanceof Error ? error.message : "");
         });
       if (!canCollect(charge, request)) throw new NotSentError("");
+      // The charge was just read open: together with the server's 409/422 for
+      // the key, this is what lets the cashier change method.
+      withStorage((storage) => markChecked(storage, scope));
       const attempt = withStorage((storage) =>
         beginAttempt(storage, scope, requestSignature(charge, request), () =>
           globalThis.crypto.randomUUID(),
         ),
       );
       if (attempt.conflict) throw new NotSentError("");
-      return collectCharge(chargeId, {
-        ...request,
-        idempotencyKey: attempt.key,
-      } as CollectChargeAtPosInput);
+      attemptKey.current = attempt.key;
+      // A request that never answers must not lock the screen: after the
+      // deadline the result is unknown (the status check follows).
+      return withDeadline(
+        collectCharge(chargeId, {
+          ...request,
+          idempotencyKey: attempt.key,
+        } as CollectChargeAtPosInput),
+        COLLECT_DEADLINE_MS,
+      );
     },
     onSuccess: (answer) => {
-      withStorage((storage) => endAttempt(storage, scope));
+      withStorage((storage) =>
+        endAttempt(storage, scope, attemptKey.current ?? undefined),
+      );
       // Show what the answer says at once (a fresh code locks the methods);
       // the refetch confirms it. A QRIS answer is a code, not money.
       queryClient.setQueryData<IssueChargeDetail>(queryKey, (current) =>
@@ -129,16 +146,20 @@ export function useCollectIssueCharge(chargeId: string) {
       void queryClient.invalidateQueries({ queryKey });
     },
     onError: (error) => {
-      // A refusal recorded nothing: the next try is a new intent. An unknown
-      // result keeps the key (the cashier checks the status first).
-      if (
-        error instanceof ApiError &&
-        chargeFailureKind(error.status) === "failed"
-      )
-        withStorage((storage) => endAttempt(storage, scope));
+      // 409/422 keep the key and free other methods once the charge reads
+      // open; auth and rate limits and unknown results keep it too. Any other
+      // refusal recorded nothing: the next try is a new intent.
+      if (!(error instanceof ApiError) || attemptKey.current === null) return;
+      const key = attemptKey.current;
+      const action = collectKeyAfter(error.status);
+      if (action === "refused")
+        withStorage((storage) => markRefused(storage, scope, key));
+      else if (action === "end")
+        withStorage((storage) => endAttempt(storage, scope, key));
     },
     onSettled: () => {
       sending.current = false;
+      attemptKey.current = null;
     },
   });
 

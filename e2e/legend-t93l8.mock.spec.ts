@@ -139,6 +139,28 @@ test("t93l8 refresh after a lost cash answer: check first, same key", async ({
   await expect(page.getByText("Penagihan tercatat")).toBeVisible();
 });
 
+test("1267 after a lost cash answer another method is refused, no code made", async ({
+  page,
+}) => {
+  await open(page, "selisih-belum-pasti");
+  await button(page, /Tagih selisih · Tunai/).click();
+  await expect(
+    page.getByText("Status penagihan belum dapat dipastikan"),
+  ).toBeVisible();
+  const key = await storedKey(page);
+  await open(page, "selisih-belum-pasti");
+  await button(page, /Periksa status/).click();
+  await expect(page.getByText("Penagihan belum tercatat")).toBeVisible();
+  // The cash answer was never seen: a code could pay the charge twice.
+  await pick(page, "QRIS");
+  await button(page, /Buat QRIS/).click();
+  await expect(
+    page.getByText("Status penagihan belum dapat dipastikan"),
+  ).toBeVisible();
+  await expect(page.locator("svg title")).toHaveCount(0);
+  expect(await storedKey(page)).toBe(key);
+});
+
 test("t93l8 an unresolved attempt in another tab locks this one", async ({
   page,
   context,

@@ -32,6 +32,7 @@ export const posIssueChargeMessages = {
     failed: "Belum berhasil",
     waived: "Dibebaskan",
     expired: "Kedaluwarsa",
+    voided: "Dibatalkan",
   },
   collect: {
     title: "Penagihan selisih",

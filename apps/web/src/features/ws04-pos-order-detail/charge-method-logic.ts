@@ -155,3 +155,26 @@ export function requestSignature(
     return `edc_card:${request.edcTransactionId}`;
   return `qris:${charge.payment?.id ?? "none"}`;
 }
+
+/** How long a collect may hang on this screen before the result is unknown. */
+export const COLLECT_DEADLINE_MS = 30_000;
+
+/** The request did not answer in time: the result is unknown, not a failure. */
+export class CollectDeadlineError extends Error {}
+
+/** Settles with `work`, or rejects with `CollectDeadlineError` after `ms`. */
+export function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new CollectDeadlineError()), ms);
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}

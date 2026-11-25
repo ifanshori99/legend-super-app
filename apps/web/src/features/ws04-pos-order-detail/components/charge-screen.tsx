@@ -344,7 +344,9 @@ function ChargeBody({ chargeId }: { chargeId: string }) {
   } else if (phase === "closed") {
     pill = (
       <StatusPill tone="neutral">
-        {t(`posIssueCharge.status.${charge.status as "waived" | "expired"}`)}
+        {t(
+          `posIssueCharge.status.${charge.status as "waived" | "expired" | "voided"}`,
+        )}
       </StatusPill>
     );
     body = (

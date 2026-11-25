@@ -38,3 +38,15 @@ export function chargeFailureKind(status: number): "unknown" | "failed" {
     return "unknown";
   return "failed";
 }
+
+/**
+ * What a failed collect does to the idempotency key. 409/422: the server
+ * answered for this key and recorded nothing (the key is kept; it only frees
+ * another method after the charge is read open). Auth and rate limits (401,
+ * 403, 429) and any unknown result keep the key too. Any other refusal ends it.
+ */
+export function collectKeyAfter(status: number): "refused" | "keep" | "end" {
+  if (status === 409 || status === 422) return "refused";
+  if (status === 401 || status === 403 || status === 429) return "keep";
+  return chargeFailureKind(status) === "failed" ? "end" : "keep";
+}

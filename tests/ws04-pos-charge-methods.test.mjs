@@ -8,6 +8,9 @@ import { describe, test } from "node:test";
 const dir = "../apps/web/src/features/ws04-pos-order-detail";
 const logic = () => import(`${dir}/charge-method-logic.ts`);
 const keys = () => import(`${dir}/charge-key-store.ts`);
+const failures = () => import(`${dir}/charge-logic.ts`);
+const messages = () =>
+  import("../packages/shared/src/i18n/messages/pos-issue-charge.ts");
 
 const qris = (status, extra = {}) => ({
   id: "p1",
@@ -253,14 +256,57 @@ describe("t93l8 idempotency key store", () => {
     assert.equal(beginAttempt(s, scope, "qris:none", uuid).conflict, true);
     // The stored key survives the refusal.
     assert.equal(beginAttempt(s, scope, "cash:10000", uuid).key, first.key);
-    // The server was read and says nothing is recorded: free to change, but a
-    // retry of the same request still replays the same key.
+    // Reading the charge as open is not an answer for the key: another request
+    // stays refused, the same one still replays the same key.
     markChecked(s, scope);
     assert.equal(beginAttempt(s, scope, "cash:10000", uuid).key, first.key);
     markChecked(s, scope);
-    const other = beginAttempt(s, scope, "qris:none", uuid);
+    assert.equal(beginAttempt(s, scope, "qris:none", uuid).conflict, true);
+  });
+
+  test("a method change needs the server's 409/422 for that key and an open read", async () => {
+    const { beginAttempt, markChecked, markRefused } = await keys();
+    const s = storage();
+    const first = beginAttempt(s, scope, "cash:10000", uuid);
+    // Refused but the charge was not read since: still locked.
+    markRefused(s, scope, first.key);
+    assert.equal(beginAttempt(s, scope, "edc_card:a", uuid).conflict, true);
+    markChecked(s, scope);
+    const other = beginAttempt(s, scope, "edc_card:a", uuid);
     assert.equal(other.conflict, false);
     assert.notEqual(other.key, first.key);
+    // A refusal for another key (another tab) proves nothing for this one.
+    markRefused(s, scope, first.key);
+    markChecked(s, scope);
+    assert.equal(beginAttempt(s, scope, "cash:10000", uuid).conflict, true);
+    // Sending again without a new refusal drops the old one.
+    const again = beginAttempt(s, scope, "edc_card:a", uuid);
+    markRefused(s, scope, again.key);
+    beginAttempt(s, scope, "edc_card:a", uuid);
+    markChecked(s, scope);
+    assert.equal(beginAttempt(s, scope, "cash:10000", uuid).conflict, true);
+  });
+
+  test("a new QRIS is free once the server's payment id changed", async () => {
+    const { beginAttempt, markChecked } = await keys();
+    const s = storage();
+    const first = beginAttempt(s, scope, "qris:none", uuid);
+    markChecked(s, scope);
+    const next = beginAttempt(s, scope, "qris:pay-1", uuid);
+    assert.equal(next.conflict, false);
+    assert.notEqual(next.key, first.key);
+    // A code never frees cash or EDC.
+    assert.equal(beginAttempt(s, scope, "cash:10000", uuid).conflict, true);
+  });
+
+  test("endAttempt only clears the key it was given", async () => {
+    const { beginAttempt, endAttempt, hasUnresolved } = await keys();
+    const s = storage();
+    const mine = beginAttempt(s, scope, "cash:10000", uuid);
+    endAttempt(s, scope, "00000000-0000-4000-8000-ffffffffffff");
+    assert.equal(hasUnresolved(s, scope), true);
+    endAttempt(s, scope, mine.key);
+    assert.equal(hasUnresolved(s, scope), false);
   });
 
   test("unresolved is visible after a refresh, gone after a known answer", async () => {
@@ -309,6 +355,39 @@ describe("t93l8 idempotency key store", () => {
     assert.notEqual(
       requestSignature(charge(), { method: "edc_card", edcTransactionId: "a" }),
       requestSignature(charge(), { method: "edc_card", edcTransactionId: "b" }),
+    );
+  });
+});
+
+describe("1267 H1 refusals, texts and deadline", () => {
+  test("only 409/422 free the key for another method; auth and limits keep it", async () => {
+    const { collectKeyAfter } = await failures();
+    assert.equal(collectKeyAfter(409), "refused");
+    assert.equal(collectKeyAfter(422), "refused");
+    for (const status of [401, 403, 429, 0, 408, 500, 502])
+      assert.equal(collectKeyAfter(status), "keep", String(status));
+    for (const status of [400, 404, 410])
+      assert.equal(collectKeyAfter(status), "end", String(status));
+  });
+
+  test("every closed charge status has catalog text", async () => {
+    const { posIssueChargeMessages } = await messages();
+    const { status } =
+      posIssueChargeMessages.posIssueCharge ?? posIssueChargeMessages;
+    for (const key of ["waived", "expired", "voided"])
+      assert.equal(typeof status[key], "string", key);
+  });
+
+  test("a hanging request ends as unknown after the deadline, never as a failure", async () => {
+    const { withDeadline, CollectDeadlineError } = await logic();
+    await assert.rejects(
+      withDeadline(new Promise(() => {}), 10),
+      CollectDeadlineError,
+    );
+    assert.equal(await withDeadline(Promise.resolve("ok"), 1000), "ok");
+    await assert.rejects(
+      withDeadline(Promise.reject(new Error("boom")), 1000),
+      /boom/,
     );
   });
 });
