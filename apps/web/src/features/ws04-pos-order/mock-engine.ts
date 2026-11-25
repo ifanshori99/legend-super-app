@@ -187,7 +187,12 @@ export function createPosOrderEngine(options: EngineOptions = {}) {
       callNumber: order.callNumber,
       lines: order.lines,
       subtotalIdr: cartTotals(
-        order.lines.map((line) => ({ ...line, hold: false })),
+        order.lines.map((line) => ({
+          ...line,
+          variantId: null,
+          variantName: null,
+          hold: false,
+        })),
       ).subtotalIdr,
     };
   }
@@ -310,9 +315,7 @@ export function createPosOrderEngine(options: EngineOptions = {}) {
     return lines.map((line) => ({
       lineId: nextLineId(),
       menuItemId: line.menuItemId,
-      name: line.variantName
-        ? `${line.name} (${line.variantName})`
-        : line.name,
+      name: line.variantName ? `${line.name} (${line.variantName})` : line.name,
       unitPriceIdr: line.unitPriceIdr,
       quantity: line.quantity,
       modifiers: line.modifiers,

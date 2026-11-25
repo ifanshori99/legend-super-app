@@ -103,6 +103,14 @@ export function endIntent(
   storage.removeItem(slot(scope));
 }
 
+/** The stored request of a scope, without creating one. */
+export function peekIntent(
+  storage: StorageLike,
+  scope: IntentScope,
+): { signature: string; key: string; data: string | null } | null {
+  return read(storage, scope);
+}
+
 /** A request was sent and its answer is not known yet. */
 export function hasUnresolvedIntent(
   storage: StorageLike,

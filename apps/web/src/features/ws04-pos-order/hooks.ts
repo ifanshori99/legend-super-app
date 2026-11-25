@@ -15,6 +15,7 @@ import { ApiError } from "@/lib/api/errors";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { useTenantContext } from "@/lib/tenant-context";
 import { useCloudConnection } from "@/features/ws02-edge/hooks";
+import { useActiveStaff } from "@/features/ws01-device-pin/storage";
 import {
   acknowledgeCall,
   addToTable,
@@ -53,6 +54,9 @@ import {
 
 export { useDraftCart } from "./draft-store";
 
+/** A resumed parked cart; `missing` lines left the catalog and were not restored. */
+export type ResumedDraft = ParkedDraft & { missing: number };
+
 /** True when the server has no contract for the call yet (show "belum tersambung"). */
 export function isContractPending(error: unknown): boolean {
   return error instanceof ApiError && error.code === CONTRACT_PENDING;
@@ -61,6 +65,11 @@ export function isContractPending(error: unknown): boolean {
 /** The outlet this screen works in; "" when none (queries stay idle). */
 function useOutletId(): string {
   return useTenantContext().outlet?.id ?? "";
+}
+
+/** The cashier at the till; a keyed send never shares its key with another. */
+function useActorId(): string {
+  return useActiveStaff()?.userId ?? "";
 }
 
 /** Mock mode needs no outlet; real calls do. */
@@ -140,14 +149,12 @@ export function useSubmitOrder({
 }): UseMutationResult<PosOrderView, Error, SubmitOrderInput> {
   const queryClient = useQueryClient();
   const outletId = useOutletId();
+  const actorId = useActorId();
   return useMutation<PosOrderView, Error, SubmitOrderInput>({
-    mutationFn: (input) =>
-      submitOrder(outletId, {
-        ...input,
-        idempotencyKey: intentKeyFor("order", draftKey, outletId, input),
-      }),
+    // The keyed intent is persisted by the api call itself (order-flow), so a
+    // refresh after an unknown outcome repeats the same keys.
+    mutationFn: (input) => submitOrder(outletId, actorId, draftKey, input),
     onSuccess: () => {
-      clearIntentKey("order", draftKey);
       writeDraft(draftKey, []);
       // A takeaway order used its call number: the next one moves on.
       void queryClient.invalidateQueries({
@@ -174,15 +181,18 @@ export function useParkedDrafts(): UseQueryResult<ParkedDraft[]> {
   return useQuery({ ...parkedDraftsQuery(outletId), enabled: ready });
 }
 
-export function useParkDraft(): UseMutationResult<
+export function useParkDraft({
+  draftKey = "kasir",
+}: { draftKey?: string } = {}): UseMutationResult<
   ParkedDraft,
   Error,
   ParkDraftInput
 > {
   const queryClient = useQueryClient();
   const outletId = useOutletId();
+  const actorId = useActorId();
   return useMutation<ParkedDraft, Error, ParkDraftInput>({
-    mutationFn: (input) => parkDraft(outletId, input),
+    mutationFn: (input) => parkDraft(outletId, actorId, draftKey, input),
     onSuccess: () =>
       void queryClient.invalidateQueries({
         queryKey: posOrderKeys.parked(outletId),
@@ -199,11 +209,12 @@ export function useResumeDraft({
   draftKey,
 }: {
   draftKey: string;
-}): UseMutationResult<ParkedDraft, Error, { id: string }> {
+}): UseMutationResult<ResumedDraft, Error, { id: string }> {
   const queryClient = useQueryClient();
   const outletId = useOutletId();
-  return useMutation<ParkedDraft, Error, { id: string }>({
-    mutationFn: ({ id }) => resumeDraft(outletId, id),
+  const actorId = useActorId();
+  return useMutation<ResumedDraft, Error, { id: string }>({
+    mutationFn: ({ id }) => resumeDraft(outletId, actorId, id),
     onSuccess: (resumed) =>
       writeDraft(draftKey, [...readDraft(draftKey), ...resumed.lines]),
     // Taken or already gone: either way the list must be read again.

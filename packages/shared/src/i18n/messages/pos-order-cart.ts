@@ -44,6 +44,7 @@ export const posOrderCartMessages = {
     description: "Pilih meja untuk pesanan dine-in ini.",
     occupied: "Terisi · {count} tamu",
     empty: "Kosong · {seats} kursi",
+    noSession: "Belum ada sesi meja",
     loading: "Memuat meja…",
     emptyTitle: "Belum ada meja",
     emptyDescription: "Daftar meja outlet ini masih kosong.",
@@ -74,6 +75,8 @@ export const posOrderCartMessages = {
     parkedOk:
       "Pesanan ditahan. Buka lewat “Pesanan ditahan” untuk melanjutkan.",
     resumedOk: "Pesanan ditahan dibuka kembali di keranjang.",
+    resumedMissing:
+      "Pesanan ditahan dibuka kembali. {count} item sudah tidak ada di menu dan tidak ikut.",
     heldReleased: "{count} item ditahan akan dikirim bersama pesanan ini.",
     placed: "Pesanan {number} terkirim. Pembayaran dilakukan oleh kasir.",
     lineRemoved: "Item dihapus",

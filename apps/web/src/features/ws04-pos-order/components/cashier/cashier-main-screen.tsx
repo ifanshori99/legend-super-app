@@ -16,7 +16,7 @@ import {
   Notice,
   PosPageHeading,
 } from "@/features/ws04-pos-kasir/components/shared";
-import { cartTotals } from "@/features/ws04-pos-order/cart-logic";
+import { cartTotals, needsChoice } from "@/features/ws04-pos-order/cart-logic";
 import { useDraftCart } from "@/features/ws04-pos-order/draft-store";
 import {
   isContractPending,
@@ -34,7 +34,8 @@ import type { ChannelDetailError } from "./channel-toggle";
 import { MobileCartBar } from "./mobile-cart-bar";
 import { ParkedDraftsSheet } from "./parked-drafts-sheet";
 
-type StatusMessage = "parkedOk" | "resumedOk" | "heldReleased" | "placed";
+type StatusMessage =
+  "parkedOk" | "resumedOk" | "resumedMissing" | "heldReleased" | "placed";
 
 interface Status {
   key: StatusMessage;
@@ -68,6 +69,7 @@ export function CashierMainScreen() {
   const [meta, setMeta] = useState<CartOrderMeta>({
     channel: "dine_in",
     tableLabel: null,
+    tableSessionId: null,
     ojolPlatform: null,
     ojolRef: "",
   });
@@ -171,7 +173,7 @@ export function CashierMainScreen() {
   const pick = (item: MenuItem) => {
     if (item.soldOut) return;
     setStatus(null);
-    if (item.modifierGroups.length === 0) {
+    if (!needsChoice(item)) {
       cart.add(item, { modifiers: [], note: "", quantity: 1 });
       return;
     }
@@ -179,8 +181,8 @@ export function CashierMainScreen() {
   };
 
   const continueOrder = () => {
-    const { channel, tableLabel, ojolPlatform, ojolRef } = meta;
-    if (channel === "dine_in" && !tableLabel) {
+    const { channel, tableSessionId, ojolPlatform, ojolRef } = meta;
+    if (channel === "dine_in" && !tableSessionId) {
       fail("table");
       return;
     }
@@ -198,7 +200,7 @@ export function CashierMainScreen() {
     submit.mutate(
       {
         channel,
-        tableLabel: channel === "dine_in" ? tableLabel : null,
+        tableSessionId: channel === "dine_in" ? tableSessionId : null,
         ojol:
           channel === "ojol_manual" && ojolPlatform
             ? { platform: ojolPlatform, externalRef: ojolRef.trim() }
@@ -226,7 +228,17 @@ export function CashierMainScreen() {
     setStatus(null);
     setRemoved([]);
     park.mutate(
-      { channel: meta.channel, lines: cart.lines },
+      {
+        channel: meta.channel,
+        tableSessionId: meta.channel === "dine_in" ? meta.tableSessionId : null,
+        ojol:
+          meta.channel === "ojol_manual" &&
+          meta.ojolPlatform &&
+          meta.ojolRef.trim() !== ""
+            ? { platform: meta.ojolPlatform, externalRef: meta.ojolRef.trim() }
+            : null,
+        lines: cart.lines,
+      },
       {
         onSuccess: () => {
           cart.clear();
@@ -244,13 +256,23 @@ export function CashierMainScreen() {
     cart.replace(cart.lines.map((line) => ({ ...line, hold: false })));
   };
 
-  const resumed = (draft: ParkedDraft) => {
-    // useResumeDraft already added the draft's lines to the cart.
-    setMeta((current) => ({ ...current, channel: draft.channel }));
+  const resumed = (draft: ParkedDraft & { missing?: number }) => {
+    // useResumeDraft already added the draft's lines to the cart. The table
+    // session may have closed since, so the table is chosen again.
+    setMeta((current) => ({
+      ...current,
+      channel: draft.channel,
+      ojolPlatform: draft.ojol?.platform ?? current.ojolPlatform,
+      ojolRef: draft.ojol?.externalRef ?? current.ojolRef,
+    }));
     setFieldError(null);
     setParkedOpen(false);
     setRemoved([]);
-    setStatus({ key: "resumedOk" });
+    setStatus(
+      draft.missing
+        ? { key: "resumedMissing", params: { count: draft.missing } }
+        : { key: "resumedOk" },
+    );
   };
 
   const feedback: ReactNode = (

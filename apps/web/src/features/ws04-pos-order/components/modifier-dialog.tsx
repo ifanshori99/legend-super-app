@@ -16,11 +16,16 @@ import { Textarea } from "@/components/ui/textarea";
 import { validateModifiers } from "@/features/ws04-pos-order/cart-logic";
 import type {
   MenuItem,
+  MenuVariant,
   ModifierGroup,
   SelectedModifier,
 } from "@/features/ws04-pos-order/types";
 
+// The variant choice is shown as a required single-choice group of its own.
+const VARIANT_GROUP_ID = "__variant";
+
 export interface ModifierSelection {
+  variant: MenuVariant | null;
   modifiers: SelectedModifier[];
   note: string;
   quantity: number;
@@ -101,6 +106,7 @@ function ModifierForm({
   const t = useT();
   const [chosen, setChosen] = useState<Record<string, string[]>>({});
   const [note, setNote] = useState("");
+  const [variantId, setVariantId] = useState<string | null>(null);
   // Required-group errors stay quiet until the first "Tambah ke keranjang" tap.
   const [attempted, setAttempted] = useState(false);
   const groupRefs = useRef<Record<string, HTMLFieldSetElement | null>>({});
@@ -115,10 +121,31 @@ function ModifierForm({
         priceDeltaIdr: option.priceDeltaIdr,
       })),
   );
+  const variant = item.variants.find((entry) => entry.id === variantId) ?? null;
+  const variantGroup: ModifierGroup | null =
+    item.variants.length > 0
+      ? {
+          id: VARIANT_GROUP_ID,
+          name: t("posOrderCatalog.modifier.variantGroup"),
+          required: true,
+          min: 1,
+          max: 1,
+          options: item.variants.map((entry) => ({
+            id: entry.id,
+            name: entry.name,
+            priceDeltaIdr: 0,
+          })),
+        }
+      : null;
+  const variantMissing = variantGroup !== null && variant === null;
   const unitPriceIdr =
-    item.priceIdr + modifiers.reduce((sum, m) => sum + m.priceDeltaIdr, 0);
+    (variant?.priceIdr ?? item.priceIdr) +
+    modifiers.reduce((sum, m) => sum + m.priceDeltaIdr, 0);
   const check = validateModifiers(item, modifiers);
-  const missing = check.ok ? [] : check.missingGroupIds;
+  const missing = [
+    ...(variantMissing ? [VARIANT_GROUP_ID] : []),
+    ...(check.ok ? [] : check.missingGroupIds),
+  ];
 
   function choose(group: ModifierGroup, optionId: string) {
     setChosen((prev) => {
@@ -145,7 +172,7 @@ function ModifierForm({
       first?.scrollIntoView({ block: "nearest" });
       return;
     }
-    onConfirm({ modifiers, note: note.trim(), quantity: 1 });
+    onConfirm({ variant, modifiers, note: note.trim(), quantity: 1 });
     onOpenChange(false);
   }
 
@@ -158,6 +185,22 @@ function ModifierForm({
       <DialogDescription className="text-sm">
         {t("posOrderCatalog.modifier.description")}
       </DialogDescription>
+
+      {variantGroup && (
+        <ModifierGroupField
+          group={variantGroup}
+          selectedIds={variantId ? [variantId] : []}
+          missing={attempted && variantMissing}
+          priceOf={(optionId) =>
+            item.variants.find((entry) => entry.id === optionId)?.priceIdr ??
+            null
+          }
+          onChoose={(optionId) => setVariantId(optionId)}
+          fieldsetRef={(el) => {
+            groupRefs.current[VARIANT_GROUP_ID] = el;
+          }}
+        />
+      )}
 
       {item.modifierGroups.map((group) => (
         <ModifierGroupField
@@ -229,7 +272,10 @@ function ModifierGroupField({
   missing,
   onChoose,
   fieldsetRef,
+  priceOf,
 }: {
+  /** Shows each option's own price (variants) instead of a "+" delta. */
+  priceOf?: (optionId: string) => number | null;
   group: ModifierGroup;
   selectedIds: string[];
   missing: boolean;
@@ -287,7 +333,12 @@ function ModifierGroupField({
               </span>
               <span className="[overflow-wrap:anywhere]">{option.name}</span>
             </span>
-            {option.priceDeltaIdr !== 0 && (
+            {priceOf && priceOf(option.id) !== null && (
+              <span className="shrink-0 text-muted-foreground">
+                <Money amount={priceOf(option.id) ?? 0} />
+              </span>
+            )}
+            {!priceOf && option.priceDeltaIdr !== 0 && (
               <span className="shrink-0 text-muted-foreground">
                 {option.priceDeltaIdr > 0 && "+"}
                 <Money amount={option.priceDeltaIdr} />

@@ -37,7 +37,7 @@ export function ParkedDraftsSheet({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onResumed: (draft: ParkedDraft) => void;
+  onResumed: (draft: ParkedDraft & { missing?: number }) => void;
 }) {
   const t = useT();
   return (
@@ -63,7 +63,7 @@ export function ParkedDraftsSheet({
 function ParkedList({
   onResumed,
 }: {
-  onResumed: (draft: ParkedDraft) => void;
+  onResumed: (draft: ParkedDraft & { missing?: number }) => void;
 }) {
   const t = useT();
   const drafts = useParkedDrafts();

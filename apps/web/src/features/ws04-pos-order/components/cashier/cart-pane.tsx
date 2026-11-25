@@ -20,6 +20,8 @@ import {
 export interface CartOrderMeta {
   channel: SaleChannel;
   tableLabel: string | null;
+  /** The open session of the chosen table; this, not the label, is sent. */
+  tableSessionId: string | null;
   ojolPlatform: OjolPlatform | null;
   ojolRef: string;
 }
@@ -126,7 +128,9 @@ export function CartPane({
       <ChannelDetail
         channel={meta.channel}
         tableLabel={meta.tableLabel}
-        onTableChange={(tableLabel) => onMetaChange({ tableLabel })}
+        onTableChange={({ label, sessionId }) =>
+          onMetaChange({ tableLabel: label, tableSessionId: sessionId })
+        }
         ojolPlatform={meta.ojolPlatform}
         onOjolPlatformChange={(ojolPlatform) => onMetaChange({ ojolPlatform })}
         ojolRef={meta.ojolRef}

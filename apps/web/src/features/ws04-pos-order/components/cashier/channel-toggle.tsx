@@ -93,7 +93,7 @@ export function ChannelDetail({
 }: {
   channel: SaleChannel;
   tableLabel: string | null;
-  onTableChange: (label: string) => void;
+  onTableChange: (table: { label: string; sessionId: string }) => void;
   ojolPlatform: OjolPlatform | null;
   onOjolPlatformChange: (platform: OjolPlatform) => void;
   ojolRef: string;
@@ -250,8 +250,8 @@ export function ChannelDetail({
         open={pickerOpen}
         onOpenChange={setPickerOpen}
         selected={tableLabel}
-        onPick={(label) => {
-          onTableChange(label);
+        onPick={(table) => {
+          onTableChange(table);
           setPickerOpen(false);
         }}
       />
@@ -268,7 +268,7 @@ function TablePickerDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   selected: string | null;
-  onPick: (label: string) => void;
+  onPick: (table: { label: string; sessionId: string }) => void;
 }) {
   const t = useT();
   return (
@@ -292,7 +292,7 @@ function TableList({
   onPick,
 }: {
   selected: string | null;
-  onPick: (label: string) => void;
+  onPick: (table: { label: string; sessionId: string }) => void;
 }) {
   const t = useT();
   const tables = useCaptainTables();
@@ -367,15 +367,22 @@ function TableChoice({
 }: {
   table: CaptainTable;
   selected: boolean;
-  onPick: (label: string) => void;
+  onPick: (table: { label: string; sessionId: string }) => void;
 }) {
   const t = useT();
+  // An order goes onto the table's open session. A table nobody sits at has
+  // none yet (seating a walk-in is on the captain screen), so it cannot be
+  // chosen here.
+  const sessionId = table.sessionId;
   return (
     <Button
       type="button"
       variant="outline"
       aria-pressed={selected}
-      onClick={() => onPick(table.label)}
+      disabled={sessionId === null}
+      onClick={() => {
+        if (sessionId !== null) onPick({ label: table.label, sessionId });
+      }}
       className={cn(
         "h-auto min-h-control-lg w-full flex-col items-start gap-0 py-2 text-left",
         selected &&
@@ -384,9 +391,9 @@ function TableChoice({
     >
       <span>{t("posOrderCart.table.value", { label: table.label })}</span>
       <span className="text-sm font-normal text-muted-foreground">
-        {table.status === "occupied"
-          ? t("posOrderCart.table.occupied", { count: table.guestCount })
-          : t("posOrderCart.table.empty", { seats: table.seats })}
+        {sessionId === null
+          ? t("posOrderCart.table.noSession")
+          : t("posOrderCart.table.occupied", { count: table.guestCount })}
       </span>
     </Button>
   );
