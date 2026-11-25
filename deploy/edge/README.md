@@ -170,8 +170,9 @@ promotion is manual and is not part of this folder (card F11b).
 1. Primary: include `postgresql-edge-primary.conf.example` and add the line of `pg_hba-edge-replication.conf.example` with the standby address (one `/32`). Create a login that is only for replication (`CREATE ROLE edge_replicator LOGIN REPLICATION PASSWORD ...` typed on the host, never in a file in the repository) and a physical slot (`SELECT pg_create_physical_replication_slot('edge_standby_slot')`).
 2. TLS: the primary server certificate comes from the internal CA and its name or address must match `host=` in `primary_conninfo` (`sslmode=verify-full`). Copy only the CA certificate to the standby.
 3. Standby: take the base copy over TLS (`pg_basebackup -R -S edge_standby_slot` with the same `sslmode` and `passfile`), keep the settings of `postgresql-edge-standby.conf.example`, and put the password only in the passfile (mode 0600, owned by postgres). Leave `legend-edge`, `legend-edge-worker` and `legend-edge-web` stopped and disabled.
-4. Primary: install `legend-edge-replication-watchdog.service`. Commits wait for the standby (synchronous). When no standby has streamed for 10 s the watchdog switches to async, logs `ALARM`, and keeps `replication-async.flag` and `replication-async-history` in its state directory; it restores synchronous commit only after the standby has replayed all WAL. After a promotion from an async period, open bills stay locked until reconciled with the cloud (F11b).
-5. Run the preflight on each host and fix every FAIL (it fails closed, and never prints a setting value):
+4. Primary: install `legend-edge-replication-watchdog.service` (adapt `postgresql@16-main` to the cluster name on Debian and Ubuntu; systemd creates its state directory). Commits wait for the standby (synchronous). When no synchronous standby has streamed for 10 s the watchdog writes the async flag and the value to restore to disk (fsync) and only then switches to async, logging `ALARM`. It restores synchronous commit when a standby named in the saved value has caught up, but the flag is never deleted automatically: it moves to `status=recovered-awaiting-reconcile`. Open bills stay locked until they are matched with the cloud (F11b), which then runs `edge-replication-watchdog.sh --state-dir ... --ack-reconciled`. Async mode that the watchdog did not start is `async-unknown`: it alarms, writes the flag and is never restored automatically. A restart of the watchdog restarts the 10 s clock.
+5. `max_slot_wal_keep_size` (20GB in the example) stops a long outage from filling the primary disk; the preflight requires it. The watchdog raises `ALARM` when the slot becomes `unreserved` or `lost`: the standby then needs a new base copy.
+6. Run the preflight on each host and fix every FAIL (it fails closed, and never prints a setting value):
 
    ```sh
    sh deploy/edge/check-edge-replication.sh --role primary --conf /etc/postgresql/edge-primary.conf \
@@ -179,6 +180,10 @@ promotion is manual and is not part of this folder (card F11b).
    sh deploy/edge/check-edge-replication.sh --role standby --conf /etc/postgresql/edge-standby.conf \
      --data-dir /var/lib/postgresql/data --replication-role edge_replicator --app-env-file /etc/legend/edge/api.env
    ```
+
+Prerequisite for promotion (F11b, not built here): the old primary must be proven
+stopped or fenced before the standby is promoted, or both hosts accept sales
+(split-brain). Nothing in this folder promotes a standby or fences a host.
 
 The 15 minute snapshot stays as a second copy; it is not changed here. The
 `ALARM` line reaches the owner only through the journal until F11b wires it into

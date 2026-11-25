@@ -132,6 +132,15 @@ if [ "$role" = primary ]; then
     fail "wal: max_replication_slots must be at least 1 (the standby keeps a slot)"
   fi
 
+  # A slot without a limit can fill the disk while the standby is away.
+  keep=$(conf_value max_slot_wal_keep_size)
+  if printf '%s\n' "$keep" | grep -E '^[0-9]+[[:space:]]*(kB|MB|GB|TB)?$' >/dev/null &&
+    [ "$(printf '%s\n' "$keep" | sed -e 's/[^0-9].*$//')" -gt 0 ]; then
+    pass "wal: max_slot_wal_keep_size is limited"
+  else
+    fail "wal: max_slot_wal_keep_size must be a positive size (for example 20GB); -1 or unset lets a lost standby fill the disk"
+  fi
+
   # 4p. TLS on, scram passwords.
   if [ "$(conf_value ssl)" = on ]; then
     pass "tls: ssl is on"

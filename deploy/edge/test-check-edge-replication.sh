@@ -162,6 +162,29 @@ expect_fail primary-password-in-conf
 expect_out primary-password-in-conf 'secret: the settings file holds a password'
 no_secret primary-password-in-conf
 
+# 3b. The slot must not be able to fill the disk.
+reset
+set_line "$pconf" max_slot_wal_keep_size -1
+run_primary
+expect_fail primary-slot-unlimited
+expect_out primary-slot-unlimited 'max_slot_wal_keep_size'
+reset
+sed -e '/max_slot_wal_keep_size/d' "$pconf" >"$pconf.new"
+mv "$pconf.new" "$pconf"
+run_primary
+expect_fail primary-slot-unset
+reset
+set_line "$pconf" max_slot_wal_keep_size 0
+run_primary
+expect_fail primary-slot-zero
+reset
+set_line "$pconf" max_slot_wal_keep_size lots
+run_primary
+expect_fail primary-slot-junk
+reset
+set_line "$pconf" max_slot_wal_keep_size "'51200MB'"
+run_primary
+expect_ok primary-slot-quoted
 # 4. pg_hba: only hostssl, the replication role, scram or cert, narrow address.
 bad_hba() {
   reset

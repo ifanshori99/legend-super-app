@@ -6,6 +6,11 @@
 wal_level = replica
 max_wal_senders = 4
 max_replication_slots = 4
+# A slot keeps WAL for a standby that is away. Without a limit a long outage
+# fills the primary disk and stops sales; with it the slot goes unreserved or
+# lost instead (the watchdog raises an ALARM and the standby is rebuilt). Choose
+# a value well below the free space of the WAL volume.
+max_slot_wal_keep_size = 20GB
 password_encryption = scram-sha-256
 
 # TLS for client and replication connections. Certificate and key come from the
