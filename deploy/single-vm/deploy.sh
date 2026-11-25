@@ -21,6 +21,9 @@ compose() { docker compose --env-file "$env_file" -f "$script_dir/compose.yaml" 
 # Validate without printing resolved secrets (Compose echoes unparsable lines).
 compose config --quiet >/dev/null 2>&1 || {
   echo "docker compose could not read the configuration (output hidden because it can contain secrets). Check compose.env and the env files." >&2
+  # Name the usual cause (missing or unreadable env file, wrong key). The
+  # provision-roles checks print messages that never contain a value.
+  "$script_dir/provision-roles.sh" --env-file "$env_file" --dry-run >/dev/null || true
   exit 1
 }
 if [ "$dry_run" -eq 1 ]; then

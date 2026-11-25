@@ -107,6 +107,14 @@ else
   else
     warn "audit-retention: MAINTENANCE_DATABASE_URL is missing; audit purge is skipped, restore configuration and check the local startup error and owner alarm"
   fi
+  # Caddy is the one proxy in front of the API; without the hop count every
+  # outlet device shares one per-IP rate-limit bucket.
+  trust_proxy=$(env_value TRUST_PROXY)
+  if [ "$trust_proxy" = 1 ]; then
+    pass "trust-proxy: TRUST_PROXY is 1"
+  else
+    warn "trust-proxy: TRUST_PROXY is not 1; set it so each outlet device has its own rate limit"
+  fi
   [ -n "$selfie_dir" ] || selfie_dir=$(env_value EDGE_SELFIE_DIR)
   [ -n "$state_dir" ] || state_dir=$(env_value EDGE_STATE_DIR)
   [ -n "$max_bytes" ] || max_bytes=$(env_value EDGE_SELFIE_MAX_BYTES)

@@ -6,7 +6,8 @@
 // Prints counts and employee ids only, never names or amounts per person.
 //   pnpm --filter @starter/api payroll:backfill-pph21-receivable -- --dry-run
 //   pnpm --filter @starter/api payroll:backfill-pph21-receivable
-import { pathToFileURL } from "node:url";
+// Inside the production image (no pnpm, tsx or src; only dist/):
+//   node dist/payroll-pph21-receivable-backfill.js [--dry-run]
 import { sql } from "drizzle-orm";
 import { tenantIdSchema, type ScopedTenantContext } from "@starter/shared/core";
 import {
@@ -59,6 +60,7 @@ export async function backfillPph21Receivables(options: {
         created: report.created,
         createdIdr: report.createdIdr,
         held: report.held,
+        entities: report.entities,
         dryRun: Number(options.dryRun ?? false),
       }),
     );
@@ -80,6 +82,13 @@ export async function cli(args: string[]): Promise<number> {
     logger.level = "silent";
     pool = (await import("../db/index")).pool;
     const total = await backfillPph21Receivables({ dryRun });
+    // No tenant read means the wrong database, never a clean run (legend-1265).
+    if (total.tenants === 0) {
+      console.error(
+        "No tenant was read; check the database. Nothing was written.",
+      );
+      return 1;
+    }
     console.log(JSON.stringify({ summary: total, dryRun: Number(dryRun) }));
     return 0;
   } catch {
@@ -91,11 +100,3 @@ export async function cli(args: string[]): Promise<number> {
     await pool?.end();
   }
 }
-
-const entry = process.argv[1];
-if (
-  entry &&
-  /payroll-pph21-receivable-backfill\.ts$/.test(entry) &&
-  import.meta.url === pathToFileURL(entry).href
-)
-  process.exitCode = await cli(process.argv.slice(2));

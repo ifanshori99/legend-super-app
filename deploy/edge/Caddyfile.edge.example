@@ -19,10 +19,17 @@ https://edge.outlet.example.invalid {
 		-Server
 	}
 	# Never expose the cloud-only internal endpoints from the edge.
-	@internal path /api/internal/*
+	@internal path /api/internal /api/internal/*
 	handle @internal {
 		respond 404
 	}
-	# The edge API listens on loopback only (default API port 4000).
+	# Same body cap as the cloud front: above the API's own caps (10 MiB file,
+	# 6 MiB sealed selfie), so the API still answers its typed errors.
+	request_body {
+		max_size 12MB
+	}
+	# The edge API listens on loopback only (default API port 4000). Caddy
+	# overwrites X-Forwarded-For with the device's address (no trusted proxy is
+	# configured), so run the API with TRUST_PROXY=1.
 	reverse_proxy 127.0.0.1:4000
 }

@@ -37,7 +37,6 @@
 // committed and been logged; later tenants are not touched. Full names and user
 // ids are never printed.
 import { readFileSync, writeFileSync } from "node:fs";
-import { pathToFileURL } from "node:url";
 import { Pool } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { sql } from "drizzle-orm";
@@ -833,13 +832,3 @@ export async function cli(
     await pool?.end();
   }
 }
-
-// tsx entry point only: the file name check keeps a bundler that inlines this
-// module from running the CLI twice.
-const entry = process.argv[1];
-if (
-  entry &&
-  /backfill-employee-managers\.ts$/.test(entry) &&
-  import.meta.url === pathToFileURL(entry).href
-)
-  process.exitCode = await cli(process.argv.slice(2), { loadEnv: true });

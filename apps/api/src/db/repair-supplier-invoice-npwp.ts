@@ -12,7 +12,15 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
-import { databaseError, databaseUrl } from "./connection.ts";
+import { databaseError } from "./connection.ts";
+import {
+  assertMigrationOwner,
+  migrationOwnerUrl,
+  SafeError,
+} from "./migration-owner.ts";
+
+/** The built file runs without tsx; the source (tsx) keeps the dev fallback. */
+const isBuilt = !import.meta.url.endsWith(".ts");
 
 const USAGE =
   "Usage: pnpm exec tsx src/db/repair-supplier-invoice-npwp.ts --tenant <uuid> --entity <uuid> --invoice <uuid> --actor <uuid> --reason '<audited reason>'";
@@ -46,12 +54,11 @@ try {
         import("./schema/index.ts"),
       ]);
     pool = new Pool({
-      connectionString: databaseUrl(
-        process.env.MIGRATION_DATABASE_URL || process.env.DATABASE_URL,
-      ),
+      connectionString: migrationOwnerUrl(isBuilt),
       max: 1,
       connectionTimeoutMillis: 5000,
     });
+    await assertMigrationOwner(pool);
     const context = establishScopedTenantContext(
       establishTenantContext({
         tenantId: options["--tenant"],
@@ -76,8 +83,9 @@ try {
   }
 } catch (error) {
   console.error(
-    error instanceof Error && error.message === USAGE
-      ? USAGE
+    error instanceof SafeError ||
+      (error instanceof Error && error.message === USAGE)
+      ? (error as Error).message
       : databaseError(error),
   );
   process.exitCode = 1;

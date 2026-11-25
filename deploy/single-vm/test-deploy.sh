@@ -112,6 +112,19 @@ if "$root/deploy.sh" --env-file relative --dry-run >/dev/null 2>&1; then
   echo 'legend-8br: relative environment file was accepted' >&2
   exit 1
 fi
+# A missing service env file: Compose's own message is hidden, so the deploy
+# names the cause through the role checks (rehearsal 2026-11-25).
+cat > "$tmp/bin/docker" <<'STUB'
+#!/bin/sh
+case "$*" in *config*--quiet*) exit 1 ;; esac
+STUB
+printf 'API_ENV_FILE=%s\n' "$tmp/missing-api.env" > "$tmp/compose.missing.env"
+for key in MIGRATOR WEB WORKER; do printf '%s_ENV_FILE=%s\n' "$key" "$tmp/migrator.env" >> "$tmp/compose.missing.env"; done
+if "$root/deploy.sh" --env-file "$tmp/compose.missing.env" --dry-run 2>"$tmp/missing.err" >/dev/null; then
+  echo 'rehearsal: a missing api env file was accepted' >&2
+  exit 1
+fi
+grep -F 'API_ENV_FILE is not readable' "$tmp/missing.err" >/dev/null || { echo 'rehearsal: the missing api env file was not named' >&2; exit 1; }
 echo 'legend-8br: deploy dry-run and ordering checks passed'
 # legend-8cf3: the pre-switch refund reset wrapper reads DOIT_REFUNDS_ENABLED
 # from api.env, worker.env and the api and worker containers, refuses --apply

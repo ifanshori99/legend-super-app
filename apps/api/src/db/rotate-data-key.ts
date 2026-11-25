@@ -22,7 +22,6 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
-import { pathToFileURL } from "node:url";
 import { aiProviderConfigs } from "./schema/ai-provider.ts";
 import { tenantIntegrations } from "./schema/platform-integrations.ts";
 
@@ -129,6 +128,9 @@ export async function runDataKeyRotation(
     sql`SELECT id FROM public.tenants ORDER BY id`,
   );
   const allIds = listed.rows.map((row) => String(row.id));
+  // No tenant read means the wrong database, never a clean rotation (legend-1265).
+  if (allIds.length === 0)
+    throw new Error("No tenant was read; check the database.");
   if (tenantId !== undefined && !allIds.includes(tenantId))
     throw new Error(`Tenant ${tenantId} does not exist.`);
   const targetIds = tenantId === undefined ? allIds : [tenantId];
@@ -326,12 +328,3 @@ export async function cli(args: string[]): Promise<number> {
     await pool.end();
   }
 }
-
-// tsx entry point only (the module is imported by tests and other code).
-const entry = process.argv[1];
-if (
-  entry &&
-  /rotate-data-key\.ts$/.test(entry) &&
-  import.meta.url === pathToFileURL(entry).href
-)
-  process.exitCode = await cli(process.argv.slice(2));

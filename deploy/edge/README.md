@@ -47,7 +47,7 @@ screen, because the edge only holds today plus that many day keys.
 2. Install chrony, copy `chrony.conf.example` to `/etc/chrony/chrony.conf`, adjust the pool, restart chrony.
 3. Create the service user and the selfie volume directory with mode 0700 owned by that user. Also create `EDGE_STATE_DIR` (default `/var/lib/legend/edge-state`, owned by the service user, mode 0700, a volume of its own) for the owner alarm queue; `check-edge-host.sh` fails when it is missing, not 0700 or not owned by the service user.
 4. Issue a certificate for the edge name from the internal CA, install it where `Caddyfile.edge.example` expects it, and trust the CA on every outlet device.
-5. Write the edge env file (`EDGE_MODE=true`, `EDGE_CLOUD_URL`, `EDGE_NODE_CREDENTIAL`; see `.env.example`). Do not set the seal private key variables.
+5. Write the edge env file (`EDGE_MODE=true`, `EDGE_CLOUD_URL`, `EDGE_NODE_CREDENTIAL`; see `.env.example`). Do not set the seal private key variables. Set `TRUST_PROXY=1` (Caddy is the one proxy in front of the API; without it every outlet device shares one per-IP rate-limit bucket).
 6. Run the preflight and fix every FAIL:
 
    ```sh

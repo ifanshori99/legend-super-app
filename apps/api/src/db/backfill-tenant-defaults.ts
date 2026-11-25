@@ -52,6 +52,11 @@ try {
     : await db.select({ id: tenants.id }).from(tenants);
   if (onlyTenant && rows.length === 0)
     throw new Error(`Tenant ${onlyTenant} does not exist.`);
+  // No tenant read means the wrong database, never "nothing to do" (legend-1265).
+  if (rows.length === 0)
+    throw new Error(
+      "No tenant was read; check the database. Nothing was written.",
+    );
 
   for (const { id } of rows) {
     const charts = await backfillTenantCharts(id);

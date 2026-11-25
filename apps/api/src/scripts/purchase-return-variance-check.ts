@@ -6,7 +6,6 @@
 // have stored (billed value of the returned quantity minus the stored invoiced
 // value, the rule of purchase-return.service.ts) and reports the mismatches.
 // It never writes: the transaction is READ ONLY. An empty report means safe.
-import { pathToFileURL } from "node:url";
 import { and, asc, eq, gt, inArray, sql } from "drizzle-orm";
 import {
   idr,
@@ -540,6 +539,11 @@ export async function cli(args: string[]): Promise<number> {
     logger.level = "silent";
     pool = (await import("../db/index")).pool;
     const report = await checkPurchaseReturnVariance({ tenant: parsed.tenant });
+    // No tenant read means the wrong database: "No mismatches" would be false.
+    if (report.tenants === 0) {
+      console.error("No tenant was read; check the database.");
+      return 1;
+    }
     if (parsed.json) console.log(JSON.stringify(report, null, 2));
     else {
       console.log(
@@ -571,11 +575,3 @@ export async function cli(args: string[]): Promise<number> {
     await pool?.end();
   }
 }
-
-const entry = process.argv[1];
-if (
-  entry &&
-  /purchase-return-variance-check\.ts$/.test(entry) &&
-  import.meta.url === pathToFileURL(entry).href
-)
-  process.exitCode = await cli(process.argv.slice(2));

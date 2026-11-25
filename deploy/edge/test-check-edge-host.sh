@@ -285,6 +285,17 @@ run_check --state-dir ''
 expect_ok state-dir-from-env
 rm -rf "$tmp/state-from-env"
 
+# 10b. A forgotten proxy hop count warns but does not block the host.
+reset
+run_check
+expect_ok trust-proxy-missing
+expect_out trust-proxy-missing 'WARN trust-proxy:'
+reset
+printf 'TRUST_PROXY=1\n' >> "$envfile"
+run_check
+expect_ok trust-proxy-set
+expect_out trust-proxy-set 'PASS trust-proxy:'
+
 # 11. Missing maintenance URL disables audit purge but must not disable POS.
 reset
 run_check

@@ -1,6 +1,5 @@
 // Release-only replay of source-backed outlet days. Reuse the metric service's
 // locks/upserts; never fabricate an empty historical day from metrics_daily.
-import { pathToFileURL } from "node:url";
 import { sql, type SQL } from "drizzle-orm";
 import {
   addBusinessDays,
@@ -274,6 +273,11 @@ export async function cli(args: string[]): Promise<number> {
     logger.level = "silent";
     pool = (await import("../db/index")).pool;
     const result = await backfillMetricsDaily(parsed);
+    // No tenant read means the wrong database, never a clean run (legend-1265).
+    if (result.tenants === 0) {
+      console.error("No tenant was read; check the database.");
+      return 1;
+    }
     return result.failedDays > 0 ? 1 : 0;
   } catch (error) {
     console.error(
@@ -286,11 +290,3 @@ export async function cli(args: string[]): Promise<number> {
     await pool?.end();
   }
 }
-
-const entry = process.argv[1];
-if (
-  entry &&
-  /metrics-daily-backfill\.ts$/.test(entry) &&
-  import.meta.url === pathToFileURL(entry).href
-)
-  process.exitCode = await cli(process.argv.slice(2));
