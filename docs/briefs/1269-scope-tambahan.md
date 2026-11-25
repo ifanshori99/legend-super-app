@@ -80,3 +80,20 @@ Jangan sampai rugi: ragu = ditolak offline dengan pesan jelas. Keluaran: keputus
 - merchantOrderId maks 50, unik per permintaan; itemDetails wajib sama totalnya dengan paymentAmount.
 - Founder: sandbox baru tersedia sesudah domain + deploy. C1 dikerjakan di staging; kode lain sesuai fakta di atas, metode tetap terkunci.
 
+## E. Keputusan dan kartu POS offline (architect 25 Nov; path API relatif `apps/api/src`)
+
+POS, captain, KDS, expo SELALU dilayani edge outlet (mode penuh), online maupun offline (PRD F5, POS-01). Cloud untuk back office, tamu, webhook gateway, laporan. Satu penulis kasir. Edge mati = EDG-04 (b3k), jangan jual di cloud sebagai jalan pintas.
+Kini belum jalan: login di edge mustahil, data pajak tak turun, worker edge tanpa unit, `outletHasActiveEdge` hanya menjaga nomor struk (`pos-receipt.service.ts:540`).
+Kartu lama: A1, A2, B-E2 gugur; A3 mengecil (pilih printer per kasir); A4 mengecil (verifikasi fallback lokal); A6 masuk E8; B-E1 masuk E1; B-E3 jadi E7; B-E4/5/6 tetap; C3a/C3b jadi E9; C2 tetap.
+
+Offline JALAN: order, captain, KDS, expo, tunai, EDC manual, ECR bila terminal terhubung bank sendiri, promo otomatis <=24 jam, void sebelum bayar (PIN/approval lokal), pajak/service/denah (sesudah E1), PIN <=72 jam, shift/kas/tutup hari, struk. DITOLAK: QRIS/VA/e-wallet gateway, tiket fasilitas, poin/voucher/kode promo/member, DP, refund dan void sesudah bayar, batas porsi, QR tamu, remake/comp. Online lewat edge: QRIS/VA/e-wallet via E9; tiket/poin/voucher/DP MENUNGGU FOUNDER (proksi belum dihitung).
+Turun belum sinkron: tax_rules, service_charge_rules, tax_settings, floor_zones, tables, payment_edc_terminals, payment_cashier_defaults, pos_approval_policies, approval_policies, kitchen_capacity_rules, kitchen_menu_loads, item_availability. Naik tanpa applier: cashier_shift.*, cash_movement.*, day.closed, edc_transaction.*, table_session.*, KDS.
+
+- E1 stream v4 (Opus K, 12): `packages/shared/src/edge/catalog-sync.ts`, `services/edge-catalog-{sync,apply}.ts`, `edge/{catalog-puller,catalog-freshness}.ts`, migrasi sync_txid. Pajak critical, gagal tertutup.
+- E2 login perangkat + PIN di edge (Opus xhigh, 10): `lib/{auth,request-context,device-token}.ts`, `middleware/auth.ts`, `services/kds-realtime-auth.ts`, `edge/mode.ts`; authMethod hanya di edge, tanpa sandi.
+- E8 host (Sonnet, 8): `deploy/edge/*` (unit worker, Caddy web+API), `apps/web/src/lib/env.ts`, `apps/web/Dockerfile`, 16s, 2lp.11.
+- E3 applier shift/kas/tutup hari + late adjustment (8yqik, k0i8) + gerbang tulis cloud (Opus xhigh, 14, sesudah E1, 1162): `edge/shift-day-applier.ts`, `pos-day.service.ts`, router POS.
+- E4 applier ledger EDC (Opus K, 8, sesudah E3). E5 QR tamu outlet edge pay-first (Opus xhigh, 12, sesudah E1): `qr-order*.ts`. E7 route ECR lokal (Opus xhigh, 10, sesudah E4). E9 proksi bayar edge->cloud (Opus xhigh, 14, sesudah E2, B2, C0): `edge/payment-proxy.ts`, `pos-order-payment.ts`, `pos-qris-hold.ts`. E6 koreksi sale edge dari back office (Opus xhigh, 12, sesudah E3, E4): `pos-order-corrections.ts`, `order-issue-manual-refund.ts`. E10 UI banner + metode terkunci (Opus, 8, sesudah W1-W3, mockup). E11 drill 4 jam (Sonnet, 8, terakhir).
+Urutan: (E1, E2, E8) -> (E3, E5) -> (E4, E9) -> (E7, E6) -> E10 -> E11. Total sekitar 116 jam. Potong bila waktu kurang: E5, lalu E9, lalu E7. Sisanya wajib.
+Test wajib: replay event dua kali/acak/crash = satu sale, jurnal, stok, shift; laci cocok; pajak edge = cloud sampai rupiah, tanpa stream pajak jual ditolak; cloud menolak order/shift/tutup hari outlet beredge; E9 putus/timeout/bayar telat/ganda tak pernah lunas dua kali; E6 refund ganda dan lebih ditolak; E2 token dicabut ditolak, sesi edge ditolak cloud, PIN salah terkunci; E5 order lunas fire sekali; drill 4 jam nol selisih.
+
