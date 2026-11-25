@@ -1583,6 +1583,8 @@ describe("1269 F0 shower off: nothing is sold, no money is taken, old bills can 
     const voided = await voidUnpaid(bought.orderId);
     expect(voided.status, JSON.stringify(voided.body)).toBe(200);
     expect((await onlyTicket(bought.orderId)).ticket.status).toBe("cancelled");
+    // The slot is free again: with the switch on, the same unit sells.
+    flag.FACILITY_SHOWER_ENABLED = true;
     await expectSlotFree(bought.unitId);
   });
 });

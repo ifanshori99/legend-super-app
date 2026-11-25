@@ -9,6 +9,7 @@
 // exactly `true` is off (fail closed). Refunds and cancellations of old
 // transactions and the staff emergency unit button do not call these guards.
 import { and, eq, inArray } from "drizzle-orm";
+import type { TenantId } from "@starter/shared/core";
 import { FacilityError } from "@starter/shared/facility";
 import { env } from "../config/env.ts";
 import { facilities, facilityProducts } from "../db/schema/facility.ts";
@@ -32,7 +33,7 @@ export function assertFacilityOpen(facility: { type: string }): void {
 /** The ids among `facilityIds` that are closed showers (empty when the switch is on). */
 export async function closedShowerFacilityIds(
   tx: Tx,
-  tenantId: string,
+  tenantId: TenantId,
   facilityIds: readonly string[],
 ): Promise<Set<string>> {
   if (facilityShowerEnabled() || facilityIds.length === 0) return new Set();
@@ -52,7 +53,7 @@ export async function closedShowerFacilityIds(
 /** Throws FACILITY_SHOWER_DISABLED when any of the facilities is a closed shower. */
 export async function assertFacilityIdsOpen(
   tx: Tx,
-  tenantId: string,
+  tenantId: TenantId,
   facilityIds: readonly string[],
 ): Promise<void> {
   if ((await closedShowerFacilityIds(tx, tenantId, facilityIds)).size > 0)
@@ -62,7 +63,7 @@ export async function assertFacilityIdsOpen(
 /** The ids among `productIds` that belong to a closed shower (empty when the switch is on). */
 export async function closedShowerProductIds(
   tx: Tx,
-  tenantId: string,
+  tenantId: TenantId,
   productIds: readonly string[],
 ): Promise<Set<string>> {
   if (facilityShowerEnabled() || productIds.length === 0) return new Set();
@@ -89,7 +90,7 @@ export async function closedShowerProductIds(
 /** Throws FACILITY_SHOWER_DISABLED when the facility product belongs to a closed shower. */
 export async function assertFacilityProductOpen(
   tx: Tx,
-  tenantId: string,
+  tenantId: TenantId,
   productId: string,
 ): Promise<void> {
   if ((await closedShowerProductIds(tx, tenantId, [productId])).size > 0)

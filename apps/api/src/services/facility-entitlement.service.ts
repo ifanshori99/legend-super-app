@@ -257,6 +257,7 @@ export async function issueTierBenefit(
   const match = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(input.period);
   if (!match) throw new RangeError("Tier benefit period must be YYYY-MM");
   const facility = await loadFacility(tx, context, input.facilityId);
+  assertFacilityOpen(facility);
   const [rule] = await tx
     .select()
     .from(entitlementRules)

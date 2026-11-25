@@ -1064,12 +1064,35 @@ describe("1269 F0 a shower reward is refused while the shower is off", () => {
       });
       expect(await rewardsOf(codePromotion)).toBe(0);
 
-      flag.FACILITY_SHOWER_ENABLED = true;
-      const on = await redeem(
-        redeemInput([priced(item, 50_000)], { customer: sari }),
+      // A coworking (paid WFC) reward is not closed: it still applies.
+      const wfcItem = randomUUID();
+      const wfcProduct = await asOwner(tenantId, (client) =>
+        seedPromoFacilityProduct(client, tenantId, outletA, "coworking"),
       );
-      expect(discountOf(on, rewardPromotion)).toBeTruthy();
-      expect(await rewardsOf(rewardPromotion)).toBe(1);
+      const wfcPromotion = await seedPromotion(wfcItem, {
+        benefit: {
+          kind: "facility_entitlement",
+          facilityProductId: wfcProduct,
+          quantity: 1,
+        },
+      });
+      const wfc = await redeem(
+        redeemInput([priced(wfcItem, 50_000)], { customer: sari }),
+      );
+      expect(discountOf(wfc, wfcPromotion)).toBeTruthy();
+      expect(await rewardsOf(wfcPromotion)).toBe(1);
+
+      // With the switch on, the shower reward applies again.
+      flag.FACILITY_SHOWER_ENABLED = true;
+      const showerItem = randomUUID();
+      const onPromotion = await seedPromotion(showerItem, {
+        benefit: facilityBenefit,
+      });
+      const on = await redeem(
+        redeemInput([priced(showerItem, 50_000)], { customer: sari }),
+      );
+      expect(discountOf(on, onPromotion)).toBeTruthy();
+      expect(await rewardsOf(onPromotion)).toBe(1);
     } finally {
       flag.FACILITY_SHOWER_ENABLED = was;
     }

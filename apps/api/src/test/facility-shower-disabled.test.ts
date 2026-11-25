@@ -72,12 +72,17 @@ describe("1269 F0 the switch", () => {
     const locker = await seedFacility(world, world.outletA, "locker");
     const room = await seedFacility(world, world.outletA, "meeting_room");
     const closed = await withTenant(db, world.context, (tx) =>
-      closedShowerFacilityIds(tx, world.tenantId, [shower, wfc, locker, room]),
+      closedShowerFacilityIds(tx, world.context.tenant.tenantId, [
+        shower,
+        wfc,
+        locker,
+        room,
+      ]),
     );
     expect([...closed]).toEqual([shower]);
     flag.FACILITY_SHOWER_ENABLED = true;
     const open = await withTenant(db, world.context, (tx) =>
-      closedShowerFacilityIds(tx, world.tenantId, [shower]),
+      closedShowerFacilityIds(tx, world.context.tenant.tenantId, [shower]),
     );
     expect(open.size).toBe(0);
   });
@@ -110,10 +115,9 @@ describe("1269 F0 entitlement issue and claim", () => {
           issueTierBenefit(tx, world.context, {
             facilityId: shower,
             customerProfileId,
+            ruleId: randomUUID(),
             tierKey: "gold",
             period: "2026-11",
-            sessions: 1,
-            paid: true,
           } as never),
         ),
       ),
