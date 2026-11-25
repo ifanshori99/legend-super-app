@@ -56,6 +56,7 @@ import {
   ulidInUuid,
 } from "../columns";
 import { outlets, tenants } from "./platform-org";
+import { syncTxidColumn } from "./sync-txid";
 import { posShifts } from "./pos-shift";
 import { orderItems, orders } from "./qr-order";
 
@@ -655,8 +656,14 @@ export const posApprovalPolicies = pgTable(
     updatedBy: text("updated_by"),
     createdAt,
     updatedAt,
+    syncTxid: syncTxidColumn(),
   },
   (table) => [
+    index("pos_approval_policies_sync_txid_idx").on(
+      table.tenantId,
+      table.syncTxid,
+      table.id,
+    ),
     unique("pos_approval_policies_tenant_id_id_key").on(
       table.tenantId,
       table.id,

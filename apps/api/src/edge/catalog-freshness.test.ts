@@ -35,6 +35,7 @@
 //  - The owner alarm sink fires once per stale episode, not on every failure.
 //  - Streams outside CRITICAL_CATALOG_STREAMS (e.g. "stations") never stale or alarm.
 import { describe, expect, it, vi } from "vitest";
+import { CATALOG_TAX_STREAMS } from "@starter/shared/edge";
 import {
   CRITICAL_CATALOG_STREAMS,
   catalogStaleForHeartbeat,
@@ -262,6 +263,7 @@ describe("legend-10nex a stale catalog keeps selling until 24 hours (founder Q57
     const { freshness, advance } = setup();
     freshness.recordSuccess(STREAM_A!);
     freshness.recordSuccess(STREAM_B!);
+    for (const name of CATALOG_TAX_STREAMS) freshness.recordSuccess(name);
     advance(3 * 60 * MIN);
     freshness.recordFailure(STREAM_A!, {
       reason: "fetch failed",
@@ -277,6 +279,7 @@ describe("legend-10nex a stale catalog keeps selling until 24 hours (founder Q57
     const { freshness, advance } = setup();
     freshness.recordSuccess(STREAM_A!);
     freshness.recordSuccess(STREAM_B!);
+    for (const name of CATALOG_TAX_STREAMS) freshness.recordSuccess(name);
     advance(5 * 60 * MIN);
     freshness.recordFailure(STREAM_B!, {
       reason: "HTTP 500",

@@ -45,6 +45,7 @@ import type {
 } from "@starter/shared/qr-order";
 import { idrColumn, outletIdColumn, tenantIdColumn } from "../columns";
 import { outlets, tenants } from "./platform-org";
+import { syncTxidColumn } from "./sync-txid";
 
 /** `floor_zones` (T, E): a zone with its pay mode, service charge and hours. */
 export const floorZones = pgTable(
@@ -76,8 +77,14 @@ export const floorZones = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
+    syncTxid: syncTxidColumn(),
   },
   (table) => [
+    index("floor_zones_sync_txid_idx").on(
+      table.tenantId,
+      table.syncTxid,
+      table.id,
+    ),
     unique("floor_zones_tenant_outlet_name_key").on(
       table.tenantId,
       table.outletId,
@@ -142,8 +149,10 @@ export const tables = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
+    syncTxid: syncTxidColumn(),
   },
   (table) => [
+    index("tables_sync_txid_idx").on(table.tenantId, table.syncTxid, table.id),
     unique("tables_tenant_outlet_code_key").on(
       table.tenantId,
       table.outletId,

@@ -1454,7 +1454,8 @@ export async function startEdgeRuntime(
     },
     // A restart must not hide a stale catalog: start from the checkpoint's
     // last success (none on a new edge). A read failure leaves the tracker
-    // unseeded; unseeded streams age from the persisted tracking start.
+    // unseeded until the gate's retry reads it: tax holds sales meanwhile, the
+    // other streams age from the persisted tracking start.
     seed: (tracker) =>
       seedCatalogFreshness(tracker, local.context, local.scope.edgeNodeId),
     // Before seed and the boot alarm: the alarm queue stamps enqueuedAt with

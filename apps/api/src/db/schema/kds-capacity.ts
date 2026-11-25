@@ -29,6 +29,7 @@ import {
 import { outletIdColumn, tenantIdColumn } from "../columns";
 import { stations } from "./menu";
 import { outlets, tenants } from "./platform-org";
+import { syncTxidColumn } from "./sync-txid";
 
 export type CapacityScheduleRow = {
   daysOfWeek: number[];
@@ -57,8 +58,14 @@ export const kitchenCapacityRules = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+    syncTxid: syncTxidColumn(),
   },
   (table) => [
+    index("kitchen_capacity_rules_sync_txid_idx").on(
+      table.tenantId,
+      table.syncTxid,
+      table.id,
+    ),
     unique("kitchen_capacity_rules_tenant_id_id_key").on(
       table.tenantId,
       table.id,

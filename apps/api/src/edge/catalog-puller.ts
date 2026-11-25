@@ -62,6 +62,7 @@ import {
   CATALOG_PROTOCOL_VERSION,
   CATALOG_SYNC_STREAMS,
   catalogSyncPageSchema,
+  isCatalogTaxStream,
   type CatalogSyncStream,
 } from "@starter/shared/edge";
 import {
@@ -131,11 +132,24 @@ const PARENT_STREAMS: Readonly<
   item_variants: ["recipes"],
   recipes: ["inventory_items"],
   vouchers: ["promotions"],
+  tables: ["floor_zones"],
+  payment_cashier_defaults: ["payment_edc_terminals"],
+  kitchen_capacity_rules: ["stations"],
+  kitchen_menu_loads: ["menu_items", "item_variants"],
+  item_availability: ["menu_items"],
 };
 
 const PROMO_INVALIDATED_AT = new Date(0);
 const isPromoStream = (stream: CatalogSyncStream): boolean =>
   stream === "promotions" || stream === "vouchers";
+
+/**
+ * Half of a discount or tax stream is not a success: until its last page is
+ * applied the checkpoint carries the epoch (legend-osqou.22 for tax, where a
+ * restart on half a rule set would charge the wrong tax).
+ */
+const countsWhenWhole = (stream: CatalogSyncStream): boolean =>
+  isPromoStream(stream) || isCatalogTaxStream(stream);
 
 /**
  * Watermark an operator sets on `catalog:<stream>` to rewind that stream after
@@ -146,7 +160,7 @@ const isPromoStream = (stream: CatalogSyncStream): boolean =>
 export const CATALOG_REWIND_MARK = "rewind";
 
 /** Durable "full replay pending" marker of a rewound stream (legend-7r7q6). */
-function catalogReplayCheckpoint(
+export function catalogReplayCheckpoint(
   stream: CatalogSyncStream,
 ): `catalog:replay:${CatalogSyncStream}` {
   return `catalog:replay:${stream}`;
@@ -205,8 +219,8 @@ export type CatalogStreamPullResult = Omit<
   readonly backlog: boolean;
   /**
    * When the last page of this pull was stored (the checkpoint's
-   * `last_success_at`); null when no page was stored, or when a discount
-   * stream has only stored partial pages.
+   * `last_success_at`); null when no page was stored, or when a discount or
+   * tax stream has only stored partial pages.
    */
   readonly lastSuccessAt: Date | null;
   /** Set when the stream stopped early; its checkpoint is the last applied page. */
@@ -723,7 +737,7 @@ type StreamProgress = {
   backlog: boolean;
   lastSuccessAt: Date | null;
   /**
-   * The promotions stream ended its last page while a replay marker still
+   * The promotions or a tax stream ended its last page while a replay marker still
    * exists (legend-1199 P2-B): the deactivation is not committed yet, so the
    * discount stays closed.
    */
@@ -817,7 +831,7 @@ async function pullStream(
     // Revocations may be on a later page. Until the whole discount stream is
     // applied its cursor may advance, but its freshness must remain closed.
     const succeededAt =
-      isPromoStream(stream) && page.hasMore ? PROMO_INVALIDATED_AT : now();
+      countsWhenWhole(stream) && page.hasMore ? PROMO_INVALIDATED_AT : now();
     const checkpoint = watermark;
     // Apply and checkpoint together: both land, or neither does.
     const result = await withTenant(database, options.context, async (tx) => {
@@ -1009,9 +1023,13 @@ async function pullStream(
       // exists, a promo the cloud no longer has may still be on this edge
       // (the cloud withholds its snapshot fields until a restamp is
       // committed), so the stream's freshness stays closed until the
-      // deactivation above commits and deletes the marker.
+      // deactivation above commits and deletes the marker. Same for a tax
+      // version the cloud no longer has (legend-osqou.22): it would still win.
       let replayOpen = false;
-      if (stream === "promotions" && !page.hasMore) {
+      if (
+        (stream === "promotions" || isCatalogTaxStream(stream)) &&
+        !page.hasMore
+      ) {
         const [open] = await tx
           .select({ watermark: edgePullCheckpoints.watermark })
           .from(edgePullCheckpoints)
@@ -1039,7 +1057,7 @@ async function pullStream(
     progress.watermark = checkpoint;
     progress.replayOpen = result.replayOpen;
     progress.lastSuccessAt =
-      (isPromoStream(stream) && page.hasMore) || result.replayOpen
+      (countsWhenWhole(stream) && page.hasMore) || result.replayOpen
         ? null
         : succeededAt;
     progress.applied += result.applied;

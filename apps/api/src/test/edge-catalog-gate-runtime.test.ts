@@ -33,6 +33,7 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
+import { CATALOG_TAX_STREAMS, isCatalogTaxStream } from "@starter/shared/edge";
 import { db } from "../db/index.ts";
 import {
   saveCatalogGateState,
@@ -44,6 +45,7 @@ import {
 import { CRITICAL_CATALOG_STREAMS } from "../edge/catalog-freshness.ts";
 import type { TrustedClock } from "../edge/trusted-clock.ts";
 import {
+  assertCatalogSalesAllowed,
   getSalesGateState,
   installSalesGateProvider,
   setSalesGateEdgeModeForTests,
@@ -137,6 +139,7 @@ async function start(
   options: {
     overrides?: CatalogGateOverrides;
     seed?: Date | null; // last success of every critical stream
+    tax?: Date | null; // the tax streams (default T0: never synced holds at once)
     database?: typeof db;
   } = {},
 ): Promise<CatalogGateHandle> {
@@ -145,9 +148,12 @@ async function start(
     scope: rig.scope,
     overrides: options.overrides ?? overrideStub().stub,
     seed: async (freshness) => {
-      if (options.seed)
-        for (const name of STREAMS)
-          freshness.seedLastSuccess(name, options.seed);
+      const tax =
+        options.tax === undefined ? (options.seed ?? T0) : options.tax;
+      for (const name of STREAMS) {
+        const at = isCatalogTaxStream(name) ? tax : options.seed;
+        if (at) freshness.seedLastSuccess(name, at);
+      }
     },
     database: options.database,
     persistMs: 24 * HOUR, // only explicit tick() / stop() persist
@@ -182,6 +188,109 @@ afterEach(async () => {
 
 afterAll(async () => {
   await owner.end();
+});
+
+describe("legend-osqou.22 no tax rules on the edge, no sale", () => {
+  it.each([
+    ["never pulled", null],
+    ["pulled for a part only (epoch checkpoint)", new Date(0)],
+  ])("is held from the first second: %s", async (_label, tax) => {
+    const rig = await newEdge();
+    await start(rig, clocks(T0), { seed: T0, tax });
+    expect(getSalesGateState()).toMatchObject({
+      blocked: true,
+      stale24h: false,
+      reason: "TAX_NOT_SYNCED",
+    });
+    expect(() => assertCatalogSalesAllowed()).toThrow(/pajak/i);
+  });
+
+  it("no owner override lifts it, one missing stream is enough, a whole pull does", async () => {
+    const rig = await newEdge();
+    const clock = clocks(T0);
+    const stubbed = overrideStub();
+    const gate = await start(rig, clock, {
+      overrides: stubbed.stub,
+      seed: T0,
+      tax: null,
+    });
+    gate.applyOverrideChange({
+      id: randomUUID(),
+      grantedBy: randomUUID(),
+      grantedAt: T0,
+      untilAt: new Date(T0.getTime() + 4 * HOUR),
+      reason: "Internet toko mati",
+    });
+    expect(getSalesGateState()).toMatchObject({
+      blocked: true,
+      reason: "TAX_NOT_SYNCED",
+    });
+    await gate.tick();
+    expect(stubbed.close).not.toHaveBeenCalled();
+
+    const [last, ...rest] = CATALOG_TAX_STREAMS;
+    for (const name of rest) gate.freshness.recordSuccess(name);
+    expect(getSalesGateState().blocked).toBe(true);
+    gate.freshness.recordSuccess(last!);
+    expect(getSalesGateState()).toMatchObject({ blocked: false, reason: null });
+    expect(() => assertCatalogSalesAllowed()).not.toThrow();
+  });
+
+  it("a seed that failed once at boot is read again: an offline edge opens without a restart", async () => {
+    const rig = await newEdge();
+    const clock = clocks(T0);
+    let reads = 0;
+    const errors: unknown[] = [];
+    const handle = await startCatalogGate({
+      context: rig.context,
+      scope: rig.scope,
+      overrides: overrideStub().stub,
+      seed: async (freshness) => {
+        reads += 1;
+        if (reads === 1) throw new Error("database unavailable");
+        for (const name of STREAMS) freshness.seedLastSuccess(name, T0);
+      },
+      onError: (error) => errors.push(error),
+      persistMs: 100,
+      wall: clock.wall,
+      mono: clock.mono,
+    });
+    handles.push(handle);
+    setSalesGateEdgeModeForTests(() => true);
+    expect(getSalesGateState()).toMatchObject({
+      blocked: true,
+      reason: "TAX_NOT_SYNCED",
+    });
+    expect(errors).toHaveLength(1);
+    // No pull ever succeeds here: only the stored state opens the gate.
+    await vi.waitFor(() => expect(getSalesGateState().blocked).toBe(false), {
+      timeout: 3_000,
+      interval: 50,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(reads).toBe(2); // read: no further seeds
+  });
+
+  it("the cloud sells without any of this", async () => {
+    const rig = await newEdge();
+    await start(rig, clocks(T0), { seed: T0, tax: null });
+    setSalesGateEdgeModeForTests(() => false);
+    expect(() => assertCatalogSalesAllowed()).not.toThrow();
+  });
+
+  it("tax rules older than 24 hours hold sales like stale prices", async () => {
+    const rig = await newEdge();
+    const clock = clocks(T0);
+    const gate = await start(rig, clock, { seed: T0 });
+    clock.tick(DAY + 1);
+    for (const name of STREAMS)
+      if (name !== "tax_rules") gate.freshness.recordSuccess(name);
+    expect(getSalesGateState()).toMatchObject({
+      blocked: true,
+      reason: "CATALOG_STALE_24H",
+      staleStreams: ["tax_rules"],
+    });
+  });
 });
 
 describe("legend-10nex a new edge counts from its first boot", () => {

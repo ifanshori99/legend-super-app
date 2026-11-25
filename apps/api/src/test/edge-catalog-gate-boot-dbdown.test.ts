@@ -27,6 +27,7 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
+import { CATALOG_TAX_STREAMS } from "@starter/shared/edge";
 import { db } from "../db/index.ts";
 import {
   saveCatalogGateState,
@@ -303,7 +304,8 @@ describe("legend-10nex the gate recovers when the local database comes back", ()
       () =>
         expect(getSalesGateState()).toMatchObject({
           blocked: true,
-          reason: "CATALOG_STALE_24H",
+          stale24h: true,
+          reason: "TAX_NOT_SYNCED", // never synced: no tax either (osqou.22)
         }),
       { timeout: 3_000, interval: 50 },
     );
@@ -314,12 +316,23 @@ describe("legend-10nex the gate recovers when the local database comes back", ()
     );
   });
 
-  it("a brand new edge (no saved row) opens after the database comes back and counts from the first load", async () => {
+  it("a brand new edge (no saved row) opens once the database is back and tax is synced, and counts from the first load", async () => {
     const rig = await newEdge();
     const dbSwitch = switchableDb("fail");
-    await boot(rig, dbSwitch.database, T0);
+    const { handle } = await boot(rig, dbSwitch.database, T0);
     expect(getSalesGateState().reason).toBe("GATE_UNAVAILABLE");
     dbSwitch.set("ok");
+    await vi.waitFor(
+      () =>
+        expect(getSalesGateState()).toMatchObject({
+          blocked: true,
+          stale24h: false,
+          reason: "TAX_NOT_SYNCED",
+        }),
+      { timeout: 3_000, interval: 50 },
+    );
+    for (const name of CATALOG_TAX_STREAMS)
+      handle.freshness.recordSuccess(name);
     await vi.waitFor(() => expect(getSalesGateState().blocked).toBe(false), {
       timeout: 3_000,
       interval: 50,

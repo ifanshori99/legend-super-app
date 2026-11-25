@@ -43,14 +43,20 @@
 // edge that negotiated protocol 3: an older edge has no brand check for them
 // (FK failure, permanent CATALOG_PULL_FAILED), so it keeps the credential's
 // brand only.
+// The protocol 4 streams (legend-osqou.22: tax, floor, EDC, approval, kitchen,
+// availability) are plain rows described by edge-catalog-documents.ts.
 // Prices are read as the stored integer rupiah and passed through untouched.
 
 import {
+  CATALOG_DOCUMENT_FIELDS,
+  CATALOG_DOCUMENT_STREAMS,
   CATALOG_PROTOCOL_VERSION,
   STATION_KDS_FIELDS,
   catalogSyncCloudPageSchema,
   catalogSyncQuerySchema,
   catalogSyncCloudRecordSchemas,
+  type CatalogDocumentStream,
+  type CatalogLinkStream,
   type CatalogSyncPage,
   type CatalogSyncQuery,
   type CatalogSyncStream,
@@ -65,8 +71,8 @@ import {
 } from "@starter/shared/core";
 import { establishTenantContext } from "@starter/shared/core/server";
 import { createHash } from "node:crypto";
-import { and, asc, eq, sql, type SQL } from "drizzle-orm";
-import type { AnyPgColumn } from "drizzle-orm/pg-core";
+import { and, asc, eq, isNull, or, sql, type SQL } from "drizzle-orm";
+import type { AnyPgColumn, PgTable } from "drizzle-orm/pg-core";
 import type { db as appDb } from "../db/index.ts";
 import { logger } from "../lib/logger.ts";
 import {
@@ -79,6 +85,7 @@ import {
   priceLists,
   stations,
 } from "../db/schema/menu.ts";
+import { edgeCatalogTombstones } from "../db/schema/edge-catalog-tombstone.ts";
 import { inventoryItems } from "../db/schema/inventory.ts";
 import {
   edgePrinters,
@@ -90,6 +97,7 @@ import { outlets, tenants } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
 import { outletContext } from "./device-pin-support.ts";
 import { isCatalogDeliveryRefusedTx } from "./edge-queue.service.ts";
+import { CATALOG_DOCUMENTS } from "./edge-catalog-documents.ts";
 import type { VerifiedEdgeNode } from "./staff-pin-sync.ts";
 import { verifiedEdgeNodeSchema } from "./staff-pin-sync.ts";
 
@@ -114,6 +122,8 @@ export const BRAND_DEPENDENT_CATALOG_STREAMS: ReadonlySet<CatalogSyncStream> =
     "recipes",
     "item_variants",
     "menu_item_modifier_groups",
+    "kitchen_menu_loads",
+    "item_availability",
   ]);
 
 /** Streams whose cloud table has no `id`: the key is two uuids. */
@@ -335,10 +345,108 @@ type Scan = {
   readonly protocolVersion: number | undefined;
 };
 
-const scanners: Record<
-  CatalogSyncStream,
-  (scan: Scan) => Promise<readonly Found[]>
-> = {
+/** Two tables read as one stream: the head of the union in (txid, id) order. */
+function mergeFound(found: Found[], take: number): Found[] {
+  return found
+    .sort((a, b) => {
+      const x = BigInt(a.txid);
+      const y = BigInt(b.txid);
+      if (x !== y) return x < y ? -1 : 1;
+      return a.keys[0]! < b.keys[0]! ? -1 : a.keys[0]! > b.keys[0]! ? 1 : 0;
+    })
+    .slice(0, take);
+}
+
+/**
+ * One document stream (edge-catalog-documents.ts): live rows, plus the deletion
+ * markers when the cloud hard-deletes them. A marker whose row lives again (the
+ * same id inserted after a restore) is not sent.
+ */
+async function scanDocuments(
+  stream: CatalogDocumentStream,
+  { tx, visible, tenantId, outletId, brandId, since, take }: Scan,
+): Promise<readonly Found[]> {
+  const spec = CATALOG_DOCUMENTS[stream];
+  const t = spec.table;
+  const inScope = (column: AnyPgColumn): SQL | undefined =>
+    spec.scope === "own"
+      ? sql`${column} = ${outletId}::uuid`
+      : or(isNull(column), sql`${column} = ${outletId}::uuid`);
+  const rows = await tx
+    .select({ row: t as PgTable, txid: txidOf(t.syncTxid) })
+    .from(t as PgTable)
+    .where(
+      and(
+        eq(t.tenantId, tenantId),
+        t.outletId === undefined ? undefined : inScope(t.outletId),
+        spec.menuItemId === undefined
+          ? undefined
+          : sql`exists (select 1 from menu_items mi where mi.tenant_id = ${t.tenantId} and mi.id = ${spec.menuItemId} and mi.brand_id = ${brandId}::uuid)`,
+        visible(t.syncTxid),
+        after(t.syncTxid, [t.id], since),
+      ),
+    )
+    .orderBy(asc(t.syncTxid), asc(t.id))
+    .limit(take);
+  const found: Found[] = rows.map((entry) => {
+    const row = entry.row as Record<string, unknown>;
+    const record: Record<string, unknown> = {
+      ...(spec.deletes === "marker" ? { deletedAt: null } : {}),
+    };
+    for (const field of CATALOG_DOCUMENT_FIELDS[stream])
+      if (field in row)
+        record[field] =
+          row[field] instanceof Date ? iso(row[field]) : row[field];
+    return {
+      txid: entry.txid,
+      keys: [String(row.id)],
+      record: {
+        ...record,
+        ...spec.toRecord?.(row),
+        syncTxid: entry.txid,
+      },
+    };
+  });
+  if (spec.deletes !== "marker") return found;
+  const gone = edgeCatalogTombstones;
+  const markers = await tx
+    .select({ row: gone, txid: txidOf(gone.syncTxid) })
+    .from(gone)
+    .where(
+      and(
+        eq(gone.tenantId, tenantId),
+        eq(gone.stream, stream),
+        eq(gone.received, false),
+        inScope(gone.outletId),
+        sql`not exists (select 1 from ${t} where ${t.tenantId} = ${gone.tenantId} and ${t.id} = ${gone.id})`,
+        visible(gone.syncTxid),
+        after(gone.syncTxid, [gone.id], since),
+      ),
+    )
+    .orderBy(asc(gone.syncTxid), asc(gone.id))
+    .limit(take);
+  return mergeFound(
+    [
+      ...found,
+      ...markers.map(({ row, txid }) => ({
+        txid,
+        keys: [row.id],
+        record: {
+          syncTxid: txid,
+          id: row.id,
+          tenantId: row.tenantId,
+          outletId: row.outletId,
+          deletedAt: iso(row.deletedAt),
+        },
+      })),
+    ],
+    take,
+  );
+}
+
+type Scanner = (scan: Scan) => Promise<readonly Found[]>;
+
+const linkScanners: Record<CatalogLinkStream, Scanner> = {
   async stations({ tx, visible, tenantId, outletId, since, take }) {
     const t = stations;
     const rows = await tx
@@ -444,14 +552,7 @@ const scanners: Record<
         },
       })),
     ];
-    return found
-      .sort((a, b) => {
-        const x = BigInt(a.txid);
-        const y = BigInt(b.txid);
-        if (x !== y) return x < y ? -1 : 1;
-        return a.keys[0] < b.keys[0] ? -1 : a.keys[0] > b.keys[0] ? 1 : 0;
-      })
-      .slice(0, take);
+    return mergeFound(found, take);
   },
   async inventory_items({ tx, visible, tenantId, since, take }) {
     const t = inventoryItems;
@@ -912,6 +1013,16 @@ const scanners: Record<
     }));
   },
 };
+
+const scanners = {
+  ...linkScanners,
+  ...Object.fromEntries(
+    CATALOG_DOCUMENT_STREAMS.map((stream) => [
+      stream,
+      (scan: Scan) => scanDocuments(stream, scan),
+    ]),
+  ),
+} as Record<CatalogSyncStream, Scanner>;
 
 /**
  * The page version for an edge that understands up to `requested`: the lower
