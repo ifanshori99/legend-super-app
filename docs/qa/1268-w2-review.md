@@ -27,3 +27,13 @@ Urutan: 1, 3, 4, 6; lalu endpoint dan UI resolve + test konkurensi (kiriman terl
 1. 403 `EDC_STANDALONE_APPROVAL_REQUIRED` saat kirim ulang = server belum mencatat, BUKAN berarti kartu tidak terdebit. Metode lain tetap terkunci. Dua jalan keluar saja: (a) minta PIN persetujuan baru lalu catat ulang EDC yang sama (nominal, terminal, `bankRef` dari catatan, tidak bisa diubah); (b) resolve supervisor dengan pernyataan "kartu tidak terdebit" + alasan.
 2. Catatan rusak dan kartu ternyata terdebit: tetap terkunci untuk metode lain, tetapi supervisor harus bisa mencatat pembayaran EDC dari slip (RRN, approval, nominal = sisa tagihan) lewat alur EDC persetujuan yang sudah ada; sesudah lunas kunci lepas. Tanpa jalan itu kasir buntu.
 3. Cek izin resolve: `pos.edc_standalone.approve` / `pos.void.approve`, penyetuju orang lain. Diterima.
+
+## Re-review 26 Nov (aeb824701): server LULUS, web EDC TIDAK. Sesuai architect, diterima CTO.
+
+1. **P1** `payment-intent-store.ts:221-240`: aturan per jenis. Semua penolakan `edc_standalone` (403/404/409/412/423; kirim pertama, replay, "recording" `replay:false` di `api.ts resolvePayment`) tetap mengunci metode lain.
+2. **P2** `api.ts:837`: simpan `amountIdr` slip di catatan; beda dari sisa tagihan = tolak, tetap terkunci.
+3. **P2** `api.ts:476`, `payment-intent-store.ts:200`: hapus catatan EDC hanya bila tender captured cocok `bankRef`; selain itu peringatan "kartu mungkin terdebit, void di mesin" sampai ditutup supervisor.
+4. Jalan keluar (c): "kartu terdebit, sudah di-void/refund di mesin" + nomor void + PIN + alasan + audit. Jadi keluar EDC: (a) catat ulang sama, (b) tidak terdebit, (c) sudah di-void.
+5. Catatan rusak: diganti catatan EDC baru dalam satu tulisan (pola `settleStored`); ditolak = tetap terkunci; nominal slip diketik = sisa, selain itu (c). Izin `pos.edc_standalone.approve`, bukan `void`.
+6. P3 kartu: pagar versi dengan tender menunggu lock (test); catatan rusak + QR hidup + provider diam perlu jalan ke release manajer.
+7. Tes wajib: 412/409/423 di tiga jalur tetap terkunci; nominal berubah; lunas cara lain dengan catatan EDC; keluar (c). Lalu review delta.
