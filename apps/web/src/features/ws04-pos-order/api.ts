@@ -47,6 +47,7 @@ import {
   assertSeated,
   captainMeta,
   mapServiceRequest,
+  payFirstError,
   mapTableOrders,
   readAllPages,
   removeSentLines,
@@ -523,6 +524,7 @@ export async function addToTable(
     if (!view.order) throw contractPending("tambah ke meja");
     return view.order;
   }
+  if (input.payFirst) throw payFirstError();
   return mapOrder(
     await placeCaptainOrder(
       flowDeps(outletId, actorId, draftKey),

@@ -141,6 +141,8 @@ export interface CaptainTable {
    * `null` = none; undefined = the server did not say (soft warning).
    */
   hold?: TableHold | null;
+  /** The open session's payment mode; pay first is the cashier's table. */
+  paymentMode?: "pay_first" | "open_bill" | null;
 }
 
 export interface TableHold {
@@ -242,6 +244,8 @@ export interface CaptainSendInput {
   tableSessionId: string | null;
   tableLabel: string;
   lines: CartLine[];
+  /** Pay-first table: held back here before anything is sent. */
+  payFirst?: boolean;
 }
 
 export interface AddToTableRequest extends AddToTableInput {

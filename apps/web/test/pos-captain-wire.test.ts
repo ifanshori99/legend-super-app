@@ -23,7 +23,9 @@ import {
   FIRE_INTENT_PENDING,
 } from "@/features/ws04-pos-order/captain-flow";
 import {
+  assertOrderable,
   assertSeated,
+  CAPTAIN_PAY_FIRST,
   canResolveCall,
   captainDraftKey,
   captainInput,
@@ -663,5 +665,41 @@ test("a list is read to its last page, and a cursor that repeats stops the read"
       meta: { limit: 1, nextCursor: "same" },
     })),
     (error: unknown) => error instanceof ApiError,
+  );
+});
+
+// ---- Pay first: the cashier's table -----------------------------------------------
+
+test("a pay-first table is held back before anything is sent", () => {
+  const row = (paymentMode: string) => ({
+    table: { id: "t1", code: "A1", zoneId: "z1", capacity: 4 },
+    session: { id: SESSION, status: "open", pax: 2, paymentMode },
+    openServiceRequestCount: 0,
+    outstandingIdr: 0,
+  });
+  const board = (mode: string) =>
+    ({
+      outletId: "o1",
+      zones: [{ id: "z1", name: "Indoor" }],
+      tables: [row(mode)],
+      generatedAt: "2026-11-26T05:00:00.000Z",
+    }) as never;
+  const payFirst = mapFloor(board("pay_first"))[0]!;
+  const openBill = mapFloor(board("open_bill"))[0]!;
+  assert.equal(payFirst.paymentMode, "pay_first");
+  assert.equal(assertOrderable(openBill), SESSION);
+  assert.throws(
+    () => assertOrderable(payFirst),
+    (error: unknown) =>
+      error instanceof ApiError &&
+      error.status === 409 &&
+      error.code === CAPTAIN_PAY_FIRST &&
+      error.message === "Meja ini bayar di muka. Arahkan tamu ke kasir.",
+  );
+  // No session is still its own refusal.
+  assert.throws(
+    () => assertOrderable(table({ sessionId: null })),
+    (error: unknown) =>
+      error instanceof ApiError && error.code === NO_TABLE_SESSION,
   );
 });

@@ -103,7 +103,8 @@ export function AddOrderScreen({ tableId }: { tableId: string }) {
     tableOrder.error instanceof ApiError &&
     tableOrder.error.status === 404;
   // No session, no order: the table must be seated before items are chosen.
-  const unseated = Boolean(tableOrder.data) && cartKey === null;
+  const payFirst = tableOrder.data?.table.paymentMode === "pay_first";
+  const unseated = Boolean(tableOrder.data) && cartKey === null && !payFirst;
 
   // An item without choices goes straight into the draft, as on the cashier.
   const pick = (item: MenuItem) => {
@@ -134,7 +135,7 @@ export function AddOrderScreen({ tableId }: { tableId: string }) {
       }
       backTo={`/pos/captain/meja/${encodeURIComponent(tableId)}`}
       bottomBar={
-        tableMissing || unseated ? undefined : (
+        tableMissing || unseated || payFirst ? undefined : (
           <div className="grid gap-1 text-center">
             {totals.itemCount > 0 ? (
               <Button
@@ -205,6 +206,18 @@ export function AddOrderScreen({ tableId }: { tableId: string }) {
               <Button asChild>
                 <Link to="/pos/captain">
                   {t("posCaptainOrder.order.backToTables")}
+                </Link>
+              </Button>
+            }
+          />
+        ) : payFirst ? (
+          <EmptyState
+            title={t("posCaptainOrder.payFirst.title")}
+            description={t("posCaptainOrder.payFirst.hint")}
+            action={
+              <Button asChild>
+                <Link to="/pos/captain/meja/$tableId" params={{ tableId }}>
+                  {t("posCaptainOrder.noSession.action")}
                 </Link>
               </Button>
             }

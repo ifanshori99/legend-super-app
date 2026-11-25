@@ -90,7 +90,8 @@ export function ReviewScreen({ tableId }: { tableId: string }) {
   const tableFailed = tableOrder.isError && !tableOrder.data;
   const table = tableOrder.data?.table ?? null;
   const tableReady = table !== null;
-  const seated = table !== null && table.sessionId !== null;
+  const payFirst = table?.paymentMode === "pay_first";
+  const seated = table !== null && table.sessionId !== null && !payFirst;
   const keyRefused = submit.isError && needsCashierClose(submit.error);
   const differs =
     table !== null &&
@@ -105,6 +106,7 @@ export function ReviewScreen({ tableId }: { tableId: string }) {
         tableSessionId: table.sessionId,
         tableLabel: table.label,
         lines: draft.lines,
+        payFirst,
       },
       {
         onSettled: pending.refresh,
@@ -278,6 +280,18 @@ export function ReviewScreen({ tableId }: { tableId: string }) {
             <Skeleton className="h-24 rounded-container" />
             <Skeleton className="h-16 rounded-control" />
           </div>
+        ) : payFirst ? (
+          <EmptyState
+            title={t("posCaptainOrder.payFirst.title")}
+            description={t("posCaptainOrder.payFirst.hint")}
+            action={
+              <Button asChild>
+                <Link to="/pos/captain/meja/$tableId" params={{ tableId }}>
+                  {t("posCaptainOrder.noSession.action")}
+                </Link>
+              </Button>
+            }
+          />
         ) : !seated ? (
           <EmptyState
             title={t("posCaptainOrder.noSession.title")}

@@ -299,6 +299,7 @@ export function mapFloor(board: FloorBoard): CaptainTable[] {
     sessionId: row.session?.id ?? null,
     hasOpenCall: row.openServiceRequestCount > 0,
     hold: row.reservationHold,
+    paymentMode: row.session?.paymentMode ?? null,
   }));
 }
 

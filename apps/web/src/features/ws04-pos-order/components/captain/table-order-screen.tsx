@@ -50,6 +50,7 @@ export function TableOrderScreen({ tableId }: { tableId: string }) {
     orderIds.has(entry.orderId),
   );
   const seated = view ? view.table.sessionId !== null : false;
+  const payFirst = view?.table.paymentMode === "pay_first";
   const refused = fire.isError && needsCashierClose(fire.error);
   const tableMissing =
     query.isError &&
@@ -170,6 +171,7 @@ export function TableOrderScreen({ tableId }: { tableId: string }) {
                   tableId={tableId}
                   fire={fire}
                   firingLineIds={firingLineIds}
+                  canFire={!payFirst}
                 />
               ))
             ) : (
@@ -178,7 +180,12 @@ export function TableOrderScreen({ tableId }: { tableId: string }) {
                 description={t("posCaptainOrder.order.emptyHint")}
               />
             )}
-            {seated && (
+            {payFirst && (
+              <Notice tone="info" title={t("posCaptainOrder.payFirst.title")}>
+                {t("posCaptainOrder.payFirst.hint")}
+              </Notice>
+            )}
+            {seated && !payFirst && (
               <Button asChild variant="outline" size="lg" className="w-full">
                 <Link
                   to="/pos/captain/meja/$tableId/tambah"
@@ -203,7 +210,9 @@ function OrderSection({
   tableId,
   fire,
   firingLineIds,
+  canFire,
 }: {
+  canFire: boolean;
   order: PosOrderView;
   tableId: string;
   fire: ReturnType<typeof useFireTableLines>;
@@ -217,7 +226,9 @@ function OrderSection({
         {t("posCaptainOrder.order.orderNumber", { number: order.number })}
       </h2>
       {groups.map((group) => {
-        const held = group.lines.filter((line) => line.status === "held");
+        const held = canFire
+          ? group.lines.filter((line) => line.status === "held")
+          : [];
         const firing = held.some((line) => firingLineIds.includes(line.lineId));
         const course = group.course.label.toLocaleLowerCase("id-ID");
         return (

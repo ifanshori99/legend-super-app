@@ -70,6 +70,24 @@ export function assertSeated(table: CaptainTable): string {
   return table.sessionId;
 }
 
+export const CAPTAIN_PAY_FIRST = "CAPTAIN_PAY_FIRST";
+
+/** A pay-first table is paid before the kitchen starts: the cashier's. */
+export function payFirstError(): ApiError {
+  return new ApiError(
+    409,
+    CAPTAIN_PAY_FIRST,
+    "Meja ini bayar di muka. Arahkan tamu ke kasir.",
+  );
+}
+
+/** The session id of a table the captain may order for, or a refusal. */
+export function assertOrderable(table: CaptainTable): string {
+  const sessionId = assertSeated(table);
+  if (table.paymentMode === "pay_first") throw payFirstError();
+  return sessionId;
+}
+
 /** Items of the cart that were not part of the send that just succeeded. */
 export function removeSentLines(
   current: readonly CartLine[],

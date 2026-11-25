@@ -40,6 +40,10 @@ export const posCaptainOrderMessages = {
     hint: "Tanpa sesi meja tidak ada pesanan. Dudukkan tamu dulu.",
     action: "Kembali ke meja",
   },
+  payFirst: {
+    title: "Meja ini bayar di muka",
+    hint: "Meja ini bayar di muka. Arahkan tamu ke kasir.",
+  },
   locked: {
     title: "Keranjang dikunci",
     body: "Pesanan sedang dikirim atau belum jelas hasilnya. Keranjang tidak bisa diubah sampai ada jawaban.",

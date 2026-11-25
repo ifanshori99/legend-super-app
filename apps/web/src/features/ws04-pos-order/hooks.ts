@@ -401,8 +401,15 @@ function useCaptainActorId(): string {
 export function useCaptainCartKey(tableId: string): string | null {
   const outletId = useOutletId();
   const actorId = useCaptainActorId();
-  const sessionId = useTableOrder(tableId).data?.table.sessionId ?? null;
-  if (sessionId === null || actorId === "") return null;
+  const table = useTableOrder(tableId).data?.table;
+  const sessionId = table?.sessionId ?? null;
+  // Pay first is the cashier's table: no cart for the captain.
+  if (
+    sessionId === null ||
+    actorId === "" ||
+    table?.paymentMode === "pay_first"
+  )
+    return null;
   return captainDraftKey(outletId, actorId, sessionId);
 }
 
