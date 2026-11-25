@@ -104,8 +104,13 @@ export async function openWalkInSession(
       .where(and(eq(tables.tenantId, tenantId), eq(tables.id, tableId)));
     if (!table || table.outletId !== outlet)
       throw new CoreError("NOT_FOUND", "Meja tidak ditemukan.");
-    // Re-read under the lock: the session may have closed or a guest scanned.
+    // Re-read under the lock: the session may have closed, a guest scanned, or
+    // another stale session was moved here after the provider confirmation. Only
+    // the session whose payment links were confirmed unpaid (`expiring`) may be
+    // expired by this seating; any other active session is somebody's bill.
     const active = await activeSessionForTable(tx, tenantId, tableId);
+    if (active && active.id !== expiring)
+      throw new CoreError("CONFLICT", "Meja masih dipakai tamu lain.");
     const staleOwnSession = active !== undefined && tokenExpired(active, now);
     if (table.status !== "available" && !staleOwnSession) {
       if (active)

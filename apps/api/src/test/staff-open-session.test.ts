@@ -21,10 +21,20 @@ import {
   it,
   vi,
 } from "vitest";
-import { tenantIdSchema } from "@starter/shared/core";
-import { establishTenantContext } from "@starter/shared/core/server";
+import { outletIdSchema, tenantIdSchema } from "@starter/shared/core";
+import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
+import {
+  createReservationInputSchema,
+  seatReservationInputSchema,
+} from "@starter/shared/reservation";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
+import { createReservation } from "../services/reservation-booking.ts";
+import { seatReservation } from "../services/reservation-lifecycle.ts";
+import { zonedInstant } from "../services/reservation-plan.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { signDeviceToken } from "../lib/device-token.ts";
 import {
@@ -161,6 +171,19 @@ async function tableStatus(tableId: string) {
   return rows[0]?.status;
 }
 
+/** A walk-in session on `tableId`, aged past the 12-hour window. */
+async function staleSession(tableId: string): Promise<string> {
+  const response = await seat(tableId, { pax: 2, idempotencyKey: newKey() });
+  expect(response.status, JSON.stringify(response.body)).toBe(200);
+  const sessionId = response.body.data.id as string;
+  await owner.query(
+    `UPDATE table_sessions SET opened_at = now() - interval '13 hours', last_activity_at = now() - interval '13 hours'
+     WHERE tenant_id = $1 AND id = $2`,
+    [tenant.tenantId, sessionId],
+  );
+  return sessionId;
+}
+
 function expectError(
   response: { status: number; body: unknown },
   status: number,
@@ -194,6 +217,8 @@ beforeAll(async () => {
         "floor.table.view",
         "floor.table.operate",
         "floor.table.manage",
+        "reservation.view",
+        "reservation.manage",
       ],
     ],
     [roles.limited, "Meja Walk-in Terbatas", ["order.view"]],
@@ -438,6 +463,165 @@ describe("POST /api/outlets/:outletId/tables/:tableId/staff-session", () => {
     expect(rows.find((row) => row.id === staleId)?.status).not.toBe("open");
   });
 
+  it("refuses a stale session that was moved onto the table after the provider confirmation", async () => {
+    // Re-review: the 12-hour exception covers only the session whose payment
+    // links were confirmed unpaid, not whatever stale session sits here later.
+    const tableId = await emptyTable();
+    const elsewhere = await emptyTable();
+    const confirmed = await staleSession(tableId);
+    const moved = await staleSession(elsewhere);
+    confirmSpy.mockImplementationOnce(async () => {
+      await owner.query(
+        `UPDATE table_sessions SET status = 'closed', closed_at = now(), closed_reason = 'expired'
+         WHERE tenant_id = $1 AND id = $2`,
+        [tenant.tenantId, confirmed],
+      );
+      await owner.query(
+        `UPDATE table_sessions SET table_id = $3 WHERE tenant_id = $1 AND id = $2`,
+        [tenant.tenantId, moved, tableId],
+      );
+    });
+
+    const response = await seat(tableId, {
+      pax: 2,
+      idempotencyKey: newKey(),
+    });
+
+    expectError(response, 409, "CONFLICT");
+    const rows = await sessionsOf(tableId);
+    // The confirmed session was closed by the hook; the moved one stays open.
+    expect(rows.filter((row) => row.status === "open")).toEqual([
+      expect.objectContaining({ id: moved }),
+    ]);
+    expect(rows.find((row) => row.id === confirmed)?.status).toBe("closed");
+  });
+
+  it("refuses a stale session that still carries an unpaid bill", async () => {
+    const tableId = await emptyTable();
+    const staleId = await staleSession(tableId);
+    const orderUuid = randomUUID();
+    await owner.query(
+      `INSERT INTO orders (id, tenant_id, outlet_id, number, channel, service_type, table_session_id,
+          payment_mode, subtotal_idr, discount_idr, service_charge_idr, tax_idr, rounding_idr,
+          total_idr, prices_include_tax, status, business_date, placed_at, fired_at)
+       SELECT $1, tenant_id, outlet_id, $2, 'qr', 'dine_in', id, payment_mode, 30000, 0, 0, 0, 0,
+          30000, false, 'sent', current_date, now(), now()
+       FROM table_sessions WHERE id = $3`,
+      [orderUuid, `SOS-${randomUUID().slice(0, 12)}`, staleId],
+    );
+
+    const response = await seat(tableId, {
+      pax: 2,
+      idempotencyKey: newKey(),
+    });
+
+    expectError(response, 409, "CONFLICT");
+    expect(confirmSpy.mock.calls.map((call) => call[1])).toContainEqual({
+      sessionId: staleId,
+    });
+    expect(await sessionsOf(tableId)).toEqual([
+      expect.objectContaining({ id: staleId, status: "open" }),
+    ]);
+  });
+
+  it("gives one new session when two tablets seat a walk-in at the same stale table", async () => {
+    const tableId = await emptyTable();
+    const staleId = await staleSession(tableId);
+    const tokenB = await tokenFor(cashierB);
+
+    const [a, b] = await Promise.all([
+      seat(tableId, { pax: 2, idempotencyKey: newKey() }),
+      seat(tableId, { pax: 3, idempotencyKey: newKey() }, { token: tokenB }),
+    ]);
+
+    expect(
+      [a.status, b.status].sort(),
+      JSON.stringify([a.body, b.body]),
+    ).toEqual([200, 409]);
+    const rows = await sessionsOf(tableId);
+    expect(rows.filter((row) => row.status === "open")).toHaveLength(1);
+    expect(rows.find((row) => row.id === staleId)?.status).not.toBe("open");
+  });
+
+  it("answers two simultaneous requests with the same key and body with one session", async () => {
+    const tableId = await emptyTable();
+    const body = { pax: 2, idempotencyKey: newKey() };
+
+    const [a, b] = await Promise.all([
+      seat(tableId, body),
+      seat(tableId, body),
+    ]);
+
+    expect(a.status, JSON.stringify(a.body)).toBe(200);
+    expect(b.status, JSON.stringify(b.body)).toBe(200);
+    expect(b.body.data.id).toBe(a.body.data.id);
+    expect(await sessionsOf(tableId)).toHaveLength(1);
+  });
+
+  it("refuses the second table of a real reservation party", async () => {
+    const ctx = establishScopedTenantContext(
+      establishTenantContext({
+        tenantId: tenantIdSchema.parse(tenant.tenantId),
+        brandId: null,
+        source: "session",
+      }),
+      { kind: "tenant" },
+    );
+    const outlet = outletIdSchema.parse(tenant.outletId);
+    await owner.query(
+      `INSERT INTO reservation_policies
+         (tenant_id, outlet_id, version, deposit_requirement, deposit_amount_idr, payment_window_minutes,
+          free_cancellation_hours, late_cancellation_refund_bp, no_show_refund_bp, minimum_spend_idr,
+          default_duration_minutes, slot_interval_minutes, is_active)
+       VALUES ($1, $2, 'sos-1', 'none', 0, 60, 24, 0, 0, 0, 90, 30, true)`,
+      [tenant.tenantId, tenant.outletId],
+    );
+    const primary = await emptyTable();
+    const secondary = await emptyTable();
+    const created = await createReservation(
+      ctx,
+      outlet,
+      createReservationInputSchema.parse({
+        reservedFor: zonedInstant(
+          "2027-04-04",
+          "19:00",
+          "Asia/Jakarta",
+        ).toISOString(),
+        pax: 2,
+        zoneId: payFirstZone,
+        guestName: "Tamu Walkin",
+        contactPhone: "081234567890",
+      }),
+      `rsv-${randomUUID()}`,
+    );
+    const seated = await seatReservation(
+      ctx,
+      till.userId,
+      outlet,
+      created.reservation.id,
+      seatReservationInputSchema.parse({ tableIds: [primary, secondary] }),
+      `rsv-${randomUUID()}`,
+    );
+    expect(await tableStatus(secondary)).toBe("occupied");
+    expect(await sessionsOf(secondary)).toHaveLength(0);
+
+    expectError(
+      await seat(secondary, { pax: 2, idempotencyKey: newKey() }),
+      409,
+      "CONFLICT",
+    );
+    expectError(
+      await seat(primary, { pax: 2, idempotencyKey: newKey() }),
+      409,
+      "CONFLICT",
+    );
+
+    expect(await sessionsOf(secondary)).toHaveLength(0);
+    expect(await sessionsOf(primary)).toEqual([
+      expect.objectContaining({ id: seated.tableSessionId, status: "open" }),
+    ]);
+  });
+
   it("answers the same session to a replay after the party moved tables", async () => {
     // Review 1268 B1, no. 4: the key lives in its own table, not on a
     // participant row that follows the session.
@@ -499,6 +683,14 @@ describe("POST /api/outlets/:outletId/tables/:tableId/staff-session", () => {
     );
     expect(rows).toHaveLength(1);
     expect(rows[0]?.actor).toBe(cashierB.userId);
+    // The audited `after` names who confirmed and the zone's pay mode.
+    expect(rows[0]?.after).toMatchObject({
+      id: response.body.data.id,
+      tableId,
+      pax: 2,
+      paymentMode: "open_bill",
+      confirmedBy: cashierB.userId,
+    });
   });
 
   it("writes an audit row for a pay-first walk-in too", async () => {

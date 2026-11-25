@@ -105,6 +105,7 @@ const AUDIT_SAFE_FIELDS = [
   "id",
   "status",
   "paymentMode",
+  "confirmedBy",
   "pax",
   "tableId",
   "outletId",
