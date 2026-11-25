@@ -355,6 +355,11 @@ describe("legend-ofq4f sign-out revokes the push subscription first", () => {
           },
         },
         "@/lib/api/acting-staff": { endActingStaffMode() {} },
+        "@/lib/retained-attempt-key": {
+          clearRetainedAttempt() {
+            calls.push("clearRetainedAttempt");
+          },
+        },
       },
       (name) => (/notifications|push/i.test(name) ? recorder(name) : {}),
     );
@@ -380,6 +385,10 @@ describe("legend-ofq4f sign-out revokes the push subscription first", () => {
     const { click, calls, removed } = signOutClick();
     await click();
     assert.deepEqual(removed, [{ queryKey: ["hris"] }]);
+    assert.ok(
+      calls.indexOf("clearRetainedAttempt") > calls.indexOf("signOut"),
+      `kept idempotency keys must be dropped after signOut, saw ${JSON.stringify(calls)}`,
+    );
     assert.ok(
       calls.indexOf("removeQueries") > calls.indexOf("signOut"),
       `removeQueries must follow signOut, saw ${JSON.stringify(calls)}`,

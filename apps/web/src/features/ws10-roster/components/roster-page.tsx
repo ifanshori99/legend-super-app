@@ -120,10 +120,9 @@ function RosterContent({
   const [positionFilter, setPositionFilter] = React.useState<string>(ALL);
   const [stationFilter, setStationFilter] = React.useState<string>(ALL);
   const [publishOpen, setPublishOpen] = React.useState(false);
-  // One key per dialog attempt: a double click/retry replays the same request;
-  // closing the dialog starts a new attempt (the week's drafts may change).
-  // Kept for the same outlet and week across close and reopen: a lost
-  // response then replays instead of publishing twice.
+  // The key covers outlet, week and the sorted drafts, and survives closing the
+  // dialog: a lost response replays the same publication, while edited drafts
+  // get a new key.
   const publishAttempt = useRetainedAttempt("roster.publish");
   const confirmedPublication = React.useRef<string | null>(null);
 
