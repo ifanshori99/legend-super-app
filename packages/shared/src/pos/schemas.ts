@@ -504,6 +504,10 @@ export const posOrderSummarySchema = z.strictObject({
   status: posOrderStatusSchema,
   shiftId: posShiftIdSchema.nullable(),
   totalIdr: nonnegativeIdr,
+  /** Total less deposit, captured tenders and paid link; 0 once final. */
+  remainingIdr: nonnegativeIdr,
+  /** Table the order's session sits at now; null without a session. */
+  tableLabel: z.string().min(1).nullable(),
   itemCount: z.number().int().nonnegative(),
   heldItemCount: z.number().int().nonnegative(),
   createdAt: isoDateTimeSchema,
@@ -2067,6 +2071,74 @@ export const posQrisHoldSchema = z.strictObject({
 export type PosQrisHold = z.infer<typeof posQrisHoldSchema>;
 
 /**
+ * GET .../qris only (cancel and release never carry a payload). `qrPayload` is
+ * set only while this QR may be shown for exactly this bill: hold `open` and
+ * unexpired, the bill unchanged since issue, amount = remaining, and the
+ * caller holds `pos.payment.accept`. Null means: show no QR.
+ */
+export const posQrisStatusSchema = posQrisHoldSchema.extend({
+  qrPayload: z.string().min(16).nullable(),
+});
+export type PosQrisStatus = z.infer<typeof posQrisStatusSchema>;
+
+// ---- Payment options (1268 B2) ----------------------------------------------
+
+/** The methods the payment panel lists; points has its own endpoint. */
+export const POS_PAYMENT_OPTION_METHODS = [
+  "cash",
+  "qris",
+  "va",
+  "ewallet",
+  "card",
+  "edc_card",
+  "edc_qris",
+] as const satisfies readonly PosTenderMethod[];
+
+export const posPaymentUnavailableReasonSchema = z.enum([
+  "not_supported",
+  "device_required",
+  "routing_disabled",
+  "gateway_down",
+  "needs_cloud",
+  "no_terminal",
+]);
+export type PosPaymentUnavailableReason = z.infer<
+  typeof posPaymentUnavailableReasonSchema
+>;
+
+export const posPaymentOptionSchema = z
+  .strictObject({
+    method: z.enum(POS_PAYMENT_OPTION_METHODS),
+    enabled: z.boolean(),
+    unavailableReason: posPaymentUnavailableReasonSchema.nullable(),
+  })
+  .refine((row) => row.enabled === (row.unavailableReason === null), {
+    path: ["unavailableReason"],
+    message: "A disabled method says why, an enabled one does not",
+  });
+
+/** What a cashier needs to pick a terminal: no merchant id, address or full id. */
+export const posPaymentTerminalSchema = z.strictObject({
+  id: uuidSchema,
+  bankCode: edcBankSchema,
+  model: z.string().min(1),
+  terminalIdLast4: z.string().min(1).max(4),
+  supportedMethods: z.array(z.enum(["card", "qris"])).min(1),
+});
+
+export const posPaymentOptionsSchema = z.strictObject({
+  outletId: outletIdSchema,
+  methods: z.array(posPaymentOptionSchema),
+  edc: z.strictObject({
+    /** False: EDC is keyed by hand (`standalone`) with a supervisor approval. */
+    ecrEnabled: z.boolean(),
+    /** Active terminals of this outlet only. */
+    terminals: z.array(posPaymentTerminalSchema),
+  }),
+});
+export type PosPaymentOptions = z.infer<typeof posPaymentOptionsSchema>;
+
+/**
  * legend-adiov: a force released QRIS the system keeps asking the provider
  * about until it answers for good. Staff read the queue; there is no UI yet.
  */
@@ -2387,6 +2459,17 @@ export const receiptLinkSchema = z.strictObject({
 });
 export type ReceiptLink = z.infer<typeof receiptLinkSchema>;
 
+/**
+ * What happened to a requested print: the outlet's edge queued it on a printer,
+ * or nothing was printed (cloud: offer the PDF). Never "printed": no printer
+ * confirms it here.
+ */
+export const receiptPrintResultSchema = z.enum([
+  "queued_to_printer",
+  "not_printed",
+]);
+export type ReceiptPrintResult = z.infer<typeof receiptPrintResultSchema>;
+
 /** What the print/e-receipt action returns: number, document and deliveries. */
 export const posReceiptIssueResultSchema = z.strictObject({
   receipt: posReceiptSchema,
@@ -2394,6 +2477,8 @@ export const posReceiptIssueResultSchema = z.strictObject({
   deliveries: z.array(receiptDeliverySchema),
   /** E-receipt link, returned once; the raw token is never stored. */
   link: receiptLinkSchema.nullable(),
+  /** Null when this request asked for no print (also on a lookup). */
+  printResult: receiptPrintResultSchema.nullable(),
 });
 export type PosReceiptIssueResult = z.infer<typeof posReceiptIssueResultSchema>;
 

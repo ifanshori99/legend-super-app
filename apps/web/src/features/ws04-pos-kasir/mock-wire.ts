@@ -362,6 +362,7 @@ export function receiptIssueWire(order: EngineOrder) {
       },
     ],
     link: null,
+    printResult: "queued_to_printer",
   };
 }
 

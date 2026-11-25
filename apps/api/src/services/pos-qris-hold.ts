@@ -30,7 +30,12 @@ import {
   type ScopedTenantContext,
   type TenantId,
 } from "@starter/shared/core";
-import { PosError, type PosQrisHold } from "@starter/shared/pos";
+import {
+  canSettlePosOrder,
+  PosError,
+  type PosQrisHold,
+  type PosQrisStatus,
+} from "@starter/shared/pos";
 import { db } from "../db/index.ts";
 import {
   orders,
@@ -63,6 +68,8 @@ import {
   consumeApproval,
   lockPosOrder,
   notFound,
+  remainingIdr,
+  tendersOf,
   type OrderRow,
   type PosCaller,
   type PosRow,
@@ -711,12 +718,95 @@ async function newestHold(
   return hold ?? null;
 }
 
-/** GET .../qris: the active hold of the bill, else the newest. */
-export async function getPosQrisHold(
+/**
+ * The QR a cashier may show now, or null. Money: an old code shown for a bill
+ * that moved on, or one of two collectible codes, makes the guest pay wrong, so
+ * any doubt hides it. The basis and amount rules are those the capture applies
+ * (pos-order-payment.ts, D-05).
+ */
+export async function showableQrPayload(
+  tx: Tx,
+  context: ScopedTenantContext,
+  hold: HoldRow,
+  now: Date,
+): Promise<string | null> {
+  if (hold.state !== "open" || hold.tenderId === null) return null;
+  const tenantId = context.tenant.tenantId;
+  const active = await tx
+    .select({ id: posQrisHolds.id, state: posQrisHolds.state })
+    .from(posQrisHolds)
+    .where(
+      and(
+        eq(posQrisHolds.tenantId, tenantId),
+        eq(posQrisHolds.orderId, hold.orderId),
+        inArray(posQrisHolds.state, [...ACTIVE_STATES]),
+      ),
+    )
+    .limit(2);
+  // The one active hold must still be the row read, and still open.
+  if (
+    active.length !== 1 ||
+    active[0]?.id !== hold.id ||
+    active[0].state !== "open"
+  )
+    return null;
+  const [order] = await tx
+    .select()
+    .from(orders)
+    .where(and(eq(orders.tenantId, tenantId), eq(orders.id, hold.orderId)));
+  if (
+    !order ||
+    !canSettlePosOrder(order.status) ||
+    order.paymentLinkId !== null
+  )
+    return null;
+  const tenders = await tendersOf(tx, context, order.id);
+  const tender = tenders.find((row) => row.id === hold.tenderId);
+  if (
+    tender?.status !== "authorized" ||
+    hold.basisTotalIdr !== order.totalIdr ||
+    hold.basisDepositIdr !== order.depositAppliedIdr ||
+    hold.amountIdr !== remainingIdr(order, tenders)
+  )
+    return null;
+  const [intent] = await tx
+    .select()
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, tenantId),
+        eq(paymentIntents.id, hold.paymentIntentId),
+      ),
+    );
+  if (
+    !intent ||
+    intent.status !== "pending" ||
+    Number(intent.amountIdr) !== Number(hold.amountIdr) ||
+    intent.expiresAt.getTime() <= now.getTime()
+  )
+    return null;
+  const instructions = intent.instructions as {
+    method?: string;
+    qrPayload?: string;
+  } | null;
+  return instructions?.method === "qris" &&
+    typeof instructions.qrPayload === "string" &&
+    instructions.qrPayload.length >= 16
+    ? instructions.qrPayload
+    : null;
+}
+
+/**
+ * GET .../qris: the active hold of the bill, else the newest. The payload is
+ * for a caller who may take payments only; `order.view` alone never gets it.
+ */
+export async function getPosQrisStatus(
   context: ScopedTenantContext,
   outletId: OutletId,
   orderId: string,
-): Promise<PosQrisHold> {
+  access: { canAcceptPayment: boolean },
+  now = new Date(),
+): Promise<PosQrisStatus> {
   return withTenant(db, context, async (tx) => {
     const tenantId = context.tenant.tenantId;
     const [order] = await tx
@@ -729,7 +819,12 @@ export async function getPosQrisHold(
     const hold = await newestHold(tx, tenantId, orderId);
     if (!hold || hold.outletId !== outletId)
       throw notFound("Pesanan ini belum punya QRIS.");
-    return holdDto(tx, tenantId, hold);
+    return {
+      ...(await holdDto(tx, tenantId, hold)),
+      qrPayload: access.canAcceptPayment
+        ? await showableQrPayload(tx, context, hold, now)
+        : null,
+    };
   });
 }
 

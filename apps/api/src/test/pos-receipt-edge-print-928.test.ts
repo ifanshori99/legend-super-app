@@ -120,7 +120,7 @@ function transaction() {
         values: Omit<
           DeliveryRow,
           "id" | "createdAt" | "updatedAt" | "failureReason" | "attempts"
-        >,
+        > & { failureReason?: string | null },
       ) => ({
         onConflictDoNothing: () => ({
           returning: async () => {
@@ -138,7 +138,7 @@ function transaction() {
               id,
               createdAt: new Date(),
               updatedAt: new Date(),
-              failureReason: null,
+              failureReason: values.failureReason ?? null,
               attempts: 0,
             });
             return [{ id }];
@@ -211,6 +211,8 @@ describe("legend-2lp.2 POS receipt through edge Print Agent", () => {
   it("queues real receipt ESC/POS bytes on the outlet receipt printer", async () => {
     const result = await issue();
     expect(result.document.receiptNumber).toBe(receipt.number);
+    expect(result.printResult).toBe("queued_to_printer");
+    expect((await issue()).printResult).toBe("queued_to_printer");
     expect(queued).toHaveLength(1);
     const job = queued[0]!;
     expect(job).toMatchObject({
@@ -302,5 +304,28 @@ describe("legend-2lp.2 POS receipt through edge Print Agent", () => {
     const result = await issue();
     expect(result.document.receiptNumber).toBe(receipt.number);
     expect(ports.enqueue).not.toHaveBeenCalled();
+  });
+
+  it("1268 B2: cloud never reports a print, also on a replay", async () => {
+    ports.runtime.mockReturnValue({ edgeMode: false, identity: null });
+    for (const result of [await issue(), await issue()]) {
+      expect(result.printResult).toBe("not_printed");
+      expect(result.deliveries).toEqual([
+        expect.objectContaining({
+          channel: "print",
+          status: "failed",
+          sentAt: null,
+          failureReason: "not_printed",
+        }),
+      ]);
+    }
+  });
+
+  it("1268 B2: a cloud replay of an old row recorded as sent is still not printed", async () => {
+    await issue();
+    ports.runtime.mockReturnValue({ edgeMode: false, identity: null });
+    const replay = await issue();
+    expect(replay.printResult).toBe("not_printed");
+    expect(replay.deliveries[0]).toMatchObject({ status: "failed" });
   });
 });

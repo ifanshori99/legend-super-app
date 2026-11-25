@@ -32,6 +32,7 @@ import {
   type ReceiptDelivery,
   type ReceiptDocument,
   type ReceiptLink,
+  type ReceiptPrintResult,
 } from "@starter/shared/pos";
 import { env } from "../config/env.ts";
 import { db } from "../db/index.ts";
@@ -53,7 +54,10 @@ import {
 } from "./pos-receipt-document.ts";
 import { maskEmail } from "./pos-receipt-email.ts";
 import { renderDocumentPdf } from "./pos-receipt-pdf.ts";
-import { enqueueReceiptOnEdge } from "./pos-receipt-edge-print.ts";
+import {
+  enqueueReceiptOnEdge,
+  receiptPrintResult,
+} from "./pos-receipt-edge-print.ts";
 import {
   findReceiptById,
   findReceiptByNumber,
@@ -69,6 +73,7 @@ type DocumentKind = "receipt" | "kuitansi";
 
 export const RECEIPT_LINK_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 const MAX_REPRINT_COUNT = 99;
+const NOT_PRINTED = "not_printed" satisfies ReceiptPrintResult;
 const LINK_KEY_CONTEXT = "legend:receipt-link:v1";
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{20,100}$/;
 
@@ -113,16 +118,19 @@ export function receiptLinkUrl(token: string): string {
 // ---- DTO mapping -----------------------------------------------------------------
 
 function toDelivery(row: DeliveryRow): ReceiptDelivery {
+  // Cloud rows written before 1268 B2 say `sent` though nothing was printed.
+  const notPrinted =
+    row.channel === "print" && receiptPrintResult() === "not_printed";
   return receiptDeliverySchema.parse({
     id: row.id,
     tenantId: row.tenantId,
     outletId: row.outletId,
     receiptId: row.receiptId,
     channel: row.channel,
-    status: row.status,
+    status: notPrinted ? "failed" : row.status,
     destinationMasked: row.destinationMasked,
-    sentAt: row.sentAt ? toIsoDateTime(row.sentAt) : null,
-    failureReason: row.failureReason,
+    sentAt: row.sentAt && !notPrinted ? toIsoDateTime(row.sentAt) : null,
+    failureReason: notPrinted ? NOT_PRINTED : row.failureReason,
   });
 }
 
@@ -256,7 +264,7 @@ export async function createReceiptLink(
 
 type InsertDelivery = {
   channel: Channel;
-  status: "queued" | "sent";
+  status: "queued" | "sent" | "failed";
   idempotencyKey: string;
   requestedBy: string;
   now: Date;
@@ -290,6 +298,7 @@ async function insertDelivery(
             ),
       idempotencyKey: input.idempotencyKey,
       sentAt: input.status === "sent" ? input.now : null,
+      failureReason: input.status === "failed" ? NOT_PRINTED : null,
       requestedBy: input.requestedBy,
     })
     .onConflictDoNothing()
@@ -340,8 +349,9 @@ async function assertEmailReplaySame(
 
 /**
  * Issues (or reprints) the receipt of a completed or voided order and records
- * the requested deliveries. `print` and `link` are done at once; `email` is
- * queued for the worker.
+ * the requested deliveries. `print` is queued on the outlet edge (the cloud
+ * records it as not printed), `link` is done at once and `email` is queued for
+ * the worker.
  */
 export async function issueReceiptDeliveries(
   context: ScopedTenantContext,
@@ -401,7 +411,7 @@ export async function issueReceiptDeliveries(
       const hadPrint = printRows.length > 0;
       const created = await insertDelivery(tx, context, receipt, {
         channel: "print",
-        status: "sent",
+        status: receiptPrintResult() === "not_printed" ? "failed" : "sent",
         idempotencyKey: key,
         requestedBy,
         now,
@@ -450,6 +460,7 @@ export async function issueReceiptDeliveries(
         printDocument ?? (await buildReceiptDocument(tx, context, receipt)),
       deliveries: await deliveriesOf(tx, context, receipt.id, key),
       link: linkRow ? toLink(linkRow) : null,
+      printResult: channels.includes("print") ? receiptPrintResult() : null,
     });
   });
 }
@@ -483,6 +494,7 @@ export async function getReceiptByNumber(
       document: await buildReceiptDocument(tx, context, receipt),
       deliveries: await deliveriesOf(tx, context, receipt.id),
       link: null,
+      printResult: null,
     });
   });
 }

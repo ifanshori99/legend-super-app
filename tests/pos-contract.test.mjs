@@ -1306,6 +1306,8 @@ test("F8 endpoints: paths, params and responses stay in step with the fixtures",
       status: detail.status,
       shiftId: detail.shiftId,
       totalIdr: detail.totalIdr,
+      remainingIdr: 0,
+      tableLabel: null,
       itemCount: items.length,
       heldItemCount: items.filter((item) => item.fireStatus === "held").length,
       createdAt: detail.createdAt,
@@ -1314,7 +1316,7 @@ test("F8 endpoints: paths, params and responses stay in step with the fixtures",
 
   pos.listPosOrders.response.parse({
     data: parsed.orderDetails.map(summary),
-    meta: { limit: 25, nextCursor: null },
+    meta: { limit: 25, nextCursor: null, totalCount: null },
   });
   respond(pos.getPosOrder, parsed.orderDetails[0]);
   respond(pos.submitPosOrder, parsed.orderDetails[3]);
@@ -1367,6 +1369,7 @@ test("F8 endpoints: paths, params and responses stay in step with the fixtures",
     document: parsed.receiptDocuments[0],
     deliveries: [parsed.deliveries[0]],
     link: null,
+    printResult: null,
   });
   respond(pos.createPosReceiptLink, {
     receiptId: parsed.receipts[1].id,

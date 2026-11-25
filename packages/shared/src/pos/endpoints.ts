@@ -14,6 +14,7 @@
 import {
   z,
   clientInputSchema,
+  cursorPageMetaSchema,
   cursorPageQuerySchema,
   cursorPageSchema,
   dataResponseSchema,
@@ -61,7 +62,9 @@ import {
   posOrderEventSchema,
   posOrderStatusSchema,
   posOrderSummarySchema,
+  posPaymentOptionsSchema,
   posQrisHoldSchema,
+  posQrisStatusSchema,
   posQrisReconciliationSchema,
   posVaReleaseReasonSchema,
   posVaReleaseSchema,
@@ -165,18 +168,36 @@ export const getNextPosCallNumber = defineEndpoint({
   response: dataResponseSchema(posNextCallNumberSchema),
 });
 
+/**
+ * `status` takes one status or several, comma separated. `withCount=true` adds
+ * `meta.totalCount`: every match of the filters, not only this page.
+ */
 export const listPosOrders = defineEndpoint({
   method: "GET",
   path: "/api/outlets/:outletId/pos/orders",
   params: outletParams,
   query: cursorPageQuerySchema.extend({
-    status: posOrderStatusSchema.optional(),
+    status: z
+      .string()
+      .transform((value) => value.split(","))
+      .pipe(z.array(posOrderStatusSchema).min(1).max(5))
+      .optional(),
+    tableSessionId: tableSessionIdSchema.optional(),
+    withCount: z
+      .enum(["true", "false"])
+      .transform((value) => value === "true")
+      .optional(),
     channel: orderChannelSchema.optional(),
     serviceType: serviceTypeSchema.optional(),
     shiftId: posShiftIdSchema.optional(),
     deviceId: uuidSchema.optional(),
   }),
-  response: cursorPageSchema(posOrderSummarySchema),
+  response: cursorPageSchema(posOrderSummarySchema).extend({
+    meta: cursorPageMetaSchema.extend({
+      /** Null unless the query asks `withCount=true`. */
+      totalCount: z.number().int().nonnegative().nullable(),
+    }),
+  }),
 });
 
 /** The cashier screen: lines, tenders, discounts and the receipt. */
@@ -335,7 +356,15 @@ export const getPosQris = defineEndpoint({
   method: "GET",
   path: "/api/outlets/:outletId/pos/orders/:orderId/qris",
   params: orderParams,
-  response: dataResponseSchema(posQrisHoldSchema),
+  response: dataResponseSchema(posQrisStatusSchema),
+});
+
+/** The methods the cashier may use now and the outlet's active EDC terminals. */
+export const getPosPaymentOptions = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/pos/payment-options",
+  params: outletParams,
+  response: dataResponseSchema(posPaymentOptionsSchema),
 });
 
 /**

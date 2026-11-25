@@ -1539,6 +1539,7 @@ export function summaryDto(
   order: OrderRow,
   pos: PosRow,
   counts: { itemCount: number; heldItemCount: number },
+  extra: { remainingIdr: number; tableLabel: string | null },
 ): PosOrderSummary {
   return posOrderSummarySchema.parse({
     id: order.id,
@@ -1551,6 +1552,8 @@ export function summaryDto(
     status: order.status,
     shiftId: pos.shiftId,
     totalIdr: order.totalIdr,
+    remainingIdr: extra.remainingIdr,
+    tableLabel: extra.tableLabel,
     itemCount: counts.itemCount,
     heldItemCount: counts.heldItemCount,
     createdAt: order.createdAt.toISOString(),

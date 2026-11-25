@@ -59,7 +59,6 @@ import {
   type PosOrderAction,
   type PosOrderDetail,
   type PosOrderEvent,
-  type PosOrderSummary,
 } from "@starter/shared/pos";
 import {
   qrOrderErrorHttpStatus,
@@ -69,7 +68,12 @@ import {
 import { resolveTaxSettings } from "@starter/shared/tax";
 import { db } from "../db/index.ts";
 import { assertCatalogSalesAllowed } from "../edge/sales-gate.ts";
-import { devices, tableSessions } from "../db/schema/index.ts";
+import {
+  devices,
+  paymentIntents,
+  tables,
+  tableSessions,
+} from "../db/schema/index.ts";
 import {
   orderEvents,
   posApprovalPolicies,
@@ -150,6 +154,7 @@ import {
   isLinePaused,
   readPausedMenuLines,
 } from "./kds-pacing.service.ts";
+import { netAllocatedIdrSql } from "./payment-net-allocated-sql.ts";
 import { orderRevenueSplit } from "./order-revenue.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 import { listSessionDepositSources } from "./reservation-deposit-credit.ts";
@@ -166,6 +171,7 @@ type CompleteInput = z.output<typeof completeEndpoint.body>;
 type VoidInput = z.output<typeof voidEndpoint.body>;
 type VoidItemInput = z.output<typeof voidItemEndpoint.body>;
 type ListQuery = z.output<typeof listEndpoint.query>;
+type PosOrderPage = z.output<typeof listEndpoint.response>;
 type EventsQuery = z.output<typeof listEventsEndpoint.query>;
 
 const OJOL_CHANNELS = new Set(["gofood", "grabfood", "shopeefood"]);
@@ -321,20 +327,36 @@ export async function listPosOrders(
   context: ScopedTenantContext,
   outletId: OutletId,
   query: ListQuery,
-): Promise<CursorPage<PosOrderSummary>> {
+): Promise<PosOrderPage> {
   return withTenant(db, context, async (tx) => {
     await loadOutlet(tx, context, outletId);
     const tenantId = context.tenant.tenantId;
+    const ofPosOrder = and(
+      eq(posOrders.tenantId, orders.tenantId),
+      eq(posOrders.orderId, orders.id),
+    );
     const filters = [
       eq(orders.tenantId, tenantId),
       eq(orders.outletId, outletId),
     ];
-    if (query.status) filters.push(eq(orders.status, query.status));
+    if (query.status) filters.push(inArray(orders.status, query.status));
+    if (query.tableSessionId)
+      filters.push(eq(orders.tableSessionId, query.tableSessionId));
     if (query.channel) filters.push(eq(orders.channel, query.channel));
     if (query.serviceType)
       filters.push(eq(orders.serviceType, query.serviceType));
     if (query.shiftId) filters.push(eq(posOrders.shiftId, query.shiftId));
     if (query.deviceId) filters.push(eq(posOrders.deviceId, query.deviceId));
+    // Counted before the cursor: the badge shows every match, not this page.
+    let totalCount: number | null = null;
+    if (query.withCount) {
+      const [counted] = await tx
+        .select({ n: sql<number>`count(*)::int` })
+        .from(orders)
+        .innerJoin(posOrders, ofPosOrder)
+        .where(and(...filters));
+      totalCount = Number(counted?.n ?? 0);
+    }
     if (query.cursor) {
       let after: string;
       try {
@@ -346,13 +368,26 @@ export async function listPosOrders(
       filters.push(lt(orders.id, after));
     }
     const rows = await tx
-      .select({ order: orders, pos: posOrders })
+      .select({
+        order: orders,
+        pos: posOrders,
+        tableLabel: tables.code,
+      })
       .from(orders)
-      .innerJoin(
-        posOrders,
+      .innerJoin(posOrders, ofPosOrder)
+      .leftJoin(
+        tableSessions,
         and(
-          eq(posOrders.tenantId, orders.tenantId),
-          eq(posOrders.orderId, orders.id),
+          eq(tableSessions.tenantId, orders.tenantId),
+          eq(tableSessions.id, orders.tableSessionId),
+        ),
+      )
+      .leftJoin(
+        tables,
+        and(
+          eq(tables.tenantId, tableSessions.tenantId),
+          eq(tables.outletId, tableSessions.outletId),
+          eq(tables.id, tableSessions.tableId),
         ),
       )
       .where(and(...filters))
@@ -360,6 +395,49 @@ export async function listPosOrders(
       .limit(query.limit + 1);
     const page = rows.slice(0, query.limit);
     const ids = page.map((row) => row.order.id);
+    const linkIds = page
+      .map((row) => row.order.paymentLinkId)
+      .filter((id): id is string => id !== null);
+    // Net, not `payment_links.paid_idr`: that stays gross when the provider
+    // refunds a code on its own.
+    const linkPaid = new Map<string, number>();
+    if (linkIds.length > 0) {
+      const paidRows = await tx
+        .select({
+          linkId: paymentIntents.paymentLinkId,
+          netIdr: sql<string>`sum(${netAllocatedIdrSql(
+            sql`${paymentIntents.tenantId}`,
+            sql`${paymentIntents.id}`,
+          )})::text`,
+        })
+        .from(paymentIntents)
+        .where(
+          and(
+            eq(paymentIntents.tenantId, tenantId),
+            inArray(paymentIntents.paymentLinkId, linkIds),
+            inArray(paymentIntents.status, [
+              "paid",
+              "partially_refunded",
+              "refunded",
+            ]),
+          ),
+        )
+        .groupBy(paymentIntents.paymentLinkId);
+      for (const row of paidRows)
+        if (row.linkId !== null) linkPaid.set(row.linkId, Number(row.netIdr));
+    }
+    const tenders =
+      ids.length === 0
+        ? []
+        : await tx
+            .select()
+            .from(posOrderTenders)
+            .where(
+              and(
+                eq(posOrderTenders.tenantId, tenantId),
+                inArray(posOrderTenders.orderId, ids),
+              ),
+            );
     const counts = new Map<
       string,
       { itemCount: number; heldItemCount: number }
@@ -393,6 +471,19 @@ export async function listPosOrders(
           row.order,
           row.pos,
           counts.get(row.order.id) ?? { itemCount: 0, heldItemCount: 0 },
+          {
+            remainingIdr:
+              row.order.status === "voided" || row.order.status === "completed"
+                ? 0
+                : Math.max(
+                    0,
+                    remainingIdr(
+                      row.order,
+                      tenders.filter((t) => t.orderId === row.order.id),
+                    ) - (linkPaid.get(row.order.paymentLinkId ?? "") ?? 0),
+                  ),
+            tableLabel: row.tableLabel,
+          },
         ),
       ),
       meta: {
@@ -401,6 +492,7 @@ export async function listPosOrders(
           rows.length > query.limit && last
             ? encodeCursor([last.order.id])
             : null,
+        totalCount,
       },
     };
   });
