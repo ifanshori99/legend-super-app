@@ -10,9 +10,10 @@ import { env } from "../config/env.ts";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
-  assertPromoBenefitNotWfc,
-  wfcProductIds,
-} from "../services/wfc-product-guard.ts";
+  createPromotion,
+  updatePromotion,
+} from "../services/crm-promo.service.ts";
+import { wfcProductIds } from "../services/wfc-product-guard.ts";
 import { lockWfcClaim } from "../services/wfc-claim-lock.ts";
 import { cancelPaymentLinkInTx } from "../services/payment.service.ts";
 import { deleteFloorZone, updateFloorZone } from "../services/floor.service.ts";
@@ -157,10 +158,28 @@ const SETTINGS = {
 
 type Actors = { proposer: string; approver: string };
 
+/** What the second person approved: every number of the version. */
+const payloadOf = (settings: Record<string, unknown>) => ({
+  version: settings.version,
+  effectiveFrom: settings.effective_from,
+  totalSeats: settings.total_seats,
+  wfcSeats: settings.wfc_seats,
+  openHoursPerMonth: settings.open_hours_per_month,
+  fixedCostIdr: settings.fixed_cost_idr,
+  targetRevenueIdr: settings.target_revenue_idr,
+  targetProfitIdr: settings.target_profit_idr,
+  targetOccupancyBp: settings.target_occupancy_bp,
+  spendPerPersonIdr: settings.spend_per_person_idr,
+  cogsBp: settings.cogs_bp,
+  avgStayMinutes: settings.avg_stay_minutes,
+  noShowMinutes: settings.no_show_minutes ?? 30,
+});
+
 /** One decided approval request of a settings change (final level by default). */
 async function seedApproval(
   world: World,
   actors: Actors,
+  settings: Record<string, unknown>,
   overrides: Record<string, unknown> = {},
 ): Promise<string> {
   const id = randomUUID();
@@ -172,7 +191,8 @@ async function seedApproval(
     source_module: "wfc",
     action_type: "price_change",
     object_type: "wfc_business_settings",
-    object_id: randomUUID(),
+    object_id: settings.id,
+    payload: JSON.stringify(payloadOf(settings)),
     requested_by: actors.proposer,
     source: "user",
     level: 1,
@@ -205,22 +225,28 @@ async function insertInto(
   );
 }
 
+const settingsRow = (
+  world: World,
+  actors: Actors,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> => ({
+  id: randomUUID(),
+  tenant_id: world.tenantId,
+  outlet_id: world.outletA,
+  ...SETTINGS,
+  proposed_by: actors.proposer,
+  approved_by: actors.approver,
+  ...overrides,
+});
+
 async function seedSettings(
   world: World,
   actors: Actors,
   overrides: Record<string, unknown> = {},
 ): Promise<string> {
-  const row: Record<string, unknown> = {
-    id: randomUUID(),
-    tenant_id: world.tenantId,
-    outlet_id: world.outletA,
-    ...SETTINGS,
-    proposed_by: actors.proposer,
-    approved_by: actors.approver,
-    ...overrides,
-  };
+  const row = settingsRow(world, actors, overrides);
   if (!("approval_request_id" in overrides))
-    row.approval_request_id = await seedApproval(world, actors);
+    row.approval_request_id = await seedApproval(world, actors, row);
   await asTenant(world.tenantId, (client) =>
     insertInto(client, "wfc_business_settings", row),
   );
@@ -297,15 +323,15 @@ async function claimRow(s: Setup) {
     customer_profile_id: profileId,
     kind: "day_pass",
     access: "all_day",
-    business_date: "2026-11-08",
-    slot: "[2026-11-08T03:00:00Z,2026-11-08T05:00:00Z)",
+    business_date: "2098-11-08",
+    slot: "[2098-11-08T03:00:00Z,2098-11-08T05:00:00Z)",
     status: "pending_payment",
     seat_fee_idr: 50_000,
     credit_idr: 20_000,
     price_idr: 70_000,
     settings_version_id: settingsId,
     floor_per_hour_idr: 12_000,
-    hold_expires_at: "2026-11-08T03:45:00Z",
+    hold_expires_at: "2098-11-08T03:45:00Z",
     ...overrides,
   });
 }
@@ -851,7 +877,7 @@ describe("seat claims", () => {
     // Back-to-back is legal.
     await insertClaim(
       s,
-      build({ slot: "[2026-11-08T05:00:00Z,2026-11-08T06:00:00Z)" }),
+      build({ slot: "[2098-11-08T05:00:00Z,2098-11-08T06:00:00Z)" }),
     );
     await updateClaim(s, first.id, "status = 'no_show'");
     const second = build();
@@ -881,7 +907,7 @@ describe("seat claims", () => {
       { hold_expires_at: null },
       { credit_idr: 0, price_idr: 50_000 },
       { floor_per_hour_idr: 0 },
-      { slot: "[2026-11-08T03:00:00Z,2026-11-08T05:00:00Z]" },
+      { slot: "[2098-11-08T03:00:00Z,2098-11-08T05:00:00Z]" },
       { kind: "bundle" },
       { access: "peak" },
     ])
@@ -890,7 +916,7 @@ describe("seat claims", () => {
         JSON.stringify(bad),
       ).rejects.toMatchObject(refused);
     // No start or no end: the generated NOT NULL instants refuse it.
-    for (const slot of ["empty", "[2026-11-08T03:00:00Z,)"])
+    for (const slot of ["empty", "[2098-11-08T03:00:00Z,)"])
       await expect(insertClaim(s, build({ slot }))).rejects.toMatchObject({
         code: "23502",
       });
@@ -1034,7 +1060,7 @@ describe("review 1: paid is proven by the payment link", () => {
     const row = build();
     const linkId = await pendingOnLink(s, row);
     const second = build({
-      slot: "[2026-11-08T07:00:00Z,2026-11-08T08:00:00Z)",
+      slot: "[2098-11-08T07:00:00Z,2098-11-08T08:00:00Z)",
     });
     await insertClaim(s, second);
     await expect(
@@ -1115,7 +1141,7 @@ describe("review 2: a claim is a frozen snapshot on legal steps", () => {
     for (const change of [
       "seat_fee_idr = 40000, credit_idr = 30000",
       "seat_fee_idr = 50001, price_idr = 70001",
-      "slot = '[2026-11-08T03:00:00Z,2026-11-08T06:00:00Z)'",
+      "slot = '[2098-11-08T03:00:00Z,2098-11-08T06:00:00Z)'",
       `seat_id = '${seat.id}'`,
       `settings_version_id = '${settings}'`,
       "floor_per_hour_idr = 1",
@@ -1123,7 +1149,7 @@ describe("review 2: a claim is a frozen snapshot on legal steps", () => {
       `customer_profile_id = '${profile}'`,
       "kind = 'seat_reservation'",
       "access = 'off_peak'",
-      "business_date = '2026-11-09'",
+      "business_date = '2098-11-09'",
       `outlet_id = '${s.world.outletB}'`,
       "created_at = now() + interval '1 day'",
     ])
@@ -1138,8 +1164,7 @@ describe("review 2: a claim is a frozen snapshot on legal steps", () => {
     const build = await claimRow(s);
     const row = build();
     await confirmedClaim(s, row);
-    await updateClaim(s, row.id, "status = 'checked_in'");
-    await updateClaim(s, row.id, "status = 'completed'");
+    await updateClaim(s, row.id, "status = 'cancelled'");
     await updateClaim(s, row.id, "refunded_idr = 10000");
     for (const change of [
       "paid_idr = 0",
@@ -1155,13 +1180,165 @@ describe("review 2: a claim is a frozen snapshot on legal steps", () => {
     await updateClaim(s, row.id, "status = 'refunded', refunded_idr = 70000");
   });
 
+  it("paid goes from nothing straight to the price", async () => {
+    const s = await setup();
+    const build = await claimRow(s);
+    const row = build();
+    const linkId = await pendingOnLink(s, row);
+    await settleLink(s, linkId);
+    for (const amount of [1, 69_999, 70_001])
+      await expect(
+        updateClaim(s, row.id, `paid_idr = ${amount}`),
+        String(amount),
+      ).rejects.toMatchObject({
+        ...refused,
+        message: expect.stringContaining("is paid straight to its price"),
+      });
+    await updateClaim(s, row.id, "paid_idr = price_idr");
+  });
+
+  describe("refund after the seat was used or its slot began", () => {
+    const FULL = "status = 'refunded', refunded_idr = paid_idr";
+    const PAST = {
+      slot: "[2026-11-08T03:00:00Z,2026-11-08T05:00:00Z)",
+      hold_expires_at: "2026-11-08T03:45:00Z",
+    };
+    const after: Record<string, string[]> = {
+      checked_in: ["status = 'checked_in'"],
+      no_show: ["status = 'no_show'"],
+      completed: ["status = 'checked_in'", "status = 'completed'"],
+    };
+    /** A refund the provider itself reported on an intent of the link. */
+    async function providerRefund(s: Setup, linkId: string, amount: number) {
+      const intentId = randomUUID();
+      await asTenant(s.world.tenantId, async (client) => {
+        await insertInto(client, "payment_intents", {
+          id: intentId,
+          tenant_id: s.world.tenantId,
+          outlet_id: s.world.outletA,
+          payment_link_id: linkId,
+          method: "qris",
+          provider: "doit",
+          amount_idr: 70_000,
+          idempotency_key: `wfc-${intentId}`,
+          status: "paid",
+          paid_at: new Date(),
+          instructions: JSON.stringify({
+            method: "qris",
+            qrPayload: "uji",
+            issuer: null,
+          }),
+          expires_at: new Date(),
+        });
+        await insertInto(client, "payment_provider_refunds", {
+          tenant_id: s.world.tenantId,
+          outlet_id: s.world.outletA,
+          payment_intent_id: intentId,
+          provider: "doit",
+          provider_refund_id: `rf-${randomUUID()}`,
+          provider_payment_ref: `pay-${randomUUID()}`,
+          amount_idr: amount,
+          source: "refund_webhook",
+        });
+      });
+    }
+
+    it.each(Object.keys(after))("%s gives no money back", async (status) => {
+      const s = await setup();
+      const build = await claimRow(s);
+      const row = build();
+      const linkId = await confirmedClaim(s, row);
+      for (const step of after[status]!) await updateClaim(s, row.id, step);
+      const refuse = async (label: string) => {
+        for (const change of ["refunded_idr = 1", FULL])
+          await expect(
+            updateClaim(s, row.id, change),
+            `${label}: ${change}`,
+          ).rejects.toMatchObject(refused);
+      };
+      await refuse("no provider refund");
+      // Another link's refund does not count, nor one rupiah short.
+      await providerRefund(s, await seedLink(s), 70_000);
+      await providerRefund(s, linkId, 50_000);
+      await providerRefund(s, linkId, 19_999);
+      await refuse("one rupiah short");
+      await providerRefund(s, linkId, 1);
+      await updateClaim(s, row.id, FULL);
+    });
+
+    it("a step that uses the seat never carries a refund", async () => {
+      const s = await setup();
+      const build = await claimRow(s);
+      const row = build();
+      await confirmedClaim(s, row);
+      await expect(
+        updateClaim(s, row.id, "status = 'no_show', refunded_idr = 1"),
+      ).rejects.toMatchObject(refused);
+      await updateClaim(s, row.id, "status = 'checked_in'");
+      await expect(
+        updateClaim(s, row.id, "status = 'completed', refunded_idr = 1"),
+      ).rejects.toMatchObject(refused);
+    });
+
+    it("the total of the link counts, tax included", async () => {
+      const s = await setup();
+      const build = await claimRow(s);
+      const row = build();
+      const linkId = await pendingOnLink(s, row, {
+        tax_idr: 7_000,
+        total_idr: 77_000,
+      });
+      await settleLink(s, linkId);
+      await updateClaim(s, row.id, CONFIRM);
+      await updateClaim(s, row.id, "status = 'no_show'");
+      await providerRefund(s, linkId, 70_000);
+      await expect(updateClaim(s, row.id, FULL)).rejects.toMatchObject(refused);
+      await providerRefund(s, linkId, 7_000);
+      await updateClaim(s, row.id, FULL);
+    });
+
+    it("confirmed is cancelled or refunded only before its slot", async () => {
+      const s = await setup();
+      const build = await claimRow(s);
+      const future = build();
+      await confirmedClaim(s, future);
+      await updateClaim(s, future.id, "status = 'cancelled'");
+      await updateClaim(s, future.id, FULL);
+      const direct = build();
+      await confirmedClaim(s, direct);
+      await updateClaim(s, direct.id, FULL);
+
+      const begun = build(PAST);
+      const linkId = await confirmedClaim(s, begun);
+      for (const change of [
+        "status = 'cancelled'",
+        "status = 'cancelled', refunded_idr = paid_idr",
+        FULL,
+      ])
+        await expect(
+          updateClaim(s, begun.id, change),
+          change,
+        ).rejects.toMatchObject(refused);
+      await providerRefund(s, linkId, 70_000);
+      await updateClaim(s, begun.id, FULL);
+      // An unpaid hold is still released after its slot began.
+      const held = build(PAST);
+      await insertClaim(s, held);
+      await updateClaim(
+        s,
+        held.id,
+        "status = 'cancelled', hold_expires_at = NULL",
+      );
+    });
+  });
+
   it("only legal status steps; a closed claim never comes back", async () => {
     const s = await setup();
     const build = await claimRow(s);
     let hour = 0;
     const next = () => {
       hour += 1;
-      const at = (h: number) => `2026-11-${String(10 + h)}T01:00:00Z`;
+      const at = (h: number) => `2098-11-${String(10 + h)}T01:00:00Z`;
       return build({
         slot: `[${at(hour)},${at(hour).replace("T01", "T02")})`,
       });
@@ -1250,7 +1427,7 @@ describe("review 4: a claim copies its live product, seat and zone", () => {
       build({
         product_id: productId,
         kind: "seat_reservation",
-        slot: `[2026-11-08T03:00:00Z,2026-11-08T${end}Z)`,
+        slot: `[2098-11-08T03:00:00Z,2098-11-08T${end}Z)`,
       });
     for (const end of ["03:59:00", "04:01:00", "05:00:00"])
       await expect(insertClaim(s, row(end)), end).rejects.toMatchObject(
@@ -1361,18 +1538,94 @@ describe("review 4: a WFC product is never a promo reward", () => {
     expect((await ids(s, [])).size).toBe(0);
   });
 
+  const promo = (productId: string, patch: Record<string, unknown> = {}) =>
+    ({
+      name: `Promo ${short()}`,
+      description: "",
+      status: "draft",
+      codeHash: null,
+      voucherRequired: false,
+      startsAt: new Date().toISOString(),
+      endsAt: null,
+      conditions: [],
+      benefit: benefitOf(productId),
+      stackGroup: "uji",
+      stackable: true,
+      priority: 0,
+      quotaTotal: null,
+      quotaPerCustomer: null,
+      budgetIdr: null,
+      ...patch,
+    }) as unknown as Parameters<typeof createPromotion>[2];
+  const notReward = { status: 409, code: "WFC_PRODUCT_NOT_REWARD" };
+
   it("cannot be saved as a reward, draft included", async () => {
     const s = await setup();
     const { productId } = await asDayPass(s);
-    await expect(
-      withTenant(db, s.world.context, (tx) =>
-        assertPromoBenefitNotWfc(
-          tx,
-          s.world.context.tenant.tenantId,
-          benefitOf(productId),
+    const marketer = await seedActor(s.world.tenantId, ["promo.manage"]);
+    for (const status of ["draft", "active"])
+      expect(
+        await failure(
+          createPromotion(
+            s.world.context,
+            marketer,
+            promo(productId, { status }),
+          ),
         ),
+        status,
+      ).toMatchObject(notReward);
+    const plain = await seedProduct(s.world, s.facilityId);
+    const saved = await createPromotion(
+      s.world.context,
+      marketer,
+      promo(plain),
+    );
+    expect(
+      await failure(
+        updatePromotion(s.world.context, marketer, saved.id, {
+          benefit: benefitOf(productId),
+        } as never),
       ),
-    ).rejects.toMatchObject({ status: 409, code: "WFC_PRODUCT_NOT_REWARD" });
+    ).toMatchObject(notReward);
+  });
+
+  it("a promotion from before the product became WFC can only be switched off", async () => {
+    const s = await setup();
+    const marketer = await seedActor(s.world.tenantId, ["promo.manage"]);
+    const productId = await seedProduct(s.world, s.facilityId);
+    const { productId: otherWfc } = await asDayPass(s);
+    const old = await createPromotion(
+      s.world.context,
+      marketer,
+      promo(productId, { status: "active" }),
+    );
+    await setWfcProduct(s.world.context, s.actor, {
+      productId,
+      wfc: {
+        kind: "day_pass",
+        access: "all_day",
+        seatFeeIdr: 50_000,
+        creditIdr: 20_000,
+        durationMinutes: null,
+      },
+      expectedUpdatedAt: await stampOf(s, productId),
+    });
+    const set = (patch: Record<string, unknown>) =>
+      updatePromotion(s.world.context, marketer, old.id, patch as never);
+    for (const patch of [
+      { name: "Masih aktif" },
+      { status: "paused", benefit: benefitOf(otherWfc) },
+      {
+        status: "paused",
+        benefit: { ...benefitOf(productId), quantity: 2 },
+      },
+    ])
+      expect(await failure(set(patch)), JSON.stringify(patch)).toMatchObject(
+        notReward,
+      );
+    expect((await set({ status: "paused" })).status).toBe("paused");
+    expect(await failure(set({ status: "active" }))).toMatchObject(notReward);
+    expect((await set({ status: "ended" })).status).toBe("ended");
   });
 });
 
@@ -1561,35 +1814,109 @@ describe("review 3: a settings version carries its own approval", () => {
       "tenant-wide": { outlet_id: null },
       purpose: { object_type: "order" },
     };
+    const attempt = async (
+      overrides: Record<string, unknown>,
+      people: Actors = actors,
+    ) => {
+      const row = settingsRow(s.world, people);
+      return seedSettings(s.world, people, {
+        id: row.id,
+        approval_request_id: await seedApproval(
+          s.world,
+          actors,
+          row,
+          overrides,
+        ),
+      });
+    };
     for (const [label, overrides] of Object.entries(bad))
-      await expect(
-        seedSettings(s.world, actors, {
-          approval_request_id: await seedApproval(s.world, actors, overrides),
-        }),
-        label,
-      ).rejects.toMatchObject(refused);
+      await expect(attempt(overrides), label).rejects.toMatchObject(refused);
     await expect(
       seedSettings(s.world, actors, { approval_request_id: randomUUID() }),
     ).rejects.toMatchObject({ code: expect.stringMatching(/^235(03|14)$/) });
     // One person on both sides.
     await expect(
-      seedSettings(
-        s.world,
-        { proposer: s.actor, approver: s.actor },
-        {
-          approval_request_id: await seedApproval(s.world, actors),
-        },
-      ),
+      attempt({}, { proposer: s.actor, approver: s.actor }),
     ).rejects.toMatchObject(refused);
-    const approval = await seedApproval(s.world, actors);
-    await seedSettings(s.world, actors, { approval_request_id: approval });
-    // One approval, one version.
+    await attempt({});
+  });
+
+  it("must be the request of this very version: module, object and every number", async () => {
+    const s = await setup();
+    const actors = { proposer: s.actor, approver: s.approver };
+    const attempt = async (
+      change: (
+        row: Record<string, unknown>,
+        payload: Record<string, unknown>,
+      ) => Record<string, unknown>,
+    ) => {
+      const row = settingsRow(s.world, actors);
+      return seedSettings(s.world, actors, {
+        id: row.id,
+        approval_request_id: await seedApproval(
+          s.world,
+          actors,
+          row,
+          change(row, payloadOf(row)),
+        ),
+      });
+    };
+    await expect(
+      attempt(() => ({ source_module: "inbox" })),
+      "inbox",
+    ).rejects.toMatchObject(refused);
+    await expect(
+      attempt(() => ({ object_id: randomUUID() })),
+      "another version",
+    ).rejects.toMatchObject(refused);
+    await expect(
+      attempt(() => ({ payload: "{}" })),
+      "empty",
+    ).rejects.toMatchObject(refused);
+    for (const key of Object.keys(payloadOf(SETTINGS))) {
+      for (const [label, value] of [
+        ["other", key === "effectiveFrom" ? "2026-01-02" : 7_777_777],
+        ["null", null],
+        ["text", "7"],
+      ] as const)
+        await expect(
+          attempt((_, payload) => ({
+            payload: JSON.stringify({ ...payload, [key]: value }),
+          })),
+          `${key} ${label}`,
+        ).rejects.toMatchObject(refused);
+      await expect(
+        attempt((_, payload) => {
+          const { [key]: _gone, ...rest } = payload;
+          return { payload: JSON.stringify(rest) };
+        }),
+        `${key} missing`,
+      ).rejects.toMatchObject(refused);
+    }
+    // Further fields (who it is for, a note) do not matter.
+    await attempt((_, payload) => ({
+      payload: JSON.stringify({ ...payload, note: "uji" }),
+    }));
+  });
+
+  it("one approval covers one version", async () => {
+    const s = await setup();
+    const actors = { proposer: s.actor, approver: s.approver };
+    const first = settingsRow(s.world, actors);
+    const approval = await seedApproval(s.world, actors, first);
+    const again = () =>
+      seedSettings(s.world, actors, {
+        id: first.id,
+        approval_request_id: approval,
+      });
+    await again();
+    await expect(again()).rejects.toMatchObject({ code: "23505" });
     await expect(
       seedSettings(s.world, actors, {
         version: 2,
         approval_request_id: approval,
       }),
-    ).rejects.toMatchObject({ code: "23505" });
+    ).rejects.toMatchObject(refused);
   });
 });
 

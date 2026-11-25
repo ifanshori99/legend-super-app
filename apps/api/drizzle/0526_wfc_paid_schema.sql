@@ -188,8 +188,10 @@ CREATE TRIGGER "wfc_business_settings_append_only_trg"
   BEFORE UPDATE OR DELETE ON "wfc_business_settings"
   FOR EACH ROW EXECUTE FUNCTION app.pos_append_only();
 --> statement-breakpoint
--- A settings version carries its own final approval: same outlet, same two
--- people, decided as approved for this purpose. RLS applies (invoker rights):
+-- A settings version carries its own final approval: opened by the WFC module
+-- for this very version, same outlet, same two people, decided as approved, and
+-- its payload holds every number of the row (camelCase, as in the contract), so
+-- nobody approves other numbers than the ones that apply. RLS applies (invoker rights):
 -- a request the caller cannot see is refused.
 CREATE FUNCTION app.wfc_settings_approval_guard() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog AS $$
@@ -202,7 +204,23 @@ BEGIN
   IF NOT FOUND
      OR request.status <> 'approved'
      OR request.level <> request.required_levels
+     OR request.source_module <> 'wfc'
      OR request.object_type <> 'wfc_business_settings'
+     OR request.object_id <> NEW.id::text
+     OR NOT request.payload @> jsonb_build_object(
+          'version', NEW.version,
+          'effectiveFrom', to_char(NEW.effective_from, 'YYYY-MM-DD'),
+          'totalSeats', NEW.total_seats,
+          'wfcSeats', NEW.wfc_seats,
+          'openHoursPerMonth', NEW.open_hours_per_month,
+          'fixedCostIdr', NEW.fixed_cost_idr,
+          'targetRevenueIdr', NEW.target_revenue_idr,
+          'targetProfitIdr', NEW.target_profit_idr,
+          'targetOccupancyBp', NEW.target_occupancy_bp,
+          'spendPerPersonIdr', NEW.spend_per_person_idr,
+          'cogsBp', NEW.cogs_bp,
+          'avgStayMinutes', NEW.avg_stay_minutes,
+          'noShowMinutes', NEW.no_show_minutes)
      OR request.outlet_id IS DISTINCT FROM NEW.outlet_id
      OR request.requested_by IS DISTINCT FROM NEW.proposed_by
      OR request.decided_by IS DISTINCT FROM NEW.approved_by THEN
@@ -224,6 +242,11 @@ CREATE TRIGGER "wfc_business_settings_approval_trg"
 -- never computed here). A link is never cancelled by a status: cancelling moves
 -- `expires_at`, so a link whose expiry is not the one it was attached with
 -- cannot confirm the seat; its money may still be recorded, to be refunded.
+--
+-- A seat that was used or not shown up for (checked_in, no_show, completed) is
+-- not refunded, and a confirmed claim is cancelled or refunded only before its
+-- slot begins. The one exception is money the provider already gave back: its
+-- refunds on the link's intents reach the link's total.
 --
 -- Lock order: payment link first, then claim (settlement holds the link). An
 -- UPDATE already holds the claim, so the link is taken NOWAIT: a caller in the
@@ -301,6 +324,10 @@ BEGIN
       RAISE EXCEPTION 'wfc claim % money never goes back', OLD.id
         USING ERRCODE = '23514';
     END IF;
+    IF NEW.paid_idr <> OLD.paid_idr AND NEW.paid_idr <> NEW.price_idr THEN
+      RAISE EXCEPTION 'wfc claim % is paid straight to its price', OLD.id
+        USING ERRCODE = '23514';
+    END IF;
     IF NEW.status <> OLD.status AND NOT (CASE OLD.status
          WHEN 'pending_payment' THEN NEW.status IN ('confirmed', 'cancelled')
          WHEN 'confirmed' THEN NEW.status IN ('checked_in', 'no_show', 'cancelled', 'refunded')
@@ -312,6 +339,25 @@ BEGIN
        END) THEN
       RAISE EXCEPTION 'wfc claim % cannot go from % to %', OLD.id, OLD.status, NEW.status
         USING ERRCODE = '23514';
+    END IF;
+    IF (NEW.status = 'refunded' AND OLD.status IN ('checked_in', 'no_show', 'completed'))
+       OR (NEW.status IN ('cancelled', 'refunded') AND OLD.status = 'confirmed'
+           AND clock_timestamp() >= lower(OLD.slot))
+       OR (NEW.refunded_idr > OLD.refunded_idr
+           AND NOT (NEW.status IN ('cancelled', 'refunded')
+                    AND OLD.status IN ('pending_payment', 'confirmed', 'cancelled'))) THEN
+      IF ((SELECT sum(r.amount_idr)
+             FROM public.payment_provider_refunds r
+             JOIN public.payment_intents i
+               ON i.tenant_id = r.tenant_id AND i.id = r.payment_intent_id
+            WHERE i.tenant_id = OLD.tenant_id
+              AND i.payment_link_id = OLD.payment_link_id)
+          >= (SELECT l.total_idr FROM public.payment_links l
+               WHERE l.tenant_id = OLD.tenant_id AND l.id = OLD.payment_link_id))
+         IS NOT TRUE THEN
+        RAISE EXCEPTION 'wfc claim % is no longer refundable', OLD.id
+          USING ERRCODE = '23514';
+      END IF;
     END IF;
     attached := OLD.payment_link_id IS NULL AND NEW.payment_link_id IS NOT NULL;
     paying := NEW.paid_idr > OLD.paid_idr;

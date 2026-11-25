@@ -10,6 +10,7 @@
 // the same adapter the POS, QR and website checkouts call in their order
 // transaction (`redeemPromotions` / `releasePromotions`).
 
+import { isDeepStrictEqual } from "node:util";
 import { randomInt } from "node:crypto";
 import { and, desc, eq, lt, or, sql, type SQL } from "drizzle-orm";
 import type { AccessTarget, PermissionCode } from "@starter/shared/access";
@@ -470,7 +471,12 @@ export async function updatePromotion(
     });
     assertStatusChange(current.status, next.status);
     await assertNoShowerPromoActive(tx, context, next);
-    await assertPromoBenefitNotWfc(tx, context.tenant.tenantId, next.benefit);
+    // A promotion saved before its product became WFC may still be switched off.
+    if (
+      next.status === "active" ||
+      !isDeepStrictEqual(next.benefit, current.benefit)
+    )
+      await assertPromoBenefitNotWfc(tx, context.tenant.tenantId, next.benefit);
     if (next.quotaTotal !== null && next.quotaTotal < row.usesTotal)
       throw new HttpError(
         422,
