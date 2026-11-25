@@ -100,3 +100,4 @@ Total 86 jam, di luar review architect xhigh untuk W2, W3, dan W4.
 - Rancangan diterima. W7 dikerjakan Claude (bukan Codex). Default paling membatasi di bagian 6 dipakai sampai founder menjawab; `WFC_SALES_ENABLED` tetap false.
 - W1 mulai sesudah F0 mendarat (berkas `env.ts`, `facility.ts`). Migrasi W1: 0526, W4: 0527 (konfirmasi ke CTO saat mulai).
 - Kursi WFC hanya diterbitkan sesudah lunas terkonfirmasi; tidak ada jalur tender kasir di rilis 1.
+- Founder (25 Nov malam): WFC harus menjaga penjualan makanan/minuman, biaya, dan target okupansi. Default bagian 6 no. 2 (tanpa minuman) DITANGGUHKAN: PRD 871 memuat minuman. Usulan CTO yang dikirim: kredit makan/minum hangus hari itu (lewat voucher F4), jam sepi vs sepanjang hari, kuota kursi per jam, no-show melepas kursi, pagar laba kotor per jam-kursi. Menunggu jawaban founder dan angka bisnis; W1 jangan mulai skema produk sebelum dijawab, lalu architect menghitung ulang jam.
