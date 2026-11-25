@@ -17,3 +17,12 @@ Audit baca saja terhadap DESIGN.md v2; temuan nyata (bukan selera) diberi berkas
 ## 17 dan 18: katalog laporan; dialog koreksi PTKP, batal persetujuan bagi hasil, banner payout beku
 
 Audit baca saja: katalog 105 laporan jujur ("Segera hadir" hanya untuk yang belum tersambung, tidak ada angka palsu, tautan mati), dan ketiga UI no. 18 aman (alasan wajib, konfirmasi jelas, tidak bisa dua klik, izin benar, banner terlihat di 390). Rekomendasi CTO: terima bila tidak ada temuan berat.
+
+## Gelombang 2: perbaikan temuan audit (berkas di apps/web/src/features)
+
+- F1 (`ws11-reports/lib.ts:41-46`, `catalog-page.tsx:38-40`, `facility-report/lib.ts:11-24`, `facility-report-hub.tsx`): "Segera hadir" diturunkan dari satu sumber kebenaran ketersediaan sumber data (server `metricSourceOf`, sumber `unavailable/source_not_built`). Utamakan lewat respons API yang ada; bila tidak ada, daftar bersama di `packages/shared` dengan test yang gagal bila menyimpang dari server. Cakup wifi, subscriptions, fnb_conversion, cleaning_time, product_revenue, menu.sold_out, payments.edc_settlement, operations.failed_items/devices/occupancy. Pastikan juga `gateway_settlement` (`metrics-gl-sources.ts` vs `payments-tax`): mana yang menang.
+- F2 (`report-viewer-page.tsx:405`, `report-viewer.ts:93`): pakai `result.availability`; sumber belum dibangun = "Sumber data belum tersambung", bukan "coba lagi setelah ada transaksi".
+- F3 (`ws10-employee-master/components/ptkp-correction-dialog.tsx:154`, `:238-245`): tanggal yang dilihat HR harus sama dengan yang disimpan. Baca `hris-employee-ptkp.service.ts` dulu. Jangan ubah semantik pajak di API; samakan label dengan perilaku server. Bila semantik server sendiri diragukan, laporkan.
+- F4 (`ws10-payroll-payout/components/freeze-banner.tsx:193`): dialog buka-beku tidak bisa ditutup saat pending (Esc, klik luar, X), pola `ptkp-correction-dialog.tsx:60-76`.
+- F5 (`ws10-payroll-payout/api.ts:337`): pastikan server menolak buka-beku kedua; buktikan dengan test yang ada atau baru. Kunci idempotensi ditambah hanya bila server menerimanya.
+- Bukti: test gagal dulu, prettier, eslint, text-contract, tsc paket tersentuh. Jangan sentuh berkas butir 16.
