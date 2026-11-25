@@ -58,13 +58,14 @@ import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { openSecret, sealSecret } from "../lib/secrets.ts";
 import type { Tx } from "./menu-internals.ts";
-import {
-  paymentGatewayFor,
-  type PaymentGatewayPort,
-} from "./payment-gateway.ts";
+import { paymentGatewayFor } from "./payment-gateway.ts";
 import { liveCodeWhere } from "./payment-live-code.ts";
 import { outstandingIdr } from "./payment-support.ts";
-import { selectGatewayForNewIntent } from "./payment-gateway-select.ts";
+import {
+  canIssueMethod,
+  gatewayListsMethod,
+  selectGatewayForNewIntent,
+} from "./payment-gateway-select.ts";
 import { resolveRoutingRule } from "./payment-routing.service.ts";
 import {
   assertSplitMutableTx,
@@ -334,28 +335,6 @@ export async function assertGuestChannel(
 }
 
 /**
- * legend-kt3t1: does the gateway list this method as enabled right now? Read
- * from the provider's own `methods()` (PRD §3.13), never from a fixed list.
- * A gateway without `methods()` (a test double) offers QRIS and VA, whose
- * channel list decides, and never e-wallet or card. A failed read is "no".
- */
-async function gatewayListsMethod(
-  context: ScopedTenantContext,
-  port: PaymentGatewayPort,
-  method: GuestPaymentMethod,
-  outletId: string,
-  amountIdr?: number,
-): Promise<boolean> {
-  if (port.methods === undefined) return method === "qris" || method === "va";
-  try {
-    const listed = await port.methods(context, outletId, amountIdr);
-    return listed.some((entry) => entry.method === method && entry.enabled);
-  } catch {
-    return false;
-  }
-}
-
-/**
  * legend-kt3t1: an e-wallet or card is refused unless the tenant's gateway for
  * that method lists it as enabled (and its routing rule is on). Throws
  * VALIDATION_ERROR; nothing is created. `amountIdr` is the bill amount read
@@ -383,10 +362,14 @@ async function assertGuestMethodOffered(
       amountIdr,
     ))
   )
-    throw new CoreError(
-      "VALIDATION_ERROR",
-      "Metode pembayaran ini tidak tersedia di outlet ini.",
-    );
+    throw methodNotOffered();
+}
+
+function methodNotOffered(): CoreError {
+  return new CoreError(
+    "VALIDATION_ERROR",
+    "Metode pembayaran ini tidak tersedia di outlet ini.",
+  );
 }
 
 /**
@@ -787,6 +770,52 @@ async function billAmountIdr(
 }
 
 /**
+ * 1269 C2a: may the guest's new method replace an old live code? QRIS that a
+ * usable gateway does not list is refused here (VALIDATION_ERROR), the same
+ * answer as an e-wallet or card; any other "no" returns false. A bill with
+ * nothing left to pay replaces nothing.
+ */
+async function canIssueGuestMethod(
+  context: ScopedTenantContext,
+  credential: string,
+  sessionId: string,
+  orderId: string,
+  splitId: string | null,
+  choice: {
+    method: GuestPaymentMethod;
+    bankCode: string | null;
+    outletId: string;
+  },
+  now: Date,
+): Promise<boolean> {
+  const amountIdr = await billAmountIdr(
+    context,
+    credential,
+    sessionId,
+    orderId,
+    splitId,
+    now,
+  );
+  if (amountIdr <= 0) return false;
+  const routing = await withTenant(db, context, (tx) =>
+    resolveRoutingRule(tx, context, choice.outletId, choice.method),
+  );
+  const issuable = await canIssueMethod(context, choice.outletId, routing, {
+    method: choice.method,
+    channelCode: choice.bankCode,
+    amountIdr,
+  });
+  if (issuable || choice.method !== "qris" || !routing.enabled) return issuable;
+  const selected = await selectGatewayForNewIntent(
+    context,
+    choice.outletId,
+    routing,
+  );
+  if (selected.provider !== null) throw methodNotOffered();
+  return false;
+}
+
+/**
  * POST /api/table-sessions/:sessionId/payments (contract guest.ts). The
  * pay-first `order` and the split `split` targets are live, with QRIS or VA:
  * the open-bill `bill` target belongs to the bill settlement bead.
@@ -897,21 +926,34 @@ export async function createGuestPayment(
       );
   } else if (bankCode !== null && namesChannel(parsed.method))
     await assertGuestChannel(context, parsed.method, bankCode, outletId);
-  // legend-9vmit: a changed method or bank voids the old code first.
-  await voidOldCodesForChange(
-    context,
-    credential,
-    sessionId,
-    orderId,
-    splitId,
-    {
-      method: parsed.method,
-      bankCode,
-      payerSecret: parsed.payerSecret,
-      idempotencyKey: parsed.idempotencyKey,
-    },
-    now,
-  );
+  // legend-9vmit: a changed method or bank voids the old code first, only when
+  // the new one can be issued (1269 C2a). With no usable gateway or route the
+  // old code stays and the steps below give their own answer.
+  if (
+    await canIssueGuestMethod(
+      context,
+      credential,
+      sessionId,
+      orderId,
+      splitId,
+      { method: parsed.method, bankCode, outletId },
+      now,
+    )
+  )
+    await voidOldCodesForChange(
+      context,
+      credential,
+      sessionId,
+      orderId,
+      splitId,
+      {
+        method: parsed.method,
+        bankCode,
+        payerSecret: parsed.payerSecret,
+        idempotencyKey: parsed.idempotencyKey,
+      },
+      now,
+    );
   return withTenant(db, context, async (tx) => {
     const session = await lockGuestSessionForPayment(
       tx,

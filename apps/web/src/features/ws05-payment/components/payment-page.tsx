@@ -10,7 +10,6 @@ import { Card } from "@/components/ui/card";
 import { ErrorState } from "@/components/ui/feedback-state";
 import { useToast } from "@/components/ui/toast";
 import { useOnline } from "@/lib/use-online";
-import type { CustomerPaymentMethodCode } from "@starter/shared/payment";
 import { isNotFoundError, isOfflineError, paymentErrorKey } from "../errors";
 import {
   useAutoRefreshIntent,
@@ -21,6 +20,7 @@ import {
   useSettledIntentSync,
   useStartPayment,
 } from "../hooks";
+import { pickerMethods, type PickerMethodCode } from "../labels";
 import { canSubmit, clockSkewMs, paymentPhase } from "../status";
 import { BillCard } from "./bill-card";
 import { MethodPicker } from "./method-picker";
@@ -45,7 +45,7 @@ export function PaymentPage({ token }: { token: string }) {
   const view = link.data;
 
   const [selection, setSelection] = useState<{
-    method: CustomerPaymentMethodCode | null;
+    method: PickerMethodCode | null;
     channelCode: string | null;
   }>({ method: null, channelCode: null });
   const [switching, setSwitching] = useState(false);
@@ -119,12 +119,13 @@ export function PaymentPage({ token }: { token: string }) {
 
   const data = link.data;
   const phase = paymentPhase(data, switching ? null : intent);
+  const methods = pickerMethods(data.methods);
   const selectedMethod =
     selection.method ??
-    data.methods.find((method) => method.enabled)?.method ??
+    methods.find((method) => method.enabled)?.method ??
     null;
   const selectedOption =
-    data.methods.find((method) => method.method === selectedMethod) ?? null;
+    methods.find((method) => method.method === selectedMethod) ?? null;
   const selectedChannel =
     selectedOption && selectedOption.method !== "qris"
       ? selection.channelCode
@@ -243,7 +244,7 @@ export function PaymentPage({ token }: { token: string }) {
 
       {phase === "choose" && !fundsUnresolved && (
         <MethodPicker
-          methods={data.methods}
+          methods={methods}
           method={selectedMethod}
           channelCode={selectedChannel}
           onMethod={(method) => setSelection({ method, channelCode: null })}

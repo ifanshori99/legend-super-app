@@ -16,7 +16,10 @@ import {
 import type { SystemRefundActor } from "@starter/shared/payment/admin";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
-import { selectGatewayForNewIntent } from "./payment-gateway-select.ts";
+import {
+  gatewayListsMethod,
+  selectGatewayForNewIntent,
+} from "./payment-gateway-select.ts";
 import { resolveRoutingRule } from "./payment-routing.service.ts";
 import { createPaymentLink } from "./payment.service.ts";
 import {
@@ -39,11 +42,14 @@ export function depositReference(reservationId: string): string {
  * Fail closed unless a gateway is usable for the deposit and not reported
  * down: a DP booking must never hold a table it cannot collect the DP for. The
  * gateway is the one the outlet's QRIS rule selects (primary, or its fallback
- * when the primary is down). A lookup that throws counts as down.
+ * when the primary is down), and it must list QRIS as enabled (1269 C0 locks
+ * methods; at the DP amount once it is known). A lookup that throws counts as
+ * down.
  */
 async function assertGatewayReady(
   context: ScopedTenantContext,
   outletId?: string,
+  amountIdr?: number,
 ): Promise<void> {
   if (!outletId) throw depositUnavailable();
   try {
@@ -55,7 +61,18 @@ async function assertGatewayReady(
       outletId,
       routing,
     );
-    if (selected.provider === null) throw depositUnavailable();
+    if (
+      !routing.enabled ||
+      selected.provider === null ||
+      !(await gatewayListsMethod(
+        context,
+        selected.port,
+        "qris",
+        outletId,
+        amountIdr,
+      ))
+    )
+      throw depositUnavailable();
   } catch {
     throw depositUnavailable();
   }
@@ -63,9 +80,9 @@ async function assertGatewayReady(
 
 export function createPaymentReservationDepositPort(): ReservationDepositPort {
   return {
-    assertReady: assertGatewayReady,
+    assertReady: (context, outletId) => assertGatewayReady(context, outletId),
     async openDeposit(input) {
-      await assertGatewayReady(input.context, input.outletId);
+      await assertGatewayReady(input.context, input.outletId, input.amountIdr);
       const amount = idr(input.amountIdr);
       const opened = await createPaymentLink(
         input.context,

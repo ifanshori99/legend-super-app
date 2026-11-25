@@ -19,6 +19,7 @@ import {
   paymentGatewayFor,
   paymentGatewayLegacyMode,
   type GatewayHealth,
+  type GatewayPaymentMethod,
   type PaymentGatewayPort,
 } from "./payment-gateway";
 import {
@@ -35,7 +36,15 @@ export type GatewaySelection =
     }
   | { readonly provider: null; readonly health: GatewayHealth };
 
-const ONLINE_METHODS = ["qris", "va", "bank_transfer"] as const;
+/** E-wallet and card have no default route, so they count only where a rule
+ * switches them on. */
+export const ONLINE_METHODS = [
+  "qris",
+  "va",
+  "bank_transfer",
+  "ewallet",
+  "card",
+] as const;
 
 /** Platform "enabled" switch. Legacy test mode (one port for every provider)
  * has no platform rows to read, so it counts as enabled. */
@@ -134,6 +143,69 @@ export async function selectGatewayForNewIntent(
       };
   }
   return { provider: null, health: primaryHealth ?? DISABLED_HEALTH };
+}
+
+/**
+ * Does the gateway list this method as enabled right now? Read from the
+ * provider's own `methods()` (PRD §3.13), never from a fixed list, so a locked
+ * method (1269 C0) answers no. A gateway without `methods()` (a test double)
+ * offers QRIS, VA and bank transfer, whose channel list decides, and never
+ * e-wallet or card. A failed read is "no". With `amountIdr` the answer is for
+ * that bill amount.
+ */
+export async function gatewayListsMethod(
+  context: ScopedTenantContext,
+  port: PaymentGatewayPort,
+  method: GatewayPaymentMethod,
+  outletId: string,
+  amountIdr?: number,
+): Promise<boolean> {
+  if (port.methods === undefined)
+    return method !== "ewallet" && method !== "card";
+  try {
+    const listed = await port.methods(context, outletId, amountIdr);
+    return listed.some((entry) => entry.method === method && entry.enabled);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Can a new code of this method (and channel) be issued for the amount now?
+ * Asked before an old live code is voided for it (1269 C2a): a refused method
+ * must leave the old code payable. A failed read is "no".
+ */
+export async function canIssueMethod(
+  context: ScopedTenantContext,
+  outletId: string,
+  routing: ResolvedRouting,
+  choice: {
+    readonly method: GatewayPaymentMethod;
+    readonly channelCode: string | null;
+    readonly amountIdr: number;
+  },
+): Promise<boolean> {
+  const { method, channelCode, amountIdr } = choice;
+  if (!routing.enabled) return false;
+  const selected = await selectGatewayForNewIntent(context, outletId, routing);
+  if (
+    selected.provider === null ||
+    !(await gatewayListsMethod(
+      context,
+      selected.port,
+      method,
+      outletId,
+      amountIdr,
+    ))
+  )
+    return false;
+  if (channelCode === null) return true;
+  try {
+    const channels = await selected.port.channels(context, method, outletId);
+    return channels.some((channel) => channel.code === channelCode);
+  } catch {
+    return false;
+  }
 }
 
 const RANK: Record<GatewayHealth["status"], number> = {

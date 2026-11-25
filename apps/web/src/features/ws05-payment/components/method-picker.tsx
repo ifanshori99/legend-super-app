@@ -16,12 +16,13 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import type {
-  CustomerPaymentMethod,
-  CustomerPaymentMethodCode,
-} from "@starter/shared/payment";
 import { paymentErrorKey } from "../errors";
-import { PAYMENT_METHOD_HINT, PAYMENT_METHOD_LABEL } from "../labels";
+import {
+  PAYMENT_METHOD_HINT,
+  PAYMENT_METHOD_LABEL,
+  type PickerMethod,
+  type PickerMethodCode,
+} from "../labels";
 import { canSubmit } from "../status";
 
 const METHOD_ICON = {
@@ -36,7 +37,7 @@ function MethodOption({
   disabled,
   onSelect,
 }: {
-  option: CustomerPaymentMethod;
+  option: PickerMethod;
   checked: boolean;
   disabled: boolean;
   onSelect: () => void;
@@ -97,10 +98,10 @@ export function MethodPicker({
   submitting,
   error,
 }: {
-  methods: CustomerPaymentMethod[];
-  method: CustomerPaymentMethodCode | null;
+  methods: PickerMethod[];
+  method: PickerMethodCode | null;
   channelCode: string | null;
-  onMethod: (method: CustomerPaymentMethodCode) => void;
+  onMethod: (method: PickerMethodCode) => void;
   onChannel: (channelCode: string | null) => void;
   onSubmit: () => void;
   submitting: boolean;
