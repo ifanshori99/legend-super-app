@@ -150,6 +150,7 @@ describe("EDG-01 edge registry", () => {
       "edge_nodes",
       "edge_order_ingests",
       "edge_outbound_queue",
+      "edge_pos_ingests",
       "edge_printer_delete_versions",
       "edge_receipt_skips",
       "edge_sync_conflicts",

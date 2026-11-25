@@ -19,6 +19,7 @@
 //    NOT asserted either way (ambiguous in the design); refunds, voids and
 //    closing are not gated. A refused create leaves no order, hence no tender.
 //  - A cloud (non-edge) process is never gated.
+import { setPosWriteGateEdgeModeForTests } from "../services/pos-edge-outlet.ts";
 import { randomUUID } from "node:crypto";
 import type { Express } from "express";
 import type { PoolClient } from "pg";
@@ -551,6 +552,8 @@ describe("521 Q62 unproven offline time keeps the outlet whole", () => {
     setPosOrderPromoPort(withPromoFreshness(inner));
     setSalesGateEdgeModeForTests(() => true);
     setPromoGateEdgeModeForTests(() => true);
+    // This process plays the edge: 1269 E3 refuses the sale in the cloud.
+    setPosWriteGateEdgeModeForTests(() => true);
     try {
       await promoGate.refresh();
       expect(promosEnabled()).toBe(false);
@@ -609,6 +612,7 @@ describe("521 Q62 unproven offline time keeps the outlet whole", () => {
       expect(row.received_idr - row.change_idr).toBe(fullPrice);
       expect(row.change_idr).toBeLessThanOrEqual(row.received_idr - fullPrice);
     } finally {
+      setPosWriteGateEdgeModeForTests(null);
       promoGate.stop();
       await gate.stop();
     }

@@ -37,13 +37,22 @@ export async function outletHasActiveEdge(
   return row !== undefined;
 }
 
+let isEdgeWriter: () => boolean = isEdgeProcess;
+
+/** Test hook (like setSalesGateEdgeModeForTests); null restores the default. */
+export function setPosWriteGateEdgeModeForTests(
+  fn: (() => boolean) | null,
+): void {
+  isEdgeWriter = fn ?? isEdgeProcess;
+}
+
 /** 409 POS_WRITE_ON_EDGE for a cloud write on an outlet its edge serves. */
 export async function assertPosWriteNotOnEdge(
   tx: Tx,
   tenantId: TenantId,
   outletId: OutletId,
 ): Promise<void> {
-  if (isEdgeProcess()) return;
+  if (isEdgeWriter()) return;
   if (await outletHasActiveEdge(tx, tenantId, outletId))
     throw new PosError("POS_WRITE_ON_EDGE");
 }

@@ -600,17 +600,21 @@ describe("1269 E3 edge shift mirrored in the cloud", () => {
 
   it("reversed order: the close waits for its movements, then writes the drawer once", async () => {
     const s = shiftEvents({ date: freshDate(), movements: true });
-    // The link holds an aggregate's later event until its earlier one is in.
-    await deliver([...s.approved]);
-    await deliver([s.closed]);
-    expect(await drawerCounts(s.shiftId)).toEqual(NO_DRAWER);
-    await deliver([s.opened]);
+    // Within one aggregate the link enforces the order (a gap is a sync
+    // conflict); across aggregates any order can arrive.
+    await deliver([s.opened, s.closed]);
     expect(await drawerCounts(s.shiftId)).toEqual(NO_DRAWER);
     expect(await ledger("shift", s.shiftId)).toMatchObject({
       state: "pending",
       reason: "movement_missing",
     });
     await deliver([...s.recorded].reverse());
+    expect(await drawerCounts(s.shiftId)).toEqual(NO_DRAWER);
+    expect(await ledger("shift", s.shiftId)).toMatchObject({
+      state: "pending",
+      reason: "approval_missing",
+    });
+    await deliver([...s.approved]);
     expect(await drawerCounts(s.shiftId)).toEqual({
       shifts: 1,
       movements: 2,
@@ -975,7 +979,8 @@ describe("1269 E3 day.closed mirrored into pos_daily_closes (legend-8yqik)", () 
   it("an older day.closed without a recap is refused, not mirrored", async () => {
     const date = freshDate();
     const event = await dayEvent(date, (recap) => recap);
-    const { recap: _recap, ...legacy } = event.payload as Payload;
+    const legacy = { ...(event.payload as Payload) };
+    delete legacy.recap;
     await deliver([envelope("day.closed", event.aggregateId, 1, legacy)]);
     expect(await closesOf(date)).toHaveLength(0);
     expect(await ledger("day", event.aggregateId)).toMatchObject({
