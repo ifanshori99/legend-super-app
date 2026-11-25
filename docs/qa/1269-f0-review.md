@@ -12,3 +12,7 @@
 10. **Playwright pasti/mungkin gagal (tak satu pun e2e diubah):** `legend-kaqr`, `legend-6liv` (booking), `legend-1oi9`, `legend-jztb7`, `legend-wf37` (kebersihan), `legend-er32` (openConfig shower); mungkin `legend-fe-small`. `mock-global-setup` hanya warn pada 404; `legend-emcy` (WFC), `legend-1046`, `legend-zx8k`, `legend-k8fk` seharusnya lolos.
 
 Keputusan CTO: perbaiki 1, 2, 3, 4, 5, 7 dan e2e di 10. No. 1: tolak item menu produk fasilitas shower dan paket yang memberi hak shower di harga server semua kanal (POS, QR, delivery, edge bila replika ada; bila tidak ada di edge, ingest memarkir). No. 6: void dan refund transaksi lama selalu boleh; complete tetap 403; runbook: rilis pertama wajib nol data shower. Migrasi dilarang. Gerbang UI per `facility.type`, coworking/loker/meeting_room tetap utuh.
+
+## Re-review 26 Nov (d90a138d5): TIDAK LULUS, tipis
+
+Dua P1 beres. Wajib: `tests/push-registration-web.test.mjs:481`; tolak shower di `createFacility` dan impor konfigurasi; urutan dan peran DB di runbook. Sisa (a)(b)(c) cukup dengan syarat nol data; dicatat di legend-osqou.33.19.

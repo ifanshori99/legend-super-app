@@ -18,3 +18,11 @@ Path `apps/api/src/` kecuali disebut lain. Urutan: P1-1, C, A+B, P2-2/3/4, P2-1,
 - `facility.*` dan QR absen tetap 403 di edge sampai kartu F1 membukanya dengan test.
 - P1-3 (SSR `/api/me/access` 401 + halaman login PIN) dan P1-4 (override katalog owner di edge) = kartu sendiri, wajib sebelum edge dipakai outlet. P1-4: PIN owner + throttle penyetuju, bukan melonggarkan MFA.
 - P3 RTC mati listrik dan kunci PIN jam dinding: bead.
+
+## Re-review 26 Nov (edb5af97c): TIDAK LULUS, dua hal kecil
+
+- P1: `request-context.ts:117` juga memotong pemilik sesi, sehingga spv yang login lalu menyetujui kasir lain dengan PIN ditolak 403 (`staff-override.service.ts:605,648`). Saran P2-4 semula dikoreksi: opsi `approver: true` di resolver, hanya untuk `holdsOverridePermission`.
+- P2: `recheckKdsSockets` berjalan dalam konteks HTTP manajer di cloud; `kds-realtime-auth.ts:224-225` menimpa pelaku. Bungkus dengan `isEdgeNode()`.
+- P3: test "opens no password session" jadi 404 `CLOUD_ONLY_ROUTE`.
+- Lulus: P1-1, C, P2-1, P2-2, A, B; test cookie cloud tidak dilonggarkan; tanpa jalan uang baru.
+- P1-3/P1-4 aman ditunda (gagal tertutup). `.36`, `.37`, dan F5 kini memblokir E11 (gerbang pemasangan edge); `.36` memblokir E10.
