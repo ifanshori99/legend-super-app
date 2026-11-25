@@ -3,6 +3,7 @@
 // demand and refreshed by the mutations in ./hooks.ts.
 import { queryOptions } from "@tanstack/react-query";
 import {
+  fetchEdcApprovers,
   fetchEdcTerminals,
   fetchEwallets,
   fetchPaymentMethods,
@@ -37,6 +38,8 @@ export const posKasirKeys = {
     ["pos-kasir", outletId, "points", orderId] as const,
   edcTerminals: (outletId: string) =>
     ["pos-kasir", outletId, "edc-terminals"] as const,
+  edcApprovers: (outletId: string) =>
+    ["pos-kasir", outletId, "edc-approvers"] as const,
   vaBanks: (outletId: string) => ["pos-kasir", outletId, "va-banks"] as const,
   ewallets: (outletId: string) => ["pos-kasir", outletId, "ewallets"] as const,
   shift: (outletId: string) => ["pos-kasir", outletId, "shift"] as const,
@@ -70,7 +73,11 @@ export function paymentSessionQuery(outletId: string, orderId: string) {
     queryFn: ({ signal }) => fetchPaymentSession(outletId, orderId, signal),
     refetchInterval: (query) => {
       const attempt = query.state.data?.activeAttempt;
-      if (!attempt || attempt.status !== "waiting") return false;
+      if (
+        !attempt ||
+        (attempt.status !== "waiting" && attempt.status !== "cancelling")
+      )
+        return false;
       return attempt.method === "edc" ? EDC_POLL_MS : GATEWAY_POLL_MS;
     },
     refetchIntervalInBackground: false,
@@ -81,7 +88,7 @@ export function paymentSessionQuery(outletId: string, orderId: string) {
 export const paymentMethodsQuery = (outletId: string, orderId: string) =>
   queryOptions({
     queryKey: posKasirKeys.methods(outletId, orderId),
-    queryFn: () => fetchPaymentMethods(),
+    queryFn: () => fetchPaymentMethods(outletId),
     retry: false,
   });
 
@@ -96,7 +103,14 @@ export const pointsAccountQuery = (outletId: string, orderId: string) =>
 export const edcTerminalsQuery = (outletId: string) =>
   queryOptions({
     queryKey: posKasirKeys.edcTerminals(outletId),
-    queryFn: () => fetchEdcTerminals(),
+    queryFn: () => fetchEdcTerminals(outletId),
+    retry: false,
+  });
+
+export const edcApproversQuery = (outletId: string) =>
+  queryOptions({
+    queryKey: posKasirKeys.edcApprovers(outletId),
+    queryFn: () => fetchEdcApprovers(outletId),
     retry: false,
   });
 

@@ -6,6 +6,7 @@
 // Plain TypeScript with no runtime imports (type imports only): Node tests load
 // it directly.
 import type { VoucherRejectionReason } from "@starter/shared/crm";
+import type { PosPaymentUnavailableReason } from "@starter/shared/pos";
 
 /**
  * One EDC request of a bill as `getPosOrder` lists it (`edcAttempts`, newest
@@ -33,8 +34,11 @@ export type PaymentMethodCode =
 export type PaymentMethodOption = {
   code: PaymentMethodCode;
   label: string;
+  /** "" when the screen words it itself (see `unavailableReason`). */
   hint: string;
   enabled: boolean;
+  /** Why the server locks this method; absent when it is usable or in mock. */
+  unavailableReason?: PosPaymentUnavailableReason;
 };
 
 export type AllocationStatus = "confirmed" | "waiting" | "failed";
@@ -87,9 +91,17 @@ export type PaymentBill = {
 /**
  * `declined`: the bank or terminal refused the payment (not a technical
  * `failed`, and not `unknown`, where the result is not known yet).
+ * `cancelling`: the cashier hid the QRIS and the provider has not yet proven it
+ * can no longer be paid, so the bill stays locked.
  */
 export type AttemptStatus =
-  "waiting" | "expired" | "failed" | "confirmed" | "unknown" | "declined";
+  | "waiting"
+  | "cancelling"
+  | "expired"
+  | "failed"
+  | "confirmed"
+  | "unknown"
+  | "declined";
 
 export type EdcMode = "card" | "qris";
 
@@ -150,7 +162,17 @@ export type PaymentAttempt = {
    * why, so the cashier text names the real cause. Absent otherwise.
    */
   voidReason?: TenderVoidReason;
+  /** False: the server gave no QR to show for this waiting QRIS. */
+  qrShown?: boolean;
+  /** False: this QRIS belongs to a guest split bill and is not ours to cancel. */
+  cancellable?: boolean;
 };
+
+/**
+ * A paid order still has to be completed, and the server refuses that while an
+ * item is held (`held`) or the order was not sent (`blocked`).
+ */
+export type OrderCompletion = "done" | "ready" | "held" | "blocked";
 
 export type PaymentSession = {
   bill: PaymentBill;
@@ -163,6 +185,10 @@ export type PaymentSession = {
   /** The last cash tender: what the customer handed over and the change. */
   cash?: { receivedIdr: number; changeIdr: number };
   receiptNo?: string;
+  /** Paid bills only, from the server's order; absent in mock mode. */
+  completion?: OrderCompletion;
+  /** The server settles the whole remaining balance: no partial amounts. */
+  partialAllowed?: boolean;
 };
 
 export type StartPaymentInput = {
@@ -189,6 +215,9 @@ export type ConfirmCashInput = {
 export type RecordEdcStandaloneInput = {
   orderId: string;
   terminalId: string;
+  /** What the supervisor approved; a changed balance is refused. */
+  amountIdr: number;
+  edcMode: EdcMode;
   bankRef: string;
   approvalCode?: string;
   overrideId: string;
@@ -203,6 +232,8 @@ export type EdcTerminal = {
   integrated: boolean;
   status: "ready" | "busy" | "offline";
   assignedTo: string;
+  /** What the machine takes; absent means both. */
+  modes?: readonly EdcMode[];
 };
 
 export type VaBank = { code: string; label: string };
@@ -213,6 +244,9 @@ export type ReceiptResult = {
   printedAt: string;
   /** Printing again after the first time is a reprint. */
   reprint: boolean;
+  receiptId?: string;
+  /** What the server did with the print; only `queued_to_printer` may print. */
+  printResult: "queued_to_printer" | "not_printed" | null;
 };
 
 // ---- Cashier code ("Bayar di kasir") ---------------------------------------

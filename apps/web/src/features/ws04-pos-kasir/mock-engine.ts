@@ -1558,7 +1558,7 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
           terminalId: terminal.id,
           terminalLabel: terminal.label,
           bank: terminal.bank,
-          mode: "card",
+          mode: input.edcMode ?? "card",
           lockedAmountIdr: amountIdr,
         },
         bankRef,
@@ -1606,6 +1606,7 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
         receiptNo: order.receiptNo,
         printedAt: iso(clock()),
         reprint: order.receiptPrints > 1,
+        printResult: "queued_to_printer",
       };
     },
 
