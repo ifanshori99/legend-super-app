@@ -68,7 +68,7 @@ export const financeExceptionsMessages = {
     manual_refund_exists:
       "Order sudah di-refund manual, jadi void dari edge ditolak.",
     void_deposit_applied:
-      "Order ini dibayar sebagian dengan uang muka (DP), jadi void dari edge ditolak. Kembalikan lewat refund DP.",
+      "Order ini dibayar sebagian dengan uang muka (DP), jadi void dari edge ditolak. Cek dulu uang yang sudah keluar dari laci. DP dikembalikan finance hanya bila belum dikembalikan outlet.",
     tax_missing: "Pajak tidak ada pada data edge.",
     tax_mismatch: "Pajak pada data edge tidak cocok dengan total order.",
     batchPrefix: "Batch pencairan",
