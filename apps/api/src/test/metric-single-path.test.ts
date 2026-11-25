@@ -37,6 +37,9 @@ const ACCOUNTING_DOMAIN = [
   // Payout holds (legend-1184) prove the settle journal debited the frozen
   // payable account before a release: ledger bookkeeping, not a metric.
   /^services\/payroll-payout-gl-holds\.service\.ts$/,
+  // Inventory GL (legend-1252) reads the price variance it already booked for
+  // the same production batch, to post only the remainder: ledger bookkeeping.
+  /^services\/inventory-gl-consumer\.ts$/,
   // Profit share (legend-2ljb) is accounting: it derives distributable net
   // profit straight from the posted journal, which is the ledger of record.
   /^services\/profit-share-net-profit\.ts$/,
