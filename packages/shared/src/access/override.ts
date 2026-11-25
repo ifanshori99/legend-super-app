@@ -332,6 +332,34 @@ export const getPosOverride = defineEndpoint({
 });
 
 /**
+ * Supervisors the POS PIN dialog may offer for one override action (card 1268
+ * B3). Only the staff the server will accept: they hold the action's approve
+ * permission (`POS_OVERRIDE_APPROVE_PERMISSION`) at the outlet and have a
+ * usable staff PIN there; the requester never appears. Answered only to a
+ * valid staff session at that outlet, never to a bare shared device.
+ */
+export const posOverrideApproversQuerySchema = z.strictObject({
+  outletId: outletIdSchema,
+  action: z.enum(POS_OVERRIDE_ACTIONS),
+});
+export type PosOverrideApproversQuery = z.infer<
+  typeof posOverrideApproversQuerySchema
+>;
+
+export const posOverrideApproverSchema = z.strictObject({
+  userId: userIdSchema,
+  displayName: z.string().min(1),
+});
+export type PosOverrideApprover = z.infer<typeof posOverrideApproverSchema>;
+
+export const listPosOverrideApprovers = defineEndpoint({
+  method: "GET",
+  path: "/api/pos-overrides/approvers",
+  query: posOverrideApproversQuerySchema,
+  response: dataResponseSchema(z.array(posOverrideApproverSchema)),
+});
+
+/**
  * PhoneWait poll (sub-brief E3): the acting cashier reads their own phone
  * override's approval request (`:requestId` = its `approvalRequestId`) at the
  * device's outlet, as the latest level of its chain. Same guards and scope as
