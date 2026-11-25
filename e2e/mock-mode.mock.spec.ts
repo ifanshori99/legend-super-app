@@ -4,6 +4,7 @@
 // fixtures. Feature specs (e2e/*.mock.spec.ts) ride on
 // the same project.
 import { expect, test } from "@playwright/test";
+import { waitForHydration } from "./hydration.ts";
 import {
   LEGACY_MOCK_WEB_URL_ENV,
   MOCK_WEB_URL,
@@ -30,6 +31,9 @@ test("legend-n2sp · mock runtime answers a registered endpoint from fixtures, n
   page,
 }) => {
   await page.goto("/design-system");
+  // The text catalog registers when the app hydrates; the mock fixtures check
+  // their keys against it as soon as the client module loads.
+  await waitForHydration(page);
 
   const requested: string[] = [];
   page.on("request", (request) => requested.push(request.url()));

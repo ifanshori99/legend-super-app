@@ -69,7 +69,7 @@ test("legend-n138: an invalid FormField Select exposes aria-invalid and its erro
   await page.goto("/kelola/pembayaran");
   await waitForHydration(page, '[role="tablist"]');
 
-  await page.getByRole("tab", { name: "Refund" }).click();
+  await page.getByRole("tab", { name: "Refund", exact: true }).click();
   await page.getByRole("button", { name: "Buat refund" }).first().click();
 
   const payment = page.getByRole("combobox", { name: "Pembayaran lunas" });

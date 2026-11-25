@@ -123,7 +123,7 @@ test.describe("Order status, waiter, bill and points (mock)", () => {
       .click();
     const pay = page.getByRole("dialog");
     await pay.getByRole("radio", { name: /QRIS/ }).click();
-    await pay.getByRole("button", { name: "Lanjut bayar" }).click();
+    await pay.getByRole("button", { name: /^Bayar Rp.* dengan QRIS$/ }).click();
     await expect(page.getByRole("img", { name: /Kode QRIS/ })).toBeVisible();
     await expect(
       page.getByText("Pembayaran berhasil", { exact: true }),

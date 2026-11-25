@@ -62,7 +62,7 @@ async function splitAndPayFirstPart(page: Page) {
   await page.getByRole("button", { name: "Bayar bagian ini" }).first().click();
   const pay = page.getByRole("dialog");
   await pay.getByRole("radio", { name: /QRIS/ }).click();
-  await pay.getByRole("button", { name: "Lanjut bayar" }).click();
+  await pay.getByRole("button", { name: /^Bayar Rp.* dengan QRIS$/ }).click();
   await expect(
     page.getByText("Pembayaran berhasil", { exact: true }),
   ).toBeVisible({ timeout: 15_000 });

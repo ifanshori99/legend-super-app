@@ -15,6 +15,9 @@
 import {
   cafeLegendHrisFixtures,
   checklistTaskSchema,
+  finalSettlementSummarySchema,
+  getOffboardingSettlement,
+  outstandingLoans,
   listChecklistTasks,
   transitionChecklistTask,
   type ChecklistTask,
@@ -99,6 +102,44 @@ registerLocalTaskAction(({ taskId, action }) => {
     tasks.map((task) => (task.id === taskId ? next : task)),
   );
   return next;
+});
+
+// The API's final-settlement summary, built from the fixture loans (kasbon).
+// The fixture employee has no running payroll run, so only the kasbon and
+// reimbursement counts carry numbers.
+registerMock(getOffboardingSettlement, ({ params }) => {
+  const task = lifecycleMockTasks
+    .get()
+    .find((row) => row.offboardingId === params.offboardingId);
+  if (task === undefined)
+    throw new ApiError(404, "NOT_FOUND", "Offboarding tidak ditemukan.");
+  const loans = outstandingLoans(
+    cafeLegendPayrollFixtures.employeeLoans.filter(
+      (loan) => loan.employeeId === task.employeeId,
+    ),
+  );
+  return {
+    data: finalSettlementSummarySchema.parse({
+      offboardingId: params.offboardingId,
+      employeeId: task.employeeId,
+      exitType: "resignation",
+      joinDate: "2024-01-15",
+      lastWorkingDate: "2026-11-30",
+      runningSalary: {
+        lastPayrollRun: null,
+        unpaidFrom: null,
+        unpaidTo: "2026-11-30",
+        unpaidCalendarDays: 0,
+      },
+      outstandingLoans: loans,
+      pendingPayrollDeductions: { count: 0, amountIdr: 0, loanIds: [] },
+      unpaidReimbursements: { count: 0, amountIdr: 0, pendingCount: 0 },
+      leave: [],
+      pendingPayrollEngine: [],
+      computedAt: "2026-11-25T00:00:00.000Z",
+      frozen: false,
+    }),
+  };
 });
 
 registerMock(listEmployeeLoans, ({ query, scenario }) => {

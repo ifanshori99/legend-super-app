@@ -33,7 +33,9 @@ test("legend-8tv6 routing saves after a failed attempt and retry", async ({
   // The toast renders the message twice for assistive tech: the visible text
   // and its assertive announcement ("Notifikasi …"). Pin the visible one.
   await expect(
-    page.getByText("Retry this attempt", { exact: true }),
+    page.getByText("Routing belum tersimpan. Coba lagi sebentar lagi.", {
+      exact: true,
+    }),
   ).toBeVisible();
   await expect(row.getByRole("button", { name: "Simpan" })).toBeEnabled();
   await row.getByRole("button", { name: "Simpan" }).click();
