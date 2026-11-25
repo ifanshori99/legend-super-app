@@ -18,7 +18,7 @@ import type { ReceiptData } from "../edge/print/types.ts";
 import type { Tx } from "./permission-resolver.ts";
 
 /** Read the document's amounts unchanged; printing never recalculates a sale. */
-function receiptData(document: ReceiptDocument): ReceiptData {
+export function receiptData(document: ReceiptDocument): ReceiptData {
   return {
     outletName: document.outletName,
     outletAddress: document.outletAddress,
@@ -40,6 +40,7 @@ function receiptData(document: ReceiptDocument): ReceiptData {
     total: document.totalIdr,
     rounding: document.roundingIdr,
     status: document.status,
+    depositAppliedIdr: Number(document.depositAppliedIdr),
     payments: document.tenders.map((tender) => ({
       method: tender.method,
       amount: tender.amountIdr,

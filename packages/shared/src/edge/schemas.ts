@@ -256,6 +256,18 @@ export const receiptRunReportQuerySchema = z
   });
 
 /**
+ * legend-rh1hk: the `receiptRunsSeq` query param, the edge's outbox link cursor
+ * (`sync_cursors(edge_to_cloud).next_out_seq`) read BEFORE its `receiptRuns`
+ * counters in the same transaction. A decimal string, `0` or up to 15 digits
+ * without a leading zero (inside the safe integer range); kept as the string
+ * (a query schema is parsed twice), read it with `Number(...)`. Only valid
+ * together with `receiptRuns`.
+ */
+export const receiptRunSeqQuerySchema = z
+  .string()
+  .regex(/^(0|[1-9][0-9]{0,14})$/, "Bad receipt run report cursor.");
+
+/**
  * legend-hfq3z: why a primary edge refused a pulled run bound to itself that a
  * new run (new id, new prefix) would fix: its prefix (`prefix_used`) or its id
  * (`id_used`) already exists on another row of this edge database.

@@ -242,6 +242,11 @@ export type ReceiptData = {
   rounding?: number;
   /** Voided receipts retain their number but must be visibly invalid. */
   status?: "issued" | "voided";
+  /**
+   * Prepaid DP (uang muka) applied to this sale. A bucket, never a tender:
+   * it is not cash and never part of payments or change.
+   */
+  depositAppliedIdr?: number;
   payments: { method: string; amount: number }[];
   change?: number;
   footer?: string | null;

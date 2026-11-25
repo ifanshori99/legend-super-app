@@ -211,6 +211,7 @@ export async function buildReceiptDocument(
     taxIdr: order.taxIdr,
     roundingIdr: order.roundingIdr,
     totalIdr: order.totalIdr,
+    depositAppliedIdr: order.depositAppliedIdr,
     pricesIncludeTax: order.pricesIncludeTax,
     tenders: tenders
       .filter((tender) => tender.status === "captured")

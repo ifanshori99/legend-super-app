@@ -350,6 +350,8 @@ function dayRecapFrom(recap: EndOfDayRecapView, cutoff: string): DayCloseRecap {
     totalSalesIdr: Number(recap.totalSalesIdr),
     refundIdr: Number(recap.totalRefundsIdr),
     voidIdr: Number(recap.totalVoidsIdr),
+    depositAppliedIdr: Number(recap.totalDepositAppliedIdr ?? 0),
+    depositRefundedIdr: Number(recap.totalDepositRefundedIdr ?? 0),
     channels: recap.channels.map((row) => ({
       code: row.channel,
       label: CHANNEL_LABELS[row.channel] ?? row.channel,

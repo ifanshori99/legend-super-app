@@ -214,6 +214,8 @@ function buildRows(doc: Document): Row[] {
   });
   rule();
 
+  if (doc.depositAppliedIdr > 0)
+    pair("Uang muka (DP)", formatRupiah(doc.depositAppliedIdr));
   for (const tender of doc.tenders) {
     const label = METHOD_LABELS[tender.method] ?? tender.method;
     pair(
