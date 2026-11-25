@@ -37,9 +37,11 @@
 //    free, as long as outstanding equals the balance.
 //  - The backfill spans every legal entity of the tenant; this test only looks
 //    at its own entities.
-import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
+import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { Writable } from "node:stream";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -857,4 +859,803 @@ describe("legend-i848k: backfill of the employee PPh 21 receivable open item", (
       before,
     );
   }, 900_000);
+});
+
+// ---------------------------------------------------------------------------
+// legend-wxvt9: release rehearsal on a disposable database (no staging yet).
+// Legacy data (pre-972 receivables, positive/zero/negative, departed employee,
+// reversed run, unreadable slip, existing items, two tenants) is built with the
+// real services, then the operator command itself is run as a child process:
+// dry-run (zero writes, proven by row fingerprints incl. xmin), killed mid-run,
+// real run, repeat, two at once, rollback SQL of the runbook, and a later
+// payroll run that must collect exactly once. Runbook:
+// docs/release/pph21-backfill-rehearsal.md.
+// ---------------------------------------------------------------------------
+
+const REPO_ROOT = resolve(import.meta.dirname, "../../../..");
+const REHEARSAL_CLI = [
+  "--filter",
+  "@starter/api",
+  "payroll:backfill-pph21-receivable",
+];
+const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
+
+type CliResult = {
+  code: number | null;
+  signal: string | null;
+  out: string;
+  err: string;
+};
+type CliLine = {
+  tenantId?: string;
+  created?: number;
+  createdIdr?: number;
+  held?: { legalEntityId: string; employeeId: string; reason: string }[];
+  dryRun?: number;
+  summary?: { tenants: number; created: number; held: number };
+};
+
+/** The operator command exactly as the runbook prints it. */
+function spawnCli(args: string[]) {
+  const child = spawn("pnpm", [...REHEARSAL_CLI, ...args], {
+    cwd: REPO_ROOT,
+    env: process.env,
+    detached: true,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const done = new Promise<CliResult>((finish) => {
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (chunk) => (out += chunk));
+    child.stderr.on("data", (chunk) => (err += chunk));
+    child.on("close", (code, signal) => finish({ code, signal, out, err }));
+  });
+  return { child, done };
+}
+
+const cliLines = (out: string): CliLine[] =>
+  out
+    .split("\n")
+    .filter((line) => line.startsWith("{"))
+    .map((line) => JSON.parse(line) as CliLine);
+const tenantLine = (result: CliResult, tenantId: string) => {
+  const line = cliLines(result.out).find((l) => l.tenantId === tenantId);
+  if (!line) throw new Error(`no report line for the tenant: ${result.out}`);
+  return line;
+};
+
+describe("legend-wxvt9: release rehearsal of the PPh 21 receivable backfill", () => {
+  const otherTenant = {
+    id: "",
+    entityId: randomUUID(),
+    employeeId: randomUUID(),
+    runIds: [] as string[],
+  };
+
+  /** A tenant id that sorts after the seeded one: it is processed second. */
+  const laterTenantId = () => {
+    for (;;) {
+      const id = randomUUID();
+      if (id > tenant.id) return id;
+    }
+  };
+
+  async function rewriteSlip(
+    runId: string,
+    emp: Emp,
+    change: (calc: Record<string, unknown>) => Record<string, unknown>,
+  ) {
+    await asTenant(async (conn) => {
+      const row = (
+        await conn.query(
+          `SELECT id, calculation_encrypted, pii_key_version FROM payslips
+            WHERE tenant_id = $1 AND payroll_run_id = $2 AND employee_id = $3`,
+          [tenant.id, runId, emp.id],
+        )
+      ).rows[0];
+      const next = change(openSlip(row) as unknown as Record<string, unknown>);
+      await conn.query(
+        `UPDATE payslips SET calculation_encrypted = $3, pii_key_version = $4
+          WHERE tenant_id = $1 AND id = $2`,
+        [
+          tenant.id,
+          row.id,
+          sealPayrollValue(JSON.stringify(next), {
+            tenantId: tenant.id,
+            table: "payslips",
+            rowId: row.id,
+            field: "calculation",
+          }),
+          PAYROLL_SEAL_KEY_VERSION,
+        ],
+      );
+    }, true);
+  }
+
+  /** Slips written before the carry field existed. */
+  const stripCarry = (runIds: string[], emp: Emp) =>
+    Promise.all(
+      runIds.map((runId) =>
+        rewriteSlip(runId, emp, (calc) => {
+          const { pph21ReceivableOpenAfterIdr: _carry, ...rest } = calc;
+          return rest;
+        }),
+      ),
+    );
+
+  async function insertItem(
+    entityId: string,
+    emp: Emp,
+    original: number,
+    documentNumber: string,
+  ) {
+    await owner.query(
+      `INSERT INTO accounting_open_items
+         (tenant_id, kind, id, legal_entity_id, counterparty_type, counterparty_id,
+          counterparty_name, document_number, document_date, due_on, original_idr)
+       VALUES ($1, 'receivable', $2, $3, 'employee', $4, $5, $6, '2026-01-28', '2026-02-27', $7)`,
+      [
+        tenant.id,
+        randomUUID(),
+        entityId,
+        emp.id,
+        emp.name,
+        documentNumber,
+        original,
+      ],
+    );
+  }
+
+  /**
+   * Copies one employee and the given runs' payslips of that employee into the
+   * other tenant (new ids, slips resealed for the other tenant).
+   */
+  async function cloneToOtherTenant(srcRunIds: string[], src: Emp) {
+    otherTenant.id = laterTenantId();
+    await owner.query(
+      `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
+       SELECT $1, $2, 'Rehearsal wxvt9 tenant', plan, status, deployment_mode, feature_flags, limits, created_by
+         FROM tenants WHERE id = $3`,
+      [otherTenant.id, `wxvt9-${randomUUID().slice(0, 8)}`, tenant.id],
+    );
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SET LOCAL session_replication_role = replica");
+      await client.query(
+        "INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'PT Rehearsal lain', false)",
+        [otherTenant.entityId, otherTenant.id],
+      );
+      await client.query(
+        `INSERT INTO employees
+           SELECT (jsonb_populate_record(NULL::employees, to_jsonb(e) || jsonb_build_object(
+             'id', $2::text, 'tenant_id', $3::text, 'legal_entity_id', $4::text))).*
+           FROM employees e WHERE e.tenant_id = $1 AND e.id = $5`,
+        [
+          tenant.id,
+          otherTenant.employeeId,
+          otherTenant.id,
+          otherTenant.entityId,
+          src.id,
+        ],
+      );
+      for (const srcRun of srcRunIds) {
+        const newRun = randomUUID();
+        otherTenant.runIds.push(newRun);
+        await client.query(
+          `INSERT INTO payroll_runs
+             SELECT (jsonb_populate_record(NULL::payroll_runs, to_jsonb(r) || jsonb_build_object(
+               'id', $3::text, 'tenant_id', $4::text, 'legal_entity_id', $5::text))).*
+             FROM payroll_runs r WHERE r.tenant_id = $1 AND r.id = $2`,
+          [tenant.id, srcRun, newRun, otherTenant.id, otherTenant.entityId],
+        );
+        const slip = (
+          await client.query(
+            `SELECT id, calculation_encrypted, pii_key_version FROM payslips
+              WHERE tenant_id = $1 AND payroll_run_id = $2 AND employee_id = $3`,
+            [tenant.id, srcRun, src.id],
+          )
+        ).rows[0];
+        const calc = { ...openSlip(slip), employeeId: otherTenant.employeeId };
+        const newSlip = randomUUID();
+        const sealed = sealPayrollValue(JSON.stringify(calc), {
+          tenantId: otherTenant.id,
+          table: "payslips",
+          rowId: newSlip,
+          field: "calculation",
+        });
+        await client.query(
+          `INSERT INTO payslips
+             SELECT (jsonb_populate_record(NULL::payslips, to_jsonb(p) || jsonb_build_object(
+               'id', $4::text, 'tenant_id', $5::text, 'payroll_run_id', $6::text,
+               'employee_id', $7::text, 'calculation_encrypted', $8::text,
+               'pii_key_version', $9::int))).*
+             FROM payslips p WHERE p.tenant_id = $1 AND p.payroll_run_id = $2 AND p.employee_id = $3`,
+          [
+            tenant.id,
+            srcRun,
+            src.id,
+            newSlip,
+            otherTenant.id,
+            newRun,
+            otherTenant.employeeId,
+            `\\x${Buffer.from(sealed).toString("hex")}`,
+            PAYROLL_SEAL_KEY_VERSION,
+          ],
+        );
+      }
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  /** Row fingerprints (content + xmin: an UPDATE or rewrite shows up too). */
+  async function fingerprint(entityIds: string[], employeeIds: string[]) {
+    const tenantIds = [tenant.id, otherTenant.id];
+    const hash = async (sqlText: string, params: unknown[]) =>
+      (await owner.query(sqlText, params)).rows[0] as { n: number; h: string };
+    return {
+      items: await hash(
+        `SELECT count(*)::int AS n, coalesce(md5(string_agg(row_to_json(i)::text || ':' || i.xmin::text, '|'
+                 ORDER BY i.tenant_id, i.kind, i.id)), '') AS h
+           FROM accounting_open_items i WHERE i.legal_entity_id = ANY($1::uuid[])`,
+        [entityIds],
+      ),
+      settlements: await hash(
+        `SELECT count(*)::int AS n, coalesce(md5(string_agg(row_to_json(s)::text || ':' || s.xmin::text, '|'
+                 ORDER BY s.id)), '') AS h
+           FROM accounting_open_item_settlements s
+           JOIN accounting_open_items i
+             ON i.tenant_id = s.tenant_id AND i.kind = s.kind AND i.id = s.open_item_id
+          WHERE i.legal_entity_id = ANY($1::uuid[])`,
+        [entityIds],
+      ),
+      payslips: await hash(
+        `SELECT count(*)::int AS n, coalesce(md5(string_agg(row_to_json(p)::text || ':' || p.xmin::text, '|'
+                 ORDER BY p.id)), '') AS h
+           FROM payslips p JOIN payroll_runs r
+             ON r.tenant_id = p.tenant_id AND r.id = p.payroll_run_id
+          WHERE r.legal_entity_id = ANY($1::uuid[])`,
+        [entityIds],
+      ),
+      runs: await hash(
+        `SELECT count(*)::int AS n, coalesce(md5(string_agg(row_to_json(r)::text || ':' || r.xmin::text, '|'
+                 ORDER BY r.id)), '') AS h
+           FROM payroll_runs r WHERE r.legal_entity_id = ANY($1::uuid[])`,
+        [entityIds],
+      ),
+      employees: await hash(
+        `SELECT count(*)::int AS n, coalesce(md5(string_agg(row_to_json(e)::text || ':' || e.xmin::text, '|'
+                 ORDER BY e.id)), '') AS h
+           FROM employees e WHERE e.id = ANY($1::uuid[]) AND e.tenant_id = ANY($2::uuid[])`,
+        [employeeIds, tenantIds],
+      ),
+    };
+  }
+
+  type ItemSummary = {
+    tenant_id: string;
+    legal_entity_id: string;
+    counterparty_id: string;
+    id: string;
+    document_number: string;
+    original: number;
+    settled: number;
+  };
+  const itemsOf = async (entityIds: string[]) =>
+    (
+      await owner.query<ItemSummary>(
+        `SELECT tenant_id, legal_entity_id, counterparty_id, id, document_number,
+                original_idr::int AS original, settled_idr::int AS settled
+           FROM accounting_open_items
+          WHERE legal_entity_id = ANY($1::uuid[]) AND kind = 'receivable'
+          ORDER BY counterparty_id, id`,
+        [entityIds],
+      )
+    ).rows;
+  const outstandingOf = (items: ItemSummary[], emp: { id: string }) =>
+    items
+      .filter((item) => item.counterparty_id === emp.id)
+      .reduce((total, item) => total + item.original - item.settled, 0);
+
+  afterAll(async () => {
+    if (!otherTenant.id) return;
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SET LOCAL session_replication_role = replica");
+      for (const table of [
+        "accounting_open_item_settlements",
+        "accounting_open_items",
+        "payslips",
+        "payroll_runs",
+        "employees",
+        "legal_entities",
+      ])
+        await client.query(`DELETE FROM ${table} WHERE tenant_id = $1`, [
+          otherTenant.id,
+        ]);
+      await client.query("DELETE FROM tenants WHERE id = $1", [otherTenant.id]);
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  });
+
+  it("legacy data: dry-run writes nothing, a killed run leaves nothing, the real run and a repeat and two at once end in the same rows, and the next payroll run collects once", async () => {
+    // --- Legacy world: two legal entities of the seeded tenant. The lower
+    // entity id is processed first, so a lock on the higher one stops the
+    // process after the lower one was already written (kill test).
+    const worlds = [await makeWorld(), await makeWorld()].sort((a, b) =>
+      a.entityId < b.entityId ? -1 : 1,
+    );
+    const lo = worlds[0]!;
+    const hi = worlds[1]!;
+    const pos = await makeEmployee(lo);
+    const zero = await makeEmployee(lo);
+    const none = await makeEmployee(lo);
+    const legacy = await makeEmployee(lo);
+    const departed = await makeEmployee(lo);
+    const neg = await makeEmployee(lo);
+    const corrupt = await makeEmployee(lo);
+    const exceeds = await makeEmployee(lo);
+    const partial = await makeEmployee(lo);
+    const reversed = await makeEmployee(lo);
+    const pos2 = await makeEmployee(hi);
+    const part2 = await makeEmployee(hi);
+
+    const OPEN = 40_000_000;
+    const julLo = await lockedRun(lo, monthDates(7, 2025));
+    for (const emp of [pos, legacy, departed, corrupt, exceeds, partial])
+      expect(await raiseReceivable(julLo, emp, OPEN)).toBe(OPEN);
+    expect(await raiseReceivable(julLo, zero, 3_000_000)).toBe(3_000_000);
+    // A run that raised a receivable and was reversed: its debt does not exist.
+    const augLo = await lockedRun(lo, monthDates(8, 2025));
+    await raiseReceivable(augLo, reversed, 7_000_000);
+    await reverseRun(augLo);
+    expect(await runStatus(augLo)).toBe("reversed");
+    const sepLo = await lockedRun(lo, monthDates(9));
+    const liveLo = [julLo, sepLo];
+
+    const julHi = await lockedRun(hi, monthDates(7, 2025));
+    for (const emp of [pos2, part2])
+      expect(await raiseReceivable(julHi, emp, OPEN)).toBe(OPEN);
+    const sepHi = await lockedRun(hi, monthDates(9));
+
+    const balance = {
+      pos: await slipBalance(liveLo, pos),
+      legacy: await slipBalance(liveLo, legacy),
+      departed: await slipBalance(liveLo, departed),
+      partial: await slipBalance(liveLo, partial),
+      exceeds: await slipBalance(liveLo, exceeds),
+      zero: await slipBalance(liveLo, zero),
+      none: await slipBalance(liveLo, none),
+      reversed: await slipBalance(liveLo, reversed),
+      pos2: await slipBalance([julHi, sepHi], pos2),
+      part2: await slipBalance([julHi, sepHi], part2),
+    };
+    for (const key of [
+      "pos",
+      "legacy",
+      "departed",
+      "partial",
+      "exceeds",
+      "pos2",
+      "part2",
+    ] as const) {
+      expect(balance[key], `${key}: Sep collected part of it`).toBeGreaterThan(
+        0,
+      );
+      expect(balance[key]).toBeLessThan(OPEN);
+    }
+    expect(balance.zero, "fully collected").toBe(0);
+    expect(balance.none).toBe(0);
+    expect(balance.reversed, "the reversed run left no debt").toBe(0);
+    const PRE_EXISTING = 10_000_000;
+    expect(balance.partial).toBeGreaterThan(PRE_EXISTING);
+    expect(balance.part2).toBeGreaterThan(PRE_EXISTING);
+    const EXCEEDING_ITEM = 60_000_000;
+
+    // --- Make the slips look like the oldest data.
+    // (a) before the carry field: the slow path must give the same balance;
+    await stripCarry(liveLo, legacy);
+    await stripCarry(liveLo, zero);
+    await stripCarry(liveLo, none);
+    // (b) a negative balance (collection without a raise): unreadable, held;
+    await stripCarry(liveLo, neg);
+    const collectLine = (await slipsOf([sepLo], pos))
+      .flatMap((calc) => calc.lines)
+      .find((line) => line.category === "pph21_receivable");
+    expect(collectLine, "template of a collection line").toBeDefined();
+    await rewriteSlip(sepLo, neg, (calc) => ({
+      ...calc,
+      lines: [
+        ...(calc.lines as unknown[]),
+        { ...collectLine, amountIdr: 3_000_000 },
+      ],
+    }));
+    // (c) a corrupted slip of an employee who really owes money;
+    await asTenant(
+      (conn) =>
+        conn.query(
+          `UPDATE payslips SET calculation_encrypted = $3
+            WHERE tenant_id = $1 AND payroll_run_id = $2 AND employee_id = $4`,
+          [tenant.id, sepLo, randomBytes(64), corrupt.id],
+        ),
+      true,
+    );
+    // (d) an employee who left after the receivable was raised.
+    await asTenant((conn) =>
+      conn.query(
+        `UPDATE employees SET status = 'terminated', end_date = '2026-09-30'
+          WHERE tenant_id = $1 AND id = $2`,
+        [tenant.id, departed.id],
+      ),
+    );
+
+    // --- Pre-972 state: no items, then the items that exist before the run.
+    await stripItems(lo);
+    await stripItems(hi);
+    await insertItem(lo.entityId, exceeds, EXCEEDING_ITEM, "LEGACY-EXCEEDS");
+    await insertItem(lo.entityId, partial, PRE_EXISTING, "LEGACY-PARTIAL");
+    await insertItem(hi.entityId, part2, PRE_EXISTING, "LEGACY-PARTIAL-2");
+
+    // --- Second tenant with the same kind of debt (isolation).
+    await cloneToOtherTenant([julLo, sepLo], pos);
+    const other = { id: otherTenant.employeeId };
+
+    const entityIds = [lo.entityId, hi.entityId, otherTenant.entityId];
+    const employeeIds = [
+      ...[pos, zero, none, legacy, departed, neg, corrupt, exceeds, partial]
+        .concat([reversed, pos2, part2])
+        .map((emp) => emp.id),
+      other.id,
+    ];
+    const before = await fingerprint(entityIds, employeeIds);
+    const itemsBefore = await itemsOf(entityIds);
+    expect(itemsBefore, "only the three pre-existing items").toHaveLength(3);
+
+    const expectedHeld = [
+      {
+        legalEntityId: lo.entityId,
+        employeeId: neg.id,
+        reason: "payslip_unreadable",
+      },
+      {
+        legalEntityId: lo.entityId,
+        employeeId: corrupt.id,
+        reason: "payslip_unreadable",
+      },
+      {
+        legalEntityId: lo.entityId,
+        employeeId: exceeds.id,
+        reason: "item_exceeds_balance",
+      },
+    ].sort((a, b) => (a.employeeId < b.employeeId ? -1 : 1));
+    const heldMine = (line: CliLine) =>
+      (line.held ?? [])
+        .filter((h) => [lo.entityId, hi.entityId].includes(h.legalEntityId))
+        .sort((a, b) => (a.employeeId < b.employeeId ? -1 : 1));
+    const gaps = {
+      a:
+        balance.pos +
+        balance.legacy +
+        balance.departed +
+        (balance.partial - PRE_EXISTING) +
+        balance.pos2 +
+        (balance.part2 - PRE_EXISTING),
+      b: balance.pos,
+    };
+
+    // --- 1. Dry run: the exact command of the bead, no `--`.
+    const dry = await spawnCli(["--dry-run"]).done;
+    expect(dry.code, dry.err).toBe(0);
+    const dryA = tenantLine(dry, tenant.id);
+    const dryB = tenantLine(dry, otherTenant.id);
+    expect(dryA.dryRun).toBe(1);
+    expect(dryA.created).toBeGreaterThanOrEqual(6);
+    expect(dryA.createdIdr).toBeGreaterThanOrEqual(gaps.a);
+    expect(heldMine(dryA)).toEqual(expectedHeld);
+    expect(dryB).toMatchObject({ created: 1, createdIdr: gaps.b, held: [] });
+    expect(cliLines(dry.out).at(-1)?.summary?.tenants).toBeGreaterThanOrEqual(
+      2,
+    );
+    expect(
+      await fingerprint(entityIds, employeeIds),
+      "dry run: zero writes (rows and xmin identical)",
+    ).toEqual(before);
+
+    // --- 2. Killed in the middle: the process holds the writes of the lower
+    // entity, waits for the lock of the higher one, then dies.
+    const gate = await owner.connect();
+    await gate.query("BEGIN");
+    await gate.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+      `payroll-pph21-receivable:${tenant.id}:${hi.entityId}`,
+    ]);
+    const victim = spawnCli([]);
+    let waitingPid: number | undefined;
+    for (let i = 0; i < 240 && waitingPid === undefined; i++) {
+      await sleep(500);
+      waitingPid = (
+        await owner.query<{ pid: number }>(
+          "SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND NOT granted LIMIT 1",
+        )
+      ).rows[0]?.pid;
+    }
+    expect(waitingPid, "the command reached the second entity").toBeDefined();
+    process.kill(-victim.child.pid!, "SIGKILL");
+    await owner.query("SELECT pg_terminate_backend($1)", [waitingPid]);
+    await gate.query("COMMIT");
+    gate.release();
+    const killed = await victim.done;
+    expect(killed.signal).toBe("SIGKILL");
+    for (let i = 0; i < 40; i++) {
+      const rows = (
+        await owner.query("SELECT 1 FROM pg_stat_activity WHERE pid = $1", [
+          waitingPid,
+        ])
+      ).rows;
+      if (rows.length === 0) break;
+      await sleep(250);
+    }
+    expect(
+      await fingerprint(entityIds, employeeIds),
+      "killed run: nothing of the interrupted tenant was written",
+    ).toEqual(before);
+
+    // --- 3. Real run.
+    const real = await spawnCli([]).done;
+    expect(real.code, real.err).toBe(0);
+    const realA = tenantLine(real, tenant.id);
+    const realB = tenantLine(real, otherTenant.id);
+    expect(realA.dryRun).toBe(0);
+    expect(realA.created).toBeGreaterThanOrEqual(6);
+    expect(heldMine(realA)).toEqual(expectedHeld);
+    expect(realB).toMatchObject({ created: 1, createdIdr: gaps.b, held: [] });
+    const afterReal = await fingerprint(entityIds, employeeIds);
+    for (const same of [
+      "settlements",
+      "payslips",
+      "runs",
+      "employees",
+    ] as const)
+      expect(afterReal[same], `${same} untouched by the backfill`).toEqual(
+        before[same],
+      );
+    const items = await itemsOf(entityIds);
+    const backfilled = items.filter((i) =>
+      i.document_number.startsWith("PPH21-BACKFILL-"),
+    );
+    expect(backfilled).toHaveLength(7);
+    expect(backfilled.reduce((t, i) => t + i.original, 0)).toBe(
+      gaps.a + gaps.b,
+    );
+    // Debt per person equals the slips; never above; none for the rest.
+    expect(outstandingOf(items, pos)).toBe(balance.pos);
+    expect(outstandingOf(items, legacy)).toBe(balance.legacy);
+    expect(outstandingOf(items, departed)).toBe(balance.departed);
+    expect(outstandingOf(items, partial)).toBe(balance.partial);
+    expect(outstandingOf(items, pos2)).toBe(balance.pos2);
+    expect(outstandingOf(items, part2)).toBe(balance.part2);
+    expect(outstandingOf(items, exceeds), "held: not lowered").toBe(
+      EXCEEDING_ITEM,
+    );
+    for (const emp of [zero, none, neg, corrupt, reversed])
+      expect(outstandingOf(items, emp), "no debt, no item").toBe(0);
+    // Tenants never mix.
+    expect(items.filter((i) => i.tenant_id === otherTenant.id)).toEqual([
+      expect.objectContaining({
+        counterparty_id: other.id,
+        legal_entity_id: otherTenant.entityId,
+        original: balance.pos,
+      }),
+    ]);
+    expect(
+      items.filter(
+        (i) => i.tenant_id === tenant.id && i.counterparty_id === other.id,
+      ),
+    ).toEqual([]);
+
+    // --- 4. Repeat: nothing changes (same rows, same xmin).
+    const repeat = await spawnCli([]).done;
+    expect(repeat.code, repeat.err).toBe(0);
+    expect(tenantLine(repeat, otherTenant.id)).toMatchObject({ created: 0 });
+    expect(heldMine(tenantLine(repeat, tenant.id))).toEqual(expectedHeld);
+    expect(
+      await fingerprint(entityIds, employeeIds),
+      "repeat: zero writes",
+    ).toEqual(afterReal);
+
+    // --- 5. Rollback of the runbook, then two commands at the same time.
+    await owner.query(
+      `DELETE FROM accounting_open_items i
+        WHERE i.tenant_id = $1 AND i.kind = 'receivable'
+          AND i.counterparty_type = 'employee'
+          AND i.document_number LIKE 'PPH21-BACKFILL-%'
+          AND i.settled_idr = 0
+          AND NOT EXISTS (
+            SELECT 1 FROM accounting_open_item_settlements s
+             WHERE s.tenant_id = i.tenant_id AND s.kind = i.kind AND s.open_item_id = i.id)`,
+      [otherTenant.id],
+    );
+    await owner.query(
+      `DELETE FROM accounting_open_items
+        WHERE tenant_id = $1 AND legal_entity_id = ANY($2::uuid[])
+          AND document_number LIKE 'PPH21-BACKFILL-%' AND settled_idr = 0`,
+      [tenant.id, [lo.entityId, hi.entityId]],
+    );
+    const rolledBack = await itemsOf(entityIds);
+    expect(rolledBack.map((i) => i.id).sort()).toEqual(
+      itemsBefore.map((i) => i.id).sort(),
+    );
+    const pair = await Promise.all([spawnCli([]).done, spawnCli([]).done]);
+    for (const result of pair) expect(result.code, result.err).toBe(0);
+    const createdByPair = pair.map(
+      (r) => tenantLine(r, otherTenant.id).created,
+    );
+    expect(
+      createdByPair.reduce((t, n) => t! + n!, 0),
+      "exactly one of the two made the item of the other tenant",
+    ).toBe(1);
+    const afterPair = await itemsOf(entityIds);
+    expect(afterPair, "same ids and amounts as the single run").toEqual(items);
+    expect(
+      afterPair.filter((i) => i.document_number.startsWith("PPH21-BACKFILL-")),
+    ).toHaveLength(7);
+
+    // --- 6. Nobody is charged twice: the next payroll run of the higher
+    // entity collects once, the item and the slips agree afterwards.
+    const octHi = await lockedRun(hi, monthDates(10));
+    const hiRuns = [julHi, sepHi, octHi];
+    for (const emp of [pos2, part2]) {
+      const collected = collectedIn(await slipsOf([octHi], emp));
+      expect(collected, "Oct collects").toBeGreaterThan(0);
+      const open = await slipBalance(hiRuns, emp);
+      expect(open).toBe(
+        (emp === pos2 ? balance.pos2 : balance.part2) - collected,
+      );
+      expect(
+        outstandingOf(await itemsOf([hi.entityId]), emp),
+        "finance list = payslips, no double charge",
+      ).toBe(open);
+    }
+    expect(
+      (await itemsOf([lo.entityId, otherTenant.entityId])).map(
+        (i) => `${i.id}:${i.original}:${i.settled}`,
+      ),
+      "other entities and the other tenant are not touched by that run",
+    ).toEqual(
+      afterPair
+        .filter((i) => i.legal_entity_id !== hi.entityId)
+        .map((i) => `${i.id}:${i.original}:${i.settled}`),
+    );
+  }, 2_400_000);
+
+  // Bead wxvt9 says "isian 0558": the migration of that number was squashed;
+  // today it is drizzle/0454_payroll_overtime_correction_activations.sql
+  // (brief 983 round 2, R1). Its data step is replayed on legacy data inside a
+  // transaction that is rolled back, so the shared database is not changed.
+  it("the overtime-correction activation fill (brief 0558) on legacy data: a tenant with runs gets one row, one without none, a second pass adds nothing, RLS stays forced", async () => {
+    const file = readdirSync(DRIZZLE_DIR).find((name) =>
+      /^\d+_payroll_overtime_correction_activations\.sql$/.test(name),
+    );
+    expect(file, "the migration file").toBeDefined();
+    const fill = readFileSync(resolve(DRIZZLE_DIR, file!), "utf8")
+      .split("--> statement-breakpoint")
+      .find((part) =>
+        /INSERT INTO public\.payroll_overtime_correction_activations/.test(
+          part,
+        ),
+      );
+    expect(fill, "the INSERT ... SELECT statement").toBeDefined();
+    const bare = randomUUID();
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
+         SELECT $1, $2, 'Rehearsal wxvt9 no runs', plan, status, deployment_mode, feature_flags, limits, created_by
+           FROM tenants WHERE id = $3`,
+        [bare, `wxvt9-${randomUUID().slice(0, 8)}`, tenant.id],
+      );
+      const withRuns = [tenant.id, otherTenant.id].filter(Boolean);
+      const ids = [...withRuns, bare];
+      // The state before the migration: no activation rows at all.
+      await client.query(
+        "DELETE FROM payroll_overtime_correction_activations WHERE tenant_id = ANY($1::uuid[])",
+        [ids],
+      );
+      const first = await client.query(fill!);
+      expect(first.rowCount ?? 0).toBeGreaterThanOrEqual(withRuns.length);
+      const rows = (
+        await client.query<{ tenant_id: string; fresh: boolean }>(
+          `SELECT tenant_id, activated_at >= now() - interval '1 minute' AS fresh
+             FROM payroll_overtime_correction_activations
+            WHERE tenant_id = ANY($1::uuid[])`,
+          [ids],
+        )
+      ).rows;
+      expect(rows.map((r) => r.tenant_id).sort()).toEqual(withRuns.sort());
+      expect(rows.every((r) => r.fresh)).toBe(true);
+      expect(
+        rows.some((r) => r.tenant_id === bare),
+        "a tenant without runs stays without a row (every run eligible)",
+      ).toBe(false);
+      expect(
+        (
+          await client.query(
+            `SELECT 1 FROM (SELECT DISTINCT tenant_id FROM payroll_runs) r
+              WHERE NOT EXISTS (SELECT 1 FROM payroll_overtime_correction_activations a
+                                 WHERE a.tenant_id = r.tenant_id)`,
+          )
+        ).rowCount,
+        "every tenant with a run has its row",
+      ).toBe(0);
+      const second = await client.query(fill!);
+      expect(second.rowCount, "second pass: ON CONFLICT adds nothing").toBe(0);
+    } finally {
+      await client.query("ROLLBACK");
+      client.release();
+    }
+    // What the migration must leave behind (checked on the migrated database).
+    const role = decodeURIComponent(
+      new URL(process.env.APP_DATABASE_URL!).username,
+    );
+    const rls = (name: string) =>
+      owner.query<{ on: boolean; forced: boolean }>(
+        "SELECT relrowsecurity AS on, relforcerowsecurity AS forced FROM pg_class WHERE oid = $1::regclass",
+        [name],
+      );
+    expect((await rls("public.payroll_runs")).rows[0]).toEqual({
+      on: true,
+      forced: true,
+    });
+    expect(
+      (await rls("public.payroll_overtime_correction_activations")).rows[0],
+    ).toEqual({ on: true, forced: true });
+    const privilege = async (kind: string) =>
+      (
+        await owner.query<{ ok: boolean }>(
+          "SELECT has_table_privilege($1, 'public.payroll_overtime_correction_activations', $2) AS ok",
+          [role, kind],
+        )
+      ).rows[0]!.ok;
+    expect(await privilege("SELECT")).toBe(true);
+    for (const kind of ["INSERT", "UPDATE", "DELETE", "TRUNCATE"])
+      expect(await privilege(kind), `${kind} revoked from the app role`).toBe(
+        false,
+      );
+  }, 120_000);
+
+  // Found in the rehearsal: the production image has no pnpm, tsx or src, only
+  // dist/. The command of the bead therefore cannot run there unless the script
+  // is a tsup entry and its "am I the entry file" guard accepts a built .js.
+  it("the command can run from the production image: tsup builds it as an entry and the entry guard accepts dist/*.js", async () => {
+    const { default: tsupConfig } = await import("../../tsup.config.ts");
+    const config = Array.isArray(tsupConfig) ? tsupConfig[0] : tsupConfig;
+    const entries = (config as { entry?: Record<string, string> }).entry ?? {};
+    expect(entries["payroll-pph21-receivable-backfill"]).toBe(
+      "src/scripts/payroll-pph21-receivable-backfill.ts",
+    );
+    const { isCliEntry } =
+      await import("../scripts/payroll-pph21-receivable-backfill.ts");
+    for (const file of [
+      "/app/dist/payroll-pph21-receivable-backfill.js",
+      "/work/apps/api/src/scripts/payroll-pph21-receivable-backfill.ts",
+    ])
+      expect(isCliEntry(file, pathToFileURL(file).href), file).toBe(true);
+    // Imported by something else (a test, another script): never runs.
+    const file = "/app/dist/server.js";
+    expect(
+      isCliEntry(file, "file:///app/dist/payroll-pph21-receivable-backfill.js"),
+    ).toBe(false);
+    expect(isCliEntry(undefined, import.meta.url)).toBe(false);
+  }, 60_000);
 });
