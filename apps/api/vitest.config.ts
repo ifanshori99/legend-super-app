@@ -27,6 +27,9 @@ export default defineConfig({
       // the refusal pass `webhookSecrets: []` / `whatsappWebhookSecrets: []`.
       KIRIM_WEBHOOK_SECRET:
         process.env.KIRIM_WEBHOOK_SECRET ?? "test-kirim-webhook-secret",
+      // 1269 C0: Duitku methods are locked by default; the adapter suites run
+      // unlocked. payment-duitku-1269-c0-lock.test.ts proves the lock.
+      DUITKU_ENABLED_METHODS: "qris,va,ewallet,card",
     },
     // Business-logic coverage (legend-dd0g). Off unless --coverage is passed
     // (pnpm test:coverage). Scope is domain logic only: services and the shared
