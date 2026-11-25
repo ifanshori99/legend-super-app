@@ -31,3 +31,17 @@ Audit baca saja: katalog 105 laporan jujur ("Segera hadir" hanya untuk yang belu
 - F8: target sentuh 44px: `ws10-roster/week-grid.tsx:132`; varian `link` di mobile untuk `wa-reset/{waiting,blocked}`, `pin-locked`, `payslip-history`, `payslip-detail`, `pin-change`, `my-requests-page`. Jangan ubah varian `link` global bila memengaruhi teks inline.
 - F9: teks keras ke katalog: `hris-requests/queue-decision-form.tsx:34-35`, `hris-owner-support/owner-request-card.tsx:78`.
 - F10: "Tolak akses" di `owner-request-card.tsx:~125` pakai konfirmasi singkat.
+
+## Gelombang 3: hasil review architect (25 Nov), test gagal dulu. Path dari apps/web/src
+
+### H1 tukar menu (`features/ws04-pos-order-detail/*`, `tests/ws04-pos-charge-methods.test.mjs`, `e2e/legend-t93l8.mock.spec.ts`)
+- P1 `charge-key-store.ts:69`, `components/charge-screen.tsx:265`: PUTUSAN kunci. Tanpa jawaban server, hanya permintaan dan kunci yang sama boleh dikirim ulang. Ganti metode hanya setelah 409/422 untuk kunci itu DAN baca tagihan open; QRIS juga bebas bila id payment server sudah berganti. Balik assert "free to change" di test.
+- P2 `charge-hooks.ts:143`: 401/403/429 tidak menghapus kunci percobaan; `endAttempt` mencocokkan kunci (tab lain).
+- P3 `charge-screen.tsx:350`: teks katalog untuk `voided`; permintaan menggantung tidak mengunci layar selamanya (batas waktu di pemanggil ini saja, hasil = belum pasti, bukan gagal).
+
+### H2 dialog dan kunci (`features/ws10-roster/*`, `lib/retained-attempt-key.ts`, `features/ws05-payment-admin/*`, `sign-out-button.tsx`, `tests/1267-pending-dialog.test.mjs`)
+- P1 `ws10-roster/components/roster-page.tsx:321`: kunci harus memuat isi draf terurut, bukan hanya outlet+minggu (jawaban hilang, jadwal diubah, terbit lagi = publikasi lama diputar ulang dan draf dihapus).
+- P2 `lib/retained-attempt-key.ts:11`: scope memuat tenant + user + cakupan outlet; `clearRetainedAttempt` dipanggil saat keluar.
+- P2 `ws05-payment-admin/components/refunds-panel.tsx:216`: scope per paymentIntentId, bukan satu slot.
+- P2 `refund-followup-dialog.tsx:110`: ganti `useIsMutating()` global dengan mutationKey per refund.
+Bukti keduanya: node test, prettier, eslint, text-contract, tsc web lewat heavy sekali di akhir. Push: `command git push origin HEAD:refs/heads/ws/1267-design-b`.
