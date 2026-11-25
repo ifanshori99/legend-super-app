@@ -26,7 +26,12 @@ import {
   it,
   vi,
 } from "vitest";
-import { outletIdSchema, tenantIdSchema } from "@starter/shared/core";
+import {
+  createUlid,
+  outletIdSchema,
+  tenantIdSchema,
+  ulidToUuid,
+} from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
@@ -116,7 +121,7 @@ const cloudApp = createApp();
 type Member = { userId: string; cookie: string };
 let cashier: Member;
 let supervisor: Member;
-/** Holds `pos.void.approve`; `supervisor` does not. */
+/** Holds `pos.void.approve` and `pos.refund.approve`; `supervisor` does not. */
 let approver: Member;
 
 const tenantOf = (source: "session" | "device") =>
@@ -349,6 +354,7 @@ beforeAll(async () => {
         // Held by the role but outside the edge list.
         "floor.table.manage",
         "device.registry.manage",
+        "pos.refund.request",
       ]),
     ],
   );
@@ -363,6 +369,8 @@ beforeAll(async () => {
         "pos.sale.create",
         "floor.table.view",
         "pos.void.approve",
+        "pos.refund.approve",
+        "pos.refund.request",
       ]),
     ],
   );
@@ -1066,6 +1074,7 @@ describe("override approved with the PIN of the session's own user", () => {
     approverUserId: string,
     pin: string,
     objectId: string = randomUUID(),
+    action: "void" | "refund" = "void",
   ) {
     const call = request(edgeApp)
       .post("/api/pos-overrides")
@@ -1076,7 +1085,7 @@ describe("override approved with the PIN of the session's own user", () => {
     if (on.acting) call.set(ACTING_STAFF_HEADER, on.acting);
     return call.send({
       outletId: tenant.outletId,
-      action: "void",
+      action,
       valueIdr: 10_000,
       reason: "salah pesan",
       objectType: "pos_order",
@@ -1133,6 +1142,109 @@ describe("override approved with the PIN of the session's own user", () => {
       "APPROVER_IS_REQUESTER",
     );
     expect(await recorded(objectId)).toBe(0);
+  });
+
+  /** The cashier's pending phone override whose chain `approver` approved, polled on the edge. */
+  async function pollPhoneApproved(on: {
+    device: TestDevice;
+    cookie: string;
+    acting: string;
+  }) {
+    const chainId = randomUUID();
+    const overrideId = createUlid(Date.now());
+    const orderId = randomUUID();
+    await asOwner(
+      `INSERT INTO approval_requests
+         (id, tenant_id, outlet_id, chain_id, source_module, action_type, object_type,
+          object_id, payload, requested_by, source, level, required_levels,
+          required_steps, status, decided_by, decided_at, reason, request_reason,
+          deadline_at, created_at)
+       VALUES ($1, $2, $3, $1, 'pos_override', 'void', 'pos_override', $4, '{}', $5,
+               'user', 1, 1, '[]'::jsonb, 'approved', $6, now(),
+               'Disetujui lewat ponsel', 'salah pesan',
+               now() + interval '1 hour', now() - interval '1 minute')`,
+      [
+        chainId,
+        tenant.tenantId,
+        tenant.outletId,
+        overrideId,
+        cashier.userId,
+        approver.userId,
+      ],
+    );
+    await asOwner(
+      `INSERT INTO pos_overrides
+         (id, tenant_id, outlet_id, action, method, status, requested_by, reason,
+          value_idr, object_type, object_id, approval_request_id, request_fingerprint)
+       VALUES ($1, $2, $3, 'void', 'supervisor_phone', 'pending', $4, 'salah pesan',
+               10000, 'pos_order', $5, $6, $7)`,
+      [
+        ulidToUuid(overrideId),
+        tenant.tenantId,
+        tenant.outletId,
+        cashier.userId,
+        orderId,
+        chainId,
+        "0".repeat(64),
+      ],
+    );
+    const response = await request(edgeApp)
+      .get(`/api/pos-overrides/${overrideId}`)
+      .set({ Host: tenant.hostname, Cookie: on.cookie })
+      .set(DEVICE_TOKEN_HEADER, on.device.token)
+      .set(ACTING_STAFF_HEADER, on.acting);
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    return response.body.data;
+  }
+
+  it("without a PIN the session's own user approves nothing: a phone approval of theirs is rejected", async () => {
+    expect(
+      await pollPhoneApproved(await actingCashier(approver)),
+    ).toMatchObject({ status: "rejected", approvedBy: null });
+    // Another staff member's session: the approver's role is not cut.
+    expect(
+      await pollPhoneApproved(await actingCashier(supervisor)),
+    ).toMatchObject({ status: "approved", approvedBy: approver.userId });
+  });
+
+  it("an approved refund override opens no refund on the edge", async () => {
+    const on = await actingCashier(approver);
+    const orderId = createUlid(Date.now());
+    const approved = await override(
+      on,
+      approver.userId,
+      PIN,
+      orderId,
+      "refund",
+    );
+    expect(approved.status, JSON.stringify(approved.body)).toBe(201);
+    const path = `/api/outlets/${tenant.outletId}/pos/orders/${orderId}/corrections/refund`;
+    const body = {
+      amountIdr: 10_000,
+      reason: "wrong_order",
+      reasonNote: "salah pesan",
+      approvedBy: approver.userId,
+      overrideId: approved.body.data.id as string,
+      idempotencyKey: `refund-e2-${randomUUID()}`,
+    };
+    for (const acting of [on.acting, null]) {
+      const call = request(edgeApp)
+        .post(path)
+        .set({ Host: tenant.hostname, Cookie: on.cookie })
+        .set(originHeader)
+        .set(DEVICE_TOKEN_HEADER, on.device.token);
+      if (acting) call.set(ACTING_STAFF_HEADER, acting);
+      const refused = await call.send(body);
+      expectRefused(refused, 403, "PERMISSION_DENIED");
+    }
+    // Both roles hold pos.refund.request: on the cloud the call gets past it.
+    asCloud();
+    const cloud = await request(cloudApp)
+      .post(path)
+      .set({ Host: tenant.hostname, Cookie: cashier.cookie })
+      .set(originHeader)
+      .send(body);
+    expectRefused(cloud, 404, "NOT_FOUND");
   });
 });
 

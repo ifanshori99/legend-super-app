@@ -141,8 +141,9 @@ export type LoadAccessOptions = {
   readonly includeInactive?: boolean;
   /**
    * E2 (brief 1269): `userId` is judged as the approver of somebody else's
-   * request, not as the caller, so their edge PIN session does not cut the
-   * role. Only `holdsOverridePermission` (staff-override.service.ts) sets it.
+   * request, proven by their own PIN, not as the caller, so their edge PIN
+   * session does not cut the role. Only `holdsOverridePermission`
+   * (staff-override.service.ts) sets it.
    */
   readonly approver?: boolean;
 };
