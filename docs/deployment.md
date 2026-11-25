@@ -237,11 +237,17 @@ and always run; a wrong argument is never a silent exit 0:
 `backfill-tenant-defaults`, `metrics-daily-backfill`,
 `backfill-employee-managers`, `rotate-data-key`, `set-role`,
 `purchase-return-variance-check`, `repair-supplier-invoice-npwp`. Run any of
-them as `docker compose ... run --rm --no-deps -T api node dist/<name>.js <args>`
+them except `backfill-ptkp-history` and `repair-supplier-invoice-npwp` (those two
+need the migration owner, see above) as
+`docker compose ... run --rm --no-deps -T api node dist/<name>.js <args>`
 with the same arguments as its `pnpm` script. `backfill-employee-managers`
 requires `MIGRATION_DATABASE_URL` (or `_FILE`) and imports no API env, so it
 runs as `--profile migration run --rm --no-deps -T migrate node
 dist/backfill-employee-managers.js`.
+
+The PTKP command commits per tenant. A non-zero exit means some tenants may
+already be written and others not: do not simulate a payroll run until the
+command has been repeated and exits 0 (it is idempotent, so repeating is safe).
 
 For every employee with a locked or paid payslip in that year it writes the
 status of his first payslip of the year on 1 January (or his join date), and,

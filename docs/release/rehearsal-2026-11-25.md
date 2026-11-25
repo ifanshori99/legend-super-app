@@ -59,3 +59,19 @@ tidak ada rahasia, server, VM, domain, atau layanan luar yang disentuh (hanya `d
 - Penanganan apex/www dan domain tenant bergantung pada pemeriksaan domain aktif oleh API (`ask`); belum diuji tanpa DB tenant nyata.
 - Audit role dengan Postgres dan image migrator nyata, serta `deploy.sh` tanpa `--dry-run`: perlu image terbangun di VM.
 - Log error Caddy (bukan log akses) bisa memuat URI dengan query; tidak ada token di path saat ini.
+
+## Smoke dist: PPh 21 dry-run dan PTKP (G1/G3)
+
+Dijalankan 25 Nov di mesin lokal, bukan di VM. Build `pnpm --filter @starter/api build` (heavy), lalu `apps/api/dist` dipasang read-only ke `/app/dist` di container `node:22.18.0-slim` (versi Dockerfile api; tanpa `node_modules`, jadi `sharp` tidak dibutuhkan oleh kedua perintah). Database sekali pakai `postgres:17-alpine` di jaringan docker sendiri: dimigrasi penuh oleh login migrator (NOSUPERUSER, BYPASSRLS), role aplikasi `legend_runtime_*` dibuat oleh `provisionRoles`, dua tenant berisi 5 karyawan dan 6 payslip (satu run draft dan satu karyawan keluar ikut). Perintah lewat `docker compose run --rm --no-deps -T [--env-from-file ...] api node dist/<x>.js` (compose 5.6.0).
+
+| Perintah                                                               | Login    | Hasil                                                                                |
+| ---------------------------------------------------------------------- | -------- | ------------------------------------------------------------------------------------ |
+| `payroll-pph21-receivable-backfill.js --dry-run`                       | app      | exit 0, `summary {tenants:2, created:3, held:0}`; item piutang 0 sebelum dan sesudah |
+| `backfill-ptkp-history.js --year 2026`, tanpa `MIGRATION_DATABASE_URL` | app      | exit 1, pesan "Set MIGRATION_DATABASE_URL", 0 baris ditulis                          |
+| idem, `--env-from-file` berisi URL login app                           | app      | exit 1, "not the migration owner", 0 baris ditulis                                   |
+| idem, `--env-from-file` berisi URL migrator                            | migrator | exit 0, "2 tenant, 5 karyawan, 2 dengan status baru"; 7 baris riwayat                |
+| ulang perintah yang sama                                               | migrator | exit 0, tetap 7 baris (idempoten)                                                    |
+
+Temuan saat menyiapkan seed (bukan bug produk): payslip dengan piutang PPh 21 harus konsisten (`pph21Idr` = dipotong + piutang), kalau tidak dry-run menahan karyawan itu sebagai `payslip_unreadable`; itu perilaku yang diinginkan (gagal tertutup).
+
+Bersih: container dan jaringan smoke dihapus; tidak ada yang tersisa di `docker ps -a`. Belum diverifikasi: apply PPh 21 tanpa `--dry-run` (di luar lingkup smoke ini), image api penuh dengan `sharp`, dan `deploy.sh` di VM.

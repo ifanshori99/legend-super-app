@@ -71,6 +71,16 @@ jobs:
           LEGEND_COVERAGE: "1"
       - run: pnpm format:check
       - run: pnpm build
+      # `pnpm check` ran before dist/ existed, so these two skip their built
+      # cases there. Run them again against the real build (legend-1265): the
+      # operator commands exit non-zero on a wrong argument, and the PTKP
+      # command runs as the migration owner on a scratch database.
+      - name: Operator commands in dist
+        run: pnpm test
+        env:
+          LEGEND_TEST_FILES: >-
+            src/test/ptkp-cli-dist-1265.test.ts
+            src/test/ops-dist-entries.test.ts
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm test:e2e
       - uses: actions/upload-artifact@v4

@@ -70,15 +70,15 @@ Bekukan payroll (tidak ada run dibuat, disetujui, dikunci, atau di-reverse) dari
 verifikasi akhir selesai. Skrip menunggu kunci badan hukum bila ada run sedang dikunci, tetapi
 pembekuan menjaga angka dry-run tetap sama dengan hasil nyata.
 
-1. Cadangan. Jalankan di VM sebagai superuser/migrator di container postgres (role aplikasi DITOLAK
-   membaca semua baris karena RLS), dengan `umask 077`, simpan salinan ke path host yang aman (bukan chat):
-   `umask 077; docker compose --env-file <compose.env> -f deploy/single-vm/compose.yaml exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --data-only -t accounting_open_items -t accounting_open_item_settlements' > <path host aman>/pra-backfill.sql`
-   (atau snapshot VM). Salinan ini untuk bukti dan rujukan, bukan untuk dipulihkan (lihat "Cara mundur").
-2. Prasyarat, sebelum pembekuan payroll dan dry-run: migrasi sudah sampai head dan image API memuat
+1. Prasyarat, sebelum pembekuan payroll dan dry-run: migrasi sudah sampai head dan image API memuat
    skrip (`ls dist/payroll-pph21-receivable-backfill.js`). Skrip memakai `APP_DATABASE_URL` (role aplikasi,
    kena RLS); bukan role migrasi. Selesaikan dulu semua reversal run payroll yang direncanakan: selama
    item backfill ada, reversal yang menaikkan atau memungut piutang karyawan itu ditolak, jadi
    reversal tidak bisa menyusul sesudah apply tanpa mundur.
+2. Cadangan, SESUDAH semua reversal selesai dan payroll beku (salinan memuat keadaan yang akan di-backfill). Jalankan di VM sebagai superuser/migrator di container postgres (role aplikasi DITOLAK
+   membaca semua baris karena RLS), dengan `umask 077`, simpan salinan ke path host yang aman (bukan chat):
+   `umask 077; docker compose --env-file <compose.env> -f deploy/single-vm/compose.yaml exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --data-only -t accounting_open_items -t accounting_open_item_settlements' > <path host aman>/pra-backfill.sql`
+   (atau snapshot VM). Salinan ini untuk bukti dan rujukan, bukan untuk dipulihkan (lihat "Cara mundur").
 3. Dry-run (tidak menulis apa pun):
    `docker compose --env-file <compose.env> -f deploy/single-vm/compose.yaml run --rm --no-deps -T api node dist/payroll-pph21-receivable-backfill.js --dry-run`
    Dari source checkout: `pnpm --filter @starter/api payroll:backfill-pph21-receivable --dry-run`.
@@ -136,7 +136,7 @@ skrip lagi membuat id dan jumlah yang sama.
 Catatan: selama item backfill ada, reversal run payroll yang menaikkan atau memungut piutang karyawan
 itu ditolak (aturan sengaja, supaya daftar finance tetap sama dengan slip).
 Tenant diproses satu per satu, satu transaksi masing-masing: bila skrip gagal di tengah, tenant sebelum
-yang gagal SUDAH ter-commit. Reversal yang direncanakan sudah selesai di prasyarat (langkah 2); ulangi
+yang gagal SUDAH ter-commit. Reversal yang direncanakan sudah selesai di prasyarat (langkah 1); ulangi
 skrip bila itu memang yang diputuskan CTO (idempoten).
 
 ## Belum diverifikasi
