@@ -260,6 +260,42 @@ describe("a readable request", () => {
     expect(stated.body.data.outcome).toBe("closed");
     expect(JSON.stringify(await audits(order))).toContain("not_debited");
   });
+
+  it("EDC voided on the machine: needs the void number, closes and is audited", async () => {
+    const order = await newSubmittedOrder(fx);
+    const key = `edc_standalone:${randomUUID()}`;
+    for (const over of [
+      { card: "voided" },
+      { card: "voided", voidRef: "4111111111111111" },
+      { card: "voided", voidRef: "1" },
+      { card: "not_debited", voidRef: "000123" },
+    ])
+      expect((await resolve(order, key, over)).status).toBe(422);
+    expect(await audits(order)).toHaveLength(0);
+    const answer = await resolve(order, key, {
+      card: "voided",
+      voidRef: "000123",
+    });
+    expect(answer.status, JSON.stringify(answer.body)).toBe(200);
+    expect(answer.body.data.outcome).toBe("closed");
+    const text = JSON.stringify(await audits(order));
+    expect(text).toContain("voided");
+    expect(text).toContain("000123");
+    expect(await capturedIdr(fx, order.id)).toBe(0);
+  });
+
+  it("a recorded payment is not settled as voided", async () => {
+    const order = await newSubmittedOrder(fx);
+    const key = cashKey();
+    expect((await cash(order, key)).status).toBe(201);
+    const answer = await resolve(order, key, {
+      card: "voided",
+      voidRef: "000123",
+    });
+    expect(answer.status, JSON.stringify(answer.body)).toBe(409);
+    expect(await capturedIdr(fx, order.id)).toBe(BILL_IDR);
+    expect(await audits(order)).toHaveLength(0);
+  });
 });
 
 describe("late send against resolve", () => {
@@ -367,12 +403,46 @@ describe("an unreadable request", () => {
     expect(silent.body.error.code).toBe(
       "PAYMENT_INTENT_CARD_STATEMENT_REQUIRED",
     );
-    // Without the request there is no slip to record the payment from.
-    const recording = await resolve(order, null, { card: "recording" });
-    expect(recording.body.error.code).toBe(
-      "PAYMENT_INTENT_CARD_STATEMENT_REQUIRED",
-    );
     expect(await versionOf(order)).toBe(version);
+  });
+
+  it.each([
+    { card: "recording" },
+    { card: "voided", voidRef: "000123" },
+    { card: "not_debited" },
+  ])("fenced with the statement %j, and audited", async (statement) => {
+    const order = await newSubmittedOrder(fx);
+    const version = await versionOf(order);
+    const answer = await resolve(order, null, statement);
+    expect(answer.status, JSON.stringify(answer.body)).toBe(200);
+    expect(answer.body.data.outcome).toBe("fenced");
+    expect(await versionOf(order)).toBe(version + 1);
+    const late = await cash(order, cashKey(), { expectedVersion: version });
+    expect(late.status).toBe(412);
+    const text = JSON.stringify(await audits(order));
+    for (const value of Object.values(statement)) expect(text).toContain(value);
+  });
+
+  it("is approved with the EDC permission, not the void one", async () => {
+    const order = await newSubmittedOrder(fx);
+    const voider = await staff("Hanya Void Resolve", [
+      "order.view",
+      "pos.void.approve",
+    ]);
+    const denied = await resolve(order, null, {
+      ...card,
+      approverUserId: voider,
+    });
+    expect(denied.status, JSON.stringify(denied.body)).toBe(403);
+    const edcOnly = await staff("Hanya EDC Resolve", [
+      "order.view",
+      "pos.edc_standalone.approve",
+    ]);
+    const allowed = await resolve(order, null, {
+      ...card,
+      approverUserId: edcOnly,
+    });
+    expect(allowed.body.data.outcome).toBe("fenced");
   });
 
   it("clean: the version moves, so a late send made before is refused", async () => {

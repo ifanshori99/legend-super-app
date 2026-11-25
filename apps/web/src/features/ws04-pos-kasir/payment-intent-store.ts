@@ -30,6 +30,8 @@ export type PaymentIntent = {
   /** The cashier who sent it: the server only replays for the same one. */
   actorId: string;
   startedAt: string;
+  /** EDC standalone: what the slip says was charged. Never part of the body. */
+  amountIdr?: number;
 };
 
 export type IntentState =
@@ -45,6 +47,10 @@ export const INTENT_STORAGE_UNAVAILABLE = "INTENT_STORAGE_UNAVAILABLE";
 
 /** The supervisor approval of a hand-keyed EDC payment is spent or too old. */
 export const EDC_APPROVAL_REQUIRED = "EDC_STANDALONE_APPROVAL_REQUIRED";
+/** The slip's amount is not what the bill still owes. */
+export const EDC_SLIP_AMOUNT_MISMATCH = "EDC_SLIP_AMOUNT_MISMATCH";
+/** The bill was paid, but not by the slip the supervisor typed. */
+export const EDC_SLIP_NOT_RECORDED = "EDC_SLIP_NOT_RECORDED";
 
 const PREFIX = "legend-pos-payment-intent:";
 const KEY_PATTERN = /^[A-Za-z0-9._:-]{8,100}$/;
@@ -73,6 +79,8 @@ export function parseIntent(raw: string | null): IntentState {
       typeof value.signature !== "string" ||
       typeof value.actorId !== "string" ||
       typeof value.startedAt !== "string" ||
+      (value.amountIdr !== undefined &&
+        !Number.isSafeInteger(value.amountIdr)) ||
       typeof value.body !== "object" ||
       value.body === null ||
       value.body.idempotencyKey !== value.key
@@ -110,6 +118,7 @@ export function beginIntent(
     kind: IntentKind;
     signature: string;
     actorId: string;
+    amountIdr?: number;
     makeKey: () => string;
     makeBody: (key: string) => Record<string, unknown>;
     now: () => Date;
@@ -148,6 +157,7 @@ export function beginIntent(
     body: ask.makeBody(key),
     actorId: ask.actorId,
     startedAt: ask.now().toISOString(),
+    ...(ask.amountIdr === undefined ? {} : { amountIdr: ask.amountIdr }),
   };
   const text = JSON.stringify(intent);
   let kept: string | null = null;
@@ -196,14 +206,6 @@ export function settleStored(
   return true;
 }
 
-/** The server proves the bill paid: whatever was stored no longer matters. */
-export function clearPaidIntent(
-  storage: StorageLike,
-  scope: Pick<IntentScope, "outletId" | "orderId">,
-): void {
-  storage.removeItem(intentStorageKey({ ...scope, slot: "payment" }));
-}
-
 const refused = new WeakSet<object>();
 
 /** The error ended a stored request: nothing was recorded under its key. */
@@ -212,25 +214,27 @@ export const wasRefused = (error: unknown): boolean =>
   typeof error === "object" && error !== null && refused.has(error);
 
 /**
- * True when the error proves the server recorded nothing for this key. The
+ * True when the error proves the server recorded nothing for this key and no
+ * money moved elsewhere. A hand-keyed EDC payment never qualifies: the card was
+ * charged on the machine before the request, and "not recorded" does not undo
+ * that. It ends only recorded, or settled by a supervisor. For the others, the
  * first send is refused by any client error that answers the request itself; a
- * repeat only by an answer about the bill (409, 412, 422, a refused EDC
- * approval): another 401, 403, 404 or 429 of the repeat says nothing about the
- * first send, and a reused key means the server DID record one.
+ * repeat only by an answer about the bill (409, 412, 422): a 401, 403, 404 or
+ * 429 of the repeat says nothing about the first send, and a reused key means
+ * the server DID record one.
  */
-export function isDefinitiveRefusal(error: unknown, replay: boolean): boolean {
-  if (!(error instanceof ApiError)) return false;
+export function isDefinitiveRefusal(
+  kind: IntentKind,
+  error: unknown,
+  replay: boolean,
+): boolean {
+  if (kind === "edc_standalone" || !(error instanceof ApiError)) return false;
   if (
     error.code === "IDEMPOTENCY_KEY_REUSED" ||
     error.code === "IDEMPOTENCY_KEY_RESERVED" ||
     error.code === PAYMENT_UNRESOLVED
   )
     return false;
-  // The API throws this one only inside the keyed transaction: after the stored
-  // key was looked up (posIdempotent) and under the order lock, so nothing is
-  // recorded under this key and the approval, spent or too old, cannot serve a
-  // late arrival of the same body either (pos-edc-standalone.test.ts).
-  if (replay && error.code === EDC_APPROVAL_REQUIRED) return true;
   if (replay) return [409, 412, 422].includes(error.status);
   return (
     error.status >= 400 &&

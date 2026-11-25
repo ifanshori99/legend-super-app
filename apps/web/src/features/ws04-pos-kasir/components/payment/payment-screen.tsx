@@ -42,7 +42,11 @@ import { PointsPanel } from "./points-panel";
 import { QrisPanel } from "./qris-panel";
 import { SplitPanel } from "./split-panel";
 import { SuccessPanel } from "./success-panel";
-import { UnresolvedPanel } from "./unresolved-panel";
+import {
+  PaidCardWarning,
+  UnresolvedPanel,
+  cardMayBeCharged,
+} from "./unresolved-panel";
 import { VaPanel } from "./va-panel";
 import { VoucherPanel } from "./voucher-panel";
 
@@ -277,13 +281,29 @@ export function PaymentScreen({ orderId }: { orderId: string }) {
       edcPanel
     );
   }
+  const cardWarning =
+    bill.paid && cardMayBeCharged(unresolvedPayment) ? (
+      <PaidCardWarning
+        orderId={orderId}
+        payment={unresolvedPayment}
+        resolve={resolve}
+      />
+    ) : null;
   if (bill.paid && attempt?.method === "edc") {
-    return (
+    const edcPanel = (
       <EdcPanel
         orderId={orderId}
         amountIdr={attempt.amountIdr}
         onChangeMethod={toMethods}
       />
+    );
+    return cardWarning ? (
+      <div className="grid content-start gap-4">
+        {cardWarning}
+        {edcPanel}
+      </div>
+    ) : (
+      edcPanel
     );
   }
 
@@ -529,8 +549,9 @@ export function PaymentScreen({ orderId }: { orderId: string }) {
           </div>
         }
       >
-        {refused ? (
+        {refused || cardWarning ? (
           <div className="grid content-start gap-4">
+            {cardWarning}
             {refused}
             {panel}
           </div>

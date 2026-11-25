@@ -584,5 +584,18 @@ export type ResolvePaymentInput = {
   approverUserId: string;
   pin: string;
   /** EDC or unreadable request: what the supervisor states about the card. */
-  card?: "not_debited" | "recording";
+  card?: "not_debited" | "recording" | "voided";
+  /** `voided`: the number of the void or refund on the machine. */
+  voidRef?: string;
+  /** `recording` of an unreadable request: what the paper slip says. */
+  slip?: EdcSlip;
+};
+
+/** A charged EDC slip, typed by hand. */
+export type EdcSlip = {
+  amountIdr: number;
+  edcMode: EdcMode;
+  terminalId: string;
+  bankRef: string;
+  approvalCode?: string;
 };

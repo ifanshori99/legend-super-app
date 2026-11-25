@@ -1,6 +1,8 @@
 import { useState } from "react";
+import { formatRupiah } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
 import { FormField } from "@/components/ui/form-field";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -11,19 +13,30 @@ import {
 import { useResolveApprovers, type useResolvePayment } from "../../hooks";
 import type { ResolvePaymentInput } from "../../types";
 import { Notice, SupervisorPinDialog } from "../shared";
+import { EMPTY_SLIP, SlipFields, slipInput } from "./resolve-slip-fields";
+
+const VOID_REF_MIN_LENGTH = 4;
 
 // A supervisor settles a payment request without a known answer (1268 W2): who
 // approves, what they state about the card (an EDC or unreadable request), a
 // reason and their own PIN. The server decides; nothing opens before it answers.
+// A charged card is recorded with the slip of the stored request as it is; only
+// when that cannot be read is the paper slip typed.
 export function ResolveDialog({
   orderId,
   kind,
+  slip,
+  paid = false,
   resolve,
   open,
   onOpenChange,
 }: {
   orderId: string;
   kind: "edc" | "corrupt" | "other";
+  /** The stored slip, shown to the supervisor; it cannot be changed. */
+  slip: { amountIdr: number; bankRef: string } | null;
+  /** A paid bill takes no other payment. */
+  paid?: boolean;
   /** Owned by the screen: its answer outlives this dialog. */
   resolve: ReturnType<typeof useResolvePayment>;
   open: boolean;
@@ -31,11 +44,13 @@ export function ResolveDialog({
 }) {
   const t = useT();
   const approvers = useResolveApprovers(
-    kind === "edc" ? "edc_standalone" : "void",
+    kind === "other" ? "void" : "edc_standalone",
     open,
   );
   const [pickedId, setPickedId] = useState<string>();
   const [card, setCard] = useState<ResolvePaymentInput["card"]>();
+  const [voidRef, setVoidRef] = useState("");
+  const [typed, setTyped] = useState(EMPTY_SLIP);
   const [formError, setFormError] = useState<string | null>(null);
 
   const options = approvers.data ?? [];
@@ -52,6 +67,8 @@ export function ResolveDialog({
         if (!next && resolve.isPending) return;
         setFormError(null);
         setCard(undefined);
+        setVoidRef("");
+        setTyped(EMPTY_SLIP);
         resolve.reset();
         onOpenChange(next);
       }}
@@ -98,11 +115,7 @@ export function ResolveDialog({
           {needsCard && (
             <FormField
               label={t("posKasirPayment.unresolved.cardLabel")}
-              hint={t(
-                kind === "corrupt"
-                  ? "posKasirPayment.unresolved.cardCorruptHint"
-                  : "posKasirPayment.unresolved.cardHint",
-              )}
+              hint={t("posKasirPayment.unresolved.cardHint")}
               required
             >
               <Select
@@ -124,14 +137,49 @@ export function ResolveDialog({
                   <SelectItem value="not_debited">
                     {t("posKasirPayment.unresolved.cardNotDebited")}
                   </SelectItem>
-                  {kind === "edc" && (
+                  {!paid && (
                     <SelectItem value="recording">
                       {t("posKasirPayment.unresolved.cardRecording")}
                     </SelectItem>
                   )}
+                  <SelectItem value="voided">
+                    {t("posKasirPayment.unresolved.cardVoided")}
+                  </SelectItem>
                 </SelectContent>
               </Select>
             </FormField>
+          )}
+          {slip && (
+            <p className="text-base text-muted-foreground">
+              {t("posKasirPayment.unresolved.slip", {
+                amount: formatRupiah(slip.amountIdr),
+                ref: slip.bankRef,
+              })}
+            </p>
+          )}
+          {card === "voided" && (
+            <FormField
+              label={t("posKasirPayment.unresolved.voidRef")}
+              hint={t("posKasirPayment.unresolved.voidRefHint")}
+              required
+            >
+              <Input
+                name="voidRef"
+                value={voidRef}
+                onChange={(event) => setVoidRef(event.target.value)}
+                autoComplete="off"
+                spellCheck={false}
+                className="tabular"
+                disabled={resolve.isPending}
+              />
+            </FormField>
+          )}
+          {card === "recording" && kind === "corrupt" && (
+            <SlipFields
+              value={typed}
+              onChange={setTyped}
+              disabled={resolve.isPending}
+            />
           )}
         </div>
       }
@@ -143,6 +191,13 @@ export function ResolveDialog({
           );
         if (needsCard && !card)
           return setFormError(t("posKasirPayment.unresolved.cardRequired"));
+        const voided = voidRef.trim();
+        if (card === "voided" && voided.length < VOID_REF_MIN_LENGTH)
+          return setFormError(t("posKasirPayment.unresolved.voidRefRequired"));
+        const charged =
+          card === "recording" && kind === "corrupt" ? slipInput(typed) : null;
+        if (card === "recording" && kind === "corrupt" && !charged)
+          return setFormError(t("posKasirPayment.unresolved.slipRequired"));
         setFormError(null);
         resolve.mutate(
           {
@@ -151,6 +206,8 @@ export function ResolveDialog({
             approverUserId,
             pin,
             ...(needsCard ? { card } : {}),
+            ...(card === "voided" ? { voidRef: voided } : {}),
+            ...(charged ? { slip: charged } : {}),
           },
           { onSuccess: () => onOpenChange(false) },
         );

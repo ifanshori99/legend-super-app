@@ -61,7 +61,7 @@ const assertCardStated = (stated: boolean): void => {
     throw new HttpError(
       409,
       PAYMENT_INTENT_CARD_STATEMENT_REQUIRED,
-      "Supervisor wajib menyatakan kartu tidak terdebit, atau mencatat pembayarannya.",
+      "Supervisor wajib menyatakan kartu tidak terdebit, sudah di-void di mesin, atau mencatat pembayarannya.",
     );
 };
 
@@ -96,6 +96,12 @@ async function settleKey(
       throw new CoreError(
         "CONFLICT",
         "Kunci ini bukan permintaan pembayaran tagihan ini.",
+      );
+    // The books hold this money: a void on the machine goes through a correction.
+    if (!closed && input.card === "voided")
+      throw new CoreError(
+        "CONFLICT",
+        "Pembayaran ini sudah tercatat. Muat ulang tagihan dan batalkan lewat koreksi.",
       );
     return closed ? "closed" : "recorded";
   }
@@ -136,9 +142,9 @@ async function fenceOrder(
   if (order.status !== "voided" && remainingIdr(order, tenders) <= 0)
     return { outcome: "recorded", locked };
   await assertNoOpenEdcRequest(tx, context, order);
-  // The stored request may have been an EDC payment, and its slip is lost: only
-  // a card that was not charged opens the bill.
-  assertCardStated(input.card === "not_debited");
+  // The stored request may have been an EDC payment: the supervisor says what
+  // became of the card before the bill can take anything.
+  assertCardStated(input.card !== undefined);
   // A final order takes no tender and no change: it is its own fence.
   if (order.status === "voided" || order.status === "completed")
     return { outcome: "closed", locked };
@@ -151,8 +157,9 @@ async function fenceOrder(
 /**
  * POST .../payment-intents/resolve. The caller holds `pos.payment.accept` at the
  * outlet; the approver is another person who may approve the override
- * (`edc_standalone` for an EDC key, else `void`) and types their own PIN. Every
- * settled request is audited with the approver and the reason.
+ * (`edc_standalone` for an EDC key or an unreadable request, else `void`) and
+ * types their own PIN. Every settled request is audited with the approver and
+ * the reason.
  */
 export async function resolvePosPaymentIntent(
   context: ScopedTenantContext,
@@ -175,7 +182,9 @@ export async function resolvePosPaymentIntent(
         tenant,
         approver,
         approverUserId,
-        key?.startsWith("edc_standalone:") ? "edc_standalone" : "void",
+        key === null || key.startsWith("edc_standalone:")
+          ? "edc_standalone"
+          : "void",
         outletId,
         now,
         // Settled only after this approver's own PIN (step 2).
@@ -230,6 +239,7 @@ export async function resolvePosPaymentIntent(
           method: key === null ? "unknown" : key.split(":")[0],
           // What the supervisor stated about the card, and the settled key.
           kind: input.card ?? null,
+          voidRef: input.voidRef ?? null,
           source: key,
         },
         reason: input.reason,

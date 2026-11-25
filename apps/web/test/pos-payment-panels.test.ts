@@ -6,6 +6,7 @@ vi.hoisted(() => {
 
 import { createElement, type ReactNode } from "react";
 import { renderToString } from "react-dom/server";
+import { ApiError } from "@/lib/api/errors";
 import { buttonsOf, mutation, visibleText } from "./pos-payment-936-helpers";
 
 const ORDER = "01JCQ8Z5N0M3X4Y5Z6A7B8C9D0";
@@ -14,6 +15,7 @@ const state = vi.hoisted(() => ({
   session: {} as Record<string, unknown>,
   unresolved: null as unknown,
   print: {} as Record<string, unknown>,
+  replay: {} as Record<string, unknown>,
   started: 0,
   methods: [] as unknown[],
   terminals: [] as unknown[],
@@ -51,7 +53,7 @@ vi.mock("@/features/ws04-pos-kasir/hooks", () => {
     useCompleteWhenPaid: () => undefined,
     usePrintReceipt: () => state.print,
     useStartPayment: start,
-    useReplayPayment: idle,
+    useReplayPayment: () => state.replay,
     useResolvePayment: idle,
     useResolveApprovers: () => ({ data: [], isError: false }),
     useReceiptPdf: idle,
@@ -135,6 +137,7 @@ beforeEach(() => {
   state.session = session();
   state.unresolved = null;
   state.print = mutation();
+  state.replay = mutation();
   state.started = 0;
   state.terminals = [];
   state.methods = [
@@ -221,6 +224,44 @@ describe("unresolved payment", () => {
     expect(button(screen(), "Kirim ulang")).toBeDefined();
     state.session = session({ bill: paidBill(), completion: "done" });
     expect(button(screen(), "Kirim ulang")).toBeUndefined();
+  });
+
+  test.each([
+    { status: "pending", kind: "edc_standalone", mine: true },
+    { status: "pending", kind: "edc_standalone", mine: false },
+    { status: "corrupt" },
+  ])("a paid bill warns that the card may be charged: %j", (unresolved) => {
+    state.unresolved = unresolved;
+    state.session = session({ bill: paidBill(), completion: "done" });
+    const html = screen();
+    expect(visibleText(html)).toContain("Kartu mungkin terdebit");
+    expect(visibleText(html)).toContain("void di mesin EDC");
+    expect(button(html, "Selesaikan dengan PIN")?.disabled).toBe(false);
+    expect(button(html, "Cetak struk")?.disabled).toBe(false);
+  });
+
+  test.each([
+    null,
+    { status: "sending" },
+    { status: "pending", kind: "cash", mine: true },
+  ])("a paid bill has no card warning for %j", (unresolved) => {
+    state.unresolved = unresolved;
+    state.session = session({ bill: paidBill(), completion: "done" });
+    expect(visibleText(screen())).not.toContain("Kartu mungkin terdebit");
+  });
+
+  test("a spent EDC approval leaves only the supervisor's ways out", () => {
+    state.unresolved = {
+      status: "pending",
+      kind: "edc_standalone",
+      mine: true,
+    };
+    state.replay = mutation({
+      error: new ApiError(403, "EDC_STANDALONE_APPROVAL_REQUIRED", "habis"),
+    });
+    const html = screen();
+    expect(button(html, "Kirim ulang")).toBeUndefined();
+    expect(button(html, "Selesaikan dengan PIN")?.disabled).toBe(false);
   });
 });
 

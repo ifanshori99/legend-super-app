@@ -280,8 +280,8 @@ describe("bug 1: a lost cash answer repeats the same request", () => {
 
   it("never calls a reused key a refusal", () => {
     const reused = new ApiError(409, "IDEMPOTENCY_KEY_REUSED", "x");
-    expect(isDefinitiveRefusal(reused, false)).toBe(false);
-    expect(isDefinitiveRefusal(reused, true)).toBe(false);
+    expect(isDefinitiveRefusal("cash", reused, false)).toBe(false);
+    expect(isDefinitiveRefusal("cash", reused, true)).toBe(false);
   });
 
   it("sends nothing when the request cannot be stored", async () => {
@@ -384,31 +384,56 @@ describe("two tabs", () => {
   });
 });
 
-describe("review 1: an EDC repeat refused for its approval", () => {
-  const approval = refuse(403, "EDC_STANDALONE_APPROVAL_REQUIRED");
+/** A slip of this bank reference, captured on the bill. */
+const slipTender = (over: Tender = {}) =>
+  tender({ method: "edc_card", reference: "736214805192", ...over });
 
-  it("unlocks: the server checks the key before the approval", async () => {
-    server.onTender = lost;
-    await expect(edc()).rejects.toThrow();
-    server.onTender = approval;
-    const error: unknown = await replayPayment(OUTLET, ORDER, CASHIER).catch(
-      (caught: unknown) => caught,
-    );
-    expect(error).toMatchObject({ code: "EDC_STANDALONE_APPROVAL_REQUIRED" });
-    expect(wasRefused(error)).toBe(true);
-    expect(state()).toBe("none");
-  });
+const EDC_REFUSALS: [number, string][] = [
+  [400, "VALIDATION_ERROR"],
+  [401, "UNAUTHORIZED"],
+  [403, "EDC_STANDALONE_APPROVAL_REQUIRED"],
+  [403, "FORBIDDEN"],
+  [404, "NOT_FOUND"],
+  [409, "CONFLICT"],
+  [412, "PRECONDITION_FAILED"],
+  [422, "VALIDATION_ERROR"],
+  [423, "LOCKED"],
+];
 
-  it("any other 403 of the repeat stays locked", async () => {
-    server.onTender = lost;
-    await expect(edc()).rejects.toThrow();
-    server.onTender = refuse(403, "FORBIDDEN");
-    const error: unknown = await edc().catch((caught: unknown) => caught);
-    expect(error).toMatchObject({ code: "FORBIDDEN" });
+describe("re-review 1: a refused EDC slip does not mean the card was not charged", () => {
+  const staysLocked = async (error: unknown, code: string) => {
+    expect(error).toMatchObject({ code });
     expect(wasRefused(error)).toBe(false);
     expect(state()).toBe("pending");
+    await expect(cash()).rejects.toMatchObject({ code: "PAYMENT_UNRESOLVED" });
+    await expect(qris()).rejects.toMatchObject({ code: "PAYMENT_UNRESOLVED" });
+  };
+
+  it.each(EDC_REFUSALS)("first send, %i %s", async (status, code) => {
+    server.onTender = refuse(status, code);
+    await staysLocked(await edc().catch((caught: unknown) => caught), code);
   });
 
+  it.each(EDC_REFUSALS)("repeat, %i %s", async (status, code) => {
+    server.onTender = lost;
+    await expect(edc()).rejects.toThrow();
+    server.onTender = refuse(status, code);
+    await staysLocked(
+      await replayPayment(OUTLET, ORDER, CASHIER).catch(
+        (caught: unknown) => caught,
+      ),
+      code,
+    );
+  });
+
+  it("other methods still open on a refusal", async () => {
+    server.onTender = refuse(409, "CONFLICT");
+    await expect(cash()).rejects.toThrow();
+    expect(state()).toBe("none");
+  });
+});
+
+describe("review 2: a gateway without an answer", () => {
   it("repeated gateway 503s keep the QRIS request", async () => {
     server.onTender = refuse(503, "PAYMENT_GATEWAY_UNAVAILABLE");
     for (let i = 0; i < 3; i += 1) {
@@ -624,7 +649,7 @@ describe("a supervisor resolves the request", () => {
     };
     server.onTender = () => {
       states.push(state());
-      return pay(tender({ method: "edc_card" }));
+      return pay(slipTender());
     };
     const session = await resolve({ card: "recording" });
     expect(session.bill.paid).toBe(true);
@@ -663,26 +688,228 @@ describe("a supervisor resolves the request", () => {
 
   it("records nothing again when the first send had been recorded", async () => {
     server.onTender = () => {
-      pay(tender({ method: "edc_card" }));
+      pay(slipTender());
       return lost();
     };
     await expect(edc()).rejects.toThrow();
-    server.order = { ...server.order, totalIdr: 100_000 };
-    outcome = "recorded";
+    const session = await resolve({ card: "recording" });
+    expect(session.bill.paid).toBe(true);
+    expect(money()).toHaveLength(1);
+    expect(state()).toBe("none");
+  });
+
+  it("nor when it is recorded while the supervisor settles it", async () => {
+    server.onTender = lost;
+    await expect(edc()).rejects.toThrow();
+    onResolve = () => {
+      pay(slipTender());
+      return { data: { outcome: "recorded", order: server.order } };
+    };
     await resolve({ card: "recording" });
     expect(money()).toHaveLength(1);
     expect(state()).toBe("none");
   });
 
-  it("an unreadable request has no slip to record", async () => {
+  it.each([
+    ["not_debited", {}],
+    ["voided", { voidRef: "000123" }],
+  ])(
+    "paid another way: the EDC note is closed only as %s",
+    async (card, over) => {
+      server.onTender = lost;
+      await expect(edc()).rejects.toThrow();
+      pay(tender({}));
+      await expect(resolve({ card: "recording" })).rejects.toMatchObject({
+        code: "EDC_SLIP_AMOUNT_MISMATCH",
+      });
+      expect(state()).toBe("pending");
+      const session = await resolve({ card, ...over });
+      expect(session.bill.paid).toBe(true);
+      expect(state()).toBe("none");
+      expect(money()).toHaveLength(1);
+    },
+  );
+
+  it.each(EDC_REFUSALS)(
+    "a refused record stays locked, %i %s, and can be recorded again",
+    async (status, code) => {
+      server.onTender = lost;
+      await expect(edc()).rejects.toThrow();
+      server.onTender = refuse(status, code);
+      await expect(resolve({ card: "recording" })).rejects.toMatchObject({
+        code,
+      });
+      expect(state()).toBe("pending");
+      await expect(cash()).rejects.toMatchObject({
+        code: "PAYMENT_UNRESOLVED",
+      });
+      server.onTender = () => pay(slipTender());
+      const session = await resolve({ card: "recording" });
+      expect(session.bill.paid).toBe(true);
+      expect(state()).toBe("none");
+      expect(new Set(money().map((c) => c.body?.idempotencyKey)).size).toBe(3);
+    },
+  );
+
+  it("the slip's amount is kept beside the request, never in its body", async () => {
     server.onTender = lost;
     await expect(edc()).rejects.toThrow();
-    corrupt();
-    await expect(resolve({ card: "recording" })).rejects.toMatchObject({
-      code: "PAYMENT_UNRESOLVED",
+    expect(readIntent(storage(), scope)).toMatchObject({
+      intent: { amountIdr: 100_000 },
     });
+    expect(JSON.stringify(money())).not.toContain("amount");
+  });
+
+  it("another amount than the remaining bill is not recorded", async () => {
+    server.onTender = lost;
+    await expect(edc()).rejects.toThrow();
+    server.order = orderOf({ totalIdr: 90_000, version: 8 });
+    await expect(resolve({ card: "recording" })).rejects.toMatchObject({
+      code: "EDC_SLIP_AMOUNT_MISMATCH",
+    });
+    expect(sent("/pos-overrides")).toHaveLength(0);
     expect(sent("/resolve")).toHaveLength(0);
-    expect(state()).toBe("corrupt");
+    expect(state()).toBe("pending");
+  });
+
+  it("a note without the slip's amount is not recorded", async () => {
+    server.onTender = lost;
+    await expect(edc()).rejects.toThrow();
+    for (const [key, value] of store)
+      store.set(key, value.replace(/"amountIdr":\d+,?/, ""));
+    await expect(resolve({ card: "recording" })).rejects.toThrow();
+    expect(sent("/resolve")).toHaveLength(0);
+    expect(state()).not.toBe("none");
+  });
+
+  it("voided on the machine: the void number is sent and the bill opens", async () => {
+    server.onTender = lost;
+    await expect(edc()).rejects.toThrow();
+    await resolve({ card: "voided", voidRef: "000123" });
+    expect(sent("/resolve")[0]?.body).toMatchObject({
+      key: money()[0]?.body?.idempotencyKey,
+      card: "voided",
+      voidRef: "000123",
+    });
+    expect(state()).toBe("none");
+    expect(money()).toHaveLength(1);
+  });
+
+  it("voided stays locked while the server does not take it", async () => {
+    server.onTender = lost;
+    await expect(edc()).rejects.toThrow();
+    onResolve = refuse(409, "CONFLICT");
+    await expect(
+      resolve({ card: "voided", voidRef: "000123" }),
+    ).rejects.toThrow();
+    expect(state()).toBe("pending");
+  });
+
+  describe("an unreadable request whose card was charged", () => {
+    const slip = {
+      amountIdr: 100_000,
+      edcMode: "card",
+      terminalId: TERMINAL,
+      bankRef: "736214805192",
+      approvalCode: "A1B2",
+    };
+    const record = (over: Record<string, unknown> = {}) =>
+      resolve({ card: "recording", slip: { ...slip, ...over } });
+
+    beforeEach(async () => {
+      server.onTender = lost;
+      await expect(edc()).rejects.toThrow();
+      net.calls.length = 0;
+      corrupt();
+      outcome = "fenced";
+      server.onTender = () => pay(slipTender());
+    });
+
+    it("is recorded from the slip without the lock ever opening", async () => {
+      const states: string[] = [];
+      onResolve = () => {
+        states.push(state());
+        return { data: { outcome, order: { ...server.order, version: 8 } } };
+      };
+      server.onTender = () => {
+        states.push(state());
+        return pay(slipTender());
+      };
+      const session = await record();
+      expect(session.bill.paid).toBe(true);
+      expect(states).toEqual(["corrupt", "pending"]);
+      expect(sent("/pos-overrides")[0]?.body).toMatchObject({
+        action: "edc_standalone",
+        valueIdr: 100_000,
+      });
+      const body = sent("/resolve")[0]?.body;
+      expect(body).toMatchObject({ key: null, card: "recording" });
+      expect(body).not.toHaveProperty("slip");
+      expect(money()[0]?.body).toMatchObject({
+        method: "edc_card",
+        expectedVersion: 8,
+        standalone: {
+          terminalId: TERMINAL,
+          bankRef: "736214805192",
+          approvalCode: "A1B2",
+          overrideId: NEW_OVERRIDE,
+        },
+      });
+      expect(JSON.stringify(money())).not.toContain("amount");
+      expect(state()).toBe("none");
+    });
+
+    it.each(EDC_REFUSALS)(
+      "refused %i %s: an EDC note stays",
+      async (status, code) => {
+        server.onTender = refuse(status, code);
+        await expect(record()).rejects.toMatchObject({ code });
+        expect(readIntent(storage(), scope)).toMatchObject({
+          status: "pending",
+          intent: { kind: "edc_standalone", amountIdr: 100_000 },
+        });
+      },
+    );
+
+    it.each([
+      ["another amount", { amountIdr: 90_000 }],
+      ["a card number as reference", { bankRef: "4111111111111111" }],
+      ["no reference", { bankRef: "" }],
+    ])("%s is refused before any PIN is asked", async (_name, over) => {
+      await expect(record(over)).rejects.toThrow();
+      expect(posts()).toHaveLength(0);
+      expect(state()).toBe("corrupt");
+    });
+
+    it("needs the slip", async () => {
+      await expect(resolve({ card: "recording" })).rejects.toMatchObject({
+        code: "PAYMENT_UNRESOLVED",
+      });
+      expect(posts()).toHaveLength(0);
+      expect(state()).toBe("corrupt");
+    });
+
+    it("paid another way meanwhile: the charged card is not forgotten", async () => {
+      onResolve = () => {
+        pay(tender({}));
+        return { data: { outcome: "recorded", order: server.order } };
+      };
+      await expect(record()).rejects.toMatchObject({
+        code: "EDC_SLIP_NOT_RECORDED",
+      });
+      expect(money()).toHaveLength(0);
+      expect(state()).toBe("corrupt");
+    });
+
+    it("paid by this very slip: the lock goes", async () => {
+      onResolve = () => {
+        pay(slipTender());
+        return { data: { outcome: "recorded", order: server.order } };
+      };
+      await record();
+      expect(money()).toHaveLength(0);
+      expect(state()).toBe("none");
+    });
   });
 });
 
@@ -754,14 +981,45 @@ describe("review 6: one PIN approves one slip", () => {
 });
 
 describe("review 6: the note goes once the server proves the bill paid", () => {
-  it.each(["a pending", "an unreadable"])("%s note", async (kind) => {
+  it("a pending note", async () => {
     server.onTender = lost;
     await expect(cash()).rejects.toThrow();
-    if (kind === "an unreadable")
-      for (const key of store.keys()) store.set(key, "{broken");
     await fetchPaymentSession(OUTLET, ORDER);
-    expect(state()).not.toBe("none");
+    expect(state()).toBe("pending");
     pay(tender({}));
+    await fetchPaymentSession(OUTLET, ORDER);
+    expect(state()).toBe("none");
+  });
+
+  it("an unreadable note may be a charged card: it stays", async () => {
+    server.onTender = lost;
+    await expect(cash()).rejects.toThrow();
+    for (const key of store.keys()) store.set(key, "{broken");
+    pay(tender({}));
+    expect((await fetchPaymentSession(OUTLET, ORDER)).bill.paid).toBe(true);
+    expect(state()).toBe("corrupt");
+  });
+
+  it.each([
+    ["cash", tender({})],
+    ["another slip", slipTender({ reference: "736214805193" })],
+    ["a slip not captured", slipTender({ status: "voided" })],
+    ["QRIS with that reference", slipTender({ method: "qris" })],
+  ])("an EDC note stays when the bill is paid by %s", async (_name, paidBy) => {
+    server.onTender = lost;
+    await expect(edc()).rejects.toThrow();
+    server.order = orderOf({
+      status: "sent",
+      tenders: [paidBy, tender({ id: `${TENDER}-2` })],
+    });
+    expect((await fetchPaymentSession(OUTLET, ORDER)).bill.paid).toBe(true);
+    expect(state()).toBe("pending");
+  });
+
+  it("an EDC note goes when its own slip is captured", async () => {
+    server.onTender = lost;
+    await expect(edc()).rejects.toThrow();
+    pay(slipTender());
     await fetchPaymentSession(OUTLET, ORDER);
     expect(state()).toBe("none");
   });

@@ -13,6 +13,7 @@ import {
   getPosPaymentOptions,
   getPosQris,
   issuePosReceipt,
+  posStandaloneEdcSchema,
   removePosDiscount,
   resolvePosPaymentIntent,
   type PosOrderDetail,
@@ -42,9 +43,10 @@ import {
   whileSending,
 } from "./payment-intent-browser";
 import {
+  EDC_SLIP_AMOUNT_MISMATCH,
+  EDC_SLIP_NOT_RECORDED,
   PAYMENT_UNRESOLVED,
   beginIntent,
-  clearPaidIntent,
   endIntent,
   isDefinitiveRefusal,
   markRefused,
@@ -59,6 +61,7 @@ import {
   type AttemptRef,
   type CashierCodeOrder,
   type ConfirmCashInput,
+  type EdcMode,
   type EdcTerminal,
   type Ewallet,
   type OrderCompletion,
@@ -472,11 +475,38 @@ async function fetchQris(
   }
 }
 
-/** A paid bill takes no other payment: the stored request is settled. */
-function forgetPaidIntent(outletId: string, orderId: string): void {
-  if (rawIntent(scopeOf(outletId, orderId, "payment")) === null) return;
+/** The bill holds money of this very EDC slip. */
+const hasCapturedSlip = (order: PosOrderDetail, bankRef: unknown): boolean =>
+  order.tenders.some(
+    (t) =>
+      t.status === "captured" &&
+      (t.method === "edc_card" || t.method === "edc_qris") &&
+      t.reference !== null &&
+      t.reference === bankRef,
+  );
+
+const slipOf = (intent: PaymentIntent) =>
+  intent.body.standalone as Record<string, unknown> | undefined;
+
+/**
+ * A paid bill takes no other payment: the stored request is settled. Not so for
+ * an EDC slip the bill was not paid with, nor for a request that cannot be read
+ * and may have been one: that card may be charged and needs a void on the
+ * machine, so it stays until a supervisor closes it.
+ */
+function forgetPaidIntent(outletId: string, order: PosOrderDetail): void {
+  const scope = scopeOf(outletId, order.id, "payment");
+  const raw = rawIntent(scope);
+  const state = parseIntent(raw);
+  if (raw === null || state.status !== "pending") return;
+  const { intent } = state;
+  if (
+    intent.kind === "edc_standalone" &&
+    !hasCapturedSlip(order, slipOf(intent)?.bankRef)
+  )
+    return;
   try {
-    clearPaidIntent(intentStorage(), { outletId, orderId });
+    settleStored(intentStorage(), scope, raw);
   } catch {
     // Blocked storage (or the server render): there is no note to forget.
   }
@@ -490,7 +520,7 @@ async function sessionOfOrder(
 ): Promise<PaymentSession> {
   const session = sessionFromOrder(order);
   if (session.bill.paid) {
-    forgetPaidIntent(outletId, order.id);
+    forgetPaidIntent(outletId, order);
     return session;
   }
   return sessionFromOrder(order, await fetchQris(outletId, order.id, signal));
@@ -631,7 +661,7 @@ async function settleIntent<T>(
       endIntent(storage, scope, intent.key);
       return result;
     } catch (error) {
-      if (isDefinitiveRefusal(error, replay)) {
+      if (isDefinitiveRefusal(intent.kind, error, replay)) {
         endIntent(storage, scope, intent.key);
         markRefused(error as ApiError);
       }
@@ -664,6 +694,9 @@ function sendPayment(
 
 type TenderBody = Record<string, unknown>;
 
+const edcTenderMethod = (mode: EdcMode) =>
+  mode === "qris" ? "edc_qris" : "edc_card";
+
 /** A body the contract refuses must not be stored as a payment in progress. */
 function tenderBody(body: TenderBody): TenderBody {
   const parsed = addPosTender.body.safeParse(body);
@@ -679,6 +712,8 @@ function tenderBody(body: TenderBody): TenderBody {
 type PaymentAsk = {
   kind: IntentKind;
   signature: string;
+  /** EDC standalone: what the slip says was charged. */
+  amountIdr?: number;
   /** Reads the bill and builds the body; skipped when a request is stored. */
   prepare: () => Promise<(key: string) => Record<string, unknown>>;
 };
@@ -716,6 +751,7 @@ async function payScoped(
     kind: ask.kind,
     signature: ask.signature,
     actorId,
+    amountIdr: ask.amountIdr,
     makeKey: () => `${ask.kind}:${globalThis.crypto.randomUUID()}`,
     makeBody,
     now: () => new Date(),
@@ -760,9 +796,10 @@ export async function fetchResolveApprovers(
 /**
  * A supervisor settles the unresolved request with their PIN. The server reads
  * what it recorded or makes sure it never can be; until it answers, the bill
- * stays locked. `recording`: the card was charged, so the slip of the stored
- * request is recorded again under a new key and a new approval, and that
- * request takes the stored one's place without opening the bill.
+ * stays locked. `recording`: the card was charged, so the slip (of the stored
+ * request, or typed when that cannot be read) is recorded under a new key and a
+ * new approval, and that request takes the stored one's place without opening
+ * the bill.
  */
 export async function resolvePayment(
   outletId: string,
@@ -770,13 +807,19 @@ export async function resolvePayment(
   input: ResolvePaymentInput,
 ): Promise<PaymentSession> {
   if (API_MOCK) throw contractPending("penyelesaian pembayaran");
-  const { orderId, card, ...approval } = input;
+  const { orderId, card, voidRef, reason, approverUserId, pin } = input;
   const scope = scopeOf(outletId, orderId, "payment");
   const raw = rawIntent(scope);
   const state = parseIntent(raw);
   if (raw === null || state.status === "none")
     return fetchPaymentSession(outletId, orderId);
   const stored = state.status === "pending" ? state.intent : null;
+  if (stored?.kind === "edc_standalone") {
+    // This very slip may be recorded by now: then there is nothing to settle.
+    const order = await fetchPosOrder(outletId, orderId);
+    if (sessionFromOrder(order).bill.paid) forgetPaidIntent(outletId, order);
+    if (rawIntent(scope) === null) return sessionAfterWrite(outletId, order);
+  }
   const slip =
     card === "recording" ? await newSlipRequest(scope, stored, input) : null;
   const { data } = await callEndpoint(resolvePosPaymentIntent, {
@@ -784,17 +827,29 @@ export async function resolvePayment(
     body: {
       key: stored?.key ?? null,
       ...(card ? { card } : {}),
-      ...approval,
+      ...(voidRef === undefined ? {} : { voidRef }),
+      reason,
+      approverUserId,
+      pin,
     },
   });
   const storage = intentStorage();
   if (slip === null || data.outcome === "recorded") {
+    // Without a key "recorded" only says the bill is paid, not with this slip.
+    if (slip && !stored && !hasCapturedSlip(data.order, slip.bankRef))
+      throw new ApiError(
+        409,
+        EDC_SLIP_NOT_RECORDED,
+        "Tagihan sudah lunas dengan cara lain. Void transaksi ini di mesin EDC, lalu isi nomor void-nya.",
+      );
     settleStored(storage, scope, raw);
     return sessionAfterWrite(outletId, data.order);
   }
   const key = `edc_standalone:${globalThis.crypto.randomUUID()}`;
   const intent: PaymentIntent = {
-    ...slip,
+    kind: "edc_standalone",
+    signature: slip.signature,
+    amountIdr: slip.amountIdr,
     key,
     body: tenderBody({
       ...slip.body,
@@ -813,34 +868,76 @@ export async function resolvePayment(
   );
 }
 
-/** The charged slip of the stored request, with a new supervisor approval. */
+type ChargedSlip = {
+  amountIdr: number | undefined;
+  method: unknown;
+  standalone: Record<string, unknown>;
+};
+
+/** The slip of the stored request, as it is; typed only when unreadable. */
+function chargedSlip(
+  stored: PaymentIntent | null,
+  typed: ResolvePaymentInput["slip"],
+): ChargedSlip {
+  const standalone = stored ? slipOf(stored) : undefined;
+  if (stored?.kind === "edc_standalone" && standalone)
+    return {
+      amountIdr: stored.amountIdr,
+      method: stored.body.method,
+      standalone,
+    };
+  if (!stored && typed)
+    return {
+      amountIdr: typed.amountIdr,
+      method: edcTenderMethod(typed.edcMode),
+      standalone: {
+        terminalId: typed.terminalId,
+        bankRef: typed.bankRef,
+        ...(typed.approvalCode ? { approvalCode: typed.approvalCode } : {}),
+      },
+    };
+  throw new ApiError(
+    409,
+    PAYMENT_UNRESOLVED,
+    "Data slip EDC tidak bisa dibaca, jadi pembayarannya tidak bisa dicatat dari sini.",
+  );
+}
+
+/** The charged slip with a new supervisor approval of exactly its amount. */
 async function newSlipRequest(
   { outletId, orderId }: IntentScope,
   stored: PaymentIntent | null,
   input: ResolvePaymentInput,
-): Promise<Pick<PaymentIntent, "kind" | "signature" | "body">> {
-  const method = stored?.body.method;
-  const standalone = stored?.body.standalone;
-  if (
-    stored?.kind !== "edc_standalone" ||
-    typeof standalone !== "object" ||
-    standalone === null
-  )
+) {
+  const { amountIdr, method, standalone } = chargedSlip(stored, input.slip);
+  const valid = posStandaloneEdcSchema
+    .partial({ overrideId: true })
+    .safeParse(standalone);
+  if (!valid.success)
     throw new ApiError(
-      409,
-      PAYMENT_UNRESOLVED,
-      "Data slip EDC tidak bisa dibaca, jadi pembayarannya tidak bisa dicatat dari sini.",
+      400,
+      "VALIDATION_ERROR",
+      valid.error.issues[0]?.message ?? "Data slip EDC tidak valid.",
     );
   const order = await fetchPosOrder(outletId, orderId);
+  // A slip is recorded for what it charged: never for another amount.
+  const { remainingIdr } = sessionFromOrder(order).bill;
+  if (amountIdr !== remainingIdr || amountIdr <= 0)
+    throw new ApiError(
+      409,
+      EDC_SLIP_AMOUNT_MISMATCH,
+      "Nominal slip EDC berbeda dari sisa tagihan. Void transaksi ini di mesin EDC, lalu isi nomor void-nya.",
+    );
   const { overrideId } = await requestEdcApproval(outletId, {
     orderId,
-    amountIdr: sessionFromOrder(order).bill.remainingIdr,
+    amountIdr,
     reason: input.reason,
     approverUserId: input.approverUserId,
     pin: input.pin,
   });
   return {
-    kind: "edc_standalone",
+    amountIdr,
+    bankRef: standalone.bankRef,
     signature: `resolved:${overrideId}`,
     body: { method, standalone: { ...standalone, overrideId } },
   };
@@ -1004,6 +1101,7 @@ export async function recordEdcStandalone(
       approvalCode ?? "",
       overrideId,
     ].join(":"),
+    amountIdr: input.amountIdr,
     prepare: async () => {
       const before = await fetchPosOrder(outletId, orderId);
       // The supervisor approved one amount: refuse to record a different one.
@@ -1015,7 +1113,7 @@ export async function recordEdcStandalone(
         );
       return (idempotencyKey) =>
         tenderBody({
-          method: input.edcMode === "qris" ? "edc_qris" : "edc_card",
+          method: edcTenderMethod(input.edcMode),
           standalone: {
             terminalId,
             bankRef,

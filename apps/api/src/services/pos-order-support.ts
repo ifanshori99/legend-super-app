@@ -159,6 +159,8 @@ const AUDIT_SAFE_FIELDS = [
   "orderId",
   "shiftId",
   "cashIdr",
+  // 1268 W2: the void number on an EDC machine's slip (no PII, never a PAN).
+  "voidRef",
 ] as const;
 
 export function notFound(message = "Pesanan tidak ditemukan."): CoreError {

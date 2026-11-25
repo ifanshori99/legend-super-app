@@ -45,7 +45,11 @@ import {
   rawIntent,
   subscribeIntents,
 } from "./payment-intent-browser";
-import { parseIntent, type IntentState } from "./payment-intent-store";
+import {
+  parseIntent,
+  type IntentState,
+  type PaymentIntent,
+} from "./payment-intent-store";
 import {
   edcApproversQuery,
   edcTerminalsQuery,
@@ -257,6 +261,16 @@ export type UnresolvedPayment = NonNullable<
   ReturnType<typeof useUnresolvedPayment>
 >;
 
+/** What the cashier copied from the EDC slip; null for other requests. */
+function slipNote({ kind, body, amountIdr }: PaymentIntent) {
+  const standalone = body.standalone as { bankRef?: unknown } | undefined;
+  return kind === "edc_standalone" &&
+    amountIdr !== undefined &&
+    typeof standalone?.bankRef === "string"
+    ? { amountIdr, bankRef: standalone.bankRef }
+    : null;
+}
+
 /**
  * The payment request of this bill that has no known answer, from any tab;
  * `sending` while this tab still waits for it, whichever screen sent it.
@@ -284,6 +298,7 @@ export function useUnresolvedPayment(orderId: string) {
     kind: state.intent.kind,
     /** The server repeats a request only for the cashier who sent it. */
     mine: state.intent.actorId === actorId,
+    slip: slipNote(state.intent),
   };
 }
 

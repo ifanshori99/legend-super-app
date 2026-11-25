@@ -26,9 +26,23 @@ export const posPaymentIntentKeySchema = z
 
 /**
  * What the supervisor states about a hand-keyed EDC payment that was not
- * recorded: the card was not charged, or the till records the payment now.
+ * recorded: the card was not charged, the till records the payment now, or the
+ * charge was voided or refunded on the machine (`voidRef`: the number on that
+ * slip).
  */
-export const posPaymentIntentCardSchema = z.enum(["not_debited", "recording"]);
+export const posPaymentIntentCardSchema = z.enum([
+  "not_debited",
+  "recording",
+  "voided",
+]);
+
+/** As for a bank reference, nothing that looks like a card number is kept. */
+export const posPaymentIntentVoidRefSchema = z
+  .string()
+  .regex(/^[A-Za-z0-9-]{4,24}$/, "Nomor void tidak valid.")
+  .refine((value) => !/\d{13,19}/.test(value.replaceAll("-", "")), {
+    message: "Nomor void tidak boleh menyerupai nomor kartu.",
+  });
 
 /**
  * - `recorded`: the request was recorded; read the bill.
@@ -57,10 +71,14 @@ export const resolvePosPaymentIntent = defineEndpoint({
     /** null: the till cannot read the stored request. */
     key: posPaymentIntentKeySchema.nullable(),
     card: posPaymentIntentCardSchema.optional(),
+    voidRef: posPaymentIntentVoidRefSchema.optional(),
     reason: z.string().trim().min(3).max(500),
     approverUserId: userIdSchema,
     pin: staffPinInputSchema,
-  }),
+  }).refine(
+    (value) => (value.card === "voided") === (value.voidRef !== undefined),
+    { message: "Isi nomor void dari mesin EDC.", path: ["voidRef"] },
+  ),
   response: dataResponseSchema(
     z.strictObject({
       outcome: posPaymentIntentOutcomeSchema,
