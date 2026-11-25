@@ -1,0 +1,5 @@
+# pg_hba.conf lines for edge replication (legend 1269 F11a). Replace the
+# address with the standby LAN address (one /32). Only TLS (hostssl) and a
+# dedicated login are allowed; never "host", "trust", "all" or a wide network.
+# TYPE      DATABASE     USER              ADDRESS            METHOD
+hostssl     replication  edge_replicator   192.0.2.20/32      scram-sha-256

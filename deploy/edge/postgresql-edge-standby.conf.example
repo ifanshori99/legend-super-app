@@ -1,0 +1,11 @@
+# PostgreSQL settings for the STANDBY edge host (legend 1269 F11a).
+# The standby runs PostgreSQL only: legend-edge, legend-edge-worker and
+# legend-edge-web stay stopped and disabled until a manager promotes it (F11b).
+# Create the data directory with pg_basebackup over TLS, then add standby.signal.
+#
+# The password is NOT here. It lives in the passfile (mode 0600, owned by
+# postgres), one line: PRIMARY_HOST:5432:replication:edge_replicator:<password>
+
+hot_standby = on
+primary_slot_name = 'edge_standby_slot'
+primary_conninfo = 'host=192.0.2.10 port=5432 user=edge_replicator application_name=edge_standby sslmode=verify-full sslrootcert=/etc/legend/edge/pg/ca.crt passfile=/etc/legend/edge/pg/replication.pgpass'
