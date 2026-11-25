@@ -502,12 +502,10 @@ export const customerPaymentMethodCodeSchema = z.enum([
   "qris",
   "va",
   "bank_transfer",
+  "ewallet",
+  "card",
 ]);
-/**
- * Methods an intent can carry. The payment-link method picker keeps the three
- * above; e-wallet and card are issued only through the QR guest flow
- * (legend-kt3t1) until the picker offers them.
- */
+/** Methods an intent can carry. */
 export const customerPaymentIntentMethodCodeSchema = z.enum([
   "qris",
   "va",

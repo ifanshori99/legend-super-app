@@ -1009,6 +1009,24 @@ empty locks every method). `DUITKU_ALLOW_SANDBOX=true` is for staging only: the
 API and the worker refuse to start with it when `DEPLOYMENT_MODE=production` or
 `DATA_CLASSIFICATION=real`, and the check stops the deploy before migrating.
 
+Before go-live with Duitku:
+
+- Deactivate every Duitku integration row with `environment = sandbox` (tenant
+  and outlet rows, every tenant) and activate the production row. A sandbox row
+  left active takes no payment in production: the outlet's Duitku reads as not
+  configured.
+- A method missing from `DUITKU_ENABLED_METHODS` does not fail over to DOIT: the
+  gateway is still up, so the routing rule keeps naming it and the method is
+  shown as unavailable (payment link, QR order) or refused. Change the routing
+  rule to move a method to another gateway. A reservation DP is refused while
+  QRIS is locked.
+- The "test connection" button lists what the Duitku merchant account has
+  active, locked or not. Read `DUITKU_ENABLED_METHODS` to know what guests can
+  use.
+- Set `DUITKU_RETURN_URL` to `https://<web>/bayar/kembali` (page of card C2b),
+  with no query and no token. It is the same for every payment, and Duitku's
+  `resultCode` on it proves nothing: the payment status comes from the server.
+
 A disabled channel is never planned for a recipient: in-app notifications are
 still written and the attempt is skipped, never reported as sent. A gap in an
 outbox stream (an event whose earlier sequence never arrived) is recorded in
