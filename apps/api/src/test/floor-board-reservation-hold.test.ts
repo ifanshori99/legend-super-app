@@ -38,6 +38,12 @@ beforeAll(async () => {
   );
   const zone = await createZone(fixture.staff.client, {}, fixture.headers);
   zoneId = zone.id as string;
+  // A waiter reads the zones assigned to them.
+  await owner.query(
+    `INSERT INTO zone_waiter_assignments (tenant_id, outlet_id, zone_id, user_id)
+     VALUES ($1, $2, $3, $4)`,
+    [fixture.tenant.tenantId, fixture.tenant.outletId, zoneId, waiter.userId],
+  );
 });
 afterAll(async () => {
   await owner.end();
@@ -58,9 +64,10 @@ async function hold(
   await owner.query(
     `INSERT INTO reservations
        (id, tenant_id, outlet_id, guest_name, reserved_for, duration_minutes, pax,
-        deposit_idr, policy_snapshot, status, source, note)
+        deposit_idr, policy_snapshot, status, source, note, closed_at)
      VALUES ($1, $2, $3, 'Tamu Rahasia', now() + make_interval(mins => $4), 90, $5,
-        0, '{}', $6, 'staff', 'catatan pribadi')`,
+        0, '{}', $6::varchar, 'staff', 'catatan pribadi',
+        CASE WHEN $6::varchar IN ('cancelled', 'no_show') THEN now() END)`,
     [
       reservationId,
       fixture.tenant.tenantId,
@@ -115,7 +122,7 @@ describe("floor board reservation hold marker", () => {
     expect(JSON.stringify(row)).not.toMatch(/Rahasia|catatan|contact|guest/i);
   });
 
-  it("does not mark a released, ended, seated or cancelled hold", async () => {
+  it("does not mark a released, ended or cancelled hold", async () => {
     const released = await newTable();
     await hold(released, { released: true });
     const ended = await newTable();
