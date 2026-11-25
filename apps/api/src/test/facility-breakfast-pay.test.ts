@@ -28,9 +28,10 @@
 
 import { randomUUID } from "node:crypto";
 import type { Express } from "express";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { ulidToUuid, uuidToUlid } from "@starter/shared/core";
 import { createApp } from "../app.ts";
+import { env } from "../config/env.ts";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { agent, originHeader } from "./helpers.ts";
@@ -1038,5 +1039,51 @@ describe("BRK-PAY-08 the breakfast refund key is reserved for the system", () =>
       ),
     ).rejects.toMatchObject({ status: 422, code: "IDEMPOTENCY_KEY_RESERVED" });
     expect(ran).toBe(false);
+  });
+});
+
+describe("1269 F0 breakfast of a shower ticket while the shower is off", () => {
+  const flag = env as unknown as { FACILITY_SHOWER_ENABLED?: boolean };
+  const was = flag.FACILITY_SHOWER_ENABLED;
+  afterEach(() => {
+    flag.FACILITY_SHOWER_ENABLED = was;
+  });
+
+  it("no new order and no pay link (403); the guest can still cancel", async () => {
+    const { member, ticketId, api } = await newTicket();
+    const order = await placeOrder(world, member, ticketId);
+    const other = await newTicket();
+    flag.FACILITY_SHOWER_ENABLED = false;
+
+    const created = await other.api.create(
+      other.ticketId,
+      breakfastBody(world),
+    );
+    expect(created.status, JSON.stringify(created.body)).toBe(403);
+    expect(created.body.error.code).toBe("FACILITY_SHOWER_DISABLED");
+
+    const paid = await api.pay(ticketId, order.id);
+    expect(paid.status, JSON.stringify(paid.body)).toBe(403);
+    expect(paid.body.error.code).toBe("FACILITY_SHOWER_DISABLED");
+    expect((await linkedOf(world, order.id)).status).toBe("awaiting_payment");
+
+    expect((await api.cancel(ticketId, order.id)).status).toBe(200);
+  });
+
+  it("the pay link of an ended ticket is closed, not left open by the gate", async () => {
+    const { member, ticketId, api } = await newTicket();
+    const order = await placeOrder(world, member, ticketId);
+    const token = await payLink(world, member, ticketId, order.id);
+    await updateTicket(
+      ticketId,
+      `ends_at = now() - interval '1 minute', cleaning_ends_at = now() + interval '9 minutes'`,
+    );
+    flag.FACILITY_SHOWER_ENABLED = false;
+
+    const response = await api.pay(ticketId, order.id);
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(response.body.error.code).toBe("BREAKFAST_UNAVAILABLE");
+    expect(await linkAcceptsPayment(token)).toBe(false);
+    expect((await linkedOf(world, order.id)).status).toBe("cancelled");
   });
 });

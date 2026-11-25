@@ -73,6 +73,7 @@ import {
 } from "../db/schema/payment-recurring";
 import { withTenant } from "../db/tenant";
 import { logger } from "../lib/logger";
+import { assertRecurringPlanOpen } from "./facility-shower-gate";
 import { revokeSubscriptionGrace } from "./facility-subscription-quota";
 import { appendNotificationEvent } from "./notification-events";
 import {
@@ -579,6 +580,12 @@ export async function startSubscription(
         "Ada langganan yang belum terkonfirmasi di gateway. Coba lagi dengan kunci yang sama.",
       );
   }
+
+  // 1269 F0: no new billing for a plan of a closed shower, retries included
+  // (a retry can still create the subscription at DOIT).
+  await withTenant(db, context, (tx) =>
+    assertRecurringPlanOpen(tx, tenantId, plan),
+  );
 
   // A retry of a stored intent only has to learn and tie the provider
   // subscription (so it can be stopped), which works for any integration
@@ -1268,6 +1275,21 @@ async function changeSubscription(
       "CONFLICT",
       "Status langganan di gateway belum dapat dipastikan.",
     );
+
+  // 1269 F0: a resume makes DOIT charge again; pause and cancel stay open.
+  if (action === "resume")
+    await withTenant(db, context, async (tx) => {
+      const [plan] = await tx
+        .select()
+        .from(paymentRecurringPlans)
+        .where(
+          and(
+            eq(paymentRecurringPlans.tenantId, tenantId),
+            eq(paymentRecurringPlans.id, current.planId),
+          ),
+        );
+      if (plan) await assertRecurringPlanOpen(tx, tenantId, plan);
+    });
 
   // A resume makes DOIT charge again: refuse while another live or unresolved
   // subscription of the same customer and plan exists (two would be paid).

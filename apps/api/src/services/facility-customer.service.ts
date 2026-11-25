@@ -34,6 +34,7 @@ import {
   listFacilityProducts,
   listFacilitySubscriptionPlans,
 } from "./facility-products.service.ts";
+import { assertFacilityOpen } from "./facility-shower-gate.ts";
 
 async function toPublicFacility(
   tx: Tx,
@@ -70,6 +71,7 @@ export async function getFacilityCatalog(
 ): Promise<FacilityCatalog> {
   return withTenant(db, context, async (tx) => {
     const facility = await loadFacility(tx, context, query.facilityId);
+    assertFacilityOpen(facility);
     const tenantId = context.tenant.tenantId;
     const products = await listFacilityProducts(tx, tenantId, facility.id);
     const addons = await listFacilityAddons(tx, tenantId, facility.id);
@@ -113,6 +115,7 @@ export async function listPublicSubscriptionPlans(
 ): Promise<{ plans: PublicSubscriptionPlan[] }> {
   return withTenant(db, context, async (tx) => {
     const facility = await loadFacility(tx, context, query.facilityId);
+    assertFacilityOpen(facility);
     const plans = await listFacilitySubscriptionPlans(
       tx,
       context.tenant.tenantId,
@@ -131,6 +134,7 @@ export async function resolveFacilityEntry(
   if (!id.success) throw notFound("Fasilitas");
   return withTenant(db, context, async (tx) => {
     const facility = await loadFacility(tx, context, id.data);
+    assertFacilityOpen(facility);
     const areas = await tx
       .select()
       .from(facilityAreas)

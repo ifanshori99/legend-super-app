@@ -30,6 +30,7 @@ import { auditFacility, loadFacility } from "./facility-shared.ts";
 import { holdFacilitySlot } from "./facility-slots.service.ts";
 import { createPosOrderInTx } from "./pos-order.service.ts";
 import { posIdempotent, type PosCaller } from "./pos-order-support.ts";
+import { assertFacilityOpen } from "./facility-shower-gate.ts";
 
 /** How long a POS sale keeps its slot while the bill is paid. */
 export const POS_TICKET_HOLD_MINUTES = 30;
@@ -79,6 +80,7 @@ export async function sellPosTicket(
   const tenantId = context.tenant.tenantId;
   return withTenant(db, context, async (tx) => {
     const facility = await loadFacility(tx, context, input.facilityId);
+    assertFacilityOpen(facility);
     assertOutletInScope(context.outletScope, facility.outletId);
     const outletId = outletIdSchema.parse(facility.outletId);
     return posIdempotent(

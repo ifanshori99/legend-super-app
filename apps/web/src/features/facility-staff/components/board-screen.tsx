@@ -34,7 +34,9 @@ export function BoardScreen({ facilityId }: { facilityId?: string }) {
   const t = useT();
   const toast = useToast();
   const { timeZone } = useOutletClock();
-  const { facilities, facility, config } = useStaffFacility(facilityId);
+  const { facilities, facility, config } = useStaffFacility(facilityId, {
+    releasedOnly: true,
+  });
   const board = useUnitBoard(facility?.id ?? null);
   const createCleaning = useCreateCleaningTask();
   const updateUnit = useUpdateFacilityUnit();

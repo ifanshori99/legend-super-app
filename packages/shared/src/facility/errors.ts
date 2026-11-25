@@ -45,6 +45,8 @@ export const facilityErrorHttpStatus = {
   BREAKFAST_ORDER_CANCELLED: 409,
   /** The ticket cannot hold a breakfast order (not yours, wrong status, or past the fire time). */
   BREAKFAST_UNAVAILABLE: 422,
+  /** 1269 F0: the paid shower room is deferred past release 1; the server refuses every new shower ticket, hold, quota and right (other facility types are untouched). */
+  FACILITY_SHOWER_DISABLED: 403,
 } as const satisfies Record<string, number>;
 
 export type FacilityErrorCode = keyof typeof facilityErrorHttpStatus;
@@ -80,6 +82,7 @@ const defaultMessages: Record<FacilityErrorCode, string> = {
     "Pesanan sarapan sudah dikirim ke dapur dan tidak dapat dibatalkan.",
   BREAKFAST_ORDER_CANCELLED: "Pesanan sarapan ini sudah dibatalkan.",
   BREAKFAST_UNAVAILABLE: "Tiket ini sudah tidak dapat memesan sarapan.",
+  FACILITY_SHOWER_DISABLED: "Shower belum dibuka. Layanan ini belum tersedia.",
 };
 
 export class FacilityError extends Error {

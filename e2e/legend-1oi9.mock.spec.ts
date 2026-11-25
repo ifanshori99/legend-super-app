@@ -21,6 +21,14 @@ const mockWebUrl = process.env.LEGEND_MOCK_WEB_URL;
 test.skip(!mockWebUrl, "Requires the mock-mode web server");
 test.use({ baseURL: mockWebUrl ?? "http://localhost:3320" });
 
+// 1269 F0: showers are deferred, so the booth fixture is served as an open
+// facility type (features/facility/mock-facilities.ts).
+test.beforeEach(({ page }) =>
+  page.addInitScript(() =>
+    window.localStorage.setItem("legend.mock.boothType", "coworking"),
+  ),
+);
+
 /** The first assertion of the first test on a route pays Vite's cold compile. */
 const COLD_START_TIMEOUT_MS = 30_000;
 

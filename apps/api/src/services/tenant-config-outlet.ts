@@ -25,6 +25,7 @@ import {
 import { floorZones } from "../db/schema/floor.ts";
 import { opsChecklistTemplates } from "../db/schema/operations.ts";
 import { ensureBaselineHoursVersion } from "./facility-hours-versions.service.ts";
+import { isShowerClosed } from "./facility-shower-gate.ts";
 import { loadTenantKeyMaps } from "./tenant-config-keys.ts";
 import {
   ConfigImportError,
@@ -585,6 +586,11 @@ const facilitiesHandler: SectionHandler = {
         skippedFacilities.add(item.key);
         continue;
       }
+      // 1269 F0: no shower comes in (new, or mapped by name) while it is closed.
+      ensure(
+        !isShowerClosed(item.type),
+        `Facility "${item.name}": type shower is not available yet (FACILITY_SHOWER_DISABLED).`,
+      );
       ensure(
         between(item.sessionMinutes, 1, 480) &&
           between(item.cleaningMinutes, 0, 240) &&

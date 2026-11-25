@@ -25,7 +25,7 @@ import {
   isActiveTicket,
   sortTicketViews,
 } from "../flow";
-import { useCurrentSubscription, useTickets } from "../hooks";
+import { useCurrentSubscription, useFacilityOpen, useTickets } from "../hooks";
 import { ApiFailure, LoadingCard, Section, TicketStatusPill } from "./shared";
 
 function TicketCard({ view }: { view: AccessTicketView }) {
@@ -123,6 +123,8 @@ export function FacilityListScreen() {
   const tickets = useTickets();
   const subscription = useCurrentSubscription();
   const facilityId = knownFacilityId(tickets.data?.data, subscription.data);
+  // 1269 F0: no way back into a facility that takes no bookings.
+  const { open: bookable } = useFacilityOpen(facilityId);
 
   const views = sortTicketViews(tickets.data?.data ?? []);
   const active = views.filter((view) => isActiveTicket(view.ticket.status));
@@ -201,7 +203,7 @@ export function FacilityListScreen() {
             )}
           </Section>
 
-          {facilityId && (
+          {facilityId && bookable && (
             <Button asChild size="lg">
               <Link to="/f/$facility" params={{ facility: facilityId }}>
                 {t("facility.list.bookAgain")}

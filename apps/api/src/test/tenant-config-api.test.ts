@@ -24,6 +24,7 @@ import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app";
+import { env } from "../config/env.ts";
 import {
   agent,
   originHeader,
@@ -1200,6 +1201,39 @@ describe("TEN-09 failure and repeat imports", () => {
     expect(rows[0]!.applied_sections).toEqual([]);
 
     // The target is still usable: the intact template imports afterwards.
+    await importOk(admin, target.tenantId, { templateId: template.id });
+    expect(await counts(target.tenantId)).toEqual(SOURCE_COUNTS);
+  });
+
+  it("1269 F0 a bundle with a shower facility is refused while the shower is off and changes nothing", async () => {
+    const flag = env as unknown as { FACILITY_SHOWER_ENABLED?: boolean };
+    const was = flag.FACILITY_SHOWER_ENABLED;
+    const target = await newTarget(admin);
+    const other = await newTarget(admin);
+    const before = await snapshot(target.tenantId);
+    const coworking = JSON.parse(JSON.stringify(sourceBundle));
+    for (const item of coworking.sections.facilities.items)
+      if (item.kind === "facility") item.type = "coworking";
+    try {
+      flag.FACILITY_SHOWER_ENABLED = false;
+      const response = await postImport(admin, target.tenantId, {
+        templateId: template.id,
+      });
+      expect(response.status, JSON.stringify(response.body)).toBe(422);
+      expect(response.body.error.code).toBe("CONFIG_IMPORT_FAILED");
+      expect(await snapshot(target.tenantId)).toEqual(before);
+      expect(await counts(target.tenantId)).toEqual(EMPTY_COUNTS);
+      const [row] = await importRows(target.tenantId);
+      expect(row).toMatchObject({ status: "failed" });
+      expect(row!.errors.join(" ")).toContain("shower");
+
+      // The same bundle with a coworking facility still imports.
+      await importOk(admin, other.tenantId, { bundle: coworking });
+      expect(await counts(other.tenantId)).toEqual(SOURCE_COUNTS);
+    } finally {
+      flag.FACILITY_SHOWER_ENABLED = was;
+    }
+    // With the switch on the shower bundle imports as before.
     await importOk(admin, target.tenantId, { templateId: template.id });
     expect(await counts(target.tenantId)).toEqual(SOURCE_COUNTS);
   });

@@ -80,6 +80,11 @@ import {
 import type { MenuChannel } from "@starter/shared/menu";
 import { outletBusinessDayClock } from "./outlet-clock";
 import {
+  assertFacilityProductOpen,
+  closedShowerProductIds,
+} from "./facility-shower-gate";
+import { FacilityError } from "@starter/shared/facility";
+import {
   domainEventOutbox,
   facilityRewards,
   loyaltyPrograms,
@@ -862,6 +867,33 @@ async function prepare(
     !candidates.some((promotion) => promotion.id === codePromotion.id)
   )
     candidates.push(codePromotion);
+  // 1269 F0: a promotion whose reward is a closed shower (the facility type is
+  // read from the product's facility row) never applies; a code or voucher for
+  // one is refused outright.
+  const closedProducts = await closedShowerProductIds(
+    tx,
+    context.tenant.tenantId,
+    candidates.flatMap((promotion) =>
+      promotion.benefit.kind === "facility_entitlement"
+        ? [promotion.benefit.facilityProductId]
+        : [],
+    ),
+  );
+  if (closedProducts.size > 0) {
+    if (
+      codePromotion?.benefit.kind === "facility_entitlement" &&
+      closedProducts.has(codePromotion.benefit.facilityProductId)
+    )
+      throw new FacilityError("FACILITY_SHOWER_DISABLED");
+    for (let index = candidates.length - 1; index >= 0; index--) {
+      const benefit = candidates[index]!.benefit;
+      if (
+        benefit.kind === "facility_entitlement" &&
+        closedProducts.has(benefit.facilityProductId)
+      )
+        candidates.splice(index, 1);
+    }
+  }
   // Q40 (legend-e5it): a member's same-day minimum-spend facility reward
   // counts the day's earlier bills (crm-promo-minspend.ts).
   const sameDay = await loadSameDayMinSpend(tx, context, {
@@ -1560,6 +1592,12 @@ export async function redeemPromotions(
     });
 
     if (evaluation.facilityEntitlement !== null) {
+      // 1269 F0: last door; throws before any reward row is written.
+      await assertFacilityProductOpen(
+        tx,
+        tenantId,
+        evaluation.facilityEntitlement.facilityProductId,
+      );
       // The evaluator only grants a facility reward to an identified customer.
       if (customerId === null)
         throw new Error("Facility reward without a customer");

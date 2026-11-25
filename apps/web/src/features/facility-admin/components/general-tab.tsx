@@ -9,7 +9,10 @@ import type {
   Facility,
   FacilityType,
 } from "@starter/shared/facility";
-import { updateFacilitySchema } from "@starter/shared/facility";
+import {
+  isFacilityTypeReleased,
+  updateFacilitySchema,
+} from "@starter/shared/facility";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { FormField } from "@/components/ui/form-field";
@@ -396,7 +399,7 @@ export function GeneralTab({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {FACILITY_TYPES.map((type) => (
+                  {FACILITY_TYPES.filter(isFacilityTypeReleased).map((type) => (
                     <SelectItem key={type} value={type}>
                       {t(facilityTypeLabel[type])}
                     </SelectItem>

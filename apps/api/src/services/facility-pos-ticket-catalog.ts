@@ -43,6 +43,7 @@ import { HttpError } from "../lib/http-error.ts";
 import { findFacilityOutletId } from "./facility-pos-ticket-sale.ts";
 import { computeFacilityAvailability } from "./facility-slots.service.ts";
 import { likePattern } from "./menu-internals.ts";
+import { facilityShowerEnabled } from "./facility-shower-gate.ts";
 
 /**
  * Active customers of the tenant whose name contains `q` (wildcards match
@@ -116,6 +117,8 @@ export async function listPosTicketProducts(
           eq(facilityProducts.type, "single"),
           eq(facilityProducts.isActive, true),
           isNotNull(facilityProducts.menuItemId),
+          // 1269 F0: a closed shower is not on the cashier's list.
+          ...(facilityShowerEnabled() ? [] : [ne(facilities.type, "shower")]),
         ),
       )
       .orderBy(

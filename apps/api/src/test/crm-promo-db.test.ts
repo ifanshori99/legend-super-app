@@ -18,6 +18,7 @@ import type {
   PromotionApplicationResult,
 } from "@starter/shared/crm";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
+import { env } from "../config/env";
 import { db } from "../db";
 import { withTenant } from "../db/tenant";
 import { getPromotionRoi } from "../services/crm-promo.service";
@@ -1003,6 +1004,98 @@ describe("Idempotent redeem and release on void", () => {
         }),
       ),
     ).rejects.toMatchObject({ status: 422, code: "VOUCHER_INVALID" });
+  });
+});
+
+describe("1269 F0 a shower reward is refused while the shower is off", () => {
+  it("a facility reward promotion does not apply and writes no reward; a code for it is refused", async () => {
+    const item = randomUUID();
+    const facilityProductId = await asOwner(tenantId, (client) =>
+      seedPromoFacilityProduct(client, tenantId, outletA),
+    );
+    const sari = await member();
+    const code0 = code();
+    const plain = await seedPromotion(item, {
+      benefit: { kind: "nominal_off", amountIdr: 1_000 },
+    });
+    const facilityBenefit = {
+      kind: "facility_entitlement",
+      facilityProductId,
+      quantity: 1,
+    };
+    const rewardPromotion = await seedPromotion(item, {
+      benefit: facilityBenefit,
+    });
+    const codePromotion = await seedPromotion(item, {
+      benefit: facilityBenefit,
+      voucherRequired: true,
+      codeHash: hash(code0),
+    });
+    const flag = env as unknown as { FACILITY_SHOWER_ENABLED?: boolean };
+    const was = flag.FACILITY_SHOWER_ENABLED;
+    flag.FACILITY_SHOWER_ENABLED = false;
+    try {
+      const rewardsOf = async (promotionId: string) =>
+        (
+          await asOwner(tenantId, (client) =>
+            client.query(
+              "SELECT id FROM facility_rewards WHERE tenant_id = $1 AND promotion_id = $2",
+              [tenantId, promotionId],
+            ),
+          )
+        ).rows.length;
+      const result = await redeem(
+        redeemInput([priced(item, 50_000)], { customer: sari }),
+      );
+      expect(discountOf(result, plain)).toBeTruthy();
+      expect(discountOf(result, rewardPromotion)).toBeUndefined();
+      expect(await rewardsOf(rewardPromotion)).toBe(0);
+
+      await expect(
+        redeem(
+          redeemInput([priced(item, 50_000)], {
+            customer: sari,
+            voucherCode: code0,
+          }),
+        ),
+      ).rejects.toMatchObject({
+        status: 403,
+        code: "FACILITY_SHOWER_DISABLED",
+      });
+      expect(await rewardsOf(codePromotion)).toBe(0);
+
+      // A coworking (paid WFC) reward is not closed: it still applies.
+      const wfcItem = randomUUID();
+      const wfcProduct = await asOwner(tenantId, (client) =>
+        seedPromoFacilityProduct(client, tenantId, outletA, "coworking"),
+      );
+      const wfcPromotion = await seedPromotion(wfcItem, {
+        benefit: {
+          kind: "facility_entitlement",
+          facilityProductId: wfcProduct,
+          quantity: 1,
+        },
+      });
+      const wfc = await redeem(
+        redeemInput([priced(wfcItem, 50_000)], { customer: sari }),
+      );
+      expect(discountOf(wfc, wfcPromotion)).toBeTruthy();
+      expect(await rewardsOf(wfcPromotion)).toBe(1);
+
+      // With the switch on, the shower reward applies again.
+      flag.FACILITY_SHOWER_ENABLED = true;
+      const showerItem = randomUUID();
+      const onPromotion = await seedPromotion(showerItem, {
+        benefit: facilityBenefit,
+      });
+      const on = await redeem(
+        redeemInput([priced(showerItem, 50_000)], { customer: sari }),
+      );
+      expect(discountOf(on, onPromotion)).toBeTruthy();
+      expect(await rewardsOf(onPromotion)).toBe(1);
+    } finally {
+      flag.FACILITY_SHOWER_ENABLED = was;
+    }
   });
 });
 

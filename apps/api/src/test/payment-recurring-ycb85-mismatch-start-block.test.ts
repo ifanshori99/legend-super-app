@@ -20,15 +20,25 @@
 // - RESPONSE_MISMATCH rows with a DOIT id already block today (control).
 import { randomBytes, randomUUID } from "node:crypto";
 import { Pool } from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+} from "vitest";
 import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
 import type { OutletId, ScopedTenantContext } from "@starter/shared/core";
 import { createApp } from "../app";
+import { env } from "../config/env";
 import {
   cancelSubscription,
+  resumeSubscription,
   startSubscription,
 } from "../services/payment-recurring.service";
 import {
@@ -40,6 +50,8 @@ import {
   removeSecondTenant,
   type SecondTenant,
 } from "./tenant-isolation-harness";
+import { seedFacility } from "./facility-entitlement-helpers";
+import { owner as memberOwner } from "./member-loyalty-helpers";
 
 // Installs the audit writer the integration service needs.
 createApp();
@@ -145,6 +157,7 @@ afterAll(async () => {
   );
   await step(() => sweepTenantRows(tenantId));
   await step(() => removeSecondTenant(owner, dedicated));
+  await step(() => memberOwner.end());
   await step(() => owner.end());
   if (errors.length > 0) throw errors[0];
 });
@@ -453,5 +466,119 @@ describe("ycb85 a new start is refused while a mismatch row with a DOIT id is no
     expect(results.map((r) => r.status)).toEqual(["fulfilled", "fulfilled"]);
     expect(sameCustomerOtherPlan.calls.createSubscription).toBe(1);
     expect(otherCustomerSamePlan.calls.createSubscription).toBe(1);
+  });
+});
+
+describe("1269 F0 a shower plan takes no new billing while the shower is off", () => {
+  const flag = env as unknown as { FACILITY_SHOWER_ENABLED?: boolean };
+  const was = flag.FACILITY_SHOWER_ENABLED;
+  beforeEach(() => {
+    flag.FACILITY_SHOWER_ENABLED = false;
+  });
+  afterEach(() => {
+    flag.FACILITY_SHOWER_ENABLED = was;
+  });
+
+  /** A recurring plan that pays for a facility plan of this type. */
+  async function planOf(type: "shower" | "coworking"): Promise<Plan> {
+    const plan = await seedPlan();
+    const facilityId = await seedFacility(
+      { tenantId, outletA: outletId },
+      outletId,
+      type,
+    );
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [tenantId],
+      );
+      await client.query(
+        `INSERT INTO facility_subscription_plans (id, tenant_id, outlet_id, facility_id, name, price_idr, quota_per_period, interval, max_per_day, provider_plan_id, is_active)
+         VALUES ($1, $2, $3, $4, 'Langganan Uji', $5, 10, 'month', 1, $6, true)`,
+        [
+          randomUUID(),
+          tenantId,
+          outletId,
+          facilityId,
+          PRICE,
+          plan.providerPlanId,
+        ],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+    return plan;
+  }
+
+  it("a start is refused: DOIT is not called and no row is stored", async () => {
+    const plan = await planOf("shower");
+    const { calls, deps } = fakeDoit({
+      createSubscription: createdAnswer(plan),
+    });
+    expect(
+      await codeOf(
+        startSubscription(
+          context(),
+          startInput(plan, await seedProfile()),
+          deps,
+        ),
+      ),
+    ).toBe("FACILITY_SHOWER_DISABLED");
+    expect(calls.createSubscription ?? 0).toBe(0);
+    expect(await rowsOfPlan(plan.planId)).toEqual([]);
+  });
+
+  it("a resume is refused (DOIT would charge again), a cancel still works", async () => {
+    const plan = await planOf("shower");
+    const id = randomUUID();
+    const providerSubId = `sub_${unique()}`;
+    await owner.query(
+      `INSERT INTO payment_recurring_subscriptions (id, tenant_id, outlet_id, plan_id, customer_profile_id, provider_subscription_id, status,
+              gateway_integration_id, start_idempotency_key)
+       VALUES ($1, $2, $3, $4, $5, $6, 'paused', $7, $8)`,
+      [
+        id,
+        tenantId,
+        outletId,
+        plan.planId,
+        await seedProfile(),
+        providerSubId,
+        integrationId,
+        `idem-${unique()}`,
+      ],
+    );
+    subIds.push(id);
+    const { calls, deps } = fakeDoit({
+      resumeSubscription: { id: providerSubId, status: "active" },
+      cancelSubscription: { id: providerSubId, status: "cancelled" },
+    });
+    const now = new Date();
+    expect(await codeOf(resumeSubscription(context(), id, now, deps))).toBe(
+      "FACILITY_SHOWER_DISABLED",
+    );
+    expect(calls.resumeSubscription ?? 0).toBe(0);
+    expect(await codeOf(cancelSubscription(context(), id, now, deps))).toBe(
+      null,
+    );
+    expect(calls.cancelSubscription).toBe(1);
+  });
+
+  it("a coworking plan still starts", async () => {
+    const plan = await planOf("coworking");
+    const { calls, deps } = fakeDoit({
+      createSubscription: createdAnswer(plan),
+    });
+    await startSubscription(
+      context(),
+      startInput(plan, await seedProfile()),
+      deps,
+    );
+    expect(calls.createSubscription).toBe(1);
   });
 });

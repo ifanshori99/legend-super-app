@@ -23,6 +23,7 @@ import {
   type z,
 } from "@starter/shared/core";
 import {
+  FacilityError,
   facilityConfigSchema,
   slotConfigSchema,
   type CreateFacilityAreaInput,
@@ -67,6 +68,7 @@ import {
   listFacilityProducts,
   listFacilitySubscriptionPlans,
 } from "./facility-products.service.ts";
+import { assertFacilityOpen, isShowerClosed } from "./facility-shower-gate.ts";
 import { listWifiPoliciesForFacility } from "./wifi-policy.service.ts";
 import {
   ensureBaselineHoursVersion,
@@ -298,6 +300,14 @@ export async function updateFacility(
     );
     const { expectedUpdatedAt, effectiveFrom, ...changes } = input;
     assertConfigFresh(locked.updatedAt, expectedUpdatedAt);
+    // 1269 F0: the type decides what the shower gate closes, so it is frozen
+    // when a closed shower is on either side of the change.
+    if (
+      changes.type !== undefined &&
+      changes.type !== locked.type &&
+      (isShowerClosed(locked.type) || isShowerClosed(changes.type))
+    )
+      throw new FacilityError("FACILITY_SHOWER_DISABLED");
     // New hours start on `effectiveFrom` (default: today, outlet business
     // date). The past is never rewritten, and a future date leaves the hours
     // valid today (`facilities.operating_hours`) alone (legend-4us1a).
@@ -807,6 +817,7 @@ export async function createFacility(
       },
       map: toFacility,
       create: async () => {
+        assertFacilityOpen(input);
         const [row] = await tx
           .insert(facilities)
           .values({

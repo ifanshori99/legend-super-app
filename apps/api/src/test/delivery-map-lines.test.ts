@@ -39,10 +39,19 @@ import { randomUUID } from "node:crypto";
 import express, { type Express } from "express";
 import request from "supertest";
 import type { PoolClient } from "pg";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+} from "vitest";
 import { signDeliveryWebhook } from "@starter/shared/adapters";
 import { deliveryChannelOrderSchema } from "@starter/shared/delivery";
 import { createApp } from "../app.ts";
+import { env } from "../config/env.ts";
 import { errorHandler } from "../middleware/error-handler";
 import { createDeliveryWebhookRouter } from "../routes/delivery-webhook.routes";
 import {
@@ -50,6 +59,11 @@ import {
   recordedDeliveryCalls,
 } from "../services/delivery-ports.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
+import {
+  seedFacility,
+  seedTicketProduct,
+} from "./facility-entitlement-helpers.ts";
+import { owner as memberOwner } from "./member-loyalty-helpers.ts";
 import {
   createIsolatedTenant,
   owner,
@@ -78,6 +92,7 @@ beforeAll(() => {
 });
 beforeEach(() => clearRecordedDeliveryCalls());
 afterAll(async () => {
+  await memberOwner.end();
   await owner.end();
 });
 
@@ -950,5 +965,73 @@ describe("legend-5d76 map lines of a needs_review order", () => {
     expect(await s.count("orders", externalOrderId)).toBe(1);
     expect(await s.count("kitchen_tickets", externalOrderId)).toBe(1);
     expect(s.acceptCalls(externalOrderId)).toBe(1);
+  });
+});
+
+describe("1269 F0 a shower menu item is not injected while the shower is off", () => {
+  const flag = env as unknown as { FACILITY_SHOWER_ENABLED?: boolean };
+  const was = flag.FACILITY_SHOWER_ENABLED;
+  beforeEach(() => {
+    flag.FACILITY_SHOWER_ENABLED = false;
+  });
+  afterEach(() => {
+    flag.FACILITY_SHOWER_ENABLED = was;
+  });
+  const linkTo = async (s: Setup, menuItemId: string) =>
+    seedTicketProduct(s.tenant.tenantId, {
+      facilityId: await seedFacility(
+        { tenantId: s.tenant.tenantId, outletA: s.outletA },
+        s.outletA,
+      ),
+      outletId: s.outletA,
+      menuItemId,
+    });
+  const shower = (itemId: string) => ({
+    itemId,
+    name: "Tiket Shower",
+    qty: 1,
+    price: 70_000,
+  });
+
+  it("a platform order for it is kept for review: no order, no kitchen ticket, not accepted", async () => {
+    const s = await setup();
+    const item = await s.addItem("Tiket Shower", { price: 70_000 });
+    await linkTo(s, item);
+    // `ingest` expects needs_review with no order.
+    const { externalOrderId } = await s.ingest([shower(item)]);
+    expect(await s.count("orders", externalOrderId)).toBe(0);
+    expect(await s.count("kitchen_tickets", externalOrderId)).toBe(0);
+    expect(s.acceptCalls(externalOrderId)).toBe(0);
+  });
+
+  it("staff cannot map a line to it, nor finish an order whose stored line already points to it", async () => {
+    const s = await setup();
+    const item = await s.addItem("Tiket Shower", { price: 70_000 });
+    const mapTo = async (
+      deliveryOrderId: string,
+      name: string,
+      menuItemId: string,
+    ) =>
+      s.mapLines(s.handlerA.client, deliveryOrderId, [
+        {
+          lineNo: lineNoOf(await s.readRow(deliveryOrderId), name),
+          menuItemId,
+        },
+      ]);
+
+    const unmatched = await s.ingest([unknownKopi()]);
+    // Stored as matched before the item became a shower ticket.
+    const mixed = await s.ingest([unknownKopi(), shower(item)]);
+    await linkTo(s, item);
+
+    const mapped = await mapTo(unmatched.deliveryOrderId, "Kopi Susu", item);
+    expect(mapped.status, JSON.stringify(mapped.body)).toBe(422);
+    const finished = await mapTo(mixed.deliveryOrderId, "Kopi Susu", s.kopi);
+    expect(finished.status, JSON.stringify(finished.body)).toBe(403);
+    expect(errorCode(finished.body)).toBe("FACILITY_SHOWER_DISABLED");
+    for (const order of [unmatched, mixed]) {
+      expect(await s.count("orders", order.externalOrderId)).toBe(0);
+      expect((await s.readRow(order.deliveryOrderId)).order_id).toBeNull();
+    }
   });
 });

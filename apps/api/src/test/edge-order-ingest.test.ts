@@ -39,6 +39,7 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 import type { EventEnvelope } from "@starter/shared/events";
+import { env } from "../config/env.ts";
 import { db } from "../db/index.ts";
 import { resetEdgeApplierRegistryForTests } from "../edge/applier-registry.ts";
 import { createDbLinkStore } from "../edge/db-link-store.ts";
@@ -55,6 +56,11 @@ import {
   registerEdgeNode,
   type AuthenticatedEdgeNode,
 } from "../services/edge-node.service.ts";
+import {
+  seedFacility,
+  seedTicketProduct,
+} from "./facility-entitlement-helpers.ts";
+import { owner as memberOwner } from "./member-loyalty-helpers.ts";
 
 const owner = new Pool({
   connectionString: process.env.STARTER_TEST_DATABASE_URL,
@@ -614,6 +620,8 @@ afterAll(async () => {
       "pos_orders",
       "orders",
       "pos_shifts",
+      "facility_products",
+      "facilities",
       "menu_items",
       "menu_categories",
       "edge_deferred_events",
@@ -644,6 +652,7 @@ afterAll(async () => {
   } finally {
     client.release();
     await owner.end();
+    await memberOwner.end();
   }
 });
 
@@ -1033,6 +1042,50 @@ describe("legend-771dl refusals keep the parked event and never stall the link",
       state: "refused",
       reason: "lines_mismatch",
     });
+  });
+
+  it("1269 F0: a sale of a closed shower's menu item stays parked (shower_closed), a voided line or an open shower does not", async () => {
+    const showerItem = randomUUID();
+    await q(
+      `INSERT INTO menu_items (id, tenant_id, brand_id, category_id, name, is_active, media_id)
+       VALUES ($1, $2, $3, $4, 'Tiket Shower', true, $5)`,
+      [showerItem, tenantId, brandId, categoryId, randomUUID()],
+    );
+    await seedTicketProduct(tenantId, {
+      facilityId: await seedFacility({ tenantId, outletA }),
+      outletId: outletA,
+      menuItemId: showerItem,
+    });
+    const flag = env as unknown as { FACILITY_SHOWER_ENABLED?: boolean };
+    const was = flag.FACILITY_SHOWER_ENABLED;
+    const [first, second, voided] = lines();
+    const sold = createUlid(++clock);
+    const voidedOnly = createUlid(++clock);
+    const opened = createUlid(++clock);
+    const soldLines = [first, { ...second, menuItemId: showerItem }, voided];
+    const event = paidEvent(sold, { lines: soldLines });
+    try {
+      flag.FACILITY_SHOWER_ENABLED = false;
+      await deliver([
+        event,
+        paidEvent(voidedOnly, {
+          lines: [first, second, { ...voided, menuItemId: showerItem }],
+        }),
+      ]);
+      flag.FACILITY_SHOWER_ENABLED = true;
+      await deliver([paidEvent(opened, { lines: soldLines })]);
+    } finally {
+      flag.FACILITY_SHOWER_ENABLED = was;
+    }
+    expect(await parkedRowsOf(event)).toBe(1);
+    expect(await cloudOrders(sold)).toBe(0);
+    expect(await childCounts(sold)).toEqual(NOTHING);
+    expect(await ingestOf(sold)).toMatchObject({
+      state: "refused",
+      reason: "shower_closed",
+    });
+    expect(await cloudOrders(voidedOnly)).toBe(1);
+    expect(await cloudOrders(opened)).toBe(1);
   });
 
   it("an order that already exists in the cloud is left as it is and refused as order_exists", async () => {

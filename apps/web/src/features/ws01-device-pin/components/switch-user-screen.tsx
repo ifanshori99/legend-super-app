@@ -72,7 +72,7 @@ export function SwitchUserScreen({
           tone: "success",
         });
         void navigate({
-          to: "/fasilitas",
+          to: "/fasilitas/darurat",
           search: returnFacilityId ? { facilityId: returnFacilityId } : {},
         });
         return;

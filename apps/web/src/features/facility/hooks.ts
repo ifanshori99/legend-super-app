@@ -6,13 +6,17 @@ import { ApiError } from "@/lib/api/errors.ts";
 import * as api from "./api";
 import { facilityKeys } from "./queries";
 import { cancelWhatsAppLogin, startWhatsAppLogin } from "./wa-login";
-import type { CreateBreakfastOrderBody } from "@starter/shared/facility";
+import {
+  isFacilityTypeReleased,
+  type CreateBreakfastOrderBody,
+} from "@starter/shared/facility";
 import {
   breakfastMenuQuery,
   loginChallengeQuery,
   availabilityQuery,
   currentSubscriptionQuery,
   facilityCatalogQuery,
+  facilityEntryQuery,
   queueEntryQuery,
   subscriptionPlansQuery,
   ticketQuery,
@@ -25,6 +29,27 @@ export function useAvailability(facilityId: string, date: string) {
 
 export function useFacilityCatalog(facilityId: string) {
   return useQuery(facilityCatalogQuery(facilityId));
+}
+
+/**
+ * Whether this facility takes bookings (1269 F0): a deferred shower does not.
+ * `closed` is only true once known, so an offline read never hides a facility
+ * on its booking page; `open` is only true once known, for links to that page.
+ */
+export function useFacilityOpen(facilityId: string | null) {
+  const entry = useQuery({
+    ...facilityEntryQuery(facilityId ?? ""),
+    enabled: facilityId !== null,
+  });
+  const released =
+    entry.data && isFacilityTypeReleased(entry.data.facility.type);
+  return {
+    open: released === true,
+    closed:
+      released === false ||
+      (entry.error instanceof ApiError &&
+        entry.error.code === "FACILITY_SHOWER_DISABLED"),
+  };
 }
 
 export function useQueueEntry(facilityId: string) {
