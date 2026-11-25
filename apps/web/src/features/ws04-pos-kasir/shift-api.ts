@@ -25,7 +25,11 @@ import { ApiError } from "@/lib/api/errors";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { contractPending, local, METHOD_LABELS } from "./api";
 import { runPosKasirMock } from "./mock-engine";
-import { clearStoredCount, readStoredCount, writeStoredCount } from "./shift-count-store";
+import {
+  clearStoredCount,
+  readStoredCount,
+  writeStoredCount,
+} from "./shift-count-store";
 import {
   type ActiveShift,
   type ApproveShiftCloseInput,
@@ -377,6 +381,16 @@ export const approveShiftClose = (
   local("persetujuan tutup shift (overrideId)", (engine) =>
     engine.approveShiftClose(input),
   );
+
+/** Answers that mean the stored count or approval cannot be used any more. */
+const CLOSE_STALE_CODES = new Set([
+  "SHIFT_COUNT_STALE",
+  "SHIFT_COUNT_SUPERSEDED",
+]);
+export const isCloseStale = (error: unknown): boolean =>
+  error instanceof ApiError && CLOSE_STALE_CODES.has(error.code);
+export const isQrisHoldBlock = (error: unknown): boolean =>
+  error instanceof ApiError && error.code === "QRIS_HOLD_ACTIVE";
 
 /**
  * Close from the cashier's device (1268 W3): the supervisor's PIN decision is

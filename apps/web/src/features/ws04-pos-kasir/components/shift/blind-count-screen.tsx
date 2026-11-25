@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Link, useRouter } from "@tanstack/react-router";
+import { IDR_CASH_DENOMINATIONS } from "@starter/shared/pos";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
@@ -7,7 +8,7 @@ import { Money } from "@/components/ui/money";
 import { ApiError } from "@/lib/api/errors";
 import { useActiveShift, useSubmitBlindCount } from "../../shift-hooks";
 import { SHIFT_COUNT_LIMIT_CODE } from "../../shift-extra-types";
-import { CASH_DENOMINATIONS_IDR, type ActiveShift } from "../../types";
+import type { ActiveShift } from "../../types";
 import {
   DenominationCounter,
   Notice,
@@ -29,15 +30,14 @@ function CountForm({ shift }: { shift: ActiveShift }) {
   const submit = useSubmitBlindCount();
   const router = useRouter();
   const [quantities, setQuantities] = useState<Record<number, number>>({});
-  const [otherIdr, setOtherIdr] = useState(0);
   // An empty drawer is valid: a zero count needs one explicit confirmation.
   const [zeroArmed, setZeroArmed] = useState(false);
 
-  const lines = CASH_DENOMINATIONS_IDR.map((denominationIdr) => ({
+  const lines = IDR_CASH_DENOMINATIONS.map((denominationIdr) => ({
     denominationIdr,
     quantity: quantities[denominationIdr] ?? 0,
   }));
-  const counted = denominationTotal(lines, otherIdr);
+  const counted = denominationTotal(lines, 0);
   const confirmingZero = counted === 0 && zeroArmed;
 
   function send() {
@@ -48,7 +48,7 @@ function CountForm({ shift }: { shift: ActiveShift }) {
     submit.mutate({
       shiftId: shift.id,
       counts: lines,
-      otherAmountIdr: otherIdr,
+      otherAmountIdr: 0,
     });
   }
 
@@ -150,7 +150,7 @@ function CountForm({ shift }: { shift: ActiveShift }) {
               {t("posKasirShift.count.panelHint")}
             </p>
             <DenominationCounter
-              denominations={CASH_DENOMINATIONS_IDR}
+              denominations={IDR_CASH_DENOMINATIONS}
               quantities={quantities}
               onQuantityChange={(denominationIdr, quantity) => {
                 setZeroArmed(false);
@@ -158,11 +158,6 @@ function CountForm({ shift }: { shift: ActiveShift }) {
                   ...current,
                   [denominationIdr]: quantity,
                 }));
-              }}
-              otherIdr={otherIdr}
-              onOtherChange={(value) => {
-                setZeroArmed(false);
-                setOtherIdr(value);
               }}
             />
             <Notice tone="info" title={t("posKasirShift.count.hiddenTitle")}>

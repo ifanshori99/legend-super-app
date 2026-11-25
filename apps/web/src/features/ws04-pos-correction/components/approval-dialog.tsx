@@ -23,6 +23,7 @@ import {
   Notice,
   SupervisorPinDialog,
 } from "../../ws04-pos-kasir/components/shared";
+import type { OverrideAction } from "../../ws04-pos-kasir/types";
 import { useApproverOptions } from "../hooks";
 
 export type ApprovalSubmit = {
@@ -41,6 +42,8 @@ type Props = {
   pending: boolean;
   /** Why the last try failed, with how to recover. */
   error: string | null;
+  /** The override action: the server then lists only who may approve it. */
+  action?: OverrideAction;
 };
 
 // The supervisor's approval step (PRD AUTH-06): choose who approves, then that
@@ -54,9 +57,10 @@ export function ApprovalDialog({
   onSubmit,
   pending,
   error,
+  action,
 }: Props) {
   const t = useT();
-  const approvers = useApproverOptions();
+  const approvers = useApproverOptions(action);
   const [pickedId, setPickedId] = useState<string>();
 
   if (approvers.isLoading || approvers.isError || !approvers.data?.length) {

@@ -147,16 +147,6 @@ export function useStartRecount() {
   };
 }
 
-/** Answers that mean the stored count or approval cannot be used any more. */
-const CLOSE_STALE_CODES = new Set([
-  "SHIFT_COUNT_STALE",
-  "SHIFT_COUNT_SUPERSEDED",
-]);
-export const isCloseStale = (error: unknown): boolean =>
-  error instanceof ApiError && CLOSE_STALE_CODES.has(error.code);
-export const isQrisHoldBlock = (error: unknown): boolean =>
-  error instanceof ApiError && error.code === "QRIS_HOLD_ACTIVE";
-
 /**
  * The supervisor closes the shift on the cashier's device: PIN override of the
  * count, then the close. Retries repeat the same close key and reuse the
