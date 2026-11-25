@@ -30,6 +30,7 @@ import { auditFacility, loadFacility } from "./facility-shared.ts";
 import { holdFacilitySlot } from "./facility-slots.service.ts";
 import { createPosOrderInTx } from "./pos-order.service.ts";
 import { posIdempotent, type PosCaller } from "./pos-order-support.ts";
+import { assertFacilityTicketsEnabled } from "./facility-tickets-gate.ts";
 
 /** How long a POS sale keeps its slot while the bill is paid. */
 export const POS_TICKET_HOLD_MINUTES = 30;
@@ -67,6 +68,7 @@ export async function sellPosTicket(
   input: StaffSellTicketInput,
   now = new Date(),
 ): Promise<PosTicketSale> {
+  assertFacilityTicketsEnabled();
   // The slot hold and the one-slot-one-ticket guarantee live in the cloud: an
   // edge node cannot prove the unit is free (same rule as refunds).
   if (getEdgeRuntimeState().edgeMode || process.env.EDGE_MODE === "true")

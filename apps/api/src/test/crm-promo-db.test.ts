@@ -18,6 +18,7 @@ import type {
   PromotionApplicationResult,
 } from "@starter/shared/crm";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
+import { env } from "../config/env";
 import { db } from "../db";
 import { withTenant } from "../db/tenant";
 import { getPromotionRoi } from "../services/crm-promo.service";
@@ -1003,6 +1004,75 @@ describe("Idempotent redeem and release on void", () => {
         }),
       ),
     ).rejects.toMatchObject({ status: 422, code: "VOUCHER_INVALID" });
+  });
+});
+
+describe("1269 F0 a shower reward is refused while facility tickets are off", () => {
+  it("a facility reward promotion does not apply and writes no reward; a code for it is refused", async () => {
+    const item = randomUUID();
+    const facilityProductId = await asOwner(tenantId, (client) =>
+      seedPromoFacilityProduct(client, tenantId, outletA),
+    );
+    const sari = await member();
+    const code0 = code();
+    const plain = await seedPromotion(item, {
+      benefit: { kind: "nominal_off", amountIdr: 1_000 },
+    });
+    const facilityBenefit = {
+      kind: "facility_entitlement",
+      facilityProductId,
+      quantity: 1,
+    };
+    const rewardPromotion = await seedPromotion(item, {
+      benefit: facilityBenefit,
+    });
+    const codePromotion = await seedPromotion(item, {
+      benefit: facilityBenefit,
+      voucherRequired: true,
+      codeHash: hash(code0),
+    });
+    const flag = env as unknown as { FACILITY_TICKETS_ENABLED?: boolean };
+    const was = flag.FACILITY_TICKETS_ENABLED;
+    flag.FACILITY_TICKETS_ENABLED = false;
+    try {
+      const rewardsOf = async (promotionId: string) =>
+        (
+          await asOwner(tenantId, (client) =>
+            client.query(
+              "SELECT id FROM facility_rewards WHERE tenant_id = $1 AND promotion_id = $2",
+              [tenantId, promotionId],
+            ),
+          )
+        ).rows.length;
+      const result = await redeem(
+        redeemInput([priced(item, 50_000)], { customer: sari }),
+      );
+      expect(discountOf(result, plain)).toBeTruthy();
+      expect(discountOf(result, rewardPromotion)).toBeUndefined();
+      expect(await rewardsOf(rewardPromotion)).toBe(0);
+
+      await expect(
+        redeem(
+          redeemInput([priced(item, 50_000)], {
+            customer: sari,
+            voucherCode: code0,
+          }),
+        ),
+      ).rejects.toMatchObject({
+        status: 403,
+        code: "FACILITY_TICKETS_DISABLED",
+      });
+      expect(await rewardsOf(codePromotion)).toBe(0);
+
+      flag.FACILITY_TICKETS_ENABLED = true;
+      const on = await redeem(
+        redeemInput([priced(item, 50_000)], { customer: sari }),
+      );
+      expect(discountOf(on, rewardPromotion)).toBeTruthy();
+      expect(await rewardsOf(rewardPromotion)).toBe(1);
+    } finally {
+      flag.FACILITY_TICKETS_ENABLED = was;
+    }
   });
 });
 

@@ -23,6 +23,7 @@ import {
   pgErrorCode,
 } from "./facility-shared.ts";
 import { notifyNextInQueue } from "./facility-slots.service.ts";
+import { assertFacilityTicketsEnabled } from "./facility-tickets-gate.ts";
 
 type Row = typeof facilityQueueEntries.$inferSelect;
 
@@ -47,6 +48,7 @@ export async function joinFacilityQueue(
   input: { facilityId: string; areaId: string },
   now = new Date(),
 ): Promise<FacilityQueueEntry> {
+  assertFacilityTicketsEnabled();
   const actor = userIdSchema.parse(actorUserId);
   return withTenant(db, context, async (tx) => {
     const tenantId = context.tenant.tenantId;

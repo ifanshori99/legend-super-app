@@ -80,6 +80,10 @@ import {
 import type { MenuChannel } from "@starter/shared/menu";
 import { outletBusinessDayClock } from "./outlet-clock";
 import {
+  assertFacilityTicketsEnabled,
+  facilityTicketsEnabled,
+} from "./facility-tickets-gate";
+import {
   domainEventOutbox,
   facilityRewards,
   loyaltyPrograms,
@@ -644,6 +648,12 @@ function canApplyPromotionHere(
     "quotaTotal" | "quotaPerCustomer" | "budgetIdr" | "benefit"
   >,
 ): boolean {
+  // 1269 F0: a shower reward never applies while facility tickets are off.
+  if (
+    promotion.benefit.kind === "facility_entitlement" &&
+    !facilityTicketsEnabled()
+  )
+    return false;
   return (
     !isPromoEdgeMode() ||
     (promotion.quotaTotal === null &&
@@ -821,6 +831,9 @@ async function prepare(
       };
     voucherEvaluationId = codePromotion.id;
   }
+  // 1269 F0: a code or voucher whose reward is a shower is refused outright.
+  if (codePromotion?.benefit.kind === "facility_entitlement")
+    assertFacilityTicketsEnabled();
   // legend-e5it: a code for a promotion switched off at this outlet is refused.
   if (
     codePromotion !== null &&
@@ -1560,6 +1573,8 @@ export async function redeemPromotions(
     });
 
     if (evaluation.facilityEntitlement !== null) {
+      // 1269 F0: last door; throws before any reward row is written.
+      assertFacilityTicketsEnabled();
       // The evaluator only grants a facility reward to an identified customer.
       if (customerId === null)
         throw new Error("Facility reward without a customer");

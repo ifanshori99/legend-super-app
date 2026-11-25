@@ -76,6 +76,7 @@ import {
   type PromotionRow,
 } from "./crm-promo-engine";
 import { promoIdempotentCommand } from "./crm-promo-idempotency";
+import { assertFacilityTicketsEnabled } from "./facility-tickets-gate";
 import { promotionDisabledAtOutlet } from "./crm-promo-outlets";
 import {
   loadTenantAccessInTransaction,
@@ -311,6 +312,17 @@ export async function listPromotions(
   });
 }
 
+/** 1269 F0: a promotion with a shower reward may be saved but not be active. */
+function assertNoShowerPromoActive(
+  promotion: Pick<Promotion, "status" | "benefit">,
+): void {
+  if (
+    promotion.status === "active" &&
+    promotion.benefit.kind === "facility_entitlement"
+  )
+    assertFacilityTicketsEnabled();
+}
+
 export async function createPromotion(
   context: ScopedTenantContext,
   actorUserId: string,
@@ -352,6 +364,7 @@ async function insertPromotion(
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
     });
+    assertNoShowerPromoActive(promotion);
     if (promotion.codeHash !== null)
       await assertCodeFree(tx, context, promotion.codeHash);
     let row: PromotionRow | undefined;
@@ -444,6 +457,7 @@ export async function updatePromotion(
       updatedAt: now.toISOString(),
     });
     assertStatusChange(current.status, next.status);
+    assertNoShowerPromoActive(next);
     if (next.quotaTotal !== null && next.quotaTotal < row.usesTotal)
       throw new HttpError(
         422,

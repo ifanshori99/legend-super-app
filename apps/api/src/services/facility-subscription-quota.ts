@@ -61,6 +61,7 @@ import {
   subscriptionAccessPeriod,
 } from "./payment-recurring.service";
 import type { Tx } from "./facility-shared.ts";
+import { facilityTicketsEnabled } from "./facility-tickets-gate.ts";
 
 /** Upper bound of intervals walked inside one paid window (a bad row must not loop). */
 const MAX_SLICES = 240;
@@ -245,6 +246,10 @@ export async function syncSubscriptionQuota(
   const graceDays = await readRecurringGraceDays(tx, tenantId, sub.outletId);
   const period = subscriptionAccessPeriod(sub, input.now, graceDays);
   if (!period) return revokeSubscriptionGrace(tx, context, sub, input.now);
+
+  // 1269 F0: no new subscription quota while facility tickets are off. The
+  // grace revoke above still runs, so an old grant can be closed.
+  if (!facilityTicketsEnabled()) return NOTHING;
 
   const p = paymentRecurringPlans;
   const [plan] = await tx

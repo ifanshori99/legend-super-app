@@ -44,7 +44,7 @@ import { randomUUID } from "node:crypto";
 import type { Express } from "express";
 import type { PoolClient } from "pg";
 import type { Test } from "supertest";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   idr,
   outletIdSchema,
@@ -65,6 +65,7 @@ import {
 import { accessTicketCredentialSchema } from "@starter/shared/facility";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
+import { env } from "../config/env.ts";
 import {
   getEdgeRuntimeState,
   setEdgeRuntimeStateForTests,
@@ -1542,5 +1543,46 @@ describe("POS-936-TKT tickets of a bill: listing and isolation", () => {
     const response = await credentialCall(first.orderId, second.ticketId);
     expect(response.status, JSON.stringify(response.body)).toBe(404);
     expect(await credentialRow(second.ticketId)).toBeNull();
+  });
+});
+
+describe("1269 F0 facility tickets off: nothing is sold, no money is taken, old bills can still be voided", () => {
+  const flag = env as unknown as { FACILITY_TICKETS_ENABLED?: boolean };
+  const was = flag.FACILITY_TICKETS_ENABLED;
+  afterEach(() => {
+    flag.FACILITY_TICKETS_ENABLED = was;
+  });
+
+  it("F0-01 selling is refused (403 FACILITY_TICKETS_DISABLED) and holds nothing", async () => {
+    const unit = await newUnit();
+    flag.FACILITY_TICKETS_ENABLED = false;
+    const response = await sell(saleBody(unit));
+    expect(response.status, JSON.stringify(response.body)).toBe(403);
+    expect(errorCode(response.body)).toBe("FACILITY_TICKETS_DISABLED");
+    expect(await ticketRowCount(unit)).toBe(0);
+  });
+
+  it("F0-02 a bill sold earlier takes no tender and no credential, and the cashier can still void it", async () => {
+    const bought = await buy();
+    flag.FACILITY_TICKETS_ENABLED = false;
+
+    const status = await readyOrder(bought.orderId);
+    const tender = await posApi().cash(
+      bought.orderId,
+      status,
+      TICKET_TOTAL_IDR,
+    );
+    expect(tender.status, JSON.stringify(tender.body)).toBe(403);
+    expect(errorCode(tender.body)).toBe("FACILITY_TICKETS_DISABLED");
+    expect((await readOrder(bought.orderId)).tenders).toHaveLength(0);
+
+    const credential = await credentialCall(bought.orderId, bought.ticketId);
+    expect(credential.status).toBe(403);
+    expect(errorCode(credential.body)).toBe("FACILITY_TICKETS_DISABLED");
+
+    const voided = await voidUnpaid(bought.orderId);
+    expect(voided.status, JSON.stringify(voided.body)).toBe(200);
+    expect((await onlyTicket(bought.orderId)).ticket.status).toBe("cancelled");
+    await expectSlotFree(bought.unitId);
   });
 });
