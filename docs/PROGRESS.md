@@ -1,5 +1,13 @@
 # PROGRESS — Legend Super App
 
+## CTO 25 Nov (batch107 mendarat)
+
+- `milestone/m1` = c52680ee0 (int/batch107: 1265 latihan rilis + 1267 bagian B; tanpa migrasi). Bukti di head itu: tsc api+web hijau, root 3775/3776 (1 dilewati), web 497/497, api terarah 76 berkas 1383 lulus 5 dilewati. Suite API penuh BELUM selesai di batch107 (run terhenti di sekitar 225 dari 1.749 berkas; satu temuan nyata, daftar perintah di data-import-registry, dibetulkan c52680ee0). Wajib suite penuh sekali di kandidat rilis sebelum merge main.
+- 1265 selesai: deploy dry-run, Caddy, 9 perintah ops di dist, PPh21/PTKP. Laporan `docs/release/rehearsal-2026-11-25.md`, langkah staging `docs/release/pph21-backfill-rehearsal.md`. legend-wxvt9 tetap buka: butuh staging (image penuh, deploy.sh di VM, cocokkan saldo 1204 per badan hukum, apply nyata).
+- 1267 selesai: audit 5c0a + perbaikan F1-F10; layar QRIS/EDC tagih tukar menu terkunci sampai backend legend-f1mmf.
+- Bead baru: legend-f1mmf, legend-r88k9, legend-fjpgp, legend-avbqd.
+- Berikut: tunggu founder (tagihan GitHub Actions, VM + Cloudflare, kredensial, restore drill); pemblokir P1 1nb85 (refund DOIT mati), 7tqe8 (sandbox Duitku); lalu suite penuh kandidat rilis. Merge main dan deploy menunggu founder.
+
 ## CTO 25 Nov (batch106 mendarat)
 - `milestone/m1` = int/batch106 = 9fcac9be1 (pushed, migrasi 0523). Rincian test: baris terakhir `docs/merge-queue.md`. Suite penuh TIDAK diulang di 9fcac9be1; delta sesudah 16572fb44 = 1264 (refund, runbook, fixture) yang diuji terarah.
 - Bead ditutup: tomda xhl5j gdjpu j7018 905j 29vw ecr16 ff393 17az7 mtbq9 ait0n. Tetap buka: k0i8, x73li, 0orff, 07eg/tkhkz. Cek go-live tomda di `docs/release/production-credentials-checklist.md` F.12.
