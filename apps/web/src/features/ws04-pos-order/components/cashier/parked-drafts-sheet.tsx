@@ -10,8 +10,10 @@ import {
 } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Notice } from "@/features/ws04-pos-kasir/components/shared";
+import { needsCashierClose } from "@/features/ws04-pos-order/order-flow";
 import {
   isContractPending,
+  useCloseResume,
   useParkedDrafts,
   useResumeDraft,
 } from "@/features/ws04-pos-order/hooks";
@@ -73,6 +75,7 @@ function ParkedList({
   const t = useT();
   const drafts = useParkedDrafts();
   const resume = useResumeDraft({ draftKey });
+  const closeResume = useCloseResume();
 
   if (drafts.isPending) {
     return (
@@ -137,6 +140,21 @@ function ParkedList({
         >
           {!isContractPending(resume.error) &&
             t("posOrderCart.error.resumeBody")}
+          {needsCashierClose(resume.error) && resume.variables && (
+            <div className="mt-2 grid gap-2">
+              <p>{t("posOrderCart.resumeClose.body")}</p>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  closeResume(resume.variables.id);
+                  resume.reset();
+                }}
+              >
+                {t("posOrderCart.resumeClose.confirm")}
+              </Button>
+            </div>
+          )}
         </Notice>
       )}
       <ul className="grid gap-2">

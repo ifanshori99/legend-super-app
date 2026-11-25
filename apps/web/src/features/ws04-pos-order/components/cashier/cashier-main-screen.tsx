@@ -11,6 +11,7 @@ import { ApiError } from "@/lib/api/errors";
 import {
   needsCashierClose,
   ORDER_INTENT_PENDING,
+  PARK_INTENT_PENDING,
 } from "@/features/ws04-pos-order/order-flow";
 import type { AreaAccess } from "@/lib/areas/access";
 import { holdsAny } from "@/lib/areas/guard";
@@ -26,6 +27,8 @@ import { useDraftCart } from "@/features/ws04-pos-order/draft-store";
 import {
   isContractPending,
   useCashierDraftKey,
+  useCloseResume,
+  useOtherCashierPending,
   usePendingOrder,
   useParkDraft,
   useReplayPendingResumes,
@@ -78,6 +81,9 @@ export function CashierMainScreen() {
   // A send whose answer was lost (or a refresh, or a copied tab): the cashier
   // brings it back exactly and sends it again with the same key.
   const pendingOrder = usePendingOrder(draftKey);
+  const pendingPark = usePendingOrder(draftKey, "park");
+  const otherCashierPending = useOtherCashierPending();
+  const closeResume = useCloseResume();
   // A resume that was sent but not answered is replayed when the screen opens.
   const replay = useReplayPendingResumes({ draftKey });
 
@@ -264,23 +270,46 @@ export function CashierMainScreen() {
   };
 
   const parkThenRestore = () => {
-    park.mutate(inputOfMeta(meta, cart.lines), {
-      onSuccess: () => {
-        cart.clear();
-        restoreNow();
+    park.mutate(
+      { ...inputOfMeta(meta, cart.lines), meta },
+      {
+        onSuccess: () => {
+          cart.clear();
+          restoreNow();
+        },
+        onSettled: pendingPark.refresh,
       },
-    });
+    );
   };
 
   const parkOrder = () => {
     setStatus(null);
     setRemoved([]);
-    park.mutate(inputOfMeta(meta, cart.lines), {
-      onSuccess: () => {
-        cart.clear();
-        setStatus({ key: "parkedOk" });
+    park.mutate(
+      { ...inputOfMeta(meta, cart.lines), meta },
+      {
+        onSuccess: () => {
+          cart.clear();
+          setStatus({ key: "parkedOk" });
+        },
+        onSettled: pendingPark.refresh,
       },
-    });
+    );
+  };
+
+  // A park whose answer was lost: sent again with the same key and bytes (the
+  // cart on screen is not touched), or closed after the cashier checked.
+  const resendPark = () => {
+    const snapshot = pendingPark.pending;
+    if (!snapshot) return;
+    setStatus(null);
+    park.mutate(
+      { ...inputOfMeta(snapshot.meta, snapshot.lines), meta: snapshot.meta },
+      {
+        onSuccess: () => setStatus({ key: "parkedOk" }),
+        onSettled: pendingPark.refresh,
+      },
+    );
   };
 
   // The order does not exist on the server yet, so "send held items" releases
@@ -316,6 +345,9 @@ export function CashierMainScreen() {
   const pendingCode = submitCode === ORDER_INTENT_PENDING;
   // The server refused the key for a different body: only the cashier closes it.
   const keyRefused = needsCashierClose(submit.error);
+  // A park refused because another cart is unclear: the notice above says it.
+  const parkConflict =
+    park.error instanceof ApiError && park.error.code === PARK_INTENT_PENDING;
   const forbidden =
     submit.error instanceof ApiError && submit.error.status === 403;
 
@@ -439,7 +471,56 @@ export function CashierMainScreen() {
           onRetry={continueOrder}
         />
       )}
-      {park.isError && (
+      {otherCashierPending && (
+        <Notice tone="info" title={t("posOrderCart.otherCashier.title")}>
+          {t("posOrderCart.otherCashier.body")}
+        </Notice>
+      )}
+      {pendingPark.pending && !park.isPending && (
+        <Notice tone="warning" title={t("posOrderCart.parkPending.title")}>
+          <div className="grid gap-2">
+            <p>
+              {t("posOrderCart.parkPending.body", {
+                where: describePending(pendingPark.pending.meta),
+                count: pendingPark.pending.lines.reduce(
+                  (sum, line) => sum + line.quantity,
+                  0,
+                ),
+              })}
+            </p>
+            <div className="flex gap-2">
+              <Button type="button" variant="outline" onClick={resendPark}>
+                {t("posOrderCart.parkPending.resend")}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={pendingPark.close}
+              >
+                {t("posOrderCart.parkPending.close")}
+              </Button>
+            </div>
+          </div>
+        </Notice>
+      )}
+      {replay.isError && needsCashierClose(replay.error) && (
+        <Notice tone="danger" title={t("posOrderCart.resumeClose.title")}>
+          <div className="grid gap-2">
+            <p>{t("posOrderCart.resumeClose.body")}</p>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                if (replay.variables) closeResume(replay.variables.id);
+                replay.reset();
+              }}
+            >
+              {t("posOrderCart.resumeClose.confirm")}
+            </Button>
+          </div>
+        </Notice>
+      )}
+      {park.isError && !parkConflict && (
         <ActionError
           pending={isContractPending(park.error)}
           title={t("posOrderCart.error.parkTitle")}

@@ -15,11 +15,22 @@ import {
   pendingResumeIds,
   ACTOR_MISSING,
   needsCashierClose,
-  OTHER_CASHIER_PENDING,
+  PARK_INTENT_PENDING,
+  readPendingPark,
+  closeParkIntent,
+  closeResumeIntent,
   ORDER_INTENT_PENDING,
   type FlowDeps,
 } from "@/features/ws04-pos-order/order-flow";
-import { peekIntent } from "@/features/ws04-pos-order/intent-store";
+import {
+  hasForeignIntent,
+  peekIntent,
+} from "@/features/ws04-pos-order/intent-store";
+import {
+  clearActingStaffToken,
+  readActingStaffUserId,
+  writeActingStaffToken,
+} from "@/lib/api/acting-staff";
 import { cashierDraftKey } from "@/features/ws04-pos-order/draft-store";
 import {
   createBodyOf,
@@ -680,26 +691,130 @@ test("the cart key carries outlet and cashier", () => {
   assert.notEqual(cashierDraftKey("o1", "u1"), cashierDraftKey("o2", "u1"));
 });
 
-test("a send is blocked while another cashier's send in this outlet is unclear", async () => {
+test("another cashier's unclear send is shown, never blocking, never resent", async () => {
   const { state, deps } = fakeServer();
   const storage = new MemoryStorage();
   state.loseCreateReply = 1;
   await assert.rejects(placeOrder(deps(storage), input(), META));
+  const keyOfA = state.createCalls[0]!;
   const other = { outletId: "o1", actorId: "u2", subject: "kasir" };
-  const blocked = (error: unknown) =>
-    error instanceof ApiError && error.code === OTHER_CASHIER_PENDING;
-  await assert.rejects(
-    placeOrder(deps(storage, other), input(), META),
-    blocked,
+  assert.equal(hasForeignIntent(storage, other), true, "the screen can tell");
+  assert.equal(
+    hasForeignIntent(storage, SCOPE),
+    false,
+    "own intent is not foreign",
   );
-  await assert.rejects(parkCart(deps(storage, other), input()), blocked);
-  assert.equal(state.createCalls.length, 1, "nothing new was sent");
-  // The first cashier is not blocked by their own intent, and can finish it.
-  await placeOrder(deps(storage), input(), META);
+  // B sends B's cart, and may also park; A's request is not touched.
   await placeOrder(deps(storage, other), input(), META);
-  assert.equal(state.orders.size, 2);
+  await parkCart(deps(storage, other), input());
+  assert.equal(
+    state.orders.size,
+    2,
+    "A's recorded order and B's own, no third",
+  );
+  assert.equal(
+    state.createCalls.filter((key) => key === keyOfA).length,
+    1,
+    "A's key is not resent by B",
+  );
+  assert.notEqual(readPendingOrder(storage, SCOPE), null, "A's intent stays");
+  assert.equal(
+    peekIntent(storage, {
+      outletId: "o1",
+      actorId: "u1",
+      kind: "create",
+      subject: "kasir",
+    })?.key,
+    keyOfA,
+  );
 });
 
+test("a lost park keeps its cart and meta; resend repeats key and bytes", async () => {
+  const { state, deps } = fakeServer();
+  const storage = new MemoryStorage();
+  const d = deps(storage);
+  const realPark = d.park;
+  let lose = 1;
+  d.park = async (body) => {
+    const parked = await realPark(body);
+    if (lose-- > 0) throw NETWORK();
+    return parked;
+  };
+  await assert.rejects(parkCart(d, input(), META));
+  const pending = readPendingPark(storage, SCOPE);
+  assert.deepEqual(pending?.meta, META);
+  assert.equal(pending?.lines.length, LINES.length);
+  // Another cart meanwhile: refused with the park message, nothing sent.
+  await assert.rejects(
+    parkCart(d, input({ lines: [] }), META),
+    (error: unknown) =>
+      error instanceof ApiError && error.code === PARK_INTENT_PENDING,
+  );
+  await parkCart(d, input({ lines: pending!.lines }), pending!.meta);
+  assert.equal(state.parked.size, 1, "one parked cart, one key");
+  assert.equal(readPendingPark(storage, SCOPE), null);
+});
+
+test("a park or resume the server refused for the key can be closed by the cashier", async () => {
+  const { deps } = fakeServer();
+  const storage = new MemoryStorage();
+  const d = deps(storage);
+  d.park = async () => {
+    throw new ApiError(403, "FORBIDDEN", "no");
+  };
+  await assert.rejects(parkCart(d, input(), META));
+  assert.notEqual(readPendingPark(storage, SCOPE), null, "403 keeps the key");
+  closeParkIntent(storage, SCOPE);
+  assert.equal(readPendingPark(storage, SCOPE), null);
+
+  d.resume = async () => {
+    throw new ApiError(409, "IDEMPOTENCY_KEY_REUSED", "x");
+  };
+  await assert.rejects(
+    resumeParkedInto(
+      d,
+      "p9",
+      async () => 1,
+      () => {},
+    ),
+  );
+  assert.deepEqual(pendingResumeIds(storage, SCOPE), ["p9"]);
+  closeResumeIntent(storage, SCOPE, "p9");
+  assert.deepEqual(pendingResumeIds(storage, SCOPE), []);
+});
+
+test("the actor is the staff the tab's token was issued to", () => {
+  const data = new Map<string, string>();
+  const store = {
+    getItem: (key: string) => data.get(key) ?? null,
+    setItem: (key: string, value: string) => void data.set(key, value),
+    removeItem: (key: string) => void data.delete(key),
+  };
+  vi.stubGlobal("window", { localStorage: store, sessionStorage: store });
+  try {
+    clearActingStaffToken();
+    assert.equal(readActingStaffUserId(), null);
+    writeActingStaffToken({
+      token: "t",
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      staffUserId: "staff-1",
+    });
+    assert.equal(readActingStaffUserId(), "staff-1");
+    writeActingStaffToken({
+      token: "t",
+      expiresAt: new Date(Date.now() - 1000).toISOString(),
+      staffUserId: "staff-1",
+    });
+    assert.equal(
+      readActingStaffUserId(),
+      null,
+      "an expired token names no actor",
+    );
+  } finally {
+    clearActingStaffToken();
+    vi.unstubAllGlobals();
+  }
+});
 test("a refused key and a 403 are closed only by the cashier", () => {
   assert.equal(
     needsCashierClose(new ApiError(409, "IDEMPOTENCY_KEY_REUSED", "x")),

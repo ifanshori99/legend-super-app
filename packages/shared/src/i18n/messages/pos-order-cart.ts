@@ -91,6 +91,21 @@ export const posOrderCartMessages = {
     replaceConfirm: "Simpan lalu kembalikan",
     replaceCancel: "Batal",
   },
+  otherCashier: {
+    title: "Ada pesanan kasir lain yang belum jelas",
+    body: "Periksa tab “Belum selesai” sebelum memasukkan ulang pesanan itu.",
+  },
+  parkPending: {
+    title: "Ada penahanan yang belum jelas",
+    body: "{where}: {count} item. Kirim ulang dengan isi yang sama, atau tutup bila sudah ada di “Pesanan ditahan”.",
+    resend: "Kirim ulang",
+    close: "Sudah saya periksa, tutup",
+  },
+  resumeClose: {
+    title: "Membuka pesanan ditahan belum jelas",
+    body: "Periksa “Pesanan ditahan” dan keranjang, lalu tutup peringatan ini.",
+    confirm: "Sudah saya periksa",
+  },
   forbidden: {
     title: "Pengiriman tidak diizinkan",
     body: "Akun ini tidak boleh mengirim pesanan, atau izinnya sedang berubah. Periksa pesanan terbuka di kasir, lalu tutup peringatan ini.",

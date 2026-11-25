@@ -144,8 +144,7 @@ export function listIntentSubjects(
 
 /**
  * True when this outlet's storage holds an unresolved send of ANOTHER cashier
- * (a shared till, a copied tab): sending as this cashier is blocked until that
- * one is settled, so two people never act on each other's unclear request.
+ * (a shared till): the screen says so. It never blocks and never resends it.
  */
 export function hasForeignIntent(
   storage: StorageLike,

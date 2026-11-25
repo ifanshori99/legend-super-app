@@ -21,6 +21,9 @@ import { demoMenuPhoto } from "@/lib/demo-media";
 import { DEMO_PHOTO_NAMES } from "./fixtures";
 import {
   closeOrderIntent,
+  closeParkIntent,
+  closeResumeIntent,
+  pendingParkText as readParkText,
   placeOrder,
   parkCart,
   pendingResumeIds,
@@ -37,6 +40,7 @@ import {
   mapOrder,
   mapParked,
 } from "./order-wire";
+import { hasForeignIntent } from "./intent-store";
 import { runPosOrderMock, type PosOrderEngine } from "./mock-engine";
 import {
   CONTRACT_PENDING,
@@ -195,6 +199,56 @@ export function pendingOrderText(
   });
 }
 
+/** The unresolved park of this cart as stored text (null: none, or mock). */
+export function pendingParkText(
+  outletId: string,
+  actorId: string,
+  draftKey: string,
+): string | null {
+  if (API_MOCK || typeof window === "undefined") return null;
+  return readParkText(window.sessionStorage, {
+    outletId,
+    actorId,
+    subject: draftKey,
+  });
+}
+
+/** The cashier checked the parked list: close an unclear park. */
+export function closePendingPark(
+  outletId: string,
+  actorId: string,
+  draftKey: string,
+): void {
+  closeParkIntent(window.sessionStorage, {
+    outletId,
+    actorId,
+    subject: draftKey,
+  });
+}
+
+/** The cashier checked: close an unclear resume of this parked cart. */
+export function closePendingResume(
+  outletId: string,
+  actorId: string,
+  parkedId: string,
+): void {
+  closeResumeIntent(
+    window.sessionStorage,
+    { outletId, actorId, subject: "" },
+    parkedId,
+  );
+}
+
+/** Another cashier of this outlet has a send whose answer is not known. */
+export function otherCashierPending(
+  outletId: string,
+  actorId: string,
+): boolean {
+  if (API_MOCK || typeof window === "undefined" || outletId === "")
+    return false;
+  return hasForeignIntent(window.sessionStorage, { outletId, actorId });
+}
+
 /** The cashier checked the open orders: close a refused (reused) key. */
 export function closePendingOrder(
   outletId: string,
@@ -239,10 +293,15 @@ export async function parkDraft(
   actorId: string,
   draftKey: string,
   input: ParkDraftInput,
+  meta?: OrderMeta,
 ): Promise<ParkedDraft> {
   if (API_MOCK) return local("tahan pesanan", (e) => e.parkDraft(input));
   // The catalog is not needed: the draft shown is the cart that was parked.
-  const parked = await parkCart(flowDeps(outletId, actorId, draftKey), input);
+  const parked = await parkCart(
+    flowDeps(outletId, actorId, draftKey),
+    input,
+    meta,
+  );
   return draftFromPark(parked, input);
 }
 

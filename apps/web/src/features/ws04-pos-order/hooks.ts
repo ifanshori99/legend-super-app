@@ -12,6 +12,7 @@ import {
   type UseMutationResult,
   type UseQueryResult,
 } from "@tanstack/react-query";
+import { readActingStaffUserId } from "@/lib/api/acting-staff";
 import { ApiError } from "@/lib/api/errors";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { useRouteContext } from "@tanstack/react-router";
@@ -21,6 +22,10 @@ import { useActiveStaff } from "@/features/ws01-device-pin/storage";
 import {
   acknowledgeCall,
   closePendingOrder,
+  closePendingPark,
+  closePendingResume,
+  otherCashierPending,
+  pendingParkText,
   pendingOrderText,
   pendingResumes,
   addToTable,
@@ -90,7 +95,9 @@ function useActorId(): string {
       session?: { user?: { id?: string } } | null;
     }
   ).session;
-  return staff?.userId ?? session?.user?.id ?? "";
+  // The token's own staff first (what the server records as the actor), then
+  // the device's active staff label, then the signed-in user.
+  return readActingStaffUserId() ?? staff?.userId ?? session?.user?.id ?? "";
 }
 
 /** The key of this cashier's cart in this outlet (see `cashierDraftKey`). */
@@ -197,7 +204,10 @@ export function useSubmitOrder({
  * after a send; `close` ends a refused (reused) key once the cashier has
  * checked the open orders.
  */
-export function usePendingOrder(draftKey: string): {
+export function usePendingOrder(
+  draftKey: string,
+  kind: "order" | "park" = "order",
+): {
   pending: OrderSnapshot | null;
   refresh: () => void;
   close: () => void;
@@ -206,15 +216,43 @@ export function usePendingOrder(draftKey: string): {
   const actorId = useActorId();
   const text = useSyncExternalStore(
     subscribePending,
-    () => pendingOrderText(outletId, actorId, draftKey),
+    () =>
+      kind === "order"
+        ? pendingOrderText(outletId, actorId, draftKey)
+        : pendingParkText(outletId, actorId, draftKey),
     () => null,
   );
   const pending = useMemo(() => parseOrderSnapshot(text), [text]);
   const close = useCallback(() => {
-    closePendingOrder(outletId, actorId, draftKey);
+    if (kind === "order") closePendingOrder(outletId, actorId, draftKey);
+    else closePendingPark(outletId, actorId, draftKey);
     notifyPending();
-  }, [outletId, actorId, draftKey]);
+  }, [kind, outletId, actorId, draftKey]);
   return { pending, refresh: notifyPending, close };
+}
+
+/** Another cashier of this outlet has a send whose answer is not known. */
+export function useOtherCashierPending(): boolean {
+  const outletId = useOutletId();
+  const actorId = useActorId();
+  return useSyncExternalStore(
+    subscribePending,
+    () => otherCashierPending(outletId, actorId),
+    () => false,
+  );
+}
+
+/** Closes an unclear resume of one parked cart after the cashier checked. */
+export function useCloseResume(): (parkedId: string) => void {
+  const outletId = useOutletId();
+  const actorId = useActorId();
+  return useCallback(
+    (parkedId: string) => {
+      closePendingResume(outletId, actorId, parkedId);
+      notifyPending();
+    },
+    [outletId, actorId],
+  );
 }
 
 const pendingListeners = new Set<() => void>();
@@ -272,18 +310,21 @@ export function useParkDraft({
 }: { draftKey?: string } = {}): UseMutationResult<
   ParkedDraft,
   Error,
-  ParkDraftInput
+  ParkDraftInput & { meta?: OrderMeta }
 > {
   const queryClient = useQueryClient();
   const outletId = useOutletId();
   const actorId = useActorId();
-  return useMutation<ParkedDraft, Error, ParkDraftInput>({
-    mutationFn: (input) => parkDraft(outletId, actorId, draftKey, input),
-    onSuccess: () =>
-      void queryClient.invalidateQueries({
-        queryKey: posOrderKeys.parked(outletId),
-      }),
-  });
+  return useMutation<ParkedDraft, Error, ParkDraftInput & { meta?: OrderMeta }>(
+    {
+      mutationFn: ({ meta, ...input }) =>
+        parkDraft(outletId, actorId, draftKey, input, meta),
+      onSuccess: () =>
+        void queryClient.invalidateQueries({
+          queryKey: posOrderKeys.parked(outletId),
+        }),
+    },
+  );
 }
 
 /**

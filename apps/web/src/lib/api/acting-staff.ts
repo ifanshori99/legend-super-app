@@ -34,13 +34,19 @@ export type ActingStaffToken = {
   token: string;
   /** ISO time the API stops accepting the token. */
   expiresAt: string;
+  /** The staff the token was issued to: the actor the server records. */
+  staffUserId?: string;
 };
 
 let memory: ActingStaffToken | null = null;
 
 function isToken(value: unknown): value is ActingStaffToken {
   const row = value as Partial<ActingStaffToken> | null;
-  return typeof row?.token === "string" && typeof row?.expiresAt === "string";
+  return (
+    typeof row?.token === "string" &&
+    typeof row?.expiresAt === "string" &&
+    (row.staffUserId === undefined || typeof row.staffUserId === "string")
+  );
 }
 
 function stored(): ActingStaffToken | null {
@@ -139,6 +145,16 @@ export function readActingStaffToken(): string | null {
     return null;
   }
   return value.token;
+}
+
+/**
+ * The staff this tab's live token was issued to (the server's `actorOf` for POS
+ * calls), or null without a live token. Never redirects or wipes anything.
+ */
+export function readActingStaffUserId(): string | null {
+  const value = stored();
+  if (!value || isExpired(value)) return null;
+  return value.staffUserId ?? null;
 }
 
 function isExpired(value: ActingStaffToken): boolean {

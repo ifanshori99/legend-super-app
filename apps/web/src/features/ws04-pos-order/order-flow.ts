@@ -11,7 +11,6 @@ import {
   beginIntent,
   endIntent,
   isFinalRefusal,
-  hasForeignIntent,
   KEY_REUSED_CODE,
   listIntentSubjects,
   peekIntent,
@@ -48,8 +47,16 @@ export interface FlowDeps<Order, Parked> {
 
 export const ORDER_INTENT_PENDING = "ORDER_INTENT_PENDING";
 export const ACTOR_MISSING = "ACTOR_MISSING";
-export const OTHER_CASHIER_PENDING = "OTHER_CASHIER_PENDING";
+export const PARK_INTENT_PENDING = "PARK_INTENT_PENDING";
 const APPLIED = "applied";
+
+function parkPendingError(): ApiError {
+  return new ApiError(
+    409,
+    PARK_INTENT_PENDING,
+    "Penahanan sebelumnya belum jelas hasilnya. Kirim ulang atau tutup dulu.",
+  );
+}
 
 function pendingError(): ApiError {
   return new ApiError(
@@ -61,21 +68,16 @@ function pendingError(): ApiError {
 
 /**
  * No outlet or no cashier: nothing may be sent (a key needs both). Another
- * cashier's unclear send in this outlet blocks sending too.
+ * cashier's unclear send does not block this one: carts are per cashier, and
+ * the screen only tells (`hasForeignIntent`); that intent is left as it is.
  */
 function assertScope(deps: { storage: Storage3; scope: FlowScope }): void {
-  const { scope, storage } = deps;
+  const { scope } = deps;
   if (scope.outletId === "" || scope.actorId === "")
     throw new ApiError(
       401,
       ACTOR_MISSING,
       "Kasir belum dikenali. Masuk dengan PIN lagi.",
-    );
-  if (hasForeignIntent(storage, scope))
-    throw new ApiError(
-      409,
-      OTHER_CASHIER_PENDING,
-      "Ada pengiriman kasir lain yang belum jelas hasilnya. Selesaikan dulu di akun kasir itu.",
     );
 }
 
@@ -124,6 +126,7 @@ async function keyedSend<T>(
   send: (key: string) => Promise<T>,
   snapshot: string | null = null,
   after?: (result: T, key: string) => void,
+  conflict: () => ApiError = pendingError,
 ): Promise<T> {
   const begun = beginIntent(
     deps.storage,
@@ -132,7 +135,7 @@ async function keyedSend<T>(
     deps.makeKey,
     snapshot,
   );
-  if (begun.conflict) throw pendingError();
+  if (begun.conflict) throw conflict();
   try {
     const result = await send(begun.key);
     after?.(result, begun.key);
@@ -258,6 +261,7 @@ export function closeOrderIntent(storage: Storage3, scope: FlowScope): void {
 export async function parkCart<Order, Parked>(
   deps: FlowDeps<Order, Parked>,
   input: SubmitOrderInput,
+  meta?: OrderMeta,
 ): Promise<Parked> {
   assertScope(deps);
   const body = parkBodyOf(input);
@@ -266,7 +270,40 @@ export async function parkCart<Order, Parked>(
     scopeOf(deps.scope, "park"),
     JSON.stringify(body),
     (key) => deps.park({ ...body, idempotencyKey: key }),
+    snapshotOf(input, meta),
+    undefined,
+    parkPendingError,
   );
+}
+
+/** The park whose answer is not known yet, as it was sent (lines and meta). */
+export function pendingParkText(
+  storage: Storage3,
+  scope: FlowScope,
+): string | null {
+  if (scope.outletId === "" || scope.actorId === "") return null;
+  return peekIntent(storage, scopeOf(scope, "park"))?.snapshot ?? null;
+}
+
+export function readPendingPark(
+  storage: Storage3,
+  scope: FlowScope,
+): OrderSnapshot | null {
+  return parseOrderSnapshot(pendingParkText(storage, scope));
+}
+
+/** The cashier checked the parked list and closes an unclear park. */
+export function closeParkIntent(storage: Storage3, scope: FlowScope): void {
+  endIntent(storage, scopeOf(scope, "park"));
+}
+
+/** The cashier checked and closes an unclear resume of this parked cart. */
+export function closeResumeIntent(
+  storage: Storage3,
+  scope: FlowScope,
+  parkedId: string,
+): void {
+  endIntent(storage, scopeOf(scope, "resume", parkedId));
 }
 
 /** Parked carts whose resume was sent but not answered (replayed on open). */
