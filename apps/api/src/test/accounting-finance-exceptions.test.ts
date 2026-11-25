@@ -1388,14 +1388,15 @@ describe("finance-exceptions: edge_void_refused", () => {
     const order = await seedRefused({
       tenant: tenantId,
       outlet: outletDp,
-      updatedAt: UPDATED.r1a,
+      updatedAt: stamp("28", 5, 1),
       state: "ingested",
       reason: "void_refused:void_deposit_applied",
       subtotalIdr: 80_000,
     });
 
     const payload = await fetchList(finance.cookie, {
-      ...WINDOW,
+      from: "2026-03-28",
+      to: "2026-03-28",
       outletId: outletDp,
       kind: KIND,
     });

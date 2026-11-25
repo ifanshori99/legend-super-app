@@ -96,6 +96,7 @@ const DETAIL_KEYS: Record<string, MessageKey> = {
   tax_missing: "financeExceptions.details.tax_missing",
   tax_mismatch: "financeExceptions.details.tax_mismatch",
   manual_refund_exists: "financeExceptions.details.manual_refund_exists",
+  void_deposit_applied: "financeExceptions.details.void_deposit_applied",
   unreadable: "financeExceptions.details.proofUnreadable",
   hash_conflict: "financeExceptions.details.proofHashConflict",
   legacy_duplicate: "financeExceptions.details.proofLegacyDuplicate",

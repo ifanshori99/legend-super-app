@@ -67,7 +67,7 @@ function Label({ children }: { children: React.ReactNode }) {
 function ReceiptBody({ document }: { document: ReceiptDocument }) {
   const t = useT();
   const voided = document.status === "voided";
-  const deposit = Number(document.depositAppliedIdr);
+  const deposit = Number(document.depositAppliedIdr ?? 0);
   const single = singleTender(document.tenders, deposit);
   const tenderLabel = (method: ReceiptDocument["tenders"][number]["method"]) =>
     t(`posReceiptPublic.tender.${method}` as MessageKey);
