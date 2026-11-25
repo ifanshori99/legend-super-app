@@ -1542,6 +1542,11 @@ describe("918 unfreeze: who may lift the freeze", () => {
       const ok = await unfreezeHttp(outsideOwner, w.batchId);
       expect([200, 201], detail(ok)).toContain(ok.status);
       expect(ok.body.data?.released).toBe(1);
+      // 1267 F5: a second unfreeze (double tap, replay without the key) finds
+      // no open dispute and is refused, so nothing is released or audited twice.
+      const again = await unfreezeHttp(outsideOwner, w.batchId);
+      expect(again.status, detail(again)).toBe(409);
+      expect(errorCodeOf(again)).toBe("PAYOUT_UNFREEZE_REFUSED");
     },
   );
 });
