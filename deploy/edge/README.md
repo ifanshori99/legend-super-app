@@ -12,7 +12,15 @@ background: `docs/design/hris-edge-replication.md`.
 - `chrony.conf.example`: NTP client configuration.
 - `Caddyfile.edge.example`: HTTPS front for outlet devices.
 - `legend-edge.service`: example systemd unit (`Restart=always`), required when `EDC_AGENT_ENABLED=true`.
+- `legend-edge-worker.service`: the edge worker (`dist/worker.js`, `EDGE_MODE=true`): print queue and edge sweeps; needs `WORKER_DATABASE_URL` in the env file.
+- `legend-edge-web.service`: the web app on loopback port 3000; Caddy serves it and `/api/*` from one HTTPS origin.
 - `check-image-version.mjs`: Validates the edge image release version at build time.
+
+Build the web app once for every edge host with
+`docker build -f apps/web/Dockerfile --target edge --build-arg VITE_API_URL=same-origin -t legend-edge-web .`.
+`same-origin` makes the browser call the origin that served the page (the edge
+HTTPS name); the web server calls `API_INTERNAL_URL` (`http://127.0.0.1:4000`).
+Set `WEB_TRUST_PROXY_HOPS=1` (Caddy is the only proxy).
 
 Build the edge image from the repository root with
 `docker build -f apps/api/Dockerfile --target edge -t legend-edge .`.
@@ -55,7 +63,7 @@ screen, because the edge only holds today plus that many day keys.
      --service-user legend --cert /etc/legend/edge/tls/edge.crt
    ```
 
-7. Start the API and Caddy, then confirm `GET /api/edge/health` over HTTPS.
+7. Start the API, worker, web app and Caddy (`systemctl enable --now legend-edge legend-edge-worker legend-edge-web`), then confirm `GET /api/edge/health` over HTTPS.
 
 ## Database migrations
 

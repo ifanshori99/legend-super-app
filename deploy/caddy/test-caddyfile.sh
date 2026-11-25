@@ -21,4 +21,12 @@ grep -Fq 'max_size 12MB' "$edge" || fail 'edge body cap missing'
 grep -Fq 'read_header 10s' "$cloud" || fail 'read_header timeout missing'
 # The app trusts forwarding headers only from Cloudflare.
 grep -Fq 'trusted_proxies static' "$cloud" || fail 'trusted_proxies missing'
+# The edge front serves the web app and the API from one origin (1269 E8).
+grep -Fq 'reverse_proxy 127.0.0.1:4000' "$edge" || fail 'edge front does not proxy /api/* to the API'
+grep -Fq 'reverse_proxy 127.0.0.1:3000' "$edge" || fail 'edge front does not proxy the web app'
+for unit in legend-edge.service legend-edge-worker.service legend-edge-web.service; do
+  [ -f "$root/edge/$unit" ] || fail "edge unit $unit missing"
+  grep -Fq 'Restart=always' "$root/edge/$unit" || fail "$unit must restart always"
+done
+grep -Fq 'apps/api/dist/worker.js' "$root/edge/legend-edge-worker.service" || fail 'edge worker unit does not run the worker'
 echo 'caddy: front guards passed'
