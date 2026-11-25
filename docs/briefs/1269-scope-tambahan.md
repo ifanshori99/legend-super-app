@@ -43,7 +43,7 @@ Test wajib: callback ganda/telat/nominal beda; ganti metode lalu kode lama dibay
 
 ## A+B. Kartu edge printer dan ECR (architect 25 Nov)
 
-Keputusan CTO (menunggu jawaban founder soal offline): POS dan buku uang tetap di cloud; edge = satelit periferal (cetak, lalu ECR) lewat link yang ada. POS dilayani edge ditolak untuk rilis 1 (hanya katalog yang tersinkron; refund/void tunai/poin/tiket/QRIS ditolak di edge; shift edge diparkir legend-8yqik). Node lama tetap mode `full`. Migrasi mulai 0524, nomor dibagi CTO. Path api = `apps/api/src/`.
+DITIMPA FOUNDER 25 Nov malam (POS wajib offline, lihat bagian E): rencana satelit di bawah dinilai ulang di bagian E. Usulan awal: POS dan buku uang tetap di cloud; edge = satelit periferal (cetak, lalu ECR) lewat link yang ada. POS dilayani edge ditolak untuk rilis 1 (hanya katalog yang tersinkron; refund/void tunai/poin/tiket/QRIS ditolak di edge; shift edge diparkir legend-8yqik). Node lama tetap mode `full`. Migrasi mulai 0524, nomor dibagi CTO. Path api = `apps/api/src/`.
 
 Celah cetak: cloud menulis `sent` lalu tidak mencetak (`pos-receipt-delivery.service.ts:394-420`, `pos-receipt-edge-print.ts:60`); node aktif memblokir cloud (`pos-receipt.service.ts:495-542`, `edge-device-sync.ts:285`, `pos-day.service.ts:802`, `qr-order.service.ts:1893`, `panic-edge-ownership.ts:30`); tidak ada perintah cloud->edge dan hasil balik; `pos-shift-print.ts:40` dan `facility-pos-ticket-print.ts:77` diam di cloud; printer struk = baris pertama per outlet.
 
@@ -62,3 +62,9 @@ Desain: cloud insert `pending` di bawah kunci tagihan + guard -> perintah (id da
 - B-E4 UI kasir (Opus, 8 jam, sesudah B-E3 dan W2). B-E6 e2e simulator (Sonnet, 5 jam).
 - B-E5 adapter per bank (Opus, 12-20 jam per bank + sertifikasi): butuh spesifikasi + terminal. Jangan menebak protokol.
 Test B: balasan hilang di tiap hop = maksimum satu sale; perintah terlambat tidak menagih; tender lain menyalip ditolak; restart = `unknown`; nominal beda = tidak lunas; event ganda/terbalik aman; PAN tak tersimpan; production tanpa adapter = ECR terkunci.
+
+## E. POS offline wajib (founder 25 Nov malam)
+
+EDG-01: internet putus 4 jam, POS, captain, KDS, expo, cetak, tutup shift, tunai, EDC tetap berfungsi; EDC-05 ikut. Baca PRD EDG-*, `docs/design/edge-cloud-failover.md`, kode `apps/api/src/edge/**` yang sudah ada (jangan bangun ulang), bagian A+B di atas, `1268-pos-wire.md` (layar POS harus bisa memakai alamat API edge atau cloud).
+Pertanyaan: topologi mana (POS selalu dilayani edge; atau cloud normal dan pindah ke edge saat putus; atau antrean di browser) yang memenuhi EDG-01 dengan risiko uang paling kecil dan kerja paling sedikit; kartu A dan B mana yang tetap, berubah, atau gugur; matriks fitur (bayar tunai, EDC manual, ECR, QRIS, tiket, refund, void, poin, promo, voucher, DP, pajak/service, denah, PIN, buka/tutup shift, tutup hari, nomor struk, KDS) = jalan / sengaja ditolak saat offline, dengan alasan; data apa yang belum tersinkron; penggabungan saat pulih (nomor, shift, laci, stok, jurnal) tanpa ganda; split-brain; layar saat berpindah; perangkat dan TLS di LAN.
+Jangan sampai rugi: ragu = ditolak offline dengan pesan jelas. Keluaran: keputusan, kartu (berkas, jam, urutan, model, tak bertumpuk), test wajib, yang perlu founder.

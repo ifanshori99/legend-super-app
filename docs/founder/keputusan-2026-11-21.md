@@ -65,3 +65,7 @@ Cara menjawab: cukup tulis nomor dan "setuju usulan" atau pilihan lain.
 21. **Bagian B nomor 15 sampai 18.** **Jawaban founder (25 Nov): "kerjakan sesuai rekomendasi kamu."** Dikerjakan di kartu 1267: 15 audit lalu perbaiki, 16 mockup dan layar QRIS/EDC, 17 dan 18 diterima bila audit tidak menemukan masalah berat. Tiga tugas rilis (dry-run PPh21, latihan deploy, review Caddy) di kartu 1265. Tidak termasuk izin merge ke main atau deploy. **Hasil (25 Nov):** masuk milestone/m1 (c52680ee0). 15: temuan audit dibetulkan. 16: layar QRIS/EDC jadi tetapi terkunci sampai backend siap (legend-f1mmf). 17 dan 18: masalah yang ditemukan audit dibetulkan (status "Segera hadir" dari satu sumber, tanggal PTKP di dialog, dialog buka-beku); laporan keuangan, absen, gaji, kinerja tetap "Segera hadir". Latihan deploy dan review Caddy lulus; PPh21 tinggal dijalankan di staging (wxvt9).
 
 22. **Tambahan scope rilis 1.** **Jawaban founder (25 Nov malam):** struk wajib tercetak lewat printer edge; refund DOIT dibiarkan mati karena awal memakai Duitku; EDC otomatis, VA/e-wallet/kartu online, dan laporan keuangan/absen/gaji/kinerja wajib ada di rilis 1. Rincian kerja: `docs/briefs/1269-scope-tambahan.md`.
+
+23. **POS saat internet putus.** **Jawaban founder (25 Nov malam): "Pos wajib bisa offline".** EDG-01 (4 jam) dan EDC-05 wajib di rilis 1.
+
+24. **Sandbox Duitku.** **Jawaban founder (25 Nov malam):** akun sandbox baru bisa dipakai sesudah ada domain dan deploy; kode dibangun dulu sesuai dokumentasi. Metode tetap terkunci sampai bukti sandbox (C1) di staging lulus.
