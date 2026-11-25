@@ -7,6 +7,7 @@ import {
   fetchCatalog,
   fetchNextCallNumber,
   fetchParkedDrafts,
+  fetchReservationHold,
   fetchServiceCalls,
   fetchTableOrder,
 } from "./api";
@@ -21,6 +22,8 @@ export const posOrderKeys = {
   tableOrder: (outletId: string, tableId: string) =>
     ["pos-order", outletId, "table-order", tableId] as const,
   calls: (outletId: string) => ["pos-order", outletId, "calls"] as const,
+  hold: (outletId: string, tableId: string, date: string) =>
+    ["pos-order", outletId, "hold", tableId, date] as const,
 };
 
 /** The waiter inbox refreshes itself every 10 seconds. */
@@ -69,9 +72,23 @@ export function tableOrderQuery(outletId: string, tableId: string) {
 export function serviceCallsQuery(outletId: string) {
   return queryOptions({
     queryKey: posOrderKeys.calls(outletId),
-    queryFn: () => fetchServiceCalls(),
+    queryFn: () => fetchServiceCalls(outletId),
     refetchInterval: SERVICE_CALLS_POLL_MS,
     refetchIntervalInBackground: false,
     retry: false,
+  });
+}
+
+/** A reservation holding the table, read when the captain is about to seat. */
+export function reservationHoldQuery(
+  outletId: string,
+  tableId: string,
+  date: string,
+) {
+  return queryOptions({
+    queryKey: posOrderKeys.hold(outletId, tableId, date),
+    queryFn: () => fetchReservationHold(outletId, tableId, date),
+    retry: false,
+    staleTime: 0,
   });
 }

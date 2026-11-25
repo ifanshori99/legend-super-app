@@ -24,11 +24,21 @@ import { useDraftCart } from "@/features/ws04-pos-order/draft-store";
 import {
   isContractPending,
   useAddToTable,
+  useCaptainCartKey,
+  useCaptainCartLocked,
+  usePendingCaptainOrder,
   useTableOrder,
 } from "@/features/ws04-pos-order/hooks";
+import { captainMeta } from "@/features/ws04-pos-order/captain-wire";
+import { needsCashierClose } from "@/features/ws04-pos-order/order-flow";
+import { sameOrder } from "@/features/ws04-pos-order/order-wire";
 import type { CartLine } from "@/features/ws04-pos-order/types";
 import { CaptainShell } from "./captain-shell";
-import { lineDetails, tableSessionText } from "./captain-order-parts";
+import {
+  lineDetails,
+  lockDraft,
+  tableSessionText,
+} from "./captain-order-parts";
 
 const MAX_QUANTITY = 99;
 
@@ -39,8 +49,13 @@ export function ReviewScreen({ tableId }: { tableId: string }) {
   const t = useT();
   const navigate = useNavigate();
   const tableOrder = useTableOrder(tableId);
-  const draft = useDraftCart(`captain:${tableId}`);
-  const submit = useAddToTable({ draftKey: `captain:${tableId}` });
+  const cartKey = useCaptainCartKey(tableId);
+  const draftKey = cartKey ?? "captain:none";
+  const rawDraft = useDraftCart(draftKey);
+  const locked = useCaptainCartLocked(cartKey);
+  const draft = lockDraft(rawDraft, locked);
+  const submit = useAddToTable({ draftKey });
+  const pending = usePendingCaptainOrder(cartKey);
   const [editingId, setEditingId] = useState<string | null>(null);
   // The line the captain just removed, kept briefly so "Urungkan" can restore it.
   const [removed, setRemoved] = useState<{
@@ -73,13 +88,26 @@ export function ReviewScreen({ tableId }: { tableId: string }) {
     tableOrder.error instanceof ApiError &&
     tableOrder.error.status === 404;
   const tableFailed = tableOrder.isError && !tableOrder.data;
-  const tableReady = Boolean(tableOrder.data);
+  const table = tableOrder.data?.table ?? null;
+  const tableReady = table !== null;
+  const seated = table !== null && table.sessionId !== null;
+  const keyRefused = submit.isError && needsCashierClose(submit.error);
+  const differs =
+    table !== null &&
+    pending.pending !== null &&
+    !sameOrder(draft.lines, captainMeta(table), pending.pending);
 
   const send = () => {
-    if (submit.isPending) return;
+    if (submit.isPending || !table || !seated) return;
     submit.mutate(
-      { tableId, lines: draft.lines },
       {
+        tableId,
+        tableSessionId: table.sessionId,
+        tableLabel: table.label,
+        lines: draft.lines,
+      },
+      {
+        onSettled: pending.refresh,
         onSuccess: () => {
           void navigate({
             to: "/pos/captain/meja/$tableId",
@@ -108,7 +136,7 @@ export function ReviewScreen({ tableId }: { tableId: string }) {
       }
       backTo={`${tableHref}/tambah`}
       bottomBar={
-        tableReady && draft.lines.length > 0 ? (
+        seated && draft.lines.length > 0 ? (
           <div className="grid gap-1 text-center">
             <Button
               size="lg"
@@ -145,7 +173,64 @@ export function ReviewScreen({ tableId }: { tableId: string }) {
           </Notice>
         )}
 
-        {submit.isError && (
+        {locked && (
+          <Notice tone="info" title={t("posCaptainOrder.locked.title")}>
+            {t("posCaptainOrder.locked.body")}
+          </Notice>
+        )}
+
+        {pending.pending && !submit.isPending && !keyRefused && (
+          <Notice tone="warning" title={t("posCaptainOrder.pending.title")}>
+            <div className="grid gap-2">
+              <p>{t("posCaptainOrder.pending.body")}</p>
+              <div className="flex flex-wrap gap-2">
+                {differs ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => rawDraft.replace(pending.pending!.lines)}
+                  >
+                    {t("posCaptainOrder.pending.restore")}
+                  </Button>
+                ) : (
+                  <Button type="button" variant="outline" onClick={send}>
+                    {t("posCaptainOrder.pending.resend")}
+                  </Button>
+                )}
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    pending.close();
+                    submit.reset();
+                  }}
+                >
+                  {t("posCaptainOrder.pending.close")}
+                </Button>
+              </div>
+            </div>
+          </Notice>
+        )}
+
+        {keyRefused && (
+          <Notice tone="danger" title={t("posCaptainOrder.refused.title")}>
+            <div className="grid gap-2">
+              <p>{t("posCaptainOrder.refused.body")}</p>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  pending.close();
+                  submit.reset();
+                }}
+              >
+                {t("posCaptainOrder.pending.close")}
+              </Button>
+            </div>
+          </Notice>
+        )}
+
+        {submit.isError && !keyRefused && (
           <Notice
             tone="danger"
             title={t("posCaptainOrder.review.submitFailed")}
@@ -193,6 +278,18 @@ export function ReviewScreen({ tableId }: { tableId: string }) {
             <Skeleton className="h-24 rounded-container" />
             <Skeleton className="h-16 rounded-control" />
           </div>
+        ) : !seated ? (
+          <EmptyState
+            title={t("posCaptainOrder.noSession.title")}
+            description={t("posCaptainOrder.noSession.hint")}
+            action={
+              <Button asChild>
+                <Link to="/pos/captain/meja/$tableId" params={{ tableId }}>
+                  {t("posCaptainOrder.noSession.action")}
+                </Link>
+              </Button>
+            }
+          />
         ) : draft.lines.length === 0 ? (
           <EmptyState
             title={t("posCaptainOrder.review.emptyTitle")}
@@ -215,6 +312,7 @@ export function ReviewScreen({ tableId }: { tableId: string }) {
                 <li key={line.lineId}>
                   <ReviewLine
                     line={line}
+                    locked={locked}
                     onEdit={() => setEditingId(line.lineId)}
                     onToggleHold={() => draft.toggleHold(line.lineId)}
                   />
@@ -265,10 +363,12 @@ export function ReviewScreen({ tableId }: { tableId: string }) {
 
 function ReviewLine({
   line,
+  locked,
   onEdit,
   onToggleHold,
 }: {
   line: CartLine;
+  locked: boolean;
   onEdit: () => void;
   onToggleHold: () => void;
 }) {
@@ -296,6 +396,7 @@ function ReviewLine({
             name: line.name,
           })}
           onClick={onEdit}
+          disabled={locked}
           className="-mt-2 -mr-2 shrink-0 underline underline-offset-4"
         >
           {t("posCaptainOrder.review.edit")}
@@ -320,6 +421,7 @@ function ReviewLine({
         <Switch
           id={switchId}
           checked={line.hold}
+          disabled={locked}
           onCheckedChange={onToggleHold}
         />
       </Label>

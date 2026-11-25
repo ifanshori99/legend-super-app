@@ -263,7 +263,10 @@ test("items added while a send was out stay in the cart", () => {
 // ---- Walk-in seat ---------------------------------------------------------
 
 function seatServer() {
-  const sessions = new Map<string, { id: string; status: string; pax: number }>();
+  const sessions = new Map<
+    string,
+    { id: string; status: string; pax: number }
+  >();
   const state = {
     sessions,
     bodies: [] as { pax: number; idempotencyKey: string }[],
@@ -300,8 +303,13 @@ test("seating: the body parses, two taps and a lost reply give one session", asy
   const seated = await openTableSession(server.deps(reloaded), "t1", 3);
   assert.equal(server.state.sessions.size, 1);
   assert.equal(seated.status, "active");
-  assert.equal(server.state.bodies[0]!.idempotencyKey, server.state.bodies[1]!.idempotencyKey);
-  assert.ok(openStaffSessionInputSchema.safeParse(server.state.bodies[0]).success);
+  assert.equal(
+    server.state.bodies[0]!.idempotencyKey,
+    server.state.bodies[1]!.idempotencyKey,
+  );
+  assert.ok(
+    openStaffSessionInputSchema.safeParse(server.state.bodies[0]).success,
+  );
   assert.equal(readPendingOpenPax(reloaded, WHO, "t1"), null);
 });
 
@@ -369,10 +377,7 @@ function fireServer() {
     storage,
     makeKey,
     scope: WHO,
-    fire: async (
-      _orderId: string,
-      body: (typeof state.bodies)[number],
-    ) => {
+    fire: async (_orderId: string, body: (typeof state.bodies)[number]) => {
       state.bodies.push(body);
       if (state.fail) throw state.fail;
       state.fired.add(body.idempotencyKey);
@@ -492,7 +497,10 @@ test("every send is its own order: orders are never merged, lines keep server id
         },
       ],
     }) as never;
-  const view = mapTableOrders(table(), [detail("o-1", "i-1"), detail("o-2", "i-2")]);
+  const view = mapTableOrders(table(), [
+    detail("o-1", "i-1"),
+    detail("o-2", "i-2"),
+  ]);
   assert.equal(view.orders.length, 2);
   assert.equal(view.orders[0]!.lines[0]!.lineId, "i-1");
   assert.equal(view.orders[1]!.lines[0]!.lineId, "i-2");
@@ -530,7 +538,10 @@ test("a bill request needs acknowledgement before it can be resolved", () => {
   assert.equal(canResolveCall(waiter), true);
   assert.equal(waiter.reason, "Minta alat makan");
   assert.equal(mapServiceRequest(request({ status: "cancelled" })), null);
-  assert.equal(mapServiceRequest(request({ status: "resolved" }))!.status, "resolved");
+  assert.equal(
+    mapServiceRequest(request({ status: "resolved" }))!.status,
+    "resolved",
+  );
 });
 
 // ---- Reservation hold --------------------------------------------------------

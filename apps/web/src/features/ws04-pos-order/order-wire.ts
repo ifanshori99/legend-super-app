@@ -165,6 +165,7 @@ export function mapCatalog(wire: PosCatalog): Catalog {
 export function mapOrder(order: PosOrderDetail): PosOrderView {
   return {
     orderId: order.id,
+    status: order.status,
     number: order.number,
     channel: channelOfOrder(order),
     tableLabel: null,

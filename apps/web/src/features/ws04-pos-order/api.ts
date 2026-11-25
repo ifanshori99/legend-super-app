@@ -7,18 +7,46 @@
 import {
   createPosOrder,
   createPosParkedOrder,
+  firePosOrderItems,
   getNextPosCallNumber,
   getPosCatalog,
+  getPosOrder,
+  listPosOrders,
   listPosParkedOrders,
   resumePosParkedOrder,
   submitPosOrder,
 } from "@starter/shared/pos";
-import { getFloorBoard } from "@starter/shared/qr-order";
+import {
+  acknowledgeServiceRequest,
+  getFloorBoard,
+  listServiceRequests,
+  openStaffSession,
+  resolveServiceRequest,
+} from "@starter/shared/qr-order";
+import { listReservations } from "@starter/shared/reservation";
 import { callEndpoint } from "@/lib/api/endpoint";
 import { ApiError } from "@/lib/api/errors";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { demoMenuPhoto } from "@/lib/demo-media";
 import { DEMO_PHOTO_NAMES } from "./fixtures";
+import {
+  closeFireIntent,
+  closeOpenIntent,
+  fireItems,
+  openTableSession,
+  pendingFireItems,
+  pendingFireOrderIds,
+  placeCaptainOrder,
+  readPendingOpenPax,
+} from "./captain-flow";
+import {
+  assertSeated,
+  captainMeta,
+  mapServiceRequest,
+  mapTableOrders,
+  type ReservationHold,
+  holdFor,
+} from "./captain-wire";
 import {
   closeOrderIntent,
   closeParkIntent,
@@ -44,7 +72,7 @@ import { hasForeignIntent } from "./intent-store";
 import { runPosOrderMock, type PosOrderEngine } from "./mock-engine";
 import {
   CONTRACT_PENDING,
-  type AddToTableRequest,
+  type CaptainSendInput,
   type CaptainTable,
   type Catalog,
   type FireLinesInput,
@@ -55,7 +83,7 @@ import {
   type PosOrderView,
   type ServiceCall,
   type SubmitOrderInput,
-  type TableOrderView,
+  type TableOrdersView,
 } from "./types";
 
 /** The error a call without a contract gives outside mock mode. */
@@ -366,46 +394,276 @@ export async function fetchCaptainTables(
   return mapFloor(data);
 }
 
-export function fetchTableOrder(
-  _outletId: string,
+/**
+ * The orders of the table's session, one per send (never merged). A table
+ * without a session has none: no session, no order.
+ */
+export async function fetchTableOrder(
+  outletId: string,
   tableId: string,
-): Promise<TableOrderView> {
-  return local("pesanan meja", (e) => e.tableOrder(tableId), "query");
-}
-
-export function addToTable(
-  _outletId: string,
-  input: AddToTableRequest,
-): Promise<TableOrderView> {
-  return local("tambah ke meja", (e) => e.addToTable(input));
-}
-
-export function fireTableLines(
-  _outletId: string,
-  input: FireTableLinesInput,
-): Promise<TableOrderView> {
-  return local("kirim item meja", (e) =>
-    e.fireTableLines(input.tableId, input.lineIds),
+): Promise<TableOrdersView> {
+  if (API_MOCK)
+    return local(
+      "pesanan meja",
+      (e) => {
+        const view = e.tableOrder(tableId);
+        return { table: view.table, orders: view.order ? [view.order] : [] };
+      },
+      "query",
+    );
+  const table = (await fetchCaptainTables(outletId)).find(
+    (entry) => entry.id === tableId,
   );
+  if (!table) throw new ApiError(404, "NOT_FOUND", "Meja tidak ditemukan.");
+  if (table.sessionId === null) return { table, orders: [] };
+  const { data: summaries } = await callEndpoint(listPosOrders, {
+    params: { outletId },
+    query: {
+      status: "awaiting_payment,sent",
+      tableSessionId: table.sessionId as never,
+      limit: 100,
+    } as never,
+  });
+  const details = await Promise.all(
+    summaries.map(async (summary) => {
+      const { data } = await callEndpoint(getPosOrder, {
+        params: { outletId, orderId: summary.id },
+      });
+      return data;
+    }),
+  );
+  return mapTableOrders(table, details);
+}
+
+/**
+ * Seat a walk-in party at an empty table (keyed, so a lost reply gives the
+ * same session). A replay that answers a closed session is refused.
+ */
+export async function openTable(
+  outletId: string,
+  actorId: string,
+  tableId: string,
+  pax: number,
+): Promise<void> {
+  if (API_MOCK) {
+    await local("dudukkan tamu", (e) => e.openTable(tableId, pax));
+    return;
+  }
+  await openTableSession(
+    {
+      storage: window.sessionStorage,
+      makeKey: () => globalThis.crypto.randomUUID(),
+      scope: { outletId, actorId },
+      open: async (body) => {
+        const { data } = await callEndpoint(openStaffSession, {
+          params: { outletId, tableId: tableId as never },
+          body,
+        });
+        return data;
+      },
+    },
+    tableId,
+    pax,
+  );
+}
+
+/** The guest count of an unclear seat of this table (null: none). */
+export function pendingOpenPax(
+  outletId: string,
+  actorId: string,
+  tableId: string,
+): number | null {
+  if (API_MOCK || typeof window === "undefined") return null;
+  return readPendingOpenPax(
+    window.sessionStorage,
+    { outletId, actorId },
+    tableId,
+  );
+}
+
+/** The captain checked the table: close an unclear or refused seat. */
+export function closePendingOpen(
+  outletId: string,
+  actorId: string,
+  tableId: string,
+): void {
+  closeOpenIntent(window.sessionStorage, { outletId, actorId }, tableId);
+}
+
+/**
+ * A reservation that holds this table and has not seated yet (the hold does
+ * not change the table status, so the captain is warned before seating).
+ */
+export async function fetchReservationHold(
+  outletId: string,
+  tableId: string,
+  date: string,
+): Promise<ReservationHold | null> {
+  if (API_MOCK) return null;
+  const { data } = await callEndpoint(listReservations, {
+    params: { outletId },
+    query: { date, limit: 100 } as never,
+  });
+  return holdFor(data, tableId, Date.now());
+}
+
+/**
+ * Send the cart as a NEW order on the table's session (`captain` channel,
+ * create then submit, keyed). Never a merge into an earlier order.
+ */
+export async function addToTable(
+  outletId: string,
+  actorId: string,
+  draftKey: string,
+  input: CaptainSendInput,
+): Promise<PosOrderView> {
+  if (API_MOCK) {
+    const view = await local("tambah ke meja", (e) =>
+      e.addToTable({
+        tableId: input.tableId,
+        lines: input.lines,
+        idempotencyKey: mockKeyFor(`captain:${draftKey}`, [
+          outletId,
+          input.tableId,
+          input.lines,
+        ]),
+      }),
+    );
+    if (!view.order) throw contractPending("tambah ke meja");
+    return view.order;
+  }
+  return mapOrder(
+    await placeCaptainOrder(
+      flowDeps(outletId, actorId, draftKey),
+      input.tableSessionId ?? "",
+      input.lines,
+      captainMeta({ label: input.tableLabel, sessionId: input.tableSessionId }),
+    ),
+  );
+}
+
+/**
+ * Fire held items by the server's item ids. The ids are grouped by the order
+ * that owns them (read fresh, so a stale screen cannot fire another item); an
+ * item the server does not hold is refused. Orders are fired one by one and it
+ * stops at the first one that fails.
+ */
+export async function fireTableLines(
+  outletId: string,
+  actorId: string,
+  input: FireTableLinesInput,
+): Promise<void> {
+  if (API_MOCK) {
+    await local("kirim item meja", (e) =>
+      e.fireTableLines(input.tableId, input.lineIds),
+    );
+    return;
+  }
+  const view = await fetchTableOrder(outletId, input.tableId);
+  assertSeated(view.table);
+  const wanted = new Set(input.lineIds);
+  const groups = view.orders
+    .map((order) => ({
+      order,
+      ids: order.lines
+        .filter((line) => wanted.has(line.lineId) && line.status === "held")
+        .map((line) => line.lineId),
+    }))
+    .filter((group) => group.ids.length > 0);
+  if (groups.reduce((sum, group) => sum + group.ids.length, 0) !== wanted.size)
+    throw new ApiError(
+      409,
+      "ITEM_NOT_HELD",
+      "Sebagian item sudah dikirim atau tidak ada. Muat ulang pesanan meja.",
+    );
+  for (const { order, ids } of groups) {
+    await fireItems(
+      {
+        storage: window.sessionStorage,
+        makeKey: () => globalThis.crypto.randomUUID(),
+        scope: { outletId, actorId },
+        fire: async (orderId, body) => {
+          const { data } = await callEndpoint(firePosOrderItems, {
+            params: { outletId, orderId: orderId as never },
+            body: body as never,
+          });
+          return data;
+        },
+      },
+      order.orderId,
+      ids,
+      order.status ?? "sent",
+    );
+  }
+}
+
+/** Orders with a fire whose answer is not known, and the items they hold. */
+export function pendingFires(
+  outletId: string,
+  actorId: string,
+): { orderId: string; itemIds: string[] }[] {
+  if (API_MOCK || typeof window === "undefined") return [];
+  const who = { outletId, actorId };
+  return pendingFireOrderIds(window.sessionStorage, who).flatMap((orderId) => {
+    const itemIds = pendingFireItems(window.sessionStorage, who, orderId);
+    return itemIds ? [{ orderId, itemIds }] : [];
+  });
+}
+
+/** The captain checked the order: close an unclear or refused fire. */
+export function closePendingFire(
+  outletId: string,
+  actorId: string,
+  orderId: string,
+): void {
+  closeFireIntent(window.sessionStorage, { outletId, actorId }, orderId);
 }
 
 // ---- Waiter calls ----------------------------------------------------------
 
-/** DEMO-CONTRACT: listServiceRequests has no table label or display reason. */
-export function fetchServiceCalls(): Promise<ServiceCall[]> {
-  return local("panggilan waiter", (e) => e.serviceCalls(), "query");
+/** Open waiter calls of the outlet: new ones and accepted ones. */
+export async function fetchServiceCalls(
+  outletId: string,
+): Promise<ServiceCall[]> {
+  if (API_MOCK)
+    return local("panggilan waiter", (e) => e.serviceCalls(), "query");
+  const pages = await Promise.all(
+    (["pending", "acknowledged"] as const).map((status) =>
+      callEndpoint(listServiceRequests, {
+        params: { outletId },
+        query: { status, limit: 100 } as never,
+      }),
+    ),
+  );
+  return pages
+    .flatMap((page) => page.data)
+    .flatMap((request) => mapServiceRequest(request) ?? []);
 }
 
-export function acknowledgeCall(
+export async function acknowledgeCall(
   _outletId: string,
   id: string,
 ): Promise<ServiceCall> {
-  return local("terima panggilan", (e) => e.acknowledgeCall(id));
+  if (API_MOCK) return local("terima panggilan", (e) => e.acknowledgeCall(id));
+  const { data } = await callEndpoint(acknowledgeServiceRequest, {
+    params: { serviceRequestId: id as never },
+  });
+  return mapServiceRequest(data) ?? contractFail("terima panggilan");
 }
 
-export function resolveCall(
+/** The server refuses a bill request that was not accepted first (409). */
+export async function resolveCall(
   _outletId: string,
   id: string,
 ): Promise<ServiceCall> {
-  return local("selesaikan panggilan", (e) => e.resolveCall(id));
+  if (API_MOCK) return local("selesaikan panggilan", (e) => e.resolveCall(id));
+  const { data } = await callEndpoint(resolveServiceRequest, {
+    params: { serviceRequestId: id as never },
+    body: {},
+  });
+  return mapServiceRequest(data) ?? contractFail("selesaikan panggilan");
+}
+
+function contractFail(feature: string): never {
+  throw contractPending(feature);
 }

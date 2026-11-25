@@ -105,6 +105,8 @@ export interface OrderLine extends Omit<
 
 export interface PosOrderView {
   orderId: string;
+  /** The server's status (real contract only); fire states it back. */
+  status?: "draft" | "awaiting_payment" | "sent" | "completed" | "voided";
   number: string;
   channel: SaleChannel;
   tableLabel: string | null;
@@ -219,6 +221,15 @@ export interface ParkDraftInput {
 
 export interface AddToTableInput {
   tableId: string;
+  lines: CartLine[];
+}
+
+/** What the captain sends for a table: its session, never its label alone. */
+export interface CaptainSendInput {
+  tableId: string;
+  /** The open session of the table; no session, no order. */
+  tableSessionId: string | null;
+  tableLabel: string;
   lines: CartLine[];
 }
 
