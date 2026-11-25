@@ -2,11 +2,12 @@
 
 ## CTO 26 Nov (kuota pulih, lanjut)
 
-- `int/rc2` LOKAL 7705b4bed (worktree `../legend-rc1`) = sebelumnya + B1, B2, W0, F0, C2a, C4a, E2 (0524), E1 (0525). Di remote baru d50fb3b85 (sampai C2a). Pemeriksaan gabungan: tsc api+web hijau, tes edge/kds/device masih jalan; hijau -> push int/rc2. Jangan gabung ke rc1 selagi tes jalan.
-- W1 1268 `ws/1268-w1` 1edad5938: re-review tidak lulus (3 P2 keranjang, `docs/qa/1268-w1-review.md`), sedang diperbaiki; lalu re-review, gabung, W4.
-- W2 1268 `ws/1268-w2` 2e377153d: selesai (web pos 154, tests ws04-pos 207 lulus; belum diuji browser/printer); review uang jalan (`docs/qa/1268-w2-review-brief.md`), lalu gabung, W3.
-- WFC W1 `ws/1270-w1` (migrasi 0526, prevId 0525) jalan; lalu review architect, W1b, W2.
-- Sesudah itu: .40, .41, .42, .44, F1, F2, F11c, E3/E5, E4/E9, E7/E6, E10, E11, W3-W6, WFC W1b-W12; D1->D2->D4/D5; C2b/C4b/W-UI butuh mockup founder. Suite penuh int/rc2 di akhir.
+- `int/rc2` a7c55af24 LOKAL (worktree `../legend-rc1`) = 763f88edc (remote; s.d. W1 1268, E1, E2) + F1 (migrasi 0526, ws/1269-f1 93820aefe, review K LULUS). Uji gabungan F1 jalan; hijau -> push, close legend-osqou.33.1, hapus worktree `../legend-1269-f1`. Suite penuh belum. Jangan gabung selagi tes jalan.
+- Nomor migrasi diambil saat gabung: 0526 F1; WFC W1 pindah ke 0527 (prevId 0526); W4/W11/W13 WFC nomor berikutnya. Unique index payment_links milik WFC W1: cek jumlah baris, deploy saat sepi.
+- 1268 W2 `ws/1268-w2` 38d61abbe: perbaikan EDC re-review (`docs/qa/1268-w2-review.md`) jalan -> review delta architect -> gabung -> W3 (9yw78.7), W5, W6.
+- 1268 W4 `ws/1268-w4` 2d3764ffc: perbaikan `docs/qa/1268-w4-review.md` no. 1-5 jalan -> review architect K (akses) -> gabung. Kartu "Dudukkan tamu" tunjukkan ke founder saat review layar.
+- WFC W1 `ws/1270-w1` 60b98aa8d: perbaikan re-review no. 1-4 (`docs/qa/1270-w1-review.md`) jalan -> review delta -> gabung (0527) -> W1b, W2.
+- Slot berikut: settlement .42+.44+.43 (Sonnet, worktree `../legend-1269-c4a2` siap, dari 763f88edc, rebase dulu), lalu E9 (kode boleh; aktif sesudah syarat di legend-osqou.30), F11b, F2, .40/.41, F11c, E3/E5, E4, E7/E6, E10, E11, W3-W6, WFC W1b-W12; D1->D2->D4/D5; C2b/C4b/W-UI butuh mockup founder. Suite penuh int/rc2 di akhir.
 - Menunggu founder: mockup WFC (`design/mockups/wfc/`, 68 layar) Setuju / Ada perubahan; usulan AI harga WFC W13: sesudah rilis (saran) / wajib rilis 1 (+10 jam).
 - Perkiraan 11-17 Des dengan 3 agent, risiko mundur. Worktree B2, F0, C2a, C4a, E1, E2 sudah dihapus.
 
