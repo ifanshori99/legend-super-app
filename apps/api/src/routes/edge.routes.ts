@@ -327,7 +327,8 @@ edgeRouter.get("/health", async (_req, res) => {
       runtime.identity && database === "ok"
         ? await countDevicesWithoutTokenHash(
             runtime.identity.context,
-            runtime.identity.scope.outletId,
+            // An identity still missing its outlet must not turn health into a 500.
+            runtime.identity.scope?.outletId,
           ).catch(() => null)
         : null,
     // Informational: stale prices/product status never change the HTTP code.
