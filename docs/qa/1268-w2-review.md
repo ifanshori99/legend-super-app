@@ -48,3 +48,7 @@ Terpenuhi: no. 1, 2 (jalur `recording`), 3 (catatan terbaca), 4, 5, 7. Menahan:
 3. Berkas: resolve service, `packages/shared/src/pos/payment-intent.ts`, web `ws04-pos-kasir/api.ts`, `components/payment/{resolve-dialog,unresolved-panel}.tsx`, i18n `pos-kasir-payment.ts`, test.
 
 Kartu lanjutan (tidak menahan W2): nominal/validasi EDC ditolak sebelum catatan ditulis + nominal slip dikunci (P2 lama); `voided` diterima bila tender kunci itu sudah tidak captured (P3); rusak + lunas + QR hidup (P3, legend-9yw78.16).
+
+## Cek delta 26 Nov (068c4bb5e): LULUS
+
+Kartu lanjutan P3 (legend-9yw78 W2 resolve, gabung ke kartu voided): pilihan "sudah tercatat" untuk catatan EDC terbaca pada tagihan lunas bila terminal/nominal beda; `hasCapturedSlip` web menyamakan bankRef seperti server (huruf besar, tanpa tanda hubung); `bankRef` salah ketik pada `voided` menutup catatan walau slip asli tercatat (bergantung pada supervisor).
