@@ -65,7 +65,9 @@ export function CleaningScreen({
   const t = useT();
   const toast = useToast();
   const { timeZone } = useOutletClock();
-  const { facilities, facility, config } = useStaffFacility(facilityId, { releasedOnly: true });
+  const { facilities, facility, config } = useStaffFacility(facilityId, {
+    releasedOnly: true,
+  });
   const board = useUnitBoard(facility?.id ?? null);
   const startTask = useStartCleaningTask();
   const [selectedTaskId, setSelectedTaskId] = React.useState<string | null>(

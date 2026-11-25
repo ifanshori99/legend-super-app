@@ -20,6 +20,8 @@ test.use({ baseURL });
 
 /** Facility fixture ids from @starter/shared/facility (stable by construction). */
 const SHOWER = "00000000-0000-4000-8000-000000009001";
+/** Open facility type: the shower booking page is deferred (1269 F0). */
+const WFC = "00000000-0000-4000-8000-000000009002";
 const TICKET = "01JBQ7Z8K3M4N5P6Q7R8S9T0VX";
 const WIFI_ZONE = "00000000-0000-4000-8000-000000009401";
 
@@ -42,7 +44,7 @@ const PAGES: Shot[] = [
   { name: "member-tiket", path: `/member/fasilitas/${TICKET}` },
   { name: "wifi", path: "/wifi" },
   { name: "wifi-zone", path: `/wifi?zone=${WIFI_ZONE}` },
-  { name: "facility-booking", path: `/f/${SHOWER}` },
+  { name: "facility-booking", path: `/f/${WFC}` },
   { name: "karyawan", path: "/karyawan", employee: true },
   { name: "karyawan-absensi", path: "/karyawan/absensi", employee: true },
   { name: "masuk", path: "/masuk" },

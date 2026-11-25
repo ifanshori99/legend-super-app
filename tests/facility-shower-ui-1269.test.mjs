@@ -6,9 +6,10 @@ import { test } from "node:test";
 
 const read = (path) =>
   readFileSync(new URL(`../apps/web/src/${path}`, import.meta.url), "utf8");
-const pick = await import(
-  "../apps/web/src/features/facility-staff/staff-facility.ts"
-).catch(() => ({}));
+const pick =
+  await import("../apps/web/src/features/facility-staff/staff-facility.ts").catch(
+    () => ({}),
+  );
 
 const shower = { id: "shower", type: "shower" };
 const wfc = { id: "wfc", type: "coworking" };
@@ -33,9 +34,14 @@ test("1269 F0 emergency links to the board and incidents follow the facility typ
   // Shower-only outlet: no board to open.
   assert.equal(boardFacility([shower], shower), null);
 
-  const screen = read("features/facility-staff/components/emergency-screen.tsx");
+  const screen = read(
+    "features/facility-staff/components/emergency-screen.tsx",
+  );
   assert.doesNotMatch(screen, /search=\{\{ facilityId(: facility\.id)? \}\}/);
-  assert.match(read("features/facility-staff/components/staff-chrome.tsx"), /boardsOpen/);
+  assert.match(
+    read("features/facility-staff/components/staff-chrome.tsx"),
+    /boardsOpen/,
+  );
 });
 
 test("1269 F0 the board opens released facilities only; the emergency screen opens all", () => {

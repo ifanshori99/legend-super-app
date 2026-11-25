@@ -34,6 +34,7 @@ import {
   sortActiveAlerts,
   useElapsedSeconds,
 } from "../view.ts";
+import { boardFacility } from "../staff-facility.ts";
 import {
   OfflineNotice,
   StaffEmpty,
@@ -303,10 +304,7 @@ export function EmergencyScreen({ facilityId }: { facilityId?: string }) {
           action={
             boardsOpen && (
               <Button asChild variant="outline" size="sm">
-                <Link
-                  to="/fasilitas"
-                  search={{ facilityId: boardTarget?.id }}
-                >
+                <Link to="/fasilitas" search={{ facilityId: boardTarget?.id }}>
                   {t("facilityStaff.common.openBoard")}
                 </Link>
               </Button>
@@ -323,10 +321,7 @@ export function EmergencyScreen({ facilityId }: { facilityId?: string }) {
           action={
             boardsOpen && (
               <Button asChild variant="outline" size="sm">
-                <Link
-                  to="/fasilitas"
-                  search={{ facilityId: boardTarget?.id }}
-                >
+                <Link to="/fasilitas" search={{ facilityId: boardTarget?.id }}>
                   {t("facilityStaff.common.openBoard")}
                 </Link>
               </Button>

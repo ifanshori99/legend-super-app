@@ -72,18 +72,10 @@ export function FacilityConfigPage({ facilityId }: { facilityId: string }) {
       </div>
     );
 
-  // 1269 F0: a shower facility reads as not found while the shower is deferred.
-  const hiddenShower =
-    configQuery.data !== undefined &&
-    !isFacilityTypeReleased(configQuery.data.facility.type);
-  if (configQuery.isError || hiddenShower) {
+  if (configQuery.isError) {
     const error = configQuery.error;
-    const offline =
-      !hiddenShower &&
-      error instanceof ApiError &&
-      error.code === "NETWORK_ERROR";
-    const notFound =
-      hiddenShower || (error instanceof ApiError && error.status === 404);
+    const offline = error instanceof ApiError && error.code === "NETWORK_ERROR";
+    const notFound = error instanceof ApiError && error.status === 404;
     return (
       <div
         data-slot="facility-config"
@@ -136,6 +128,10 @@ export function FacilityConfigPage({ facilityId }: { facilityId: string }) {
 
   const hours = summarizeOperatingHours(config.facility.operatingHours, t);
   const menuItems = menuQuery.data ?? [];
+  // 1269 F0: a deferred shower keeps only its guest Wi-Fi policy editable.
+  const released = isFacilityTypeReleased(config.facility.type);
+  const tabs = released ? TABS : TABS.filter((item) => item.key === "wifi");
+  const activeTab = released ? tab : "wifi";
 
   return (
     <div
@@ -160,11 +156,11 @@ export function FacilityConfigPage({ facilityId }: { facilityId: string }) {
       </div>
 
       <Tabs
-        value={tab}
+        value={activeTab}
         onValueChange={(value) => setTab(value as ConfigTabKey)}
       >
         <TabsList aria-label={t("facilityAdmin.config.tabsLabel")}>
-          {TABS.map((item) => (
+          {tabs.map((item) => (
             <TabsTrigger key={item.key} value={item.key}>
               {t(item.labelKey)}
             </TabsTrigger>

@@ -1,12 +1,12 @@
 // 1269 F0 (founder 25 Nov 2026): the paid shower room is deferred past release
 // 1. The API refuses facilities of type shower with FACILITY_SHOWER_DISABLED
-// (env FACILITY_SHOWER_ENABLED, default off); this constant is the web side:
-// one switch that hides the shower staff screens (booth board, cleaning,
-// incidents), drops shower facilities from the facility settings, and keeps
-// the guest booking entry /f/$facility closed until the paid WFC booking (W8)
-// is wired. It is a build-time constant on purpose (the browser reads no server
-// env). Flip it with the API flag when the shower is released. Guest Wi-Fi,
-// the WFC policy and the facility reports are not behind it.
+// (env FACILITY_SHOWER_ENABLED, default off); this constant is the web side,
+// applied per facility type: the booth board, cleaning, incidents and the guest
+// booking page leave showers out, and the settings of a shower show only its
+// guest Wi-Fi policy. Coworking, lockers and meeting rooms are untouched, and
+// the emergency screen and panic alerts always cover every facility. It is a
+// build-time constant on purpose (the browser reads no server env). Flip it
+// with the API flag when the shower is released.
 export const SHOWER_FACILITIES_RELEASED = false;
 
 /** True when a facility of this type may appear in the web app. */

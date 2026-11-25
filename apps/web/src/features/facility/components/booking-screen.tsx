@@ -3,6 +3,7 @@
 // One route, four steps: WhatsApp gate → area and time → product/add-ons →
 // review and pay. The ticket itself lives at `/member/fasilitas/[ticketId]`.
 import { useCallback, useRef, useState } from "react";
+import { notFound } from "@tanstack/react-router";
 import type {
   AccessTicket,
   AccessTicketCredential,
@@ -26,6 +27,7 @@ import {
   useBookTicket,
   useCurrentSubscription,
   useFacilityCatalog,
+  useFacilityOpen,
   useJoinQueue,
   useLeaveQueue,
   useQueueEntry,
@@ -54,6 +56,7 @@ export function FacilityBookingScreen({ facilityId }: { facilityId: string }) {
   const date = addDays(businessDateInOutletZone(new Date()), dayOffset);
   const availability = useAvailability(facilityId, date);
   const catalog = useFacilityCatalog(facilityId);
+  const { closed } = useFacilityOpen(facilityId);
   const queue = useQueueEntry(facilityId);
   const subscription = useCurrentSubscription();
   const joinQueue = useJoinQueue(facilityId);
@@ -111,6 +114,9 @@ export function FacilityBookingScreen({ facilityId }: { facilityId: string }) {
       // Rendered by ReviewStep next to the pay button.
     }
   }
+
+  // 1269 F0: a deferred shower reads as not found; other types book as usual.
+  if (closed) throw notFound();
 
   return (
     <div className="grid gap-5 pb-4">

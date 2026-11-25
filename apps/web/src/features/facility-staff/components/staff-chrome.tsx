@@ -83,39 +83,39 @@ export function StaffSubNav({
         )}
       >
         {boardsOpen && (
-<>
-        <li>
-          <Link
-            to="/fasilitas"
-            search={{ facilityId: boardFacilityId }}
-            aria-current={link("board")}
-            className={SUBNAV_TRIGGER}
-          >
-            {t("facilityStaff.subnav.board")}
-          </Link>
-        </li>
-        <li>
-          <Link
-            to="/fasilitas/kebersihan"
-            search={{ facilityId: boardFacilityId }}
-            aria-current={link("cleaning")}
-            className={SUBNAV_TRIGGER}
-          >
-            {t("facilityStaff.subnav.cleaning")}
-          </Link>
-        </li>
-        <li>
-          <Link
-            to="/fasilitas/insiden"
-            search={{ facilityId: boardFacilityId }}
-            aria-current={link("incidents")}
-            className={SUBNAV_TRIGGER}
-          >
-            {t("facilityStaff.subnav.incidents")}
-          </Link>
-        </li>
-</>
-)}
+          <>
+            <li>
+              <Link
+                to="/fasilitas"
+                search={{ facilityId: boardFacilityId }}
+                aria-current={link("board")}
+                className={SUBNAV_TRIGGER}
+              >
+                {t("facilityStaff.subnav.board")}
+              </Link>
+            </li>
+            <li>
+              <Link
+                to="/fasilitas/kebersihan"
+                search={{ facilityId: boardFacilityId }}
+                aria-current={link("cleaning")}
+                className={SUBNAV_TRIGGER}
+              >
+                {t("facilityStaff.subnav.cleaning")}
+              </Link>
+            </li>
+            <li>
+              <Link
+                to="/fasilitas/insiden"
+                search={{ facilityId: boardFacilityId }}
+                aria-current={link("incidents")}
+                className={SUBNAV_TRIGGER}
+              >
+                {t("facilityStaff.subnav.incidents")}
+              </Link>
+            </li>
+          </>
+        )}
         <li>
           <Link
             to="/fasilitas/darurat"

@@ -20,6 +20,7 @@ import {
   getFacilityConfig,
   joinFacilityQueue,
   leaveFacilityQueue,
+  resolveFacilityEntry,
   listAccessTickets,
   listSubscriptionPlans,
   startFacilitySubscription,
@@ -64,6 +65,19 @@ export async function fetchFacilityCatalog(
   const response = await callEndpoint(
     getFacilityConfig,
     { query: { facilityId } },
+    { signal },
+  );
+  return response.data;
+}
+
+/** Public door-QR lookup: the facility and its type (shower closed: 403). */
+export async function fetchFacilityEntry(
+  facilityId: string,
+  signal?: AbortSignal,
+) {
+  const response = await callEndpoint(
+    resolveFacilityEntry,
+    { params: { token: facilityId } },
     { signal },
   );
   return response.data;
