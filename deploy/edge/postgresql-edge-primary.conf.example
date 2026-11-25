@@ -1,0 +1,26 @@
+# PostgreSQL settings for the PRIMARY edge host (legend 1269 F11a).
+# Include from postgresql.conf (include_if_exists) and adapt the placeholders.
+# The standby streams over the LAN with TLS and its own login; no password or
+# key lives in this file or in the repository.
+
+wal_level = replica
+max_wal_senders = 4
+max_replication_slots = 4
+password_encryption = scram-sha-256
+
+# TLS for client and replication connections. Certificate and key come from the
+# internal CA and stay on the host (key mode 0600, owned by postgres).
+ssl = on
+ssl_cert_file = '/etc/legend/edge/pg/server.crt'
+ssl_key_file = '/etc/legend/edge/pg/server.key'
+ssl_min_protocol_version = 'TLSv1.2'
+
+# Synchronous commit: a sale is acknowledged only after the standby has it.
+# The name must equal application_name in the standby primary_conninfo.
+synchronous_commit = on
+synchronous_standby_names = 'FIRST 1 (edge_standby)'
+
+# If the standby is down for more than 10 s the watchdog
+# (edge-replication-watchdog.sh) empties synchronous_standby_names with ALTER
+# SYSTEM (postgresql.auto.conf), raises an alarm and restores it after resync.
+# Do not set synchronous_standby_names to empty here.

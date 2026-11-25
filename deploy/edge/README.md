@@ -9,6 +9,9 @@ background: `docs/design/hris-edge-replication.md`.
 
 - `check-edge-host.sh`: read-only preflight; exits 1 on any FAIL. Run it as root or the service user so every selfie folder can be inspected. With `--web-env-file` (and `--web-output`) it also checks the web env file, the web build and, in the API env file, the one-origin settings below.
 - `test-check-edge-host.sh`: stubbed test for the preflight (`sh deploy/edge/test-check-edge-host.sh`).
+- `check-edge-replication.sh`, `test-check-edge-replication.sh`: read-only preflight for LAN standby replication (see "Standby replication"); the test runs with `sh deploy/edge/test-check-edge-replication.sh`.
+- `edge-replication-watchdog.sh`, `legend-edge-replication-watchdog.service`, `test-edge-replication-watchdog.sh`: primary-side switch to async commit when the standby is gone for 10 s.
+- `postgresql-edge-primary.conf.example`, `postgresql-edge-standby.conf.example`, `pg_hba-edge-replication.conf.example`: replication settings, without any secret.
 - `chrony.conf.example`: NTP client configuration.
 - `Caddyfile.edge.example`: HTTPS front for outlet devices.
 - `legend-edge.service`: example systemd unit (`Restart=always`), required when `EDC_AGENT_ENABLED=true`.
@@ -158,6 +161,29 @@ before a cloud that replaces stale catalog rows with the
 `edge_link.dead_lettered` no-op is released; an older edge cannot classify it
 and its batches stall. See `docs/deployment.md`, section "Edge host".
 
+## Standby replication (1269 F11a)
+
+A second mini PC on the outlet LAN keeps a streaming copy of the edge database
+so a failure of the primary loses no sale. The standby runs PostgreSQL only;
+promotion is manual and is not part of this folder (card F11b).
+
+1. Primary: include `postgresql-edge-primary.conf.example` and add the line of `pg_hba-edge-replication.conf.example` with the standby address (one `/32`). Create a login that is only for replication (`CREATE ROLE edge_replicator LOGIN REPLICATION PASSWORD ...` typed on the host, never in a file in the repository) and a physical slot (`SELECT pg_create_physical_replication_slot('edge_standby_slot')`).
+2. TLS: the primary server certificate comes from the internal CA and its name or address must match `host=` in `primary_conninfo` (`sslmode=verify-full`). Copy only the CA certificate to the standby.
+3. Standby: take the base copy over TLS (`pg_basebackup -R -S edge_standby_slot` with the same `sslmode` and `passfile`), keep the settings of `postgresql-edge-standby.conf.example`, and put the password only in the passfile (mode 0600, owned by postgres). Leave `legend-edge`, `legend-edge-worker` and `legend-edge-web` stopped and disabled.
+4. Primary: install `legend-edge-replication-watchdog.service`. Commits wait for the standby (synchronous). When no standby has streamed for 10 s the watchdog switches to async, logs `ALARM`, and keeps `replication-async.flag` and `replication-async-history` in its state directory; it restores synchronous commit only after the standby has replayed all WAL. After a promotion from an async period, open bills stay locked until reconciled with the cloud (F11b).
+5. Run the preflight on each host and fix every FAIL (it fails closed, and never prints a setting value):
+
+   ```sh
+   sh deploy/edge/check-edge-replication.sh --role primary --conf /etc/postgresql/edge-primary.conf \
+     --hba /etc/postgresql/pg_hba.conf --replication-role edge_replicator --app-env-file /etc/legend/edge/api.env
+   sh deploy/edge/check-edge-replication.sh --role standby --conf /etc/postgresql/edge-standby.conf \
+     --data-dir /var/lib/postgresql/data --replication-role edge_replicator --app-env-file /etc/legend/edge/api.env
+   ```
+
+The 15 minute snapshot stays as a second copy; it is not changed here. The
+`ALARM` line reaches the owner only through the journal until F11b wires it into
+the owner alarm queue.
+
 ## Checklist
 
 - [ ] Preflight prints no FAIL.
@@ -167,4 +193,5 @@ and its batches stall. See `docs/deployment.md`, section "Edge host".
 - [ ] `web.env` exists with the deployment settings and the web build is in `/opt/legend/apps/web/.output`.
 - [ ] Env file has no seal private key and is readable only by the service user.
 - [ ] Local audit maintenance login is configured, or its missing-login warning has an owner assigned to restore audit purge.
+- [ ] Standby: `check-edge-replication.sh` prints no FAIL on both hosts, the watchdog unit runs on the primary, and the application units are stopped on the standby.
 - [ ] Theft or loss: follow `docs/runbooks/edge-hilang-dicuri.md`.

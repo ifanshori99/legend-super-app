@@ -1,0 +1,22 @@
+# Example systemd unit for the edge primary replication watchdog (legend 1269 F11a).
+# Copy to /etc/systemd/system/legend-edge-replication-watchdog.service. Runs only
+# on the PRIMARY host, as the postgres user, next to PostgreSQL. It turns off
+# synchronous commit when the standby has been gone for 10 s and turns it back on
+# after resync; see edge-replication-watchdog.sh. The state directory must exist
+# (owned by postgres, mode 0700). Watch the journal for "ALARM".
+[Unit]
+Description=Legend edge replication watchdog (primary)
+After=postgresql.service
+Requires=postgresql.service
+StartLimitIntervalSec=0
+
+[Service]
+User=postgres
+Group=postgres
+Environment=PGHOST=/var/run/postgresql
+ExecStart=/bin/sh /opt/legend/deploy/edge/edge-replication-watchdog.sh --state-dir /var/lib/legend/edge-replication
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
