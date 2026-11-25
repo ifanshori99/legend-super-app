@@ -81,3 +81,5 @@ Urutan: F6a -> (F1, F7, F11a, F11c) -> F2 + F11b -> E9 -> F3 -> F8 -> F9 -> E6; 
 - Standby tidak bisa tahu apakah primary sempat async sebelum mati (penandanya tidak mungkin tereplikasi). Karena itu setiap promosi dianggap "mungkin async": tagihan terbuka hasil replika terkunci sampai dicocokkan dengan cloud; penjualan baru boleh dengan nomor cadangan (F11c). Penanda di primary hanya untuk alarm.
 - Pagar split-brain wajib di F11b: primary yang turun ke async memeriksa term di cloud (bila internet ada) dan unit lain (bila LAN ada) sebelum terus menjual; term lebih tinggi = berhenti menjual. Boot juga memeriksa. Tanpa keduanya: konfirmasi PIN manajer.
 - Alarm async, slot WAL, dan primary lama masuk notifikasi pemilik.
+
+- **Keputusan founder 27:** WFC berbayar wajib rilis 1. F0 hanya menutup fasilitas `type = 'shower'` (dan produk, rencana langganan, slot, hak, sarapan tiketnya); `coworking` tetap terbuka. Rancangan WFC menyusul (backend lama di `ws/bz9h-wfc-products` a73998a99).
