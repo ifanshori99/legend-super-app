@@ -19,3 +19,7 @@ Keputusan CTO: 1, 2, 3, 4, 5, 8 dan komentar basi `settlement-events.ts` dibetul
 ## Re-review 26 Nov (4262ca419): LULUS, 0 P0/P1
 
 Sisa (jurnal gross/gabungan net, batas atas jendela) ke kartu legend-osqou.44, memblokir C4b.
+
+## Review uang 26 Nov bundel .42/.43/.44 (f2283612a): LULUS, 0 P0-P2
+
+P3 (kartu, sebelum C4b dirilis): batas fee maksimal 1000 bps (`payment-settlement-emit.service.ts:334`); pembulatan fee `Math.floor`, bukan `ceil` (:421); satu config saja: outlet bila barisnya ada (nonaktif = tolak), tenant hanya bila outlet tidak ada (:349-359, 386-399); batas "hari ini" pakai `shiftDate(todayOf(now), 1)` agar outlet WITA/WIT tak bercelah (:362-368, 452); unmatch sebelum posting: sertakan baris penolakan settlement itu di cek perubahan mapping (`accounting-auto-journal-amounts.ts:1897-1911`).
