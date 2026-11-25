@@ -26,8 +26,7 @@ import {
   setEdgeRuntimeStateForTests,
 } from "../edge/runtime.ts";
 
-if (env.EDGE_MODE)
-  setEdgeNodeForTests(() => process.env.EDGE_MODE === "true");
+if (env.EDGE_MODE) setEdgeNodeForTests(() => process.env.EDGE_MODE === "true");
 
 let node: { readonly tenantId: string; readonly outletId: string } | null =
   null;
@@ -115,5 +114,16 @@ export async function withEdgeModeEnv<T>(run: () => Promise<T>): Promise<T> {
     }
     if (previous === undefined) delete process.env.EDGE_MODE;
     else process.env.EDGE_MODE = previous;
+  }
+}
+
+/** The reverse, for a file whose whole process runs with EDGE_MODE on. */
+export async function withCloudModeEnv<T>(run: () => Promise<T>): Promise<T> {
+  const previous = process.env.EDGE_MODE;
+  delete process.env.EDGE_MODE;
+  try {
+    return await run();
+  } finally {
+    if (previous !== undefined) process.env.EDGE_MODE = previous;
   }
 }

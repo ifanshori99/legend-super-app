@@ -33,7 +33,7 @@ import {
 
 /**
  * `unavailable`: this edge cannot judge the token (no node identity, no trusted
- * clock, device or its newest token not synced yet). Never a verdict about the
+ * clock, the device's newest token not synced yet). Never a verdict about the
  * token itself: the client must keep it.
  */
 export type EdgeDeviceCheck =
@@ -74,7 +74,8 @@ export async function checkEdgeDeviceToken(
       )
       .limit(1),
   );
-  if (!row) return UNAVAILABLE;
+  // An unknown device gets the registry's own answer (device-registry-check.ts).
+  if (!row) return REFUSED;
   if (
     row.outletId.toLowerCase() !== outletId.toLowerCase() ||
     row.status !== "active" ||

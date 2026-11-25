@@ -516,7 +516,8 @@ describe("device token digest (decision 1)", () => {
     await applyDeviceRecords(scoped("device"), [first]);
     expect(await storedHash(device.id)).toBe(second.tokenHash);
     // Same floor without the field (an older cloud): the digest stays.
-    const { tokenHash: _hash, ...withoutHash } = second;
+    const withoutHash = { ...second };
+    delete withoutHash.tokenHash;
     await applyDeviceRecords(scoped("device"), [withoutHash]);
     expect(await storedHash(device.id)).toBe(second.tokenHash);
     // A newer floor without the field: the old digest must not survive it.

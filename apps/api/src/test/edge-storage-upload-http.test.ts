@@ -5,13 +5,10 @@
 // session is 401; neither the response nor the process logs ever carry the
 // selfie bytes or a PIN.
 //
-// Session helper (assumption): no PIN login route is mounted on the edge, so
-// there is no HTTP way to obtain a "staff PIN" session. The most faithful
-// stand-in is the edge sign-in path (POST /api/auth/sign-in/email, which the
-// edge serves) for a user that has an active employee row and a role with
-// self.attendance.clock scoped to the outlet. The user itself is created on a
-// cloud app instance because sign-up is cloud only. The device token is not
-// involved: the design (section 5) gives the upload route no device check.
+// Session helper: an `edge_staff_pin` session (E2, the only session an edge
+// accepts) of a user that has an active employee row and a role with
+// self.attendance.clock scoped to the outlet, sent with its device's token. The
+// user itself is created on a cloud process because sign-up is cloud only.
 //
 // Other assumptions:
 // - The edge app is createApp({ edgeMode: true }) with EDGE_MODE=true in the
@@ -73,15 +70,16 @@ import {
 } from "@starter/shared/platform";
 import { FakeObjectStorage } from "@starter/shared/adapters";
 import { createApp } from "../app.ts";
-import { signDeviceToken } from "../lib/device-token.ts";
+import { hashDeviceToken, signDeviceToken } from "../lib/device-token.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { edgeStaffAgent } from "./edge-staff-session-fixture.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
 import {
   installEdgeNodeForTests,
   removeEdgeNodeForTests,
+  withCloudModeEnv,
 } from "./edge-mode-env.ts";
 
-const PASSWORD = "Test-password-123!"; // the helpers.ts sign-up password
 const PIN = "482915";
 const EXIF_MARKER = "selfie-marker-5d1e7c";
 const tenant = cafeLegendPlatformFixtures.tenant;
@@ -178,14 +176,21 @@ async function seedOutlet() {
 }
 
 /**
- * A staff member of both outlets who may clock, signed in on the EDGE app.
- * The user is created on the cloud app (sign-up is cloud only).
+ * A staff member of both outlets who may clock, signed in on the EDGE app at
+ * `device` (a new one by default). The user is created on the cloud app
+ * (sign-up is cloud only).
  */
-async function edgeStaff(name: string, app = edge) {
-  const signUpClient = agent(cloud);
-  const email = await signUp(signUpClient, name);
-  const session = await signUpClient.get("/api/auth/get-session");
-  const userId = session.body.user.id as string;
+async function edgeStaff(
+  name: string,
+  app = edge,
+  device?: Awaited<ReturnType<typeof seedDevice>>,
+) {
+  const userId = await withCloudModeEnv(async () => {
+    const signUpClient = agent(cloud);
+    await signUp(signUpClient, name);
+    const session = await signUpClient.get("/api/auth/get-session");
+    return session.body.user.id as string;
+  });
   createdUsers.push(userId);
 
   const roleId = randomUUID();
@@ -225,12 +230,12 @@ async function edgeStaff(name: string, app = edge) {
     );
   });
 
-  const client = agent(app);
-  const signIn = await client
-    .post("/api/auth/sign-in/email")
-    .set(originHeader)
-    .send({ email, password: PASSWORD });
-  expect(signIn.status, JSON.stringify(signIn.body)).toBe(200);
+  const at = device ?? (await seedDevice(sealedOutlet));
+  const client = await edgeStaffAgent(owner, app, {
+    tenantId: tenant.id,
+    userId,
+    device: { id: at.deviceId, token: at.token },
+  });
   return { client, userId };
 }
 
@@ -241,23 +246,27 @@ async function seedDevice(outletId: string) {
   const deviceId = randomUUID();
   createdDevices.push(deviceId);
   const issuedAt = Math.floor(Date.now() / 1000);
+  const token = signDeviceToken({
+    version: 1,
+    tenantId: tenant.id,
+    brandId: null,
+    deviceId,
+    issuedAt,
+  });
   await asTenant((client) =>
     client.query(
-      `INSERT INTO devices (id, tenant_id, outlet_id, type, label, token_issued_at)
-       VALUES ($1, $2, $3, 'pos', 'Layar absen', $4)`,
-      [deviceId, tenant.id, outletId, new Date(issuedAt * 1000)],
+      `INSERT INTO devices (id, tenant_id, outlet_id, type, label, token_issued_at, token_hash)
+       VALUES ($1, $2, $3, 'pos', 'Layar absen', $4, $5)`,
+      [
+        deviceId,
+        tenant.id,
+        outletId,
+        new Date(issuedAt * 1000),
+        hashDeviceToken(token),
+      ],
     ),
   );
-  return {
-    deviceId,
-    token: signDeviceToken({
-      version: 1,
-      tenantId: tenant.id,
-      brandId: null,
-      deviceId,
-      issuedAt,
-    }),
-  };
+  return { deviceId, token };
 }
 
 /** A PIN proof row for (device, user), as /api/staff-pins/verify would issue. */
@@ -641,9 +650,9 @@ describe("legend-u7g9w POST /api/storage/uploads with X-Pin-Proof (HTTP)", () =>
   });
 
   it("owner is the proof's staff even when another user's session cookie is sent", async () => {
-    const cashier = await edgeStaff("Kasir Sesi Unggah");
-    const staff = await edgeStaff("Staf Bukti Unggah");
     const device = await seedDevice(sealedOutlet);
+    const cashier = await edgeStaff("Kasir Sesi Unggah", edge, device);
+    const staff = await edgeStaff("Staf Bukti Unggah");
     const proof = await seedProof(device, sealedOutlet, staff.userId);
     const response = await proofUpload(
       { deviceToken: device.token, proof: proof.token },
