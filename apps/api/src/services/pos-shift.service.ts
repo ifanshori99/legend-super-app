@@ -124,6 +124,7 @@ import {
 } from "./permission-resolver.ts";
 import { revokeActingStaffForDevice } from "./pos-acting-staff-revoke.ts";
 import { POS_OVERRIDE_SOURCE_MODULE } from "./staff-override.service.ts";
+import { isEdgeProcess } from "./pos-edge-outlet.ts";
 import { enqueueClosedShiftReport } from "./pos-shift-print.ts";
 
 export type { ShiftCaller } from "./pos-shift-support.ts";
@@ -1549,6 +1550,10 @@ async function writeClose(
       approvedBy,
       approvalRequestId,
       closedAt: toIsoDateTime(now),
+      // 1269 E3: what the cloud needs to mirror the drawer of an edge outlet.
+      ...(isEdgeProcess()
+        ? { close: await edgeCloseDetail(tx, row, count, override, approvedAt) }
+        : {}),
     },
     caller,
     now,
@@ -1576,6 +1581,61 @@ async function writeClose(
   );
   await enqueueClosedShiftReport(tx, context, row, caller.userId);
   return dto;
+}
+
+/** 1269 E3: the closed drawer as the cloud must hold it (contract `close`). */
+async function edgeCloseDetail(
+  tx: Tx,
+  row: ShiftRow,
+  count: ShiftCountRow,
+  override: OverrideRow,
+  approvedAt: Date,
+) {
+  const movements = await movementsOf(tx, row);
+  const decisions = await tx
+    .select({
+      movementId: cashMovementOutcomes.movementId,
+      outcome: cashMovementOutcomes.outcome,
+      decidedBy: cashMovementOutcomes.decidedBy,
+      decidedAt: cashMovementOutcomes.decidedAt,
+    })
+    .from(cashMovementOutcomes)
+    .where(
+      and(
+        eq(cashMovementOutcomes.tenantId, row.tenantId),
+        eq(cashMovementOutcomes.shiftId, row.id),
+      ),
+    );
+  return {
+    openedAt: toIsoDateTime(row.openedAt),
+    closedBy: row.closedBy,
+    approvalOverrideId: ulidToUuid(override.id),
+    approvedAt: toIsoDateTime(approvedAt),
+    heldTotalIdr: Number(row.heldCashOutIdr),
+    count: {
+      id: count.id,
+      sequence: count.sequence,
+      counts: count.counts,
+      heldCorrectionIdr:
+        count.heldCorrectionIdr === null
+          ? null
+          : Number(count.heldCorrectionIdr),
+      cashWatermark: count.cashWatermark,
+      submittedBy: count.submittedBy,
+      submittedAt: toIsoDateTime(count.submittedAt),
+      forced: count.forced,
+    },
+    movements: movements.map((movement) => {
+      const decision = decisions.find((d) => d.movementId === movement.id);
+      return {
+        movementId: movement.id,
+        needsApproval: movement.needsApproval,
+        outcome: decision?.outcome ?? null,
+        decidedBy: decision?.decidedBy ?? null,
+        decidedAt: decision ? toIsoDateTime(decision.decidedAt) : null,
+      };
+    }),
+  };
 }
 
 // ---- Force close (U9) --------------------------------------------------------

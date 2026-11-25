@@ -34,6 +34,7 @@ import {
   gt,
   gte,
   inArray,
+  isNull,
   lt,
   lte,
   notInArray,
@@ -68,8 +69,9 @@ import {
 } from "@starter/shared/pos";
 import { db } from "../db/index.ts";
 import { edgeNodes } from "../db/schema/edge-node.ts";
+import { edgeOrderIngests } from "../db/schema/edge-order-ingest.ts";
+import { edgePosIngests } from "../db/schema/edge-pos-ingest.ts";
 import { isHeartbeatFreshForDayClose } from "../edge/link-freshness.ts";
-import { getEdgeRuntimeState } from "../edge/runtime.ts";
 import {
   domainEventOutbox,
   outlets,
@@ -102,6 +104,7 @@ import {
   resolveAccessSnapshot,
   type Tx,
 } from "./permission-resolver.ts";
+import { isEdgeProcess } from "./pos-edge-outlet.ts";
 import {
   posDayInventoryPort,
   posOutletReceiptGapsPort,
@@ -321,8 +324,17 @@ async function computeRecap(
   outletId: OutletId,
   businessDate: string,
   now: Date,
+  options: { edgeComparable?: boolean } = {},
 ): Promise<EndOfDayRecap> {
   const tenantId = context.tenant.tenantId;
+  // 1269 E3: late adjustments (legend-k0i8) belong to this open day in the
+  // cloud but are not in the recap the edge froze for it.
+  const notLateOrder = options.edgeComparable
+    ? sql`NOT EXISTS (SELECT 1 FROM ${edgeOrderIngests} WHERE ${edgeOrderIngests.tenantId} = ${orders.tenantId} AND ${edgeOrderIngests.orderId} = ${orders.id} AND ${edgeOrderIngests.lateBusinessDate} IS NOT NULL)`
+    : undefined;
+  const notLateShift = options.edgeComparable
+    ? sql`NOT EXISTS (SELECT 1 FROM ${edgePosIngests} WHERE ${edgePosIngests.tenantId} = ${posShifts.tenantId} AND ${edgePosIngests.kind} = 'shift' AND ${edgePosIngests.aggregateId} = ${posShifts.id} AND ${edgePosIngests.lateBusinessDate} IS NOT NULL)`
+    : undefined;
   const range = businessDayRange(
     businessDate as never,
     outletBusinessDayClock(outlet),
@@ -378,6 +390,7 @@ async function computeRecap(
         eq(orders.businessDate, businessDate),
         eq(orders.status, "completed"),
         reportablePosOrders(),
+        notLateOrder,
       ),
     );
   const channels = new Map<string, { orderCount: number; totalIdr: number }>();
@@ -443,6 +456,7 @@ async function computeRecap(
         eq(orders.businessDate, businessDate),
         eq(orders.status, "completed"),
         reportablePosOrders(),
+        notLateOrder,
       ),
     )
     .groupBy(posOrderTenders.method);
@@ -494,12 +508,28 @@ async function computeRecap(
         eq(posShifts.id, posOrders.shiftId),
       ),
     )
+    .leftJoin(
+      edgeOrderIngests,
+      and(
+        eq(edgeOrderIngests.tenantId, posOrderVoids.tenantId),
+        eq(edgeOrderIngests.orderId, posOrderVoids.orderId),
+      ),
+    )
     .where(
       and(
         eq(posOrderVoids.tenantId, tenantId),
         eq(posOrderVoids.outletId, outletId),
-        gte(posOrderVoids.voidedAt, range.start),
-        lt(posOrderVoids.voidedAt, range.end),
+        // legend-k0i8: a late edge void counts on the day it was posted to.
+        or(
+          and(
+            gte(posOrderVoids.voidedAt, range.start),
+            lt(posOrderVoids.voidedAt, range.end),
+            isNull(edgeOrderIngests.lateVoidBusinessDate),
+          ),
+          options.edgeComparable
+            ? undefined
+            : eq(edgeOrderIngests.lateVoidBusinessDate, businessDate),
+        ),
         reportablePosOrders(),
       ),
     );
@@ -744,6 +774,7 @@ async function computeRecap(
         eq(posShifts.tenantId, tenantId),
         eq(posShifts.outletId, outletId),
         eq(posShifts.businessDate, businessDate),
+        notLateShift,
       ),
     );
   for (const row of shifts) {
@@ -790,6 +821,7 @@ async function computeRecap(
         eq(cashMovementOutcomes.outletId, outletId),
         eq(cashMovementOutcomes.outcome, "expired"),
         eq(posShifts.businessDate, businessDate),
+        notLateShift,
       ),
     )
     .groupBy(posShifts.deviceId);
@@ -826,9 +858,9 @@ async function computeRecap(
   const sum = (pick: (device: DeviceAcc) => number) =>
     deviceRows.reduce((total, device) => total + pick(device), 0);
   // legend-21c8n: the same outlet-wide numbers RECEIPT_SEQUENCE_GAP names.
-  const receiptGaps = await posOutletReceiptGapsPort()(tx, context, {
-    outletId,
-  });
+  const receiptGaps = options.edgeComparable
+    ? []
+    : await posOutletReceiptGapsPort()(tx, context, { outletId });
   const unsyncedReceiptCount = receiptGaps.reduce(
     (total, run) => total + run.missing.length,
     0,
@@ -855,6 +887,23 @@ async function computeRecap(
     inventoryDeductionApplied: false,
     unsyncedReceiptCount,
     accountingSync: { status: "pending", journalCount: 0, postedAt: null },
+  });
+}
+
+/**
+ * 1269 E3: the cloud's figures of one business day of an edge outlet, to compare
+ * with the recap its edge froze: without late adjustments and receipt gaps.
+ */
+export function computeEdgeComparableRecap(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outlet: typeof outlets.$inferSelect,
+  outletId: OutletId,
+  businessDate: string,
+  now: Date,
+): Promise<EndOfDayRecap> {
+  return computeRecap(tx, context, outlet, outletId, businessDate, now, {
+    edgeComparable: true,
   });
 }
 
@@ -915,8 +964,7 @@ async function assertDayClosesOnCloud(
   outletId: OutletId,
   now: Date,
 ): Promise<{ staleEdge: boolean }> {
-  if (getEdgeRuntimeState().edgeMode || process.env.EDGE_MODE === "true")
-    return { staleEdge: false };
+  if (isEdgeProcess()) return { staleEdge: false };
   const [edge] = await tx
     .select({ lastHeartbeatAt: edgeNodes.lastHeartbeatAt })
     .from(edgeNodes)
@@ -1199,6 +1247,8 @@ export async function closePosDay(
         accountingSyncStatus: "pending",
         closedBy: caller.userId,
         closedAt,
+        // 1269 E3: the cloud mirrors an edge close from its frozen recap.
+        ...(isEdgeProcess() ? { recap } : {}),
       },
     });
     await appendOutbox(tx, context, {

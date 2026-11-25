@@ -44,6 +44,7 @@ import {
 } from "../middleware/acting-staff.ts";
 import { requireAuthAllowSharedDevice } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
+import { requirePosWriteOnCloud } from "../middleware/pos-on-cloud.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
   getScopedTenantContext,
@@ -129,20 +130,26 @@ async function caller(req: Request): Promise<shifts.ShiftCaller> {
 
 // ---- Shifts -------------------------------------------------------------------
 
-posShiftRouter.post("/shifts", operate, jsonBody, async (req, res) => {
-  const { outletId } = openPosShift.params.parse(req.params);
-  const body = openPosShift.body.parse(req.body);
-  const shift = await shifts.openPosShift(
-    getScopedTenantContext(req),
-    await caller(req),
-    outletId,
-    body,
-  );
-  res.location(
-    `/api/outlets/${encodeURIComponent(outletId)}/pos/shifts/${encodeURIComponent(shift.id)}`,
-  );
-  res.status(201).json({ data: shift });
-});
+posShiftRouter.post(
+  "/shifts",
+  operate,
+  requirePosWriteOnCloud,
+  jsonBody,
+  async (req, res) => {
+    const { outletId } = openPosShift.params.parse(req.params);
+    const body = openPosShift.body.parse(req.body);
+    const shift = await shifts.openPosShift(
+      getScopedTenantContext(req),
+      await caller(req),
+      outletId,
+      body,
+    );
+    res.location(
+      `/api/outlets/${encodeURIComponent(outletId)}/pos/shifts/${encodeURIComponent(shift.id)}`,
+    );
+    res.status(201).json({ data: shift });
+  },
+);
 
 posShiftRouter.get("/shifts", readShift, async (req, res) => {
   const { outletId } = listPosShifts.params.parse(req.params);
@@ -245,6 +252,7 @@ posShiftRouter.post(
 posShiftRouter.post(
   "/shifts/:shiftId/cash-movements",
   operate,
+  requirePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, shiftId } = recordPosCashMovement.params.parse(

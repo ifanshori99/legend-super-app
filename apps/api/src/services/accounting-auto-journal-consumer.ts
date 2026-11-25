@@ -54,6 +54,8 @@ import {
   outlets,
   tenants,
 } from "../db/schema/index.ts";
+import { edgeOrderIngests } from "../db/schema/edge-order-ingest.ts";
+import { edgePosIngests } from "../db/schema/edge-pos-ingest.ts";
 import { purchaseReturns } from "../db/schema/purchase-returns.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
@@ -588,6 +590,54 @@ async function saleJournalPosted(
   return row !== undefined;
 }
 
+/**
+ * legend-k0i8: the open business date a late edge sale, void, shift or cash
+ * movement was posted to (edge/late-adjustment.ts); null when it is not late.
+ */
+async function edgeLateDateOf(
+  tx: Tx,
+  tenantId: TenantId,
+  stored: StoredAutoJournalEvent,
+): Promise<string | null> {
+  switch (stored.eventName) {
+    case "order.paid":
+    case "order.voided": {
+      const [row] = await tx
+        .select({
+          sale: edgeOrderIngests.lateBusinessDate,
+          voided: edgeOrderIngests.lateVoidBusinessDate,
+        })
+        .from(edgeOrderIngests)
+        .where(
+          and(
+            eq(edgeOrderIngests.tenantId, tenantId),
+            eq(edgeOrderIngests.orderId, String(stored.payload.orderId)),
+          ),
+        );
+      return (
+        (stored.eventName === "order.paid" ? row?.sale : row?.voided) ?? null
+      );
+    }
+    case "cashier_shift.closed":
+    case "cash_movement.recorded":
+    case "cash_movement.approved": {
+      const [row] = await tx
+        .select({ late: edgePosIngests.lateBusinessDate })
+        .from(edgePosIngests)
+        .where(
+          and(
+            eq(edgePosIngests.tenantId, tenantId),
+            eq(edgePosIngests.kind, "shift"),
+            eq(edgePosIngests.aggregateId, String(stored.payload.shiftId)),
+          ),
+        );
+      return row?.late ?? null;
+    }
+    default:
+      return null;
+  }
+}
+
 async function postAutoJournal(
   tx: Tx,
   context: ScopedTenantContext,
@@ -644,9 +694,15 @@ async function postAutoJournal(
 
   // A date fact (bank settlement date) is used as is; an instant becomes the
   // outlet business date.
-  const naturalDate =
+  const factDate =
     (fact?.entryDate as ReturnType<typeof businessDateOf> | undefined) ??
     businessDateOf(target.moneyTime, outletBusinessDayClock(outlet));
+  // legend-k0i8: an edge fact of a business day the cloud already closed is
+  // dated on the open day it was posted to.
+  const edgeLateDate = (await edgeLateDateOf(tx, tenantId, stored)) as
+    typeof factDate | null;
+  const naturalDate =
+    edgeLateDate !== null && edgeLateDate > factDate ? edgeLateDate : factDate;
   // Takes the entity FOR SHARE lock: close/reopen cannot race this post.
   const blocked = await wouldPostingBeBlockedByClosedPeriod(
     tx,
@@ -654,10 +710,13 @@ async function postAutoJournal(
     legalEntityId,
     periodOf(naturalDate),
   );
-  const { entryDate, lateAdjustmentFrom } = resolveAutoJournalDate(
+  const resolved = resolveAutoJournalDate(
     naturalDate,
     blocked ? await latestClosedPeriod(tx, tenantId, legalEntityId) : null,
   );
+  const { entryDate } = resolved;
+  const lateAdjustmentFrom =
+    naturalDate === factDate ? resolved.lateAdjustmentFrom : factDate;
   const lateSuffix =
     lateAdjustmentFrom === null
       ? ""
