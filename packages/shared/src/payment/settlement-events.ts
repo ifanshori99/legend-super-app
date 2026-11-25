@@ -6,8 +6,9 @@
 // Payloads are JSON only; amounts are whole rupiah; `settledOn` is the bank
 // settlement date (a business date, not an instant).
 //
-// No emitter exists yet (beads legend-3a5m, legend-jlqi, legend-cs7). Emitter
-// contract:
+// `settlement.reconciled` is emitted by payment-settlement-emit.service.ts (1269
+// C4a); `edc_transaction.settled` has no emitter yet (beads legend-jlqi,
+// legend-cs7). Emitter contract:
 // - Each bank payout has exactly one emitter and one event. EDC payouts are
 //   emitted only as `edc_transaction.settled`, never as `settlement.reconciled`.
 // - `settlement.reconciled.provider` is an allow-list of gateway providers
