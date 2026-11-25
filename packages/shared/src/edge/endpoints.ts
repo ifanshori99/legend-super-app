@@ -63,7 +63,12 @@ export const catalogFreshnessSchema = z.strictObject({
       /** The 24 h rule hit, even when an owner override allows selling. */
       stale24h: z.boolean(),
       reason: z
-        .enum(["CATALOG_STALE_24H", "CLOCK_REGRESSED", "GATE_UNAVAILABLE"])
+        .enum([
+          "CATALOG_STALE_24H",
+          "CLOCK_REGRESSED",
+          "GATE_UNAVAILABLE",
+          "TAX_NOT_SYNCED",
+        ])
         .nullable(),
       /** Oldest last success (or tracking start) among the offending streams. */
       staleSince: isoDateTimeSchema.nullable(),

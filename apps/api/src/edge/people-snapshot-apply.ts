@@ -80,6 +80,7 @@ import { user } from "../db/schema/user.ts";
 import { withTenant } from "../db/tenant.ts";
 import { edgeNodeContext } from "../services/edge-node.service.ts";
 import type { parseEdgeCredential } from "./credential.ts";
+import { DETACHED_ROLE_PREFIX } from "./detached-role.ts";
 
 type Database = NodePgDatabase<typeof schema>;
 type Claims = NonNullable<ReturnType<typeof parseEdgeCredential>>;
@@ -107,7 +108,6 @@ export type EdgePeopleSyncStateView = {
 
 /** Rows per statement: keeps every statement far below the 65535 parameter cap. */
 const CHUNK = 500;
-const DETACHED_ROLE_PREFIX = "~detached-";
 
 function chunks<T>(items: readonly T[], size = CHUNK): T[][] {
   const out: T[][] = [];

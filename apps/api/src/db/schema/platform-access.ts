@@ -22,6 +22,7 @@ import type {
   ScopeType,
 } from "@starter/shared/access";
 import { tenants } from "./platform-org";
+import { syncTxidColumn } from "./sync-txid";
 import { user } from "./user";
 
 // PRD §6 B lists `roles` / `permissions` as two tables. The Legend access
@@ -135,8 +136,14 @@ export const approvalPolicies = pgTable(
     requiresDistinctActor: boolean("requires_distinct_actor")
       .notNull()
       .default(true),
+    syncTxid: syncTxidColumn(),
   },
   (table) => [
+    index("approval_policies_sync_txid_idx").on(
+      table.tenantId,
+      table.syncTxid,
+      table.id,
+    ),
     unique("approval_policies_tenant_id_id_key").on(table.tenantId, table.id),
     foreignKey({
       name: "approval_policies_role_fk",

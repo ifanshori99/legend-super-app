@@ -64,6 +64,7 @@ import { and, eq, inArray, notInArray, sql } from "drizzle-orm";
 import {
   CATALOG_PROTOCOL_MIN_VERSION,
   CATALOG_PROTOCOL_VERSION,
+  isCatalogTaxStream,
   CATALOG_SYNC_LIMIT_DEFAULT,
   EDGE_CATALOG_SYNC_PATH,
   type CatalogSyncStream,
@@ -921,7 +922,11 @@ export function startEdgeMasterSyncLoop(input: {
                 : isOfflineFailureCode(code)),
             });
           report(new EdgeCatalogSyncError(stream, code));
-        } else if (!stopped)
+        } else if (
+          !stopped &&
+          // Half a tax rule set (a backlog) is not a success.
+          !(isCatalogTaxStream(stream) && outcome.lastSuccessAt === null)
+        )
           freshness?.recordSuccess(stream, outcome.lastSuccessAt ?? undefined);
       }
       if (!result.backlog) break;

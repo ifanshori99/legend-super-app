@@ -15,6 +15,10 @@ export const catalogSalesMessages = {
     "Jam perangkat mundur: penjualan ditahan, minta owner mengizinkan",
   clockRegressedHint:
     "Perangkat tidak bisa memastikan katalog masih baru. Minta owner untuk mengizinkan penjualan.",
+  taxNotSyncedTitle:
+    "Penjualan ditahan: aturan pajak belum tersinkron ke perangkat ini",
+  taxNotSyncedHint:
+    "Sambungkan perangkat ke internet. Penjualan dibuka otomatis setelah pajak tersinkron.",
   sinceLine: "Terakhir tersinkron sejak {time}.",
   overrideTitle: "Penjualan diizinkan owner sampai {until}",
   overrideHint:

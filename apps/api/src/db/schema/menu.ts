@@ -642,8 +642,14 @@ export const itemAvailability = pgTable(
     createdAt,
     updatedAt,
     deletedAt,
+    syncTxid: syncTxidColumn(),
   },
   (table) => [
+    index("item_availability_sync_txid_idx").on(
+      table.tenantId,
+      table.syncTxid,
+      table.id,
+    ),
     unique("item_availability_tenant_id_id_key").on(table.tenantId, table.id),
     foreignKey({
       name: "item_availability_outlet_fk",

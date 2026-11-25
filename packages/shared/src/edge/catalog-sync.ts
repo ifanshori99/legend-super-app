@@ -60,11 +60,19 @@ import {
   promoStackingPolicySchema,
   voucherObjectSchema,
 } from "../crm/promo.ts";
+import { capacityRuleSchema } from "../kitchen/schemas.ts";
+import { scheduleSchema } from "../menu/schemas.ts";
+import { floorZoneSchema, tableSchema } from "../qr-order/schemas.ts";
+import {
+  serviceChargeRuleSchema,
+  taxRuleSchema,
+  taxSettingsSchema,
+} from "../tax/schemas.ts";
 
 export const EDGE_CATALOG_SYNC_PATH = "/api/edge-sync/catalog";
 
 /**
- * Pull order. `stations` and `inventory_items` come first so the rows that
+ * Streams that are also published as link events. Pull order. `stations` and `inventory_items` come first so the rows that
  * items, modifiers and recipes point to (`stationId`, `outputItemId`) already
  * exist on the edge when those streams are applied. `recipes` follow right
  * after `inventory_items` and before `menu_items` and `item_variants`: those
@@ -72,7 +80,7 @@ export const EDGE_CATALOG_SYNC_PATH = "/api/edge-sync/catalog";
  * (legend-3kdd). `modifiers` carry `recipe_id` without that key on the edge
  * (recipes are brand-scoped, modifiers tenant-level) and do not wait.
  */
-export const CATALOG_SYNC_STREAMS = [
+export const CATALOG_LINK_STREAMS = [
   "stations",
   "printers",
   "inventory_items",
@@ -86,6 +94,43 @@ export const CATALOG_SYNC_STREAMS = [
   "price_lists",
   "promotions",
   "vouchers",
+] as const;
+export type CatalogLinkStream = (typeof CATALOG_LINK_STREAMS)[number];
+
+/**
+ * Protocol 4 (legend-osqou.22): the config an edge needs to sell, seat and cook
+ * while the cloud is away. Pulled over HTTP only, never published on the link:
+ * an older edge refuses a link event of a stream it does not know, never
+ * acknowledges it and its link stays stuck, while it simply never asks for a
+ * stream of the HTTP pull. Parents first (a table needs its zone, a cashier
+ * default its terminal, a menu load its item).
+ */
+export const CATALOG_DOCUMENT_STREAMS = [
+  "tax_rules",
+  "service_charge_rules",
+  "tax_settings",
+  "floor_zones",
+  "tables",
+  "payment_edc_terminals",
+  "payment_cashier_defaults",
+  "pos_approval_policies",
+  "approval_policies",
+  "kitchen_capacity_rules",
+  "kitchen_menu_loads",
+  "item_availability",
+] as const;
+export type CatalogDocumentStream = (typeof CATALOG_DOCUMENT_STREAMS)[number];
+
+/** Without every one of these the edge cannot compute a bill: sales stay held. */
+export const CATALOG_TAX_STREAMS = [
+  "tax_rules",
+  "service_charge_rules",
+  "tax_settings",
+] as const satisfies readonly CatalogDocumentStream[];
+
+export const CATALOG_SYNC_STREAMS = [
+  ...CATALOG_LINK_STREAMS,
+  ...CATALOG_DOCUMENT_STREAMS,
 ] as const;
 export const catalogSyncStreamSchema = z.enum(CATALOG_SYNC_STREAMS);
 export type CatalogSyncStream = z.infer<typeof catalogSyncStreamSchema>;
@@ -108,9 +153,14 @@ export const CATALOG_SYNC_LIMIT_DEFAULT = PAGE_LIMIT_MAX;
  * (no parameter, or 2) cannot check the brand of such a recipe, so it keeps
  * getting the brand-filtered stream. Page shape is unchanged from 2, so a v3
  * edge still accepts a v2 cloud (it just sees fewer recipes).
+ *
+ * Version 4 (legend-osqou.22): the `CATALOG_DOCUMENT_STREAMS`. Page shape and
+ * the older streams are unchanged. A cloud that predates them answers 400 for
+ * those streams only; the edge reports CATALOG_CLOUD_OUTDATED for them and,
+ * without the tax streams, holds sales.
  */
-export const CATALOG_PROTOCOL_VERSION = 3;
-/** Oldest cloud version the edge still accepts (first one with `syncTxid`). Unchanged by 3: the page shape is the same. */
+export const CATALOG_PROTOCOL_VERSION = 4;
+/** Oldest cloud version the edge still accepts (first one with `syncTxid`). Unchanged by 3 and 4: the page shape is the same. */
 export const CATALOG_PROTOCOL_MIN_VERSION = 2;
 
 export const catalogSyncQuerySchema = z.strictObject({
@@ -425,7 +475,220 @@ export const voucherSyncRecordSchema = voucherObjectSchema
   })
   .strict();
 
+// ---- protocol 4 documents -------------------------------------------------
+// A table the cloud hard-deletes from has a live shape (`deletedAt: null`) and
+// a deletion record, like printers. Money and approval rules are strict: an
+// edge that does not know a field must not guess its meaning.
+
+const documentScope = { id: uuidSchema, tenantId: uuidSchema };
+/** Null = tenant-wide, inherited by every outlet. */
+const ownOrTenantOutlet = { outletId: uuidSchema.nullable() };
+const liveStamp = { deletedAt: z.null(), syncTxid: syncTxidSchema };
+const tombstone = z.strictObject({
+  ...documentScope,
+  /** Null for a row the whole tenant shares. */
+  outletId: uuidSchema.nullable(),
+  deletedAt: isoDateTimeSchema,
+  syncTxid: syncTxidSchema,
+});
+
+/**
+ * Every version travels, drafts and archived ones too: the edge reads the
+ * published ones, and only a record of the superseded version can take it out
+ * of force there.
+ */
+export const taxRuleSyncRecordSchema = z.strictObject({
+  ...taxRuleSchema.shape,
+  ...documentScope,
+  ...ownOrTenantOutlet,
+  syncTxid: syncTxidSchema,
+});
+export const serviceChargeRuleSyncRecordSchema = z.strictObject({
+  ...serviceChargeRuleSchema.shape,
+  ...documentScope,
+  ...ownOrTenantOutlet,
+  syncTxid: syncTxidSchema,
+});
+export const taxSettingsSyncRecordSchema = z.strictObject({
+  ...taxSettingsSchema.shape,
+  ...documentScope,
+  ...ownOrTenantOutlet,
+  syncTxid: syncTxidSchema,
+});
+
+const liveFloorZone = z.object({
+  ...documentScope,
+  outletId: uuidSchema,
+  name,
+  paymentMode: floorZoneSchema.shape.paymentMode,
+  serviceChargeBp: floorZoneSchema.shape.serviceChargeBp,
+  minimumSpendIdr: floorZoneSchema.shape.minimumSpendIdr,
+  hours: floorZoneSchema.shape.hours,
+  status: floorZoneSchema.shape.status,
+  sortOrder: z.number().int(),
+  isWfc: z.boolean(),
+  createdAt: isoDateTimeSchema,
+  updatedAt: isoDateTimeSchema,
+  ...liveStamp,
+});
+
+/**
+ * The table's place and shape only. Whether it is occupied, reserved or dirty
+ * belongs to the edge and is never overwritten; the cloud only decides whether
+ * the table is in use at all (`isActive`). The QR credential never travels.
+ */
+const liveTable = z.object({
+  ...documentScope,
+  outletId: uuidSchema,
+  zoneId: uuidSchema,
+  code: tableSchema.shape.code,
+  capacity: z.number().int().min(1).max(50),
+  type: tableSchema.shape.type,
+  layout: tableSchema.shape.layout,
+  isActive: z.boolean(),
+  createdAt: isoDateTimeSchema,
+  updatedAt: isoDateTimeSchema,
+  ...liveStamp,
+});
+
+/** Never deleted in the cloud (switched off with `status`). */
+export const edcTerminalSyncRecordSchema = z.object({
+  ...documentScope,
+  outletId: uuidSchema,
+  bankCode: z.enum(["bca", "mandiri", "bni", "bjb"]),
+  terminalId: z.string().min(1).max(100),
+  merchantId: z.string().min(1).max(100),
+  model: z.string().max(100),
+  connection: z.enum(["lan", "usb", "bluetooth"]),
+  ipAddress: z.string().max(45).nullable(),
+  supportedMethods: z.array(z.enum(["card", "qris"])).min(1),
+  assignedDeviceId: uuidSchema.nullable(),
+  status: z.enum(["active", "inactive"]),
+  createdAt: isoDateTimeSchema,
+  updatedAt: isoDateTimeSchema,
+  syncTxid: syncTxidSchema,
+});
+
+const liveCashierDefault = z.object({
+  ...documentScope,
+  outletId: uuidSchema,
+  cashierId: uuidSchema,
+  terminalId: uuidSchema.nullable(),
+  defaultMethod: z.enum(["edc_card", "edc_qris", "qris_doit"]),
+  updatedAt: isoDateTimeSchema,
+  ...liveStamp,
+});
+
+/** Discount approval threshold. Never deleted in the cloud. */
+export const posApprovalPolicySyncRecordSchema = z.strictObject({
+  ...documentScope,
+  ...ownOrTenantOutlet,
+  discountThresholdBp: z.number().int().min(1).max(10_000),
+  updatedBy: userIdSchema.nullable(),
+  createdAt: isoDateTimeSchema,
+  updatedAt: isoDateTimeSchema,
+  syncTxid: syncTxidSchema,
+});
+
+/** One tier of the approval matrix; the cloud replaces the matrix as a whole. */
+const liveApprovalPolicy = z.strictObject({
+  ...documentScope,
+  actionType: z.string().min(1).max(50),
+  thresholdIdr: idrSchema.nullable(),
+  approverRoleId: uuidSchema,
+  levels: z.number().int().min(1).max(3),
+  requiresDistinctActor: z.literal(true),
+  ...liveStamp,
+});
+
+const liveCapacityRule = z.object({
+  ...documentScope,
+  outletId: uuidSchema,
+  stationId: uuidSchema,
+  windowMinutes: capacityRuleSchema.shape.windowMinutes,
+  capacityPoints: z.number().int().positive(),
+  nearCapacityBp: z.number().int().positive(),
+  schedule: capacityRuleSchema.shape.schedule,
+  channelPriority: z.array(z.string()),
+  createdAt: isoDateTimeSchema,
+  updatedAt: isoDateTimeSchema,
+  ...liveStamp,
+});
+
+const liveMenuLoad = z.object({
+  ...documentScope,
+  outletId: uuidSchema,
+  menuItemId: uuidSchema,
+  variantId: uuidSchema.nullable(),
+  loadPoints: z.number().int().min(1).max(100),
+  prepSeconds: z.number().int().min(1).max(7200),
+  createdAt: isoDateTimeSchema,
+  updatedAt: isoDateTimeSchema,
+  ...liveStamp,
+});
+
+/** Sold-out state, schedule and daily limit; soft-deleted like the menu rows. */
+export const itemAvailabilitySyncRecordSchema = z.object({
+  ...documentScope,
+  outletId: uuidSchema,
+  menuItemId: uuidSchema,
+  schedule: z.array(scheduleSchema),
+  dailyLimit: z.number().int().nonnegative().nullable(),
+  soldOutUntil: isoDateTimeSchema.nullable(),
+  status: z.enum(["available", "sold_out"]),
+  source: z.enum(["staff", "auto"]).nullable(),
+  ...stamps,
+});
+
+/** One entry per stream; a new stream (F7) adds its schema here and its spec in the API. */
+const documentRecordSchemas = {
+  tax_rules: taxRuleSyncRecordSchema,
+  service_charge_rules: serviceChargeRuleSyncRecordSchema,
+  tax_settings: taxSettingsSyncRecordSchema,
+  floor_zones: z.union([liveFloorZone, tombstone]),
+  tables: z.union([liveTable, tombstone]),
+  payment_edc_terminals: edcTerminalSyncRecordSchema,
+  payment_cashier_defaults: z.union([liveCashierDefault, tombstone]),
+  pos_approval_policies: posApprovalPolicySyncRecordSchema,
+  approval_policies: z.union([liveApprovalPolicy, tombstone]),
+  kitchen_capacity_rules: z.union([liveCapacityRule, tombstone]),
+  kitchen_menu_loads: z.union([liveMenuLoad, tombstone]),
+  item_availability: itemAvailabilitySyncRecordSchema,
+} as const satisfies Record<CatalogDocumentStream, z.ZodType>;
+
+const liveDocumentShapes = {
+  ...documentRecordSchemas,
+  floor_zones: liveFloorZone,
+  tables: liveTable,
+  payment_cashier_defaults: liveCashierDefault,
+  approval_policies: liveApprovalPolicy,
+  kitchen_capacity_rules: liveCapacityRule,
+  kitchen_menu_loads: liveMenuLoad,
+} as const;
+
+/** Wire fields of a live record per stream (no `syncTxid`): what is exported and applied. */
+export const CATALOG_DOCUMENT_FIELDS = Object.fromEntries(
+  CATALOG_DOCUMENT_STREAMS.map((stream) => [
+    stream,
+    Object.keys(liveDocumentShapes[stream].shape).filter(
+      (key) => key !== "syncTxid",
+    ),
+  ]),
+) as unknown as Readonly<Record<CatalogDocumentStream, readonly string[]>>;
+
+const cloudDocumentRecordSchemas = {
+  ...documentRecordSchemas,
+  floor_zones: z.union([liveFloorZone.strict(), tombstone]),
+  tables: z.union([liveTable.strict(), tombstone]),
+  payment_edc_terminals: edcTerminalSyncRecordSchema.strict(),
+  payment_cashier_defaults: z.union([liveCashierDefault.strict(), tombstone]),
+  kitchen_capacity_rules: z.union([liveCapacityRule.strict(), tombstone]),
+  kitchen_menu_loads: z.union([liveMenuLoad.strict(), tombstone]),
+  item_availability: itemAvailabilitySyncRecordSchema.strict(),
+} as const;
+
 export const catalogSyncRecordSchemas = {
+  ...documentRecordSchemas,
   stations: stationSyncRecordSchema,
   printers: printerSyncRecordSchema,
   inventory_items: inventoryItemSyncRecordSchema,
@@ -464,6 +727,16 @@ export type RecipeSyncRecord = z.infer<typeof recipeSyncRecordSchema>;
 export type RecipeLineRecord = z.infer<typeof recipeLineRecordSchema>;
 export type PromotionSyncRecord = z.infer<typeof promotionSyncRecordSchema>;
 export type VoucherSyncRecord = z.infer<typeof voucherSyncRecordSchema>;
+
+export function isCatalogDocumentStream(
+  stream: CatalogSyncStream,
+): stream is CatalogDocumentStream {
+  return (CATALOG_DOCUMENT_STREAMS as readonly string[]).includes(stream);
+}
+
+export function isCatalogTaxStream(stream: string): boolean {
+  return (CATALOG_TAX_STREAMS as readonly string[]).includes(stream);
+}
 
 export type CatalogSyncRecordOf<S extends CatalogSyncStream> = z.infer<
   (typeof catalogSyncRecordSchemas)[S]
@@ -517,12 +790,25 @@ export const catalogSyncPageSchema = noUnsafeCatalogFields.pipe(
     pageOf("price_lists"),
     pageOf("promotions"),
     pageOf("vouchers"),
+    pageOf("tax_rules"),
+    pageOf("service_charge_rules"),
+    pageOf("tax_settings"),
+    pageOf("floor_zones"),
+    pageOf("tables"),
+    pageOf("payment_edc_terminals"),
+    pageOf("payment_cashier_defaults"),
+    pageOf("pos_approval_policies"),
+    pageOf("approval_policies"),
+    pageOf("kitchen_capacity_rules"),
+    pageOf("kitchen_menu_loads"),
+    pageOf("item_availability"),
   ]),
 );
 export type CatalogSyncPage = z.infer<typeof catalogSyncPageSchema>;
 
 /** Cloud output validation must detect accidental columns, including nested rows. */
 export const catalogSyncCloudRecordSchemas = {
+  ...cloudDocumentRecordSchemas,
   stations: stationSyncRecordSchema.strict(),
   printers: z.union([
     livePrinterSyncRecordSchema.strict(),
@@ -576,4 +862,16 @@ export const catalogSyncCloudPageSchema = z.discriminatedUnion("stream", [
   cloudPageOf("recipes"),
   cloudPageOf("promotions"),
   cloudPageOf("vouchers"),
+  cloudPageOf("tax_rules"),
+  cloudPageOf("service_charge_rules"),
+  cloudPageOf("tax_settings"),
+  cloudPageOf("floor_zones"),
+  cloudPageOf("tables"),
+  cloudPageOf("payment_edc_terminals"),
+  cloudPageOf("payment_cashier_defaults"),
+  cloudPageOf("pos_approval_policies"),
+  cloudPageOf("approval_policies"),
+  cloudPageOf("kitchen_capacity_rules"),
+  cloudPageOf("kitchen_menu_loads"),
+  cloudPageOf("item_availability"),
 ]);

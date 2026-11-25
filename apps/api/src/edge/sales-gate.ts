@@ -7,6 +7,7 @@
 //
 //   cloud process     never gated.
 //   edge, no provider fail closed: blocked with reason GATE_UNAVAILABLE.
+//   edge, tax never synced: TAX_NOT_SYNCED; no owner override lifts it.
 //   edge, wall clock booted far behind the saved high water: CLOCK_REGRESSED.
 import { CoreError } from "@starter/shared/core";
 import { env } from "../config/env.ts";
@@ -14,11 +15,16 @@ import { env } from "../config/env.ts";
 export const CATALOG_SALES_BLOCK_AFTER_MS = 24 * 60 * 60_000;
 
 export type SalesGateState = {
-  /** True only when the 24 h rule hit and no override is active. */
+  /** True when tax was never synced, or the 24 h rule hit and no override is active. */
   blocked: boolean;
   /** The 24 h rule hit (even when overridden). */
   stale24h: boolean;
-  reason: "CATALOG_STALE_24H" | "GATE_UNAVAILABLE" | "CLOCK_REGRESSED" | null;
+  reason:
+    | "CATALOG_STALE_24H"
+    | "GATE_UNAVAILABLE"
+    | "CLOCK_REGRESSED"
+    | "TAX_NOT_SYNCED"
+    | null;
   /** Oldest last success (or tracking start) among the offending streams. */
   staleSince: Date | null;
   staleStreams: string[];
@@ -83,8 +89,10 @@ export function assertCatalogSalesAllowed(): void {
   const message =
     state.reason === "GATE_UNAVAILABLE"
       ? "Penjualan ditahan: database lokal edge belum bisa dibaca. Hubungi teknisi; penjualan dibuka lagi otomatis setelah sistem pulih."
-      : state.reason === "CLOCK_REGRESSED"
-        ? "Penjualan ditahan: jam perangkat mundur dari waktu terakhir yang tercatat. Perbaiki jam perangkat atau minta owner untuk mengizinkan."
-        : "Penjualan ditahan: katalog belum tersinkron lebih dari 24 jam. Minta owner untuk mengizinkan.";
+      : state.reason === "TAX_NOT_SYNCED"
+        ? "Penjualan ditahan: aturan pajak belum tersinkron ke perangkat ini. Sambungkan internet; penjualan dibuka otomatis setelah pajak tersinkron."
+        : state.reason === "CLOCK_REGRESSED"
+          ? "Penjualan ditahan: jam perangkat mundur dari waktu terakhir yang tercatat. Perbaiki jam perangkat atau minta owner untuk mengizinkan."
+          : "Penjualan ditahan: katalog belum tersinkron lebih dari 24 jam. Minta owner untuk mengizinkan.";
   throw new CoreError("CATALOG_STALE_BLOCKED", message);
 }

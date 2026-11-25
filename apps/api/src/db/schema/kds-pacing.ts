@@ -31,6 +31,7 @@ import {
 import { outletIdColumn, tenantIdColumn } from "../columns";
 import { itemVariants, menuItems, stations } from "./menu";
 import { outlets, tenants } from "./platform-org";
+import { syncTxidColumn } from "./sync-txid";
 
 /** Pause reasons of `channelPauseSchema`. */
 export const CHANNEL_PAUSE_REASONS = [
@@ -64,8 +65,14 @@ export const kitchenMenuLoads = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+    syncTxid: syncTxidColumn(),
   },
   (table) => [
+    index("kitchen_menu_loads_sync_txid_idx").on(
+      table.tenantId,
+      table.syncTxid,
+      table.id,
+    ),
     unique("kitchen_menu_loads_tenant_id_id_key").on(table.tenantId, table.id),
     uniqueIndex("kitchen_menu_loads_line_key").on(
       table.tenantId,

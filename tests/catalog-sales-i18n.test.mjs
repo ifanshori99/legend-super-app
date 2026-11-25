@@ -15,7 +15,7 @@ const keys = Object.keys(catalogSalesMessages).map((k) => `catalogSales.${k}`);
 
 describe("catalog sales text (legend-10nex)", () => {
   test("every catalogSales key is registered and resolves", () => {
-    assert.ok(keys.length === 23);
+    assert.ok(keys.length === 25);
     for (const key of keys) {
       assert.ok(MESSAGE_KEYS.includes(key), `${key} is not a catalog key`);
       const value = t(key);

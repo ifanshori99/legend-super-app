@@ -22,6 +22,7 @@ import {
   businessDate,
 } from "../columns";
 import { outlets, tenants } from "./platform-org";
+import { syncTxidColumn } from "./sync-txid";
 import { paymentIntents, paymentUnallocatedFunds } from "./payment";
 import { orderIssues } from "./kds-issues";
 
@@ -46,8 +47,14 @@ export const paymentEdcTerminals = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
+    syncTxid: syncTxidColumn(),
   },
   (t) => [
+    index("payment_edc_terminals_sync_txid_idx").on(
+      t.tenantId,
+      t.syncTxid,
+      t.id,
+    ),
     unique("payment_edc_terminals_tenant_id_key").on(t.tenantId, t.id),
     unique("payment_edc_terminals_tenant_outlet_id_key").on(
       t.tenantId,
@@ -95,8 +102,14 @@ export const paymentCashierDefaults = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
+    syncTxid: syncTxidColumn(),
   },
   (t) => [
+    index("payment_cashier_defaults_sync_txid_idx").on(
+      t.tenantId,
+      t.syncTxid,
+      t.id,
+    ),
     unique("payment_cashier_defaults_tenant_id_key").on(t.tenantId, t.id),
     unique("payment_cashier_defaults_cashier_key").on(
       t.tenantId,
