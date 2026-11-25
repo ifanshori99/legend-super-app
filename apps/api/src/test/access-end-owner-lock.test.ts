@@ -203,10 +203,14 @@ describe("legend-qr1uv Owner end decides after the tenant lock", () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
 
       // Meanwhile B ended A first (simulated), then the lock is released.
-      // Node time, not DB time: avoids container clock drift.
+      // DB time: endRoleAssignment reads the DB clock (legend-hzdy5), so a Node
+      // timestamp ahead of the container would still look active. Truncated
+      // because the service compares at millisecond precision.
       await holder.query(
-        "UPDATE role_assignments SET valid_until = $2 WHERE id = $1",
-        [assignmentA, new Date()],
+        `UPDATE role_assignments
+         SET valid_until = date_trunc('milliseconds', clock_timestamp())
+         WHERE id = $1`,
+        [assignmentA],
       );
       await holder.query("COMMIT");
     } catch (error) {
@@ -289,10 +293,14 @@ describe("legend-qr1uv Owner end decides after the tenant lock", () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
 
       // Meanwhile Owner A is ended (simulated), then the lock is released.
-      // Node time, not DB time: avoids container clock drift.
+      // DB time: endRoleAssignment reads the DB clock (legend-hzdy5), so a Node
+      // timestamp ahead of the container would still look active. Truncated
+      // because the service compares at millisecond precision.
       await holder.query(
-        "UPDATE role_assignments SET valid_until = $2 WHERE id = $1",
-        [assignmentA, new Date()],
+        `UPDATE role_assignments
+         SET valid_until = date_trunc('milliseconds', clock_timestamp())
+         WHERE id = $1`,
+        [assignmentA],
       );
       await holder.query("COMMIT");
     } catch (error) {
