@@ -120,7 +120,9 @@ export async function getPosPaymentOptions(
         id: row.id,
         bankCode: row.bankCode,
         model: row.model,
-        terminalIdLast4: row.terminalId.slice(-4),
+        // A short id would show whole.
+        terminalIdLast4:
+          row.terminalId.length > 4 ? row.terminalId.slice(-4) : "****",
         supportedMethods: row.supportedMethods,
       })),
     },

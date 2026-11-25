@@ -724,7 +724,7 @@ async function newestHold(
  * any doubt hides it. The basis and amount rules are those the capture applies
  * (pos-order-payment.ts, D-05).
  */
-async function showableQrPayload(
+export async function showableQrPayload(
   tx: Tx,
   context: ScopedTenantContext,
   hold: HoldRow,
@@ -733,7 +733,7 @@ async function showableQrPayload(
   if (hold.state !== "open" || hold.tenderId === null) return null;
   const tenantId = context.tenant.tenantId;
   const active = await tx
-    .select({ id: posQrisHolds.id })
+    .select({ id: posQrisHolds.id, state: posQrisHolds.state })
     .from(posQrisHolds)
     .where(
       and(
@@ -743,7 +743,13 @@ async function showableQrPayload(
       ),
     )
     .limit(2);
-  if (active.length !== 1) return null;
+  // The one active hold must still be the row read, and still open.
+  if (
+    active.length !== 1 ||
+    active[0]?.id !== hold.id ||
+    active[0].state !== "open"
+  )
+    return null;
   const [order] = await tx
     .select()
     .from(orders)

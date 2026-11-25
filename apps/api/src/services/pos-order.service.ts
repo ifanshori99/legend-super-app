@@ -70,7 +70,7 @@ import { db } from "../db/index.ts";
 import { assertCatalogSalesAllowed } from "../edge/sales-gate.ts";
 import {
   devices,
-  paymentLinks,
+  paymentIntents,
   tables,
   tableSessions,
 } from "../db/schema/index.ts";
@@ -154,6 +154,7 @@ import {
   isLinePaused,
   readPausedMenuLines,
 } from "./kds-pacing.service.ts";
+import { netAllocatedIdrSql } from "./payment-net-allocated-sql.ts";
 import { orderRevenueSplit } from "./order-revenue.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 import { listSessionDepositSources } from "./reservation-deposit-credit.ts";
@@ -371,7 +372,6 @@ export async function listPosOrders(
         order: orders,
         pos: posOrders,
         tableLabel: tables.code,
-        linkPaidIdr: paymentLinks.paidIdr,
       })
       .from(orders)
       .innerJoin(posOrders, ofPosOrder)
@@ -390,18 +390,42 @@ export async function listPosOrders(
           eq(tables.id, tableSessions.tableId),
         ),
       )
-      .leftJoin(
-        paymentLinks,
-        and(
-          eq(paymentLinks.tenantId, orders.tenantId),
-          eq(paymentLinks.id, orders.paymentLinkId),
-        ),
-      )
       .where(and(...filters))
       .orderBy(desc(orders.id))
       .limit(query.limit + 1);
     const page = rows.slice(0, query.limit);
     const ids = page.map((row) => row.order.id);
+    const linkIds = page
+      .map((row) => row.order.paymentLinkId)
+      .filter((id): id is string => id !== null);
+    // Net, not `payment_links.paid_idr`: that stays gross when the provider
+    // refunds a code on its own.
+    const linkPaid = new Map<string, number>();
+    if (linkIds.length > 0) {
+      const paidRows = await tx
+        .select({
+          linkId: paymentIntents.paymentLinkId,
+          netIdr: sql<string>`sum(${netAllocatedIdrSql(
+            sql`${paymentIntents.tenantId}`,
+            sql`${paymentIntents.id}`,
+          )})::text`,
+        })
+        .from(paymentIntents)
+        .where(
+          and(
+            eq(paymentIntents.tenantId, tenantId),
+            inArray(paymentIntents.paymentLinkId, linkIds),
+            inArray(paymentIntents.status, [
+              "paid",
+              "partially_refunded",
+              "refunded",
+            ]),
+          ),
+        )
+        .groupBy(paymentIntents.paymentLinkId);
+      for (const row of paidRows)
+        if (row.linkId !== null) linkPaid.set(row.linkId, Number(row.netIdr));
+    }
     const tenders =
       ids.length === 0
         ? []
@@ -456,7 +480,7 @@ export async function listPosOrders(
                     remainingIdr(
                       row.order,
                       tenders.filter((t) => t.orderId === row.order.id),
-                    ) - (row.linkPaidIdr ?? 0),
+                    ) - (linkPaid.get(row.order.paymentLinkId ?? "") ?? 0),
                   ),
             tableLabel: row.tableLabel,
           },
