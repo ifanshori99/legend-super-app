@@ -10,3 +10,7 @@ Path `apps/api/src/`. Wajib di cabang ini: 1, 2, 4, (c). Lalu re-review diff.
 (a) Kartu sebelum rilis: `services/payment-routing.service.ts:99,138` tanpa aturan pakai `platformDefaultGateway()`; null = nonaktif; test legacy tetap `doit`. Runbook `gateway:set duitku --enabled --default`, `gateway:set doit --disabled`, periksa aturan tiap tenant.
 (b) Kartu yang sama dengan 3: `payment.service.ts:1277` VA/bank_transfer maksimal `max(link.expiresAt, now+10 menit)`; e-wallet/kartu jangan dipendekkan; `payment-duitku.ts:486` ceil jadi floor.
 (c) `config/env.ts:287` tolak query, hash, userinfo; production wajib path `/bayar/kembali`; samakan `deploy/single-vm/runtime.env.example:115` (berkas contoh, bukan rahasia).
+
+## Re-review 26 Nov (7c4026b80): LULUS (uang)
+
+Syarat sebelum merge: `config/env.ts` refine DUITKU_RETURN_URL tidak boleh melempar nilai env (dikerjakan CTO, `URL.canParse`). Sisa P2/P3 ke kartu legend-osqou.41.
