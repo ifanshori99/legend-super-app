@@ -65,6 +65,7 @@ import {
   qrOrderErrorMessages,
   QR_ORDER_PRICING_MODE_MIXED,
 } from "@starter/shared/qr-order";
+import { AccessError } from "@starter/shared/access";
 import { resolveTaxSettings } from "@starter/shared/tax";
 import { db } from "../db/index.ts";
 import { assertCatalogSalesAllowed } from "../edge/sales-gate.ts";
@@ -178,6 +179,19 @@ const OJOL_CHANNELS = new Set(["gofood", "grabfood", "shopeefood"]);
 const ACTIVE_SESSION_STATUSES = new Set(["open", "bill_requested"]);
 
 /**
+ * A caller who only holds `order.create` (waiter, captain) may work on
+ * `captain` orders alone. The channel is the order row's own, read under the
+ * lock; nothing the client sends decides it.
+ */
+function assertCaptainOnly(caller: PosCaller, channel: string): void {
+  if (caller.captainOnly === true && channel !== "captain")
+    throw new AccessError(
+      "PERMISSION_DENIED",
+      "Akun ini hanya boleh mengelola pesanan captain.",
+    );
+}
+
+/**
  * A POS mutation: one tenant transaction, idempotent under the request key,
  * the order locked, the client's version checked. `run` returns the stored
  * (replayable) response.
@@ -225,6 +239,7 @@ export async function mutatePosOrder<T>(
           input.outletId,
           input.orderId,
         );
+        assertCaptainOnly(caller, locked.order.channel);
         if (
           input.requireActiveSession &&
           locked.order.tableSessionId !== sessionId
@@ -679,6 +694,7 @@ export async function createPosOrder(
   now = new Date(),
 ): Promise<PosOrderDetail> {
   const { idempotencyKey, ...request } = input;
+  assertCaptainOnly(caller, input.channel);
   if (input.channel === "qr")
     throw new CoreError(
       "VALIDATION_ERROR",
