@@ -43,7 +43,7 @@ import {
 import type { MessageKey } from "@starter/shared/i18n";
 import type { EmployeeLoan } from "@starter/shared/hris/payroll";
 import { ApiError } from "@/lib/api/errors";
-import { newIdempotencyKey } from "@/lib/idempotency";
+import { useAttemptKey } from "@/features/ws05-payment-admin/use-attempt-key";
 import { formatBusinessDate } from "../format.ts";
 import { useCreateLoan, useMyLoans } from "../hooks.ts";
 import { DEMO_LOAN_POLICY } from "../policy.ts";
@@ -182,6 +182,7 @@ export function KasbonPage() {
   const t = useT();
   const query = useMyLoans();
   const create = useCreateLoan();
+  const attempt = useAttemptKey();
   const [amount, setAmount] = useState("");
   const [tenor, setTenor] = useState(String(Math.min(3, TENOR_MAX)));
   const [reason, setReason] = useState("");
@@ -235,15 +236,18 @@ export function KasbonPage() {
     setSubmitFailure(null);
     const valid = validate();
     if (!valid) return;
+    // Same request after a lost response reuses its key (replay, no second
+    // loan request); a changed request is a new attempt.
+    const body = {
+      principalIdr: valid.amountIdr,
+      installmentCount: valid.installmentCount,
+      reason: reason.trim(),
+    };
     create.mutate(
-      {
-        principalIdr: valid.amountIdr,
-        installmentCount: valid.installmentCount,
-        reason: reason.trim(),
-        idempotencyKey: newIdempotencyKey(),
-      },
+      { ...body, idempotencyKey: attempt.keyFor(body) },
       {
         onSuccess: () => {
+          attempt.settle();
           setSubmitted(true);
           setAmount("");
           setReason("");

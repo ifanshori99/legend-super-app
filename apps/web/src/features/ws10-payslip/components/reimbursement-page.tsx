@@ -40,7 +40,7 @@ import { formatRupiah } from "@starter/shared/i18n";
 import type { MessageKey } from "@starter/shared/i18n";
 import type { Reimbursement } from "@starter/shared/hris/payroll";
 import { ApiError } from "@/lib/api/errors";
-import { newIdempotencyKey } from "@/lib/idempotency";
+import { useAttemptKey } from "@/features/ws05-payment-admin/use-attempt-key";
 import { formatBusinessDate } from "../format.ts";
 import {
   useCreateReimbursement,
@@ -131,6 +131,7 @@ export function ReimbursementPage() {
   const query = useMyReimbursements();
   const categories = useReimbursementCategories();
   const create = useCreateReimbursement();
+  const attempt = useAttemptKey();
 
   const [categoryId, setCategoryId] = useState("");
   const [expenseDate, setExpenseDate] = useState(todayBusinessDate());
@@ -218,18 +219,21 @@ export function ReimbursementPage() {
     setSubmitFailure(null);
     const valid = validate();
     if (!valid) return;
+    // Same request after a lost response reuses its key (replay, no second
+    // claim); a changed request is a new attempt.
+    const body = {
+      categoryId,
+      expenseDate,
+      amountIdr: valid.amountIdr,
+      description: valid.description,
+      receiptUploadRef: photo?.url ?? null,
+      payout,
+    };
     create.mutate(
-      {
-        categoryId,
-        expenseDate,
-        amountIdr: valid.amountIdr,
-        description: valid.description,
-        receiptUploadRef: photo?.url ?? null,
-        payout,
-        idempotencyKey: newIdempotencyKey(),
-      },
+      { ...body, idempotencyKey: attempt.keyFor(body) },
       {
         onSuccess: () => {
+          attempt.settle();
           setSubmitted(true);
           setAmount("");
           setNote("");
