@@ -109,7 +109,10 @@ import {
   assertJournalCredit1102Covered,
   pettyCashGlAccount,
 } from "./accounting-petty-cash.service";
-import { markMatchStaleForReversedJournal } from "./accounting-bank-recon-stale.service";
+import {
+  assertSettlementJournalReversibleByHand,
+  markMatchStaleForReversedJournal,
+} from "./accounting-bank-recon-stale.service";
 import { assertPeriodOpenForPosting } from "./accounting-period.service";
 import {
   auditAccountingChange,
@@ -1575,6 +1578,12 @@ export async function reverseJournalInTransaction(
   )
     passedGuards.push("petty-cash-out-source-not-paid");
   assertReversible(row, reversal?.id ?? null);
+  if (input.manualReversal === true)
+    await assertSettlementJournalReversibleByHand(
+      tx,
+      context.tenant.tenantId,
+      row,
+    );
   if (
     await assertReturnBackingNotPaidOut(tx, context.tenant.tenantId, row, lines)
   )
@@ -1684,6 +1693,8 @@ export async function reverseJournalInTransaction(
       legalEntityId: row.legalEntityId,
       outletId: row.outletId,
       journalEntryId: entryId,
+      sourceType: row.sourceType,
+      sourceId: row.sourceId,
       reversalEntryId: entry.id,
       reversedBy: input.postedBy,
       reason: input.reason,

@@ -206,6 +206,11 @@ export async function hasUnmatchedDocument(
   input: {
     lineAmountIdr: number;
     journalAmountsIdr: readonly number[];
+    /**
+     * A free journal that debits the bank account and credits this account
+     * (gateway_clearing) books a settlement already, whatever its amount.
+     */
+    clearingAccountId: string;
     from: string;
     to: string;
     toleranceDays: number;
@@ -231,6 +236,25 @@ export async function hasUnmatchedDocument(
     journals.some((row) => input.journalAmountsIdr.includes(Number(row.amount)))
   )
     return true;
+  const debitsBank = journals
+    .filter((row) => Number(row.amount) > 0)
+    .map((row) => row.id as string);
+  if (debitsBank.length > 0) {
+    const toClearing = rowsOf(
+      await tx.execute(
+        sql`SELECT 1 FROM journal_lines jl
+            WHERE jl.tenant_id = ${tenantId}
+              AND jl.entry_id IN (${sql.join(
+                debitsBank.map((id) => sql`${id}::uuid`),
+                sql`, `,
+              )})
+              AND jl.account_id = ${input.clearingAccountId}
+              AND jl.credit_idr > 0
+            LIMIT 1`,
+      ),
+    );
+    if (toClearing.length > 0) return true;
+  }
   const deposits = rowsOf(
     await tx.execute(
       depositCandidateSql(
@@ -346,7 +370,7 @@ export async function resolveRefs(
       if (!exists) throw notFound("Jurnal");
       throw new CoreError(
         "VALIDATION_ERROR",
-        "Jurnal ini tidak menggerakkan rekening bank tersebut, sudah dibalik, atau sudah tercatat lewat setoran kas.",
+        "Jurnal ini tidak menggerakkan rekening bank tersebut, sudah dibalik, sudah tercatat lewat setoran kas, atau sudah dicocokkan sebagai settlement gateway.",
       );
     }
     resolved.push({
