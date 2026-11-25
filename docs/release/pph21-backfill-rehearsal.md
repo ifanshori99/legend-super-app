@@ -70,12 +70,15 @@ Bekukan payroll (tidak ada run dibuat, disetujui, dikunci, atau di-reverse) dari
 verifikasi akhir selesai. Skrip menunggu kunci badan hukum bila ada run sedang dikunci, tetapi
 pembekuan menjaga angka dry-run tetap sama dengan hasil nyata.
 
-1. Cadangan. Di container postgres, sebagai superuser atau role migrator (role aplikasi kena RLS dan
-   hanya melihat sebagian), dengan `umask 077`, simpan salinan di tempat aman (bukan chat):
-   `umask 077; pg_dump --data-only -t accounting_open_items -t accounting_open_item_settlements <db> > pra-backfill.sql`
+1. Cadangan. Jalankan di VM sebagai superuser/migrator di container postgres (role aplikasi DITOLAK
+   membaca semua baris karena RLS), dengan `umask 077`, simpan salinan ke path host yang aman (bukan chat):
+   `umask 077; docker compose --env-file <compose.env> -f deploy/single-vm/compose.yaml exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --data-only -t accounting_open_items -t accounting_open_item_settlements' > <path host aman>/pra-backfill.sql`
    (atau snapshot VM). Salinan ini untuk bukti dan rujukan, bukan untuk dipulihkan (lihat "Cara mundur").
-2. Prasyarat: migrasi sudah sampai head dan image API memuat skrip (`ls dist/payroll-pph21-receivable-backfill.js`).
-   Skrip memakai `APP_DATABASE_URL` (role aplikasi, kena RLS); bukan role migrasi.
+2. Prasyarat, sebelum pembekuan payroll dan dry-run: migrasi sudah sampai head dan image API memuat
+   skrip (`ls dist/payroll-pph21-receivable-backfill.js`). Skrip memakai `APP_DATABASE_URL` (role aplikasi,
+   kena RLS); bukan role migrasi. Selesaikan dulu semua reversal run payroll yang direncanakan: selama
+   item backfill ada, reversal yang menaikkan atau memungut piutang karyawan itu ditolak, jadi
+   reversal tidak bisa menyusul sesudah apply tanpa mundur.
 3. Dry-run (tidak menulis apa pun):
    `docker compose --env-file <compose.env> -f deploy/single-vm/compose.yaml run --rm --no-deps -T api node dist/payroll-pph21-receivable-backfill.js --dry-run`
    Dari source checkout: `pnpm --filter @starter/api payroll:backfill-pph21-receivable --dry-run`.
@@ -96,9 +99,9 @@ pembekuan menjaga angka dry-run tetap sama dengan hasil nyata.
    - ada `payslip_unreadable` atau `item_exceeds_balance` yang belum dijelaskan tertulis oleh HR atau
      finance untuk tiap karyawannya (lanjut hanya bila tiap nama punya penjelasan; skrip tidak menulis
      apa pun untuk karyawan itu dan tidak menurunkan item yang ada);
-   - hasil nyata (langkah 6) berbeda dari dry-run (jumlah, rupiah, atau `held`).
-6. Jalankan sungguhan, tanpa `--dry-run` (perintah sama tanpa flag). Boleh diulang kapan pun. Bandingkan
-   dengan dry-run: harus sama.
+6. Jalankan sungguhan, tanpa `--dry-run` (perintah sama tanpa flag). Bandingkan dengan dry-run: jumlah,
+   rupiah, dan `held` harus sama. Bila berbeda: payroll tetap beku, lapor CTO, jangan diulang
+   (jangan jalankan lagi, jangan mundur sendiri) sampai sebabnya jelas.
 7. Verifikasi: jalankan dry-run lagi. Hasil benar: `created: 0` di semua tenant, `held` sama seperti
    langkah 4 (karyawan yang ditahan tetap ditahan). Cek di daftar piutang finance: saldo tiap
    karyawan = saldo slip terakhir. Baru sesudah ini payroll dibuka kembali.
@@ -108,7 +111,7 @@ pembekuan menjaga angka dry-run tetap sama dengan hasil nyata.
 
 Item yang dibuat skrip bisa dikenali dari nomor dokumen `PPH21-BACKFILL-%`. Selama belum ada pelunasan
 (belum ada run payroll terkunci sesudahnya yang memungut piutang itu), hapus item itu saja. Jalankan
-sebagai role migrator (`BYPASSRLS`; role aplikasi tidak melihat semua baris), di dalam transaksi, dan
+sebagai role migrator (`BYPASSRLS`; role aplikasi ditolak), di dalam transaksi, dan
 jangan `COMMIT` sebelum jumlah baris yang terhapus dicek:
 
 ```sql
@@ -125,7 +128,7 @@ RETURNING i.id, i.original_idr;
 -- Cocok: COMMIT;  Tidak cocok: ROLLBACK; dan berhenti.
 ```
 
-Batasi per badan hukum (atau daftar id dari `RETURNING` apply). Item yang sudah ada pelunasan
+Batasi per badan hukum (kolom `legal_entity_id`); skrip tidak mencetak id item, jadi pembatas lain adalah nomor dokumen dan `RETURNING` di atas. Item yang sudah ada pelunasan
 (`settled_idr > 0` atau ada baris pelunasan, artinya payroll sudah memungut): JANGAN memulihkan
 cadangan (itu menghapus pelunasan yang sah dan bisa membuat karyawan dipotong atau dibayar dobel).
 Berhenti, hubungi CTO; perbaikannya maju, bukan mundur. Sesudah penghapusan yang sah, menjalankan
@@ -133,8 +136,8 @@ skrip lagi membuat id dan jumlah yang sama.
 Catatan: selama item backfill ada, reversal run payroll yang menaikkan atau memungut piutang karyawan
 itu ditolak (aturan sengaja, supaya daftar finance tetap sama dengan slip).
 Tenant diproses satu per satu, satu transaksi masing-masing: bila skrip gagal di tengah, tenant sebelum
-yang gagal SUDAH ter-commit. Selesaikan dulu reversal yang direncanakan (di atas) untuk tenant itu,
-baru ulangi skrip; mengulang aman (idempoten).
+yang gagal SUDAH ter-commit. Reversal yang direncanakan sudah selesai di prasyarat (langkah 2); ulangi
+skrip bila itu memang yang diputuskan CTO (idempoten).
 
 ## Belum diverifikasi
 

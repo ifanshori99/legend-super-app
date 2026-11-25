@@ -82,8 +82,10 @@ Dari `apps/api`, koneksi database lewat `MIGRATION_DATABASE_URL_FILE` (path ke
 berkas berisi URL, jangan cetak URL). Pilih salah satu, bukan keduanya:
 
 Di VM produksi tidak ada pnpm: ganti `pnpm --filter @starter/api db:backfill-employee-managers`
-dengan `docker compose ... --profile migration run --rm --no-deps -T migrate node dist/backfill-employee-managers.js`
-(butuh `MIGRATION_DATABASE_URL_FILE`; argumen salah keluar bukan 0 dengan petunjuk).
+dengan `docker compose ... --profile migration run --rm --no-deps -T -v <folder absolut di host>:/manifest migrate node dist/backfill-employee-managers.js`
+dan tulis manifest ke `/manifest/<nama>.csv` (folder host harus bisa ditulis user `node` di
+container; tanpa `-v`, container sekali pakai membuang manifest). Butuh `MIGRATION_DATABASE_URL_FILE`;
+argumen salah keluar bukan 0 dengan petunjuk.
 
 ```bash
 pnpm --filter @starter/api db:backfill-employee-managers --dry-run --manifest review-managers.csv

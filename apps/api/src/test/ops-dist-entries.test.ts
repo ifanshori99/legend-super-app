@@ -76,12 +76,21 @@ describe("operator commands in dist", () => {
             NODE_ENV: "production",
             DATABASE_URL: "postgres://nobody:nopass@127.0.0.1:1/none",
             MIGRATION_DATABASE_URL: "postgres://nobody:nopass@127.0.0.1:1/none",
+            // Some entries load the full (production-strict) API config
+            // before they read the arguments. Dummy values, never connected.
+            BETTER_AUTH_SECRET:
+              "dummy-secret-for-argument-test-only-0000000000",
+            STAFF_PIN_PEPPER: "dummy-pepper-for-argument-test-only-0000000000",
+            PAYOUT_GRANTOR_DATABASE_URL:
+              "postgres://legend_grant_x:nopass@127.0.0.1:1/none",
           },
         },
       );
       expect(result.status, name).not.toBe(0);
       expect(result.status, name).not.toBeNull();
-      expect(`${result.stdout}${result.stderr}`.trim(), name).not.toBe("");
+      // The message is the usage line, not just any output (a stack trace
+      // or a connection error would also be non-empty).
+      expect(`${result.stdout}${result.stderr}`, name).toMatch(/usage/i);
     });
   });
 });
