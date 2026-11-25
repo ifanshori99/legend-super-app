@@ -18,3 +18,8 @@ Izin menjadi tingkat K: review architect sesudah perbaikan.
 4. **P2** `services/floor.service.ts:384`: penanda hold dibatasi hari bisnis berjalan outlet. Test.
 5. **P2** `ws04-pos-order/api.ts:429`: baca juga draft milik sesi sebagai "belum terkirim", aksi lanjut submit (kunci yang sama, tanpa create kedua). Test.
 6. **P3** test: fire pesanan kanal lain via `itemIds`, badan diskon lengkap, waiter outlet A ke order outlet B untuk submit/fire.
+
+## Review delta 26 Nov (35a7fde8c): TIDAK LULUS, 1 P2, 1 P3 (no. 1, 2, 4, 6 benar; import lazy aman)
+
+1. **P2 dapur dobel** `ws04-pos-order/api.ts:675`, `captain-flow.ts` `continueDraft`: balasan create hilang -> "Lanjutkan" memakai kunci baru `draft:<id>` padahal intent create masih tersimpan dan keranjang tidak dihapus; "Kirim ulang" lalu mengulang create, submit 409 final, keranjang terbuka lagi, kirim berikutnya = pesanan kedua. Perbaikan: bila sesi masih punya intent create tertunda, "Lanjutkan" lewat `resendCaptainOrder` dengan kunci sama (atau tombol disembunyikan); di `placeOrder`, 409 transisi submit sesudah create diulang = terkirim, keranjang dihapus. Test web urutan ini.
+2. **P3** `pos-order.service.ts:254-263`: `captainSessionOf` pada fire mengunci sesi `for("share")` sesudah kunci pesanan (urutan terbalik, bisa deadlock -> 500). Baca tanpa kunci; paling buruk 409.
