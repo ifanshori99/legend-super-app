@@ -23,7 +23,7 @@ import {
 } from "@/features/ws04-pos-kasir/components/shared";
 import { cartTotals, needsChoice } from "@/features/ws04-pos-order/cart-logic";
 import { inputOfMeta, sameOrder } from "@/features/ws04-pos-order/order-wire";
-import { useDraftCart } from "@/features/ws04-pos-order/draft-store";
+import { readDraft, useDraftCart } from "@/features/ws04-pos-order/draft-store";
 import {
   isContractPending,
   useCashierDraftKey,
@@ -192,7 +192,8 @@ export function CashierMainScreen() {
   };
 
   const pick = (item: MenuItem) => {
-    if (item.soldOut) return;
+    // A success empties the cart: an item added meanwhile would be lost.
+    if (item.soldOut || park.isPending || submit.isPending) return;
     setStatus(null);
     if (!needsChoice(item)) {
       cart.add(item, { modifiers: [], note: "", quantity: 1 });
@@ -309,7 +310,8 @@ export function CashierMainScreen() {
         onSuccess: () => {
           // Same cart as the one parked: it is on the held list now, so it
           // leaves the screen. A different cart stays: it is a new order.
-          if (sameOrder(cart.lines, meta, snapshot)) cart.clear();
+          // Read again now: an item added while this was sending must stay.
+          if (sameOrder(readDraft(draftKey), meta, snapshot)) cart.clear();
           setStatus({ key: "parkedOk" });
         },
         onSettled: pendingPark.refresh,
@@ -603,6 +605,7 @@ export function CashierMainScreen() {
           if (!open) setPickedItem(null);
         }}
         onConfirm={(selection) => {
+          if (park.isPending || submit.isPending) return;
           if (pickedItem) cart.add(pickedItem, selection);
           setPickedItem(null);
         }}

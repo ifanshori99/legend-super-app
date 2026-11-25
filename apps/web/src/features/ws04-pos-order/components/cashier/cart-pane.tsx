@@ -144,7 +144,7 @@ export function CartPane({
               <CartLineRow
                 key={line.lineId}
                 line={line}
-                locked={submitting}
+                locked={busy}
                 onSetQuantity={onSetQuantity}
                 onToggleHold={onToggleHold}
               />
