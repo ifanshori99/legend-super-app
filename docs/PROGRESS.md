@@ -6,6 +6,11 @@
 - TEMUAN P0: layar kasir/captain (`ws04-pos-order/api.ts`) dan sebagian bayar/shift hanya jalan di mode mock. Epic legend-9yw78, rencana `docs/briefs/1268-pos-wire.md` (sekitar 70 jam agent).
 - Jalan: B1 `ws/1268-b1`, B3 `ws/1268-b3`, nilai 1162 `ws/1268-1162`. Mockup W5 `design/mockups/pos/1268-pesanan-terbuka/` DISETUJUI founder 25 Nov (tab jadi "Belum selesai").
 - Berikut: B2 (Opus, sesudah 1162), W0, lalu W1-W3, W4-W6.
+- Scope rilis 1 dari founder (keputusan 22-25 di `docs/founder/keputusan-2026-11-21.md`): edge printer, EDC otomatis, Duitku VA/e-wallet/kartu, laporan, POS offline, tiket/poin/voucher/DP di kasir. Brief `docs/briefs/1269-scope-tambahan.md` (C, D, E) dan `docs/briefs/1269-f-tiket-poin-dp-standby.md` (F, sekitar 148 jam). Epic legend-osqou, anak F di legend-osqou.33.
+- Suite penuh f9dea5f98: root-web, api-1/2/4/5 lulus; api-3 dan api-6 gagal karena test (jam, VAPID), dibetulkan di `int/rc1` b61b245db (uji ulang VAPID antre); api-7/8 jalan.
+- E8 `ws/1269-e8` eaa6faa41 review LULUS, menunggu gabung. Jalan: B1, B3, 1162 (antre test), C0 `ws/1269-c0`, E2 `ws/1269-e2` (migrasi 0524), E1 `ws/1269-e1` (0525), F6a `ws/1269-f6a`.
+- Sesudahnya: review tiap kartu -> gabung gelombang -> B2, W0, C2a/C4a, F1, F7, F11a/c.
+- Menunggu founder: tiket offline tanpa member, paket/langganan di kasir, smart lock (default paling membatasi dipakai).
 - Triase bead uang: tidak ada pemblokir baru; `DOIT_REFUNDS_ENABLED` dan `DOIT_RECURRING_ENABLED` harus tetap false. Cek dulu iojd1 (tukar item tiket fasilitas) bila tiket dijual. q7jj F2 menunggu putusan akuntansi CTO.
 
 ## CTO 25 Nov (batch107 mendarat)
