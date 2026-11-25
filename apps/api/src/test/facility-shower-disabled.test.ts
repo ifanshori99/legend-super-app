@@ -17,7 +17,10 @@ import {
   closedShowerFacilityIds,
   facilityShowerEnabled,
 } from "../services/facility-shower-gate.ts";
-import { updateFacility } from "../services/facility-config.service.ts";
+import {
+  createFacility,
+  updateFacility,
+} from "../services/facility-config.service.ts";
 import {
   asTenant,
   createWorld,
@@ -293,5 +296,57 @@ describe("1269 F0 the facility type is frozen around the shower", () => {
     await patch(shower, { name: "Shower Baru", type: "shower" });
     await patch(locker, { type: "meeting_room" });
     expect((await typeOf(locker)).type).toBe("meeting_room");
+  });
+
+  it("a new shower is refused and writes no row; a coworking facility and the switch on still create", async () => {
+    const world = await createWorld();
+    const actor = await seedConfigManager(world);
+    const create = (type: string, idempotencyKey = randomUUID()) =>
+      createFacility(world.context, actor, {
+        outletId: world.outletA,
+        name: `Fasilitas ${type}`,
+        type,
+        sessionMinutes: 20,
+        cleaningMinutes: 10,
+        arrivalGraceMinutes: 10,
+        operatingHours: [
+          {
+            daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+            opensAt: "06:00",
+            closesAt: "22:00",
+          },
+        ],
+        overtimePolicy: {
+          graceMinutes: 5,
+          blockMinutes: 10,
+          feePerBlockIdr: 10_000,
+        },
+        cancellationPolicy: {
+          freeCancelMinutesBefore: 60,
+          lateCancelResolution: "no_refund",
+          lateCancelFeeIdr: 0,
+          noShowResolution: "no_refund",
+        },
+        idempotencyKey,
+      } as never);
+    const types = () =>
+      asTenant(world, async (client) => {
+        const { rows } = await client.query<{ type: string }>(
+          "SELECT type FROM facilities WHERE tenant_id = $1 ORDER BY type",
+          [world.tenantId],
+        );
+        return rows.map((row) => row.type);
+      });
+
+    const key = randomUUID();
+    expect(await rejectionCode(create("shower", key))).toBe(DISABLED);
+    expect(await types()).toEqual([]);
+    await create("coworking");
+    expect(await types()).toEqual(["coworking"]);
+
+    // The refusal left the key unbound: the same request works when released.
+    flag.FACILITY_SHOWER_ENABLED = true;
+    await create("shower", key);
+    expect(await types()).toEqual(["coworking", "shower"]);
   });
 });

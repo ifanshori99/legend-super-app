@@ -68,7 +68,7 @@ import {
   listFacilityProducts,
   listFacilitySubscriptionPlans,
 } from "./facility-products.service.ts";
-import { isShowerClosed } from "./facility-shower-gate.ts";
+import { assertFacilityOpen, isShowerClosed } from "./facility-shower-gate.ts";
 import { listWifiPoliciesForFacility } from "./wifi-policy.service.ts";
 import {
   ensureBaselineHoursVersion,
@@ -817,6 +817,7 @@ export async function createFacility(
       },
       map: toFacility,
       create: async () => {
+        assertFacilityOpen(input);
         const [row] = await tx
           .insert(facilities)
           .values({
