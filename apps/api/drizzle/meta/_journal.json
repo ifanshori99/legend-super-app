@@ -3585,6 +3585,13 @@
       "when": 1795617701872,
       "tag": "0525_edge_catalog_v4",
       "breakpoints": true
+    },
+    {
+      "idx": 526,
+      "version": "7",
+      "when": 1795635326758,
+      "tag": "0530_edge_cloud_commands",
+      "breakpoints": true
     }
   ]
 }
