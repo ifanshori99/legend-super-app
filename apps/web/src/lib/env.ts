@@ -30,3 +30,10 @@ const apiUrl =
 
 // The API origin the browser calls (Better Auth + application routes).
 export const API_URL = new URL(apiUrl).origin;
+
+// A URL that is written into server-rendered HTML for the browser to follow.
+// In a same-origin build SSR's API_URL is the loopback address of this server,
+// which the browser must never see: the path stays relative to the page origin.
+export function publicApiUrl(path: string): string {
+  return configured === SAME_ORIGIN ? path : `${API_URL}${path}`;
+}

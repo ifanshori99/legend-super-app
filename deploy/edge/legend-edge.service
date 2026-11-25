@@ -4,6 +4,9 @@
 # Restart=always is required when EDC_AGENT_ENABLED=true: the EDC agent exits
 # the process (code 1) when it loses its outlet lock with a sale on the wire,
 # and this unit is what brings it back. See docs/deployment.md, "EDC agent".
+# One origin (1269 E8): in api.env set WEB_URL and BETTER_AUTH_URL to the edge
+# HTTPS origin and leave TRUSTED_ORIGINS and COOKIE_DOMAIN empty; TRUST_PROXY=1.
+# See deploy/edge/README.md.
 [Unit]
 Description=Legend edge API (outlet)
 After=network-online.target postgresql.service

@@ -7,10 +7,13 @@ set -eu
 usage() {
   cat >&2 <<'USAGE'
 usage: check-edge-host.sh --env-file FILE [--service-user USER] [--cert FILE]
+                          [--web-env-file FILE] [--web-output DIR]
                           [--selfie-dir DIR] [--state-dir DIR] [--max-bytes N] [--margin-bytes N]
   --env-file      edge API environment file (required); checks seal key and audit maintenance setup
   --service-user  account that runs the edge API (default: legend)
   --cert          HTTPS certificate file served to outlet devices
+  --web-env-file  edge web environment file (legend-edge-web.service); checks the deployment settings
+  --web-output    web build folder (default /opt/legend/apps/web/.output); checked with --web-env-file
   --selfie-dir    default: EDGE_SELFIE_DIR in the env file, else /var/lib/legend/edge-selfies
   --state-dir     default: EDGE_STATE_DIR in the env file, else /var/lib/legend/edge-state
   --max-bytes     default: EDGE_SELFIE_MAX_BYTES in the env file, else 2147483648
@@ -22,18 +25,22 @@ USAGE
 env_file=
 service_user=legend
 cert=
+web_env_file=
+web_output=/opt/legend/apps/web/.output
 selfie_dir=
 state_dir=
 max_bytes=
 margin_bytes=536870912
 while [ $# -gt 0 ]; do
   case $1 in
-    --env-file | --service-user | --cert | --selfie-dir | --state-dir | --max-bytes | --margin-bytes)
+    --env-file | --service-user | --cert | --web-env-file | --web-output | --selfie-dir | --state-dir | --max-bytes | --margin-bytes)
       [ $# -ge 2 ] || usage
       case $1 in
         --env-file) env_file=$2 ;;
         --service-user) service_user=$2 ;;
         --cert) cert=$2 ;;
+        --web-env-file) web_env_file=$2 ;;
+        --web-output) web_output=$2 ;;
         --selfie-dir) selfie_dir=$2 ;;
         --state-dir) state_dir=$2 ;;
         --max-bytes) max_bytes=$2 ;;
@@ -115,6 +122,32 @@ else
   else
     warn "trust-proxy: TRUST_PROXY is not 1; set it so each outlet device has its own rate limit"
   fi
+  # One origin for the web app and the API (1269 E8). WEB_URL and
+  # BETTER_AUTH_URL must both be the edge HTTPS origin; the defaults point at
+  # localhost and would make the browser call the wrong host. The session
+  # cookie stays host-only (no COOKIE_DOMAIN) and no other origin is trusted.
+  web_url=$(env_value WEB_URL)
+  auth_url=$(env_value BETTER_AUTH_URL)
+  if [ -z "$web_url" ] || [ -z "$auth_url" ]; then
+    fail "origin: WEB_URL and BETTER_AUTH_URL must both be set to the edge HTTPS origin"
+  elif [ "$web_url" != "$auth_url" ]; then
+    fail "origin: WEB_URL and BETTER_AUTH_URL differ; the edge serves web and API from one origin"
+  else
+    case $web_url in
+      https://*) pass "origin: WEB_URL and BETTER_AUTH_URL are the same HTTPS origin" ;;
+      *) fail "origin: the edge origin must be https (the camera needs a secure context)" ;;
+    esac
+  fi
+  if env_is_set COOKIE_DOMAIN; then
+    fail "origin: COOKIE_DOMAIN is set; leave it empty so the session cookie stays on the edge host"
+  else
+    pass "origin: COOKIE_DOMAIN is empty (host-only cookie)"
+  fi
+  if env_is_set TRUSTED_ORIGINS; then
+    fail "origin: TRUSTED_ORIGINS is set; leave it empty, the edge trusts only its own origin"
+  else
+    pass "origin: TRUSTED_ORIGINS is empty"
+  fi
   [ -n "$selfie_dir" ] || selfie_dir=$(env_value EDGE_SELFIE_DIR)
   [ -n "$state_dir" ] || state_dir=$(env_value EDGE_STATE_DIR)
   [ -n "$max_bytes" ] || max_bytes=$(env_value EDGE_SELFIE_MAX_BYTES)
@@ -126,6 +159,39 @@ space_inputs=ok
 if ! is_uint "$max_bytes"; then
   fail "disk-space: EDGE_SELFIE_MAX_BYTES is not a whole number"
   space_inputs=bad
+fi
+
+# 1b. Edge web env file and build (legend-edge-web.service, 1269 E8). Names only:
+# no value is printed.
+if [ -z "$web_env_file" ]; then
+  warn "web-env: --web-env-file not given; the edge web app settings were not checked"
+elif [ ! -r "$web_env_file" ]; then
+  fail "web-env: cannot read the edge web env file"
+else
+  saved_env_file=$env_file
+  env_file=$web_env_file
+  for name in DEPLOYMENT_MODE DATA_CLASSIFICATION; do
+    if env_is_set "$name"; then
+      pass "web-env: $name is set"
+    else
+      fail "web-env: $name is missing; the web server refuses to start without it"
+    fi
+  done
+  web_secrets=
+  for name in DATABASE_URL WORKER_DATABASE_URL MAINTENANCE_DATABASE_URL BETTER_AUTH_SECRET EDGE_NODE_CREDENTIAL ATTENDANCE_SELFIE_SEAL_KEYS; do
+    if env_is_set "$name"; then web_secrets="$web_secrets $name"; fi
+  done
+  if [ -n "$web_secrets" ]; then
+    fail "web-env: the web env file sets$web_secrets; these belong to the API only, remove them"
+  else
+    pass "web-env: the web env file holds no API-only secret"
+  fi
+  env_file=$saved_env_file
+  if [ -r "$web_output/server/index.mjs" ]; then
+    pass "web-build: the web build is in place"
+  else
+    fail "web-build: server/index.mjs is missing in the web build folder; copy .output from the edge web image"
+  fi
 fi
 
 # 2. Clock: edge and phones must agree within one 30 s QR window.

@@ -7,7 +7,7 @@ background: `docs/design/hris-edge-replication.md`.
 
 ## Files
 
-- `check-edge-host.sh`: read-only preflight; exits 1 on any FAIL. Run it as root or the service user so every selfie folder can be inspected.
+- `check-edge-host.sh`: read-only preflight; exits 1 on any FAIL. Run it as root or the service user so every selfie folder can be inspected. With `--web-env-file` (and `--web-output`) it also checks the web env file, the web build and, in the API env file, the one-origin settings below.
 - `test-check-edge-host.sh`: stubbed test for the preflight (`sh deploy/edge/test-check-edge-host.sh`).
 - `chrony.conf.example`: NTP client configuration.
 - `Caddyfile.edge.example`: HTTPS front for outlet devices.
@@ -19,8 +19,9 @@ background: `docs/design/hris-edge-replication.md`.
 Build the web app once for every edge host with
 `docker build -f apps/web/Dockerfile --target edge --build-arg VITE_API_URL=same-origin -t legend-edge-web .`.
 `same-origin` makes the browser call the origin that served the page (the edge
-HTTPS name); the web server calls `API_INTERNAL_URL` (`http://127.0.0.1:4000`).
-Set `WEB_TRUST_PROXY_HOPS=1` (Caddy is the only proxy).
+HTTPS name); the web server calls `API_INTERNAL_URL` (`http://127.0.0.1:4000`,
+set by the unit). Links in server-rendered pages stay relative (`/api/...`), so
+the loopback address never reaches a device.
 
 Build the edge image from the repository root with
 `docker build -f apps/api/Dockerfile --target edge -t legend-edge .`.
@@ -55,15 +56,46 @@ screen, because the edge only holds today plus that many day keys.
 2. Install chrony, copy `chrony.conf.example` to `/etc/chrony/chrony.conf`, adjust the pool, restart chrony.
 3. Create the service user and the selfie volume directory with mode 0700 owned by that user. Also create `EDGE_STATE_DIR` (default `/var/lib/legend/edge-state`, owned by the service user, mode 0700, a volume of its own) for the owner alarm queue; `check-edge-host.sh` fails when it is missing, not 0700 or not owned by the service user.
 4. Issue a certificate for the edge name from the internal CA, install it where `Caddyfile.edge.example` expects it, and trust the CA on every outlet device.
-5. Write the edge env file (`EDGE_MODE=true`, `EDGE_CLOUD_URL`, `EDGE_NODE_CREDENTIAL`; see `.env.example`). Do not set the seal private key variables. Set `TRUST_PROXY=1` (Caddy is the one proxy in front of the API; without it every outlet device shares one per-IP rate-limit bucket).
+5. Write the edge env file (`EDGE_MODE=true`, `EDGE_CLOUD_URL`, `EDGE_NODE_CREDENTIAL`; see `.env.example`). Do not set the seal private key variables. Set `TRUST_PROXY=1` (Caddy is the one proxy in front of the API; without it every outlet device shares one per-IP rate-limit bucket). Set `WEB_URL` and `BETTER_AUTH_URL` to the edge origin and leave `TRUSTED_ORIGINS` and `COOKIE_DOMAIN` empty. Write `/etc/legend/edge/web.env` and place the web build (see "Web app, origin and env files").
 6. Run the preflight and fix every FAIL:
 
    ```sh
    sh deploy/edge/check-edge-host.sh --env-file /etc/legend/edge/api.env \
-     --service-user legend --cert /etc/legend/edge/tls/edge.crt
+     --service-user legend --cert /etc/legend/edge/tls/edge.crt \
+     --web-env-file /etc/legend/edge/web.env
    ```
 
 7. Start the API, worker, web app and Caddy (`systemctl enable --now legend-edge legend-edge-worker legend-edge-web`), then confirm `GET /api/edge/health` over HTTPS.
+
+## Web app, origin and env files
+
+The web app is the `.output` folder of the edge web image. The unit runs it with
+the host's Node (use the image's Node major, 22), so put the folder where the
+unit expects it, next to the API build under `/opt/legend`:
+
+```sh
+id=$(docker create legend-edge-web)
+docker cp "$id":/app/.output /opt/legend/apps/web/.output
+docker rm "$id"
+chown -R legend:legend /opt/legend/apps/web/.output
+```
+
+Replace the folder on every web release, then `systemctl restart legend-edge-web`.
+
+`/etc/legend/edge/web.env` (mode 0600, owner the service user) is read by
+`legend-edge-web.service`. It holds only:
+
+- `DEPLOYMENT_MODE` and `DATA_CLASSIFICATION` (same values as the API; the web server refuses to start without them; `EDGE_MODE=true` comes from the unit).
+- `SSR_SHARED_SECRET`, only if the API env file sets the same value (it lets the API rate-limit each device, not the web server).
+
+Never put `DATABASE_URL`, `BETTER_AUTH_SECRET`, `EDGE_NODE_CREDENTIAL` or the seal
+keys in it; the preflight fails when it finds one.
+
+One origin: in the API env file (`api.env`) set `WEB_URL` and `BETTER_AUTH_URL`
+to the same edge HTTPS origin (the name in the Caddyfile and certificate), and
+leave `TRUSTED_ORIGINS` and `COOKIE_DOMAIN` empty. The session cookie then
+stays on the edge host and no other origin may call the API with cookies. The
+defaults point at localhost, so a missing value is a FAIL in the preflight.
 
 ## Database migrations
 
@@ -131,6 +163,8 @@ and its batches stall. See `docs/deployment.md`, section "Edge host".
 - [ ] Preflight prints no FAIL.
 - [ ] Phone and edge show the same time (QR scans succeed).
 - [ ] A phone opens the edge URL with no certificate warning and the camera starts.
+- [ ] `WEB_URL` and `BETTER_AUTH_URL` are the edge origin; `TRUSTED_ORIGINS` and `COOKIE_DOMAIN` are empty.
+- [ ] `web.env` exists with the deployment settings and the web build is in `/opt/legend/apps/web/.output`.
 - [ ] Env file has no seal private key and is readable only by the service user.
 - [ ] Local audit maintenance login is configured, or its missing-login warning has an owner assigned to restore audit purge.
 - [ ] Theft or loss: follow `docs/runbooks/edge-hilang-dicuri.md`.

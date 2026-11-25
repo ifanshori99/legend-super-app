@@ -54,7 +54,7 @@ reset() {
   rm -rf "$state"
   mkdir "$state"
   chmod 700 "$state"
-  printf 'EDGE_MODE=true\n# ATTENDANCE_SELFIE_SEAL_KEYS=%s\nATTENDANCE_SELFIE_SEAL_ACTIVE_KID=\nEDGE_SELFIE_DIR=%s\nEDGE_SELFIE_MAX_BYTES=1073741824\n' "$secret" "$selfies" > "$envfile"
+  printf 'EDGE_MODE=true\nWEB_URL=https://edge.outlet.invalid\nBETTER_AUTH_URL=https://edge.outlet.invalid\n# ATTENDANCE_SELFIE_SEAL_KEYS=%s\nATTENDANCE_SELFIE_SEAL_ACTIVE_KID=\nEDGE_SELFIE_DIR=%s\nEDGE_SELFIE_MAX_BYTES=1073741824\n' "$secret" "$selfies" > "$envfile"
   export TEST_OS=Linux TEST_AVAIL_KB=4194304 TEST_OFFSET=0.000123456 TEST_LEAP=Normal \
     TEST_NTPSYNC=yes TEST_LSBLK='crypt' TEST_LSBLK_SELFIE='crypt' TEST_FDE='FileVault is On.'
   unset TEST_DIRECTION || true
@@ -101,6 +101,64 @@ run_check
 expect_ok healthy
 expect_out healthy 'PASS'
 no_secret healthy
+
+# 1b. One edge origin (1269 E8): both URLs equal and https, host-only cookie,
+# no extra trusted origin.
+reset
+printf 'WEB_URL=https://edge.outlet.invalid\nBETTER_AUTH_URL=https://other.invalid\n' > "$envfile"
+run_check
+expect_fail origin-differ
+expect_out origin-differ 'origin: WEB_URL and BETTER_AUTH_URL differ'
+reset
+printf 'EDGE_MODE=true\n' > "$envfile"
+run_check
+expect_fail origin-missing
+reset
+printf 'WEB_URL=http://edge.outlet.invalid\nBETTER_AUTH_URL=http://edge.outlet.invalid\n' > "$envfile"
+run_check
+expect_fail origin-http
+reset
+printf 'COOKIE_DOMAIN=.outlet.invalid\n' >> "$envfile"
+run_check
+expect_fail cookie-domain
+expect_out cookie-domain 'origin: COOKIE_DOMAIN is set'
+reset
+printf 'TRUSTED_ORIGINS=https://other.invalid\n' >> "$envfile"
+run_check
+expect_fail trusted-origins
+expect_out trusted-origins 'origin: TRUSTED_ORIGINS is set'
+reset
+printf 'COOKIE_DOMAIN=\nTRUSTED_ORIGINS=\n' >> "$envfile"
+run_check
+expect_ok origins-blank
+
+# 1c. Edge web env file and build.
+reset
+run_check
+expect_ok web-env-skipped
+expect_out web-env-skipped 'WARN web-env: --web-env-file not given'
+reset
+webenv="$tmp/web.env"
+webout="$tmp/web-output"
+mkdir -p "$webout/server"
+: > "$webout/server/index.mjs"
+printf 'DEPLOYMENT_MODE=production\nDATA_CLASSIFICATION=real\n' > "$webenv"
+run_check --web-env-file "$webenv" --web-output "$webout"
+expect_ok web-env-ok
+expect_out web-env-ok 'PASS web-build'
+printf 'DEPLOYMENT_MODE=production\n' > "$webenv"
+run_check --web-env-file "$webenv" --web-output "$webout"
+expect_fail web-env-missing
+expect_out web-env-missing 'web-env: DATA_CLASSIFICATION is missing'
+printf 'DEPLOYMENT_MODE=production\nDATA_CLASSIFICATION=real\nDATABASE_URL=postgres://u:pw@h/db\n' > "$webenv"
+run_check --web-env-file "$webenv" --web-output "$webout"
+expect_fail web-env-secret
+expect_out web-env-secret 'DATABASE_URL'
+if printf '%s\n' "$out" | grep -F 'postgres://' >/dev/null; then echo 'FAIL web-env-secret: a value was printed' >&2; exit 1; fi
+printf 'DEPLOYMENT_MODE=production\nDATA_CLASSIFICATION=real\n' > "$webenv"
+rm -f "$webout/server/index.mjs"
+run_check --web-env-file "$webenv" --web-output "$webout"
+expect_fail web-build-missing
 
 # 2. Clock offset: warn above 2 s, fail above 10 s, fail when unsynchronised.
 reset
@@ -195,7 +253,7 @@ printf 'EDGE_MODE=true\nexport ATTENDANCE_SELFIE_SEAL_ACTIVE_KID="k1"\n' > "$env
 run_check
 expect_fail seal-kid
 reset
-printf 'EDGE_MODE=true\nATTENDANCE_SELFIE_SEAL_KEYS=""\n' > "$envfile"
+printf 'WEB_URL=https://edge.outlet.invalid\nBETTER_AUTH_URL=https://edge.outlet.invalid\nEDGE_MODE=true\nATTENDANCE_SELFIE_SEAL_KEYS=""\n' > "$envfile"
 run_check
 expect_ok seal-empty
 
@@ -244,7 +302,7 @@ expect_fail space-margin-added
 # symlinked directory is judged by its target; a bad number is a FAIL, not a
 # half-finished usage error.
 reset
-printf 'EDGE_SELFIE_MAX_BYTES="1000"  # one thousand\nEDGE_SELFIE_DIR=%s # dir\n' "$selfies" > "$envfile"
+printf 'WEB_URL=https://edge.outlet.invalid\nBETTER_AUTH_URL=https://edge.outlet.invalid\nEDGE_SELFIE_MAX_BYTES="1000"  # one thousand\nEDGE_SELFIE_DIR=%s # dir\n' "$selfies" > "$envfile"
 TEST_AVAIL_KB=4 run_check --selfie-dir '' --margin-bytes 0
 expect_ok env-number-comment
 reset
@@ -276,7 +334,7 @@ run_check
 expect_ok state-dir-ok
 expect_out state-dir-ok 'PASS state-dir: mode 0700'
 reset
-printf 'EDGE_SELFIE_DIR=%s\nEDGE_STATE_DIR=%s\n' "$selfies" "$tmp/state-from-env" > "$envfile"
+printf 'WEB_URL=https://edge.outlet.invalid\nBETTER_AUTH_URL=https://edge.outlet.invalid\nEDGE_SELFIE_DIR=%s\nEDGE_STATE_DIR=%s\n' "$selfies" "$tmp/state-from-env" > "$envfile"
 run_check --state-dir ''
 expect_fail state-dir-from-env-missing
 mkdir "$tmp/state-from-env"
