@@ -41,7 +41,10 @@ function vapidPair() {
   key.generateKeys();
   return {
     publicKey: key.getPublicKey().toString("base64url"), // 65 bytes, 0x04 first
-    privateKey: key.getPrivateKey().toString("base64url"), // 32 bytes
+    privateKey: Buffer.from(
+      key.getPrivateKey("hex").padStart(64, "0"),
+      "hex",
+    ).toString("base64url"), // 32 bytes
   };
 }
 const pair = vapidPair();

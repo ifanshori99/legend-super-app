@@ -58,7 +58,10 @@ await vi.hoisted(async () => {
   key.generateKeys();
   process.env.NOTIFICATION_PUSH_PROVIDER = "web_push";
   process.env.VAPID_PUBLIC_KEY = key.getPublicKey().toString("base64url");
-  process.env.VAPID_PRIVATE_KEY = key.getPrivateKey().toString("base64url");
+  process.env.VAPID_PRIVATE_KEY = Buffer.from(
+    key.getPrivateKey("hex").padStart(64, "0"),
+    "hex",
+  ).toString("base64url");
   process.env.VAPID_SUBJECT = "mailto:push@example.test";
 });
 
@@ -299,7 +302,10 @@ const webPushEnv = {
   NOTIFICATION_WHATSAPP_PROVIDER: "disabled",
   NOTIFICATION_PUSH_PROVIDER: "web_push",
   VAPID_PUBLIC_KEY: vapidKey.getPublicKey().toString("base64url"),
-  VAPID_PRIVATE_KEY: vapidKey.getPrivateKey().toString("base64url"),
+  VAPID_PRIVATE_KEY: Buffer.from(
+    vapidKey.getPrivateKey("hex").padStart(64, "0"),
+    "hex",
+  ).toString("base64url"),
   VAPID_SUBJECT: "mailto:push@example.test",
 };
 

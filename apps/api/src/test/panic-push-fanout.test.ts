@@ -312,7 +312,10 @@ const webPushEnv = {
   NOTIFICATION_WHATSAPP_PROVIDER: "disabled",
   NOTIFICATION_PUSH_PROVIDER: "web_push",
   VAPID_PUBLIC_KEY: key.getPublicKey().toString("base64url"),
-  VAPID_PRIVATE_KEY: key.getPrivateKey().toString("base64url"),
+  VAPID_PRIVATE_KEY: Buffer.from(
+    key.getPrivateKey("hex").padStart(64, "0"),
+    "hex",
+  ).toString("base64url"),
   VAPID_SUBJECT: "mailto:push@example.test",
 };
 
