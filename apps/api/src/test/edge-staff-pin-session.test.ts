@@ -15,14 +15,26 @@
 // "Cloud" and "edge" share one test database: `asEdge` / `asCloud` switch the
 // process role.
 import { createHash, createHmac, randomUUID } from "node:crypto";
+import type { IncomingMessage } from "node:http";
 import request from "supertest";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { outletIdSchema, tenantIdSchema } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
-import { deviceSyncRecordSchema } from "@starter/shared/edge";
+import {
+  deviceSyncRecordSchema,
+  EDGE_STAFF_SESSION_PERMISSIONS,
+} from "@starter/shared/edge";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
 import { setCatalogOverrideClock } from "../edge/catalog-override.ts";
@@ -30,6 +42,7 @@ import {
   createDeviceRegistryPuller,
   type DeviceRegistryPullerDeps,
 } from "../edge/device-registry-puller.ts";
+import { withTokenHashRepull } from "../edge/device-token-hash-repull.ts";
 import { createPeopleSnapshotPuller } from "../edge/people-snapshot-pull.ts";
 import { setEdgeNodeForTests } from "../edge/mode.ts";
 import {
@@ -42,6 +55,7 @@ import {
   resetEdgeStaffPinPeppers,
 } from "../edge/staff-pin-pepper-registry.ts";
 import { signDeviceToken } from "../lib/device-token.ts";
+import { edgeSessionPermissions } from "../lib/edge-session.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import {
@@ -64,6 +78,7 @@ import {
   saveStaffPinCheckpoint,
 } from "../services/edge-device-sync-store.ts";
 import { registerEdgeNode } from "../services/edge-node.service.ts";
+import { resolveKdsStaffConnection } from "../services/kds-realtime-auth.ts";
 import { attemptApproverPin } from "../services/staff-pin-proof.service.ts";
 import {
   createIsolatedTenant,
@@ -71,6 +86,15 @@ import {
   type IsolatedTenant,
 } from "./floor-test-helpers.ts";
 import { originHeader } from "./helpers.ts";
+
+// Real unless a test replaces it.
+vi.mock("../lib/edge-session.ts", async (original) => {
+  const real = await original<typeof import("../lib/edge-session.ts")>();
+  return {
+    ...real,
+    edgeSessionPermissions: vi.fn(real.edgeSessionPermissions),
+  };
+});
 
 const PASSWORD = "Test-password-123!";
 const PIN = "582914";
@@ -246,6 +270,31 @@ async function loggedIn(device: TestDevice, member: Member = cashier) {
   return cookieOf(response);
 }
 
+function outletClock(token: string) {
+  return request(edgeApp)
+    .post("/api/hris/attendance/outlet-clock")
+    .set({ Host: tenant.hostname })
+    .set(originHeader)
+    .set(DEVICE_TOKEN_HEADER, token)
+    .send({
+      type: "in",
+      occurredAt: new Date().toISOString(),
+      photoUploadRef: null,
+      idempotencyKey: `att-e2-${randomUUID()}`,
+    });
+}
+
+function expectRefused(
+  response: request.Response,
+  status: number,
+  code: string,
+) {
+  expect(
+    { status: response.status, code: response.body.error?.code },
+    JSON.stringify(response.body),
+  ).toEqual({ status, code });
+}
+
 function board(
   cookie: string | null,
   token: string | null,
@@ -292,6 +341,7 @@ beforeAll(async () => {
         "order.view",
         "pos.sale.create",
         "floor.table.view",
+        "kds.ticket.process",
         // Held by the role but outside the edge list.
         "floor.table.manage",
         "device.registry.manage",
@@ -384,7 +434,7 @@ describe("device token digest (decision 1)", () => {
       device.id,
     ]);
     asEdge();
-    expect((await login(device)).status).toBeGreaterThanOrEqual(401);
+    expectRefused(await login(device), 503, "EDGE_DEVICE_NOT_SYNCED");
     expect(await edgeSessionsOf(device.id)).toHaveLength(0);
   });
 
@@ -398,7 +448,12 @@ describe("device token digest (decision 1)", () => {
       deviceId: device.id,
     });
     asEdge();
-    expect((await login({ token: forged })).status).toBeGreaterThanOrEqual(401);
+    // Newer than the digest on record: a reissue this edge has not pulled yet.
+    expectRefused(
+      await login({ token: forged }),
+      503,
+      "EDGE_DEVICE_NOT_SYNCED",
+    );
     expect(await edgeSessionsOf(device.id)).toHaveLength(0);
   });
 
@@ -408,7 +463,7 @@ describe("device token digest (decision 1)", () => {
       deviceId: device.id,
     });
     asEdge();
-    expect((await login(device)).status).toBe(401);
+    expectRefused(await login(device), 401, "UNAUTHORIZED");
     expect((await login({ token: next.token })).status).toBe(201);
   });
 
@@ -419,7 +474,7 @@ describe("device token digest (decision 1)", () => {
       [device.id],
     );
     asEdge();
-    expect((await login(device)).status).toBe(401);
+    expectRefused(await login(device), 401, "UNAUTHORIZED");
     expect(await edgeSessionsOf(device.id)).toHaveLength(0);
   });
 
@@ -427,9 +482,9 @@ describe("device token digest (decision 1)", () => {
     const device = await newDevice();
     asEdge();
     clockNow = () => new Date(Date.now() + 91 * 24 * HOUR);
-    expect((await login(device)).status).toBeGreaterThanOrEqual(401);
+    expectRefused(await login(device), 401, "UNAUTHORIZED");
     setCatalogOverrideClock(null);
-    expect((await login(device)).status).toBe(503);
+    expectRefused(await login(device), 503, "EDGE_DEVICE_NOT_SYNCED");
     expect(await edgeSessionsOf(device.id)).toHaveLength(0);
   });
 
@@ -448,7 +503,7 @@ describe("device token digest (decision 1)", () => {
         },
       },
     });
-    expect((await login(device)).status).toBeGreaterThanOrEqual(401);
+    expectRefused(await login(device), 401, "UNAUTHORIZED");
     setEdgeRuntimeStateForTests({
       ...getEdgeRuntimeState(),
       identity: {
@@ -460,8 +515,114 @@ describe("device token digest (decision 1)", () => {
         },
       },
     });
-    expect((await login(device)).status).toBeGreaterThanOrEqual(401);
+    expectRefused(await login(device), 403, "TENANT_MISMATCH");
     expect(await edgeSessionsOf(device.id)).toHaveLength(0);
+  });
+
+  it("only a revoked or rotated-out token is declared invalid; any other refusal keeps the client's token", async () => {
+    const stranger = signDeviceToken({
+      version: 1,
+      issuedAt: Math.floor(Date.now() / 1000),
+      tenantId: tenant.tenantId,
+      brandId: null,
+      deviceId: randomUUID(),
+    });
+    const device = await newDevice();
+    const swapped = await newDevice();
+    await asOwner("UPDATE devices SET token_hash = $2 WHERE id = $1", [
+      swapped.id,
+      sha256("token lain"),
+    ]);
+    const revoked = await newDevice();
+    await asOwner(
+      "UPDATE devices SET status = 'revoked', revoked_at = now() WHERE id = $1",
+      [revoked.id],
+    );
+    const rotated = await newDevice();
+    await issueDeviceToken(scoped("session"), actor, { deviceId: rotated.id });
+    asEdge();
+    // Not synced yet, or the wrong digest: the client keeps its token.
+    expectRefused(await outletClock(stranger), 401, "UNAUTHORIZED");
+    expectRefused(await outletClock(swapped.token), 401, "UNAUTHORIZED");
+    // A trusted clock that jumped ahead says "expired" to every token.
+    clockNow = () => new Date(Date.now() + 91 * 24 * HOUR);
+    expectRefused(await outletClock(device.token), 401, "UNAUTHORIZED");
+    clockNow = () => new Date();
+    expectRefused(
+      await outletClock(revoked.token),
+      401,
+      "DEVICE_TOKEN_INVALID",
+    );
+    expectRefused(
+      await outletClock(rotated.token),
+      401,
+      "DEVICE_TOKEN_INVALID",
+    );
+    const other = await createIsolatedTenant(`e2k-${randomUUID().slice(0, 6)}`);
+    setEdgeRuntimeStateForTests({
+      ...getEdgeRuntimeState(),
+      identity: {
+        context: scoped("device"),
+        scope: {
+          tenantId: tenant.tenantId,
+          outletId: other.outletId,
+          edgeNodeId: node.id,
+        },
+      },
+    });
+    expectRefused(await outletClock(device.token), 401, "UNAUTHORIZED");
+  });
+
+  it("pulls the registry from the start once per boot while an active device has no digest", async () => {
+    asCloud();
+    const device = await newDevice();
+    await asOwner(
+      "UPDATE devices SET token_hash = $2 WHERE tenant_id = $1 AND token_hash IS NULL",
+      [tenant.tenantId, sha256("x")],
+    );
+    asEdge();
+    const missing = async () =>
+      (await request(edgeApp).get("/api/edge/health")).body
+        .devicesWithoutTokenHash;
+    const boot = () => {
+      const since: (string | null)[] = [];
+      let fail = true;
+      const puller = createDeviceRegistryPuller({
+        pull: withTokenHashRepull(
+          scoped("device"),
+          tenant.outletId,
+          async (from) => {
+            since.push(from);
+            if (from === null && fail) {
+              fail = false;
+              throw new Error("cloud down");
+            }
+            return { watermark: "w1" };
+          },
+        ),
+        load: async () => ({ watermark: "w0", lastSuccessAt: null }),
+        save: async () => undefined,
+        intervalMs: HOUR,
+        staleAfterMs: HOUR,
+        maxBackoffMs: HOUR,
+      });
+      return { since, puller };
+    };
+    const clean = boot();
+    await clean.puller.runOnce();
+    await clean.puller.stop();
+    expect(clean.since).toEqual(["w0"]);
+    expect(await missing()).toBe(0);
+
+    await asOwner("UPDATE devices SET token_hash = NULL WHERE id = $1", [
+      device.id,
+    ]);
+    expect(await missing()).toBe(1);
+    const needed = boot();
+    for (let i = 0; i < 4; i += 1) await needed.puller.runOnce();
+    await needed.puller.stop();
+    // The failed attempt does not count; after the first success no more.
+    expect(needed.since).toEqual([null, null, "w1", "w1"]);
   });
 
   it("goes out on the outlet's device stream only when the edge asks", async () => {
@@ -816,6 +977,41 @@ describe("operational permissions only (decision 4)", () => {
       .set({ Host: tenant.hostname, Cookie: cookie })
       .set(DEVICE_TOKEN_HEADER, device.token);
     expect(feed.status).toBe(403);
+  });
+
+  it("the list carries no override approval: those need the approver's own PIN", () => {
+    expect(
+      EDGE_STAFF_SESSION_PERMISSIONS.filter((code) =>
+        /^pos\..*\.approve$/.test(code),
+      ),
+    ).toEqual([]);
+  });
+
+  it("the KDS socket cuts the role to the same list", async () => {
+    const stationId = randomUUID();
+    await asOwner(
+      `INSERT INTO stations (id, tenant_id, outlet_id, name, type)
+       VALUES ($1, $2, $3, 'Dapur E2', 'hot_kitchen')`,
+      [stationId, tenant.tenantId, tenant.outletId],
+    );
+    const device = await newDevice("kds");
+    const cookie = await loggedIn(device);
+    const connect = () =>
+      resolveKdsStaffConnection({
+        url: `/api/outlets/${tenant.outletId}/kitchen/stations/${stationId}/realtime?after=0`,
+        headers: {
+          host: tenant.hostname,
+          cookie,
+          [DEVICE_TOKEN_HEADER.toLowerCase()]: device.token,
+        },
+      } as unknown as IncomingMessage);
+    expect((await connect())?.userId).toBe(cashier.userId);
+    vi.mocked(edgeSessionPermissions).mockImplementation(() => []);
+    try {
+      expect(await connect()).toBeNull();
+    } finally {
+      vi.mocked(edgeSessionPermissions).mockReset();
+    }
   });
 
   it("the owner-only catalog override stays closed to a PIN session", async () => {

@@ -44,6 +44,7 @@ import {
   loadActiveCatalogOverride,
   type CatalogOverride,
 } from "../edge/catalog-override.ts";
+import { countDevicesWithoutTokenHash } from "../edge/device-token-hash-repull.ts";
 import { catalogFreshnessToDto } from "../edge/catalog-freshness.ts";
 import {
   getCatalogFreshness,
@@ -320,6 +321,14 @@ edgeRouter.get("/health", async (_req, res) => {
         ? await countBlockedOutboxAggregates(db, runtime.identity.context, {
             destinations: ["cloud-sync"],
           }).catch(() => null)
+        : null,
+    // Count only: devices this edge answers 503 until their digest arrives (E2).
+    devicesWithoutTokenHash:
+      runtime.identity && database === "ok"
+        ? await countDevicesWithoutTokenHash(
+            runtime.identity.context,
+            runtime.identity.scope.outletId,
+          ).catch(() => null)
         : null,
     // Informational: stale prices/product status never change the HTTP code.
     catalogFreshness: (() => {
