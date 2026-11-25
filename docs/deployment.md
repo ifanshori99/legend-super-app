@@ -205,17 +205,31 @@ pnpm exec tsx src/db/backfill-ptkp-history.ts --year 2026 # an explicit year
 
 On the production VM there is no tsx or pnpm; run the built command in the
 `api` service (it imports the payroll sealing code, so it needs the full API
-env; the migrator env alone stops with "Invalid API environment"). Wrong
-arguments exit non-zero with a usage line before any database connection:
+env from `api.env`) with the migration owner's login added for this one run
+from `migrator.env`. The built command never uses the app `DATABASE_URL`: it
+stops with a non-zero exit before any connection when `MIGRATION_DATABASE_URL`
+(or `_FILE`) is missing, refuses a login that is not the migration owner
+(superuser or `BYPASSRLS`), and exits non-zero when it reads no tenant. Wrong
+arguments exit non-zero with a usage line:
 
 ```sh
-docker compose ... run --rm --no-deps -T api node dist/backfill-ptkp-history.js [--year YYYY] [--force]
+docker compose ... run --rm --no-deps -T --env-from-file /absolute/path/to/migrator.env api node dist/backfill-ptkp-history.js [--year YYYY] [--force]
+docker compose ... run --rm --no-deps -T --env-from-file /absolute/path/to/migrator.env api node dist/repair-supplier-invoice-npwp.js --tenant <uuid> --entity <uuid> --invoice <uuid> --actor <uuid> --reason '<audited reason>'
 ```
 
-`api.env` holds no `MIGRATION_DATABASE_URL`, so the command then uses the app
-login (smoke-tested only against an empty database). Before real data, confirm
-with the CTO that the app login may write the PTKP history, or add the owner URL
-for this one run.
+Rules for this form:
+
+- Use an absolute path to `migrator.env`. It must hold only `MIGRATION_*` keys,
+  with the URL given directly (`MIGRATION_DATABASE_URL`, not `_FILE`: a file
+  path would have to exist inside the container). Keys in this file override
+  `api.env`, so anything else in it changes the API env of the run.
+- Before the first use on a VM, check that `docker compose run --help` lists
+  `--env-from-file`; if it does not, upgrade Compose before running either
+  command.
+- After each run, `docker compose ... ps -a` must show no leftover one-off
+  container (`--rm` removes it).
+- Do not use this form for PPh 21 (`payroll-pph21-receivable-backfill`): it runs
+  in the `api` service with the app login only, as its runbook says.
 
 All one-off operator commands are built into `dist/` (`apps/api/tsup.config.ts`)
 and always run; a wrong argument is never a silent exit 0:

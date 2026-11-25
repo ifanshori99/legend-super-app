@@ -539,6 +539,11 @@ export async function cli(args: string[]): Promise<number> {
     logger.level = "silent";
     pool = (await import("../db/index")).pool;
     const report = await checkPurchaseReturnVariance({ tenant: parsed.tenant });
+    // No tenant read means the wrong database: "No mismatches" would be false.
+    if (report.tenants === 0) {
+      console.error("No tenant was read; check the database.");
+      return 1;
+    }
     if (parsed.json) console.log(JSON.stringify(report, null, 2));
     else {
       console.log(

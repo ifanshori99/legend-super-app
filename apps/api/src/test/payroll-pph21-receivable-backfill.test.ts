@@ -963,6 +963,12 @@ type CliLine = {
   created?: number;
   createdIdr?: number;
   held?: { legalEntityId: string; employeeId: string; reason: string }[];
+  entities?: {
+    legalEntityId: string;
+    created: number;
+    createdIdr: number;
+    existingIdr: number;
+  }[];
   dryRun?: number;
   summary?: { tenants: number; created: number; held: number };
 };
@@ -1436,6 +1442,14 @@ describe("legend-wxvt9: release rehearsal of the PPh 21 receivable backfill", ()
     expect(dryA.created).toBeGreaterThanOrEqual(6);
     expect(dryA.createdIdr).toBeGreaterThanOrEqual(gaps.a);
     expect(heldMine(dryA)).toEqual(expectedHeld);
+    // The runbook compares existingIdr + createdIdr per legal entity with 1204.
+    expect(
+      (dryA.entities ?? []).map((e) => e.legalEntityId),
+      "per-entity detail is printed on the tenant line",
+    ).toEqual(expect.arrayContaining([lo.entityId, hi.entityId]));
+    expect(
+      (dryA.entities ?? []).reduce((sum, e) => sum + e.createdIdr, 0),
+    ).toBe(dryA.createdIdr);
     expect(dryB).toMatchObject({ created: 1, createdIdr: gaps.b, held: [] });
     expect(cliLines(dry.out).at(-1)?.summary?.tenants).toBeGreaterThanOrEqual(
       2,

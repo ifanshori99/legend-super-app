@@ -273,6 +273,11 @@ export async function cli(args: string[]): Promise<number> {
     logger.level = "silent";
     pool = (await import("../db/index")).pool;
     const result = await backfillMetricsDaily(parsed);
+    // No tenant read means the wrong database, never a clean run (legend-1265).
+    if (result.tenants === 0) {
+      console.error("No tenant was read; check the database.");
+      return 1;
+    }
     return result.failedDays > 0 ? 1 : 0;
   } catch (error) {
     console.error(

@@ -128,6 +128,9 @@ export async function runDataKeyRotation(
     sql`SELECT id FROM public.tenants ORDER BY id`,
   );
   const allIds = listed.rows.map((row) => String(row.id));
+  // No tenant read means the wrong database, never a clean rotation (legend-1265).
+  if (allIds.length === 0)
+    throw new Error("No tenant was read; check the database.");
   if (tenantId !== undefined && !allIds.includes(tenantId))
     throw new Error(`Tenant ${tenantId} does not exist.`);
   const targetIds = tenantId === undefined ? allIds : [tenantId];
