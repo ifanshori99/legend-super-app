@@ -68,3 +68,15 @@ Test B: balasan hilang di tiap hop = maksimum satu sale; perintah terlambat tida
 EDG-01: internet putus 4 jam, POS, captain, KDS, expo, cetak, tutup shift, tunai, EDC tetap berfungsi; EDC-05 ikut. Baca PRD EDG-*, `docs/design/edge-cloud-failover.md`, kode `apps/api/src/edge/**` yang sudah ada (jangan bangun ulang), bagian A+B di atas, `1268-pos-wire.md` (layar POS harus bisa memakai alamat API edge atau cloud).
 Pertanyaan: topologi mana (POS selalu dilayani edge; atau cloud normal dan pindah ke edge saat putus; atau antrean di browser) yang memenuhi EDG-01 dengan risiko uang paling kecil dan kerja paling sedikit; kartu A dan B mana yang tetap, berubah, atau gugur; matriks fitur (bayar tunai, EDC manual, ECR, QRIS, tiket, refund, void, poin, promo, voucher, DP, pajak/service, denah, PIN, buka/tutup shift, tutup hari, nomor struk, KDS) = jalan / sengaja ditolak saat offline, dengan alasan; data apa yang belum tersinkron; penggabungan saat pulih (nomor, shift, laci, stok, jurnal) tanpa ganda; split-brain; layar saat berpindah; perangkat dan TLS di LAN.
 Jangan sampai rugi: ragu = ditolak offline dengan pesan jelas. Keluaran: keputusan, kartu (berkas, jam, urutan, model, tak bertumpuk), test wajib, yang perlu founder.
+
+## Fakta dokumentasi Duitku (docs.duitku.com/api/id lewat Context7 `/websites/duitku_api_id`, 25 Nov)
+
+- Host: sandbox `https://sandbox.duitku.com/webapi/api/merchant/...`, production `https://passport.duitku.com/webapi/api/merchant/...` (`v2/inquiry`, `transactionStatus`).
+- Signature HMAC-SHA256 (MD5 usang): inquiry `merchantCode+merchantOrderId+paymentAmount`; callback `merchantCode+amount+merchantOrderId`; status `merchantCode+merchantOrderId`; kunci = apiKey.
+- Callback POST form-urlencoded, port 80/443, balas 200. resultCode 00 sukses, 01 gagal. Status 00 sukses, 01 pending, 02 batal. IP: production 182.23.85.14, 103.177.101.190, 182.23.85.{8,9,10,13}, 103.177.101.{184,185,186,189}; sandbox 182.23.85.{11,12}, 103.177.101.{187,188}.
+- `transactionStatus` JANGAN dipanggil otomatis berulang: lewat batas = diblok sekitar satu jam.
+- expiryPeriod (menit; bawaan/maks): VA 1440/>1440 (nilai merchant dipakai); OVO 10/1440; ShopeePay app 10/60; DANA 1440/1440; QRIS SP 10/60, Nobu 24/1440. TETAP (permintaan diabaikan): kartu 30, LinkAja 24, ShopeePay link 30, OVO link 15.
+- Kode: kartu VC; VA BC M2 VA I1 B1 BT A1 AG NC BR S1 DM BV; e-wallet OV SA LF LA DA SL OL; QRIS SP NQ SQ. OV dan SA mendukung void (belum ada API void yang terbaca). SL/OL butuh `accountLink`.
+- merchantOrderId maks 50, unik per permintaan; itemDetails wajib sama totalnya dengan paymentAmount.
+- Founder: sandbox baru tersedia sesudah domain + deploy. C1 dikerjakan di staging; kode lain sesuai fakta di atas, metode tetap terkunci.
+
