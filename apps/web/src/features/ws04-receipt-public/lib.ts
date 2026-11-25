@@ -31,7 +31,26 @@ export function isInvalidLink(error: unknown): boolean {
   );
 }
 
-/** Sum of what the customer paid, from the tenders (matches the total, POS-07). */
-export function paidIdr(tenders: readonly { amountIdr: number }[]): number {
-  return tenders.reduce((sum, tender) => sum + tender.amountIdr, 0);
+/**
+ * What the customer paid: tenders plus the reservation deposit (DP). DP is a
+ * prepaid bucket, not a tender, so a DP-only sale has no tender at all.
+ */
+export function paidIdr(
+  tenders: readonly { amountIdr: number }[],
+  depositAppliedIdr = 0,
+): number {
+  return (
+    tenders.reduce((sum, tender) => sum + tender.amountIdr, 0) +
+    depositAppliedIdr
+  );
+}
+
+/** The one tender to show as a single "Pembayaran" line; null when a list is needed. */
+export function singleTender<T>(
+  tenders: readonly T[],
+  depositAppliedIdr = 0,
+): T | null {
+  return tenders.length === 1 && depositAppliedIdr <= 0
+    ? (tenders[0] ?? null)
+    : null;
 }

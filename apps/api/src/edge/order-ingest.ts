@@ -768,7 +768,11 @@ async function applyVoided(
     throw new IngestRefusal("order_not_ingested");
 
   const [order] = await tx
-    .select({ totalIdr: orders.totalIdr, status: orders.status })
+    .select({
+      totalIdr: orders.totalIdr,
+      status: orders.status,
+      depositAppliedIdr: orders.depositAppliedIdr,
+    })
     .from(orders)
     .where(and(eq(orders.tenantId, tenantId), eq(orders.id, payload.orderId)))
     // legend-1042: the cloud refund/void and the manual refund serialise on this
@@ -836,6 +840,12 @@ async function applyVoided(
   });
   if (vouchersOfOrder.kind === "used")
     throw new IngestRefusal("apology_voucher_exists");
+
+  // legend-j772n: the void row reverses the whole total, but the DP part was
+  // never a tender; a full refund of the void could return it as cash. A DP
+  // sale is returned through the DP refund lane, so this void stays parked.
+  if (Number(order.depositAppliedIdr) > 0)
+    throw new IngestRefusal("void_deposit_applied");
 
   const total = Number(order.totalIdr);
   if (total <= 0 || Number(payload.amountIdr) !== total)

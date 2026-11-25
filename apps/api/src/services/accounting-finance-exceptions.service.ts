@@ -232,7 +232,8 @@ function receiptSkipped(tx: Executor, scope: Scope) {
  * Edge voids the cloud refused because a manual refund already paid the guest
  * (legend-nbkvh, 1042 F2): the cashier voided on the edge, the cloud kept the
  * refund, so the outlet drawer can be short. `edge_order_ingests.reason` holds
- * `void_refused:manual_refund_exists`; only state `ingested` counts (a later
+ * `void_refused:manual_refund_exists` (or `void_refused:void_deposit_applied`:
+ * a sale paid partly by a reservation deposit, legend-j772n); only state `ingested` counts (a later
  * successful void sets `voided` and leaves the old reason behind). Dated by the
  * refusal time in the outlet time zone; the amount is the order total.
  */
@@ -243,7 +244,7 @@ function voidRefused(tx: Executor, scope: Scope) {
                 LEFT JOIN orders ord ON ord.tenant_id = i.tenant_id AND ord.id = i.order_id`,
     where: sql`i.tenant_id = ${scope.tenantId}::uuid
       AND i.state = 'ingested'
-      AND i.reason = 'void_refused:manual_refund_exists'
+      AND i.reason IN ('void_refused:manual_refund_exists', 'void_refused:void_deposit_applied')
       AND (i.updated_at AT TIME ZONE o.timezone)::date
           BETWEEN ${scope.from}::date AND ${scope.to}::date
       AND ${outletClause(sql`i.outlet_id`, scope.reach)}`,
@@ -251,7 +252,7 @@ function voidRefused(tx: Executor, scope: Scope) {
     outlet: sql`i.outlet_id`,
     ref: sql`i.order_id::text`,
     amount: sql`ord.total_idr`,
-    detail: sql`'manual_refund_exists'::text`,
+    detail: sql`substring(i.reason FROM length('void_refused:') + 1)`,
   });
 }
 

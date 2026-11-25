@@ -15,7 +15,12 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { receiptPdfUrl } from "../api.ts";
 import { useReceiptBrand, usePublicReceipt } from "../hooks.ts";
-import { formatIssuedAt, isInvalidLink, paidIdr } from "../lib.ts";
+import {
+  formatIssuedAt,
+  isInvalidLink,
+  paidIdr,
+  singleTender,
+} from "../lib.ts";
 
 function Divider() {
   return <hr className="my-5 border-border" />;
@@ -62,7 +67,8 @@ function Label({ children }: { children: React.ReactNode }) {
 function ReceiptBody({ document }: { document: ReceiptDocument }) {
   const t = useT();
   const voided = document.status === "voided";
-  const single = document.tenders.length === 1 ? document.tenders[0] : null;
+  const deposit = Number(document.depositAppliedIdr ?? 0);
+  const single = singleTender(document.tenders, deposit);
   const tenderLabel = (method: ReceiptDocument["tenders"][number]["method"]) =>
     t(`posReceiptPublic.tender.${method}` as MessageKey);
   return (
@@ -181,10 +187,18 @@ function ReceiptBody({ document }: { document: ReceiptDocument }) {
               <Money amount={tender.amountIdr} className="font-semibold" />
             </Line>
           ))}
+          {deposit > 0 && (
+            <Line label={t("posReceiptPublic.deposit")}>
+              <Money amount={deposit} className="font-semibold" />
+            </Line>
+          )}
         </>
       )}
       <Line label={t("posReceiptPublic.paid")}>
-        <Money amount={paidIdr(document.tenders)} className="font-semibold" />
+        <Money
+          amount={paidIdr(document.tenders, deposit)}
+          className="font-semibold"
+        />
       </Line>
     </article>
   );

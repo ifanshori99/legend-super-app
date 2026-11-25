@@ -9,7 +9,7 @@ export const financeExceptionsMessages = {
   kinds: {
     edge_tax_unsnapshotted: "Pajak edge belum tersnapshot",
     edge_void_unsupported: "Void edge tidak didukung",
-    edge_void_refused: "Void edge ditolak, refund manual sudah ada",
+    edge_void_refused: "Void edge ditolak",
     edge_receipt_skipped: "Struk edge dilewati",
     edge_link_dead_letter: "Link edge dead-letter",
     payout_fee_not_posted: "Biaya payout belum dijurnal",
@@ -28,7 +28,7 @@ export const financeExceptionsMessages = {
     edge_void_unsupported:
       "Pembatalan dari edge belum bisa dijurnal otomatis. Jurnal pembalik perlu diperiksa manual.",
     edge_void_refused:
-      "Kasir membatalkan order ini di edge, tetapi pusat menolaknya karena tamu sudah menerima refund manual. Bila kasir sudah mengembalikan uang tunai dari laci, laci kas outlet bisa kurang sebesar nilai order. Nilai di daftar adalah total order, bukan selisih laci yang pasti. Periksa selisih laci dan hubungi outlet.",
+      "Kasir membatalkan order ini di edge, tetapi pusat menolaknya karena tamu sudah menerima refund manual atau order dibayar sebagian dengan uang muka (DP). Bila kasir sudah mengembalikan uang tunai dari laci, laci kas outlet bisa kurang sebesar nilai order. Nilai di daftar adalah total order, bukan selisih laci yang pasti. Periksa selisih laci dan hubungi outlet.",
     edge_receipt_skipped:
       "Struk dari edge dilewati saat sinkronisasi, jadi order ini belum lengkap di pusat.",
     edge_link_dead_letter:
@@ -67,6 +67,8 @@ export const financeExceptionsMessages = {
   details: {
     manual_refund_exists:
       "Order sudah di-refund manual, jadi void dari edge ditolak.",
+    void_deposit_applied:
+      "Order ini dibayar sebagian dengan uang muka (DP), jadi void dari edge ditolak. Cek dulu uang yang sudah keluar dari laci. DP dikembalikan finance hanya bila belum dikembalikan outlet.",
     tax_missing: "Pajak tidak ada pada data edge.",
     tax_mismatch: "Pajak pada data edge tidak cocok dengan total order.",
     batchPrefix: "Batch pencairan",
