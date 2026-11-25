@@ -1381,6 +1381,43 @@ describe("finance-exceptions: edge_void_refused", () => {
     ]);
   });
 
+  it("lists an edge void refused for a reservation deposit once, with the reason as detail and the order total", async () => {
+    // legend-j772n review: the DP guard parks the void; without this the cash
+    // drawer short would reach no one.
+    const outletDp = await newOutlet("Void ditolak DP");
+    const order = await seedRefused({
+      tenant: tenantId,
+      outlet: outletDp,
+      updatedAt: UPDATED.r1a,
+      state: "ingested",
+      reason: "void_refused:void_deposit_applied",
+      subtotalIdr: 80_000,
+    });
+
+    const payload = await fetchList(finance.cookie, {
+      ...WINDOW,
+      outletId: outletDp,
+      kind: KIND,
+    });
+
+    expect(payload.items).toHaveLength(1);
+    expect(payload.items[0]).toMatchObject({
+      kind: KIND,
+      refType: "order",
+      refId: order.uuid,
+      detail: "void_deposit_applied",
+      amountIdr: order.totalIdr,
+    });
+    expect(payload.summary).toEqual([
+      {
+        kind: KIND,
+        count: 1,
+        amountIdr: order.totalIdr,
+        knownAmountCount: 1,
+      },
+    ]);
+  });
+
   it("does not list a stale reason on a voided row, another reason, a missing reason, other windows or another tenant", async () => {
     const [voided, otherReason, noReason, tooOld, tooNew] = ids.excluded;
     const day = await fetchList(finance.cookie, { ...WINDOW, kind: KIND });
