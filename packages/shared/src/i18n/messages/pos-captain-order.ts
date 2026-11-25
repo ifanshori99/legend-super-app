@@ -64,6 +64,19 @@ export const posCaptainOrderMessages = {
     resend: "Kirim ulang ({count} item)",
     close: "Sudah saya periksa, tutup",
   },
+  unclear: {
+    title: "Pengiriman yang belum jelas",
+    body: "Jawaban server belum diterima, dan mejanya mungkin sudah ditutup. Kirim ulang memakai kunci yang sama, atau tutup setelah memeriksa pesanan meja.",
+    order: "Pesanan meja {table}: {count} item",
+    seat: "Dudukkan {count} tamu di meja {table}",
+    fire: "Kirim {count} item ke dapur",
+    resend: "Kirim ulang",
+    close: "Sudah saya periksa, tutup",
+    failed:
+      "Pengiriman ulang belum berhasil. Coba lagi, atau periksa pesanan meja.",
+    refused:
+      "Server menolak kunci pengiriman ini. Periksa pesanan meja, lalu tutup.",
+  },
   seat: {
     title: "Dudukkan tamu di meja {table}",
     hint: "Meja kosong belum punya sesi. Catat jumlah tamu untuk membuka sesi.",

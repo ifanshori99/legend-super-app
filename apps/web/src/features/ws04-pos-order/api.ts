@@ -15,6 +15,7 @@ import {
   listPosParkedOrders,
   resumePosParkedOrder,
   submitPosOrder,
+  type PosOrderStatus,
 } from "@starter/shared/pos";
 import {
   acknowledgeServiceRequest,
@@ -27,6 +28,7 @@ import { callEndpoint } from "@/lib/api/endpoint";
 import { ApiError } from "@/lib/api/errors";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { demoMenuPhoto } from "@/lib/demo-media";
+import { readDraft, writeDraft } from "./draft-store";
 import { DEMO_PHOTO_NAMES } from "./fixtures";
 import {
   closeFireIntent,
@@ -34,8 +36,11 @@ import {
   fireItems,
   openTableSession,
   pendingFireItems,
+  pendingCaptainOrders,
   pendingFireOrderIds,
+  pendingOpenSeats,
   placeCaptainOrder,
+  planFireReplay,
   readPendingOpenPax,
 } from "./captain-flow";
 import {
@@ -43,6 +48,7 @@ import {
   captainMeta,
   mapServiceRequest,
   mapTableOrders,
+  removeSentLines,
 } from "./captain-wire";
 import {
   closeOrderIntent,
@@ -75,6 +81,7 @@ import {
   type FireLinesInput,
   type FireTableLinesInput,
   type OrderMeta,
+  type OrderSnapshot,
   type ParkDraftInput,
   type ParkedDraft,
   type PosOrderView,
@@ -539,9 +546,18 @@ export async function fireTableLines(
     );
     return;
   }
+  // An unclear fire of these items goes again as it was (same key, same
+  // body), without reading the order first: it may have moved on already.
+  const plan = planFireReplay(
+    pendingFires(outletId, actorId),
+    new Set(input.lineIds),
+  );
+  for (const { orderId, itemIds } of plan.replay)
+    await sendFire(outletId, actorId, orderId, itemIds, "sent");
+  if (plan.rest.length === 0) return;
   const view = await fetchTableOrder(outletId, input.tableId);
   assertSeated(view.table);
-  const wanted = new Set(input.lineIds);
+  const wanted = new Set(plan.rest);
   const groups = view.orders
     .map((order) => ({
       order,
@@ -556,25 +572,54 @@ export async function fireTableLines(
       "ITEM_NOT_HELD",
       "Sebagian item sudah dikirim atau tidak ada. Muat ulang pesanan meja.",
     );
-  for (const { order, ids } of groups) {
-    await fireItems(
-      {
-        storage: window.sessionStorage,
-        makeKey: () => globalThis.crypto.randomUUID(),
-        scope: { outletId, actorId },
-        fire: async (orderId, body) => {
-          const { data } = await callEndpoint(firePosOrderItems, {
-            params: { outletId, orderId: orderId as never },
-            body: body as never,
-          });
-          return data;
-        },
-      },
+  for (const { order, ids } of groups)
+    await sendFire(
+      outletId,
+      actorId,
       order.orderId,
       ids,
       order.status ?? "sent",
     );
-  }
+}
+
+/** One keyed fire of an order (the stored key and status win on a repeat). */
+function sendFire(
+  outletId: string,
+  actorId: string,
+  orderId: string,
+  itemIds: string[],
+  status: PosOrderStatus,
+): Promise<unknown> {
+  return fireItems(
+    {
+      storage: window.sessionStorage,
+      makeKey: () => globalThis.crypto.randomUUID(),
+      scope: { outletId, actorId },
+      fire: async (id, body) => {
+        const { data } = await callEndpoint(firePosOrderItems, {
+          params: { outletId, orderId: id as never },
+          body: body as never,
+        });
+        return data;
+      },
+    },
+    orderId,
+    itemIds,
+    status,
+  );
+}
+
+/** Repeat an unclear fire exactly as it was stored, whatever table it was. */
+export async function resendFire(
+  outletId: string,
+  actorId: string,
+  orderId: string,
+): Promise<void> {
+  const pending = pendingFires(outletId, actorId).find(
+    (entry) => entry.orderId === orderId,
+  );
+  if (!pending) return;
+  await sendFire(outletId, actorId, orderId, pending.itemIds, "sent");
 }
 
 /** Orders with a fire whose answer is not known, and the items they hold. */
@@ -597,6 +642,47 @@ export function closePendingFire(
   orderId: string,
 ): void {
   closeFireIntent(window.sessionStorage, { outletId, actorId }, orderId);
+}
+
+/**
+ * Captain orders whose answer is not known, for this outlet and captain, with
+ * or without an open session on the table. Mock mode has none.
+ */
+export function pendingCaptainSends(
+  outletId: string,
+  actorId: string,
+): {
+  orders: { draftKey: string; snapshot: OrderSnapshot }[];
+  seats: { tableId: string; pax: number }[];
+} {
+  if (API_MOCK || typeof window === "undefined")
+    return { orders: [], seats: [] };
+  const who = { outletId, actorId };
+  return {
+    orders: pendingCaptainOrders(window.sessionStorage, who),
+    seats: pendingOpenSeats(window.sessionStorage, who),
+  };
+}
+
+/** Send an unclear captain order again from its stored snapshot alone. */
+export async function resendCaptainOrder(
+  outletId: string,
+  actorId: string,
+  draftKey: string,
+): Promise<void> {
+  const found = pendingCaptainOrders(window.sessionStorage, {
+    outletId,
+    actorId,
+  }).find((entry) => entry.draftKey === draftKey);
+  if (!found) return;
+  const { lines, meta } = found.snapshot;
+  await placeCaptainOrder(
+    flowDeps(outletId, actorId, draftKey),
+    meta.tableSessionId ?? "",
+    lines,
+    meta,
+  );
+  writeDraft(draftKey, removeSentLines(readDraft(draftKey), lines));
 }
 
 // ---- Waiter calls ----------------------------------------------------------

@@ -13,7 +13,11 @@ import {
   placeCaptainOrder,
   pendingFireItems,
   closeFireIntent,
+  closeOpenIntent,
   readPendingOpenPax,
+  pendingCaptainOrders,
+  pendingOpenSeats,
+  planFireReplay,
   SESSION_CLOSED,
   OPEN_INTENT_PENDING,
   FIRE_INTENT_PENDING,
@@ -23,6 +27,7 @@ import {
   canResolveCall,
   captainDraftKey,
   captainInput,
+  captainMeta,
   mapServiceRequest,
   mapTableOrders,
   NO_TABLE_SESSION,
@@ -569,4 +574,70 @@ test("the floor board hold marker reaches the table, without a name", () => {
   // None means none; a server that did not say stays unknown (soft warning).
   assert.equal(mapFloor(board(row(null)))[0]!.hold, null);
   assert.equal(mapFloor(board(row()))[0]!.hold, undefined);
+});
+
+// ---- Unclear sends independent of the table ------------------------------------
+
+test("an unclear captain order is listed with no open session, resent from its snapshot and closed", async () => {
+  const server = orderServer();
+  const storage = new MemoryStorage();
+  const draftKey = captainDraftKey(WHO.outletId, WHO.actorId, SESSION);
+  server.state.loseCreate = 1;
+  await assert.rejects(
+    placeCaptainOrder(
+      server.deps(storage, draftKey),
+      SESSION,
+      LINES,
+      captainMeta({ label: "A1", sessionId: SESSION }),
+    ),
+  );
+  // Another cashier's cart and a cashier cart are not the captain's.
+  const other = new MemoryStorage();
+  const found = pendingCaptainOrders(storage, WHO);
+  assert.equal(found.length, 1);
+  assert.equal(found[0]!.draftKey, draftKey);
+  assert.equal(found[0]!.snapshot.meta.tableSessionId, SESSION);
+  assert.equal(found[0]!.snapshot.meta.tableLabel, "A1");
+  assert.deepEqual(pendingCaptainOrders(other, WHO), []);
+  assert.deepEqual(
+    pendingCaptainOrders(storage, { ...WHO, actorId: "u2" }),
+    [],
+  );
+  // The same bytes go again from the snapshot alone: one order.
+  const reloaded = storage.clone();
+  const again = pendingCaptainOrders(reloaded, WHO)[0]!;
+  await placeCaptainOrder(
+    server.deps(reloaded, again.draftKey),
+    again.snapshot.meta.tableSessionId!,
+    again.snapshot.lines,
+    again.snapshot.meta,
+  );
+  assert.equal(server.state.orders.size, 1);
+  assert.deepEqual(pendingCaptainOrders(reloaded, WHO), []);
+});
+
+test("an unclear seat is listed per table, with its guest count", async () => {
+  const storage = new MemoryStorage();
+  const server = seatServer();
+  server.state.lose = 1;
+  await assert.rejects(openTableSession(server.deps(storage), "t9", 3));
+  assert.deepEqual(pendingOpenSeats(storage, WHO), [{ tableId: "t9", pax: 3 }]);
+  closeOpenIntent(storage, WHO, "t9");
+  assert.deepEqual(pendingOpenSeats(storage, WHO), []);
+});
+
+test("a table fire replays an unclear fire of the same items as it was, without a new pre-check", () => {
+  const pending = [
+    { orderId: "o-1", itemIds: [ITEM_A] },
+    { orderId: "o-2", itemIds: [ITEM_B, "other"] },
+  ];
+  const plan = planFireReplay(pending, new Set([ITEM_A, ITEM_B]));
+  // o-1 is fully wanted: replayed. o-2 holds an item that was not asked for:
+  // not touched here, and its items stay out of the new send.
+  assert.deepEqual(plan.replay, [{ orderId: "o-1", itemIds: [ITEM_A] }]);
+  assert.deepEqual(plan.rest, [ITEM_B]);
+  assert.deepEqual(planFireReplay([], new Set([ITEM_A])), {
+    replay: [],
+    rest: [ITEM_A],
+  });
 });

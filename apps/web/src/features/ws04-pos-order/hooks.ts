@@ -34,6 +34,7 @@ import {
   closePendingResume,
   openTable,
   otherCashierPending,
+  pendingCaptainSends,
   pendingFires,
   pendingOpenPax,
   pendingParkText,
@@ -43,6 +44,8 @@ import {
   fireLines,
   fireTableLines,
   parkDraft,
+  resendCaptainOrder,
+  resendFire,
   resolveCall,
   resumeDraft,
   submitOrder,
@@ -549,6 +552,72 @@ export function usePendingFires(): {
     [outletId, actorId],
   );
   return { pending, close };
+}
+
+const NO_SENDS = '{"orders":[],"seats":[]}';
+
+/**
+ * Every captain send whose answer is not known (orders, seats, fires) for this
+ * outlet and captain, whether or not its table still has a session: resend
+ * from what was stored, or close after checking.
+ */
+export function useUnclearSends() {
+  const queryClient = useQueryClient();
+  const outletId = useOutletId();
+  const actorId = useCaptainActorId();
+  const text = useSyncExternalStore(
+    subscribePending,
+    () => JSON.stringify(pendingCaptainSends(outletId, actorId)),
+    () => NO_SENDS,
+  );
+  const sends = useMemo(
+    () => JSON.parse(text) as ReturnType<typeof pendingCaptainSends>,
+    [text],
+  );
+  const fires = usePendingFires();
+  const resend = useMutation<
+    void,
+    Error,
+    | { kind: "order"; draftKey: string }
+    | { kind: "seat"; tableId: string; pax: number }
+    | { kind: "fire"; orderId: string }
+  >({
+    mutationFn: (target) =>
+      target.kind === "order"
+        ? resendCaptainOrder(outletId, actorId, target.draftKey)
+        : target.kind === "seat"
+          ? openTable(outletId, actorId, target.tableId, target.pax).then(
+              () => undefined,
+            )
+          : resendFire(outletId, actorId, target.orderId),
+    onSettled: () => {
+      notifyPending();
+      void queryClient.invalidateQueries({ queryKey: ["pos-order", outletId] });
+    },
+  });
+  const closeOrder = useCallback(
+    (draftKey: string) => {
+      closePendingOrder(outletId, actorId, draftKey);
+      notifyPending();
+    },
+    [outletId, actorId],
+  );
+  const closeSeat = useCallback(
+    (tableId: string) => {
+      closePendingOpen(outletId, actorId, tableId);
+      notifyPending();
+    },
+    [outletId, actorId],
+  );
+  return {
+    orders: sends.orders,
+    seats: sends.seats,
+    fires: fires.pending,
+    resend,
+    closeOrder,
+    closeSeat,
+    closeFire: fires.close,
+  };
 }
 
 // ---- Waiter calls ----------------------------------------------------------

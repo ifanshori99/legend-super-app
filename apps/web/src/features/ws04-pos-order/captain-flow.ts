@@ -18,12 +18,14 @@ import {
   assertScope,
   forgetOnFinalRefusal,
   keyedSend,
+  parseOrderSnapshot,
+  pendingOrderText,
   placeOrder,
   scopeOf,
   type FlowDeps,
 } from "./order-flow.ts";
 import { NO_TABLE_SESSION, captainInput } from "./captain-wire.ts";
-import type { CartLine, OrderMeta } from "./types.ts";
+import type { CartLine, OrderMeta, OrderSnapshot } from "./types.ts";
 
 export { NO_TABLE_SESSION };
 export const SESSION_CLOSED = "SESSION_CLOSED";
@@ -65,6 +67,30 @@ export function placeCaptainOrder<Order, Parked>(
       ),
     );
   return placeOrder(deps, captainInput(tableSessionId, lines), meta);
+}
+
+/**
+ * Captain orders whose answer is not known, for this outlet and captain,
+ * whether or not the table still has a session (a closed session must not hide
+ * an order that may have gone through). Each one has its stored snapshot, so
+ * it is sent again from that alone.
+ */
+export function pendingCaptainOrders(
+  storage: Storage3,
+  who: Who,
+): { draftKey: string; snapshot: OrderSnapshot }[] {
+  if (who.outletId === "" || who.actorId === "") return [];
+  const subjects = new Set([
+    ...listIntentSubjects(storage, { ...who, kind: "create" }),
+    ...listIntentSubjects(storage, { ...who, kind: "submit" }),
+  ]);
+  return [...subjects].flatMap((draftKey) => {
+    if (!draftKey.startsWith("captain:")) return [];
+    const snapshot = parseOrderSnapshot(
+      pendingOrderText(storage, { ...who, subject: draftKey }),
+    );
+    return snapshot ? [{ draftKey, snapshot }] : [];
+  });
 }
 
 // ---- Walk-in seat -----------------------------------------------------------------
@@ -128,6 +154,20 @@ export function readPendingOpenPax(
   } catch {
     return null;
   }
+}
+
+/** Seats whose answer is not known, per table (no open session needed). */
+export function pendingOpenSeats(
+  storage: Storage3,
+  who: Who,
+): { tableId: string; pax: number }[] {
+  if (who.outletId === "" || who.actorId === "") return [];
+  return listIntentSubjects(storage, { ...who, kind: "open" }).flatMap(
+    (tableId) => {
+      const pax = readPendingOpenPax(storage, who, tableId);
+      return pax === null ? [] : [{ tableId, pax }];
+    },
+  );
 }
 
 /** The captain checked the table: an unclear or refused seat is closed. */
@@ -231,4 +271,25 @@ export function closeFireIntent(
   orderId: string,
 ): void {
   endIntent(storage, scopeFor(who, "fire", orderId));
+}
+
+/**
+ * A fire of table items first repeats every unclear fire whose items are all
+ * wanted (same key, same body, no new read of the order: the order may have
+ * moved on, and a changed read would change the bytes). What is left is sent
+ * as a new fire.
+ */
+export function planFireReplay(
+  pending: readonly { orderId: string; itemIds: string[] }[],
+  wanted: ReadonlySet<string>,
+): { replay: { orderId: string; itemIds: string[] }[]; rest: string[] } {
+  const replay = pending.filter(
+    (entry) =>
+      entry.itemIds.length > 0 && entry.itemIds.every((id) => wanted.has(id)),
+  );
+  const done = new Set(replay.flatMap((entry) => entry.itemIds));
+  return {
+    replay: replay.map((entry) => ({ ...entry })),
+    rest: [...wanted].filter((id) => !done.has(id)),
+  };
 }
