@@ -1,5 +1,5 @@
 {
-  "id": "88b6fae6-9d1e-4f41-b7ac-9a0da75d1e42",
+  "id": "1908ddb0-dc7b-496d-af26-2f11b6ceda9a",
   "prevId": "0073e6d7-0962-4db2-a220-29f8e49aa02c",
   "version": "7",
   "dialect": "postgresql",
@@ -53254,6 +53254,12 @@
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
+        },
+        "purged_at": {
+          "name": "purged_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -53280,6 +53286,28 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "edge_command_executions_purge_idx": {
+          "name": "edge_command_executions_purge_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "decided_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"edge_command_executions\".\"status\" = 'succeeded' AND \"edge_command_executions\".\"purged_at\" IS NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -53352,7 +53380,11 @@
         },
         "edge_command_executions_status_check": {
           "name": "edge_command_executions_status_check",
-          "value": "(\"edge_command_executions\".\"status\" = 'executing' AND \"edge_command_executions\".\"decided_at\" IS NULL AND \"edge_command_executions\".\"result\" IS NULL AND \"edge_command_executions\".\"code\" IS NULL)\n        OR (\"edge_command_executions\".\"status\" = 'succeeded' AND \"edge_command_executions\".\"decided_at\" IS NOT NULL AND \"edge_command_executions\".\"result\" IS NOT NULL AND \"edge_command_executions\".\"code\" IS NULL)\n        OR (\"edge_command_executions\".\"status\" = 'refused' AND \"edge_command_executions\".\"decided_at\" IS NOT NULL AND \"edge_command_executions\".\"result\" IS NULL AND \"edge_command_executions\".\"code\" IS NOT NULL)\n        OR (\"edge_command_executions\".\"status\" IN ('expired', 'absent') AND \"edge_command_executions\".\"decided_at\" IS NOT NULL AND \"edge_command_executions\".\"result\" IS NULL AND \"edge_command_executions\".\"code\" IS NULL)"
+          "value": "(\"edge_command_executions\".\"status\" = 'executing' AND \"edge_command_executions\".\"decided_at\" IS NULL AND \"edge_command_executions\".\"result\" IS NULL AND \"edge_command_executions\".\"code\" IS NULL)\n        OR (\"edge_command_executions\".\"status\" = 'succeeded' AND \"edge_command_executions\".\"decided_at\" IS NOT NULL AND (\"edge_command_executions\".\"result\" IS NULL) = (\"edge_command_executions\".\"purged_at\" IS NOT NULL) AND \"edge_command_executions\".\"code\" IS NULL)\n        OR (\"edge_command_executions\".\"status\" = 'refused' AND \"edge_command_executions\".\"decided_at\" IS NOT NULL AND \"edge_command_executions\".\"result\" IS NULL AND \"edge_command_executions\".\"code\" IS NOT NULL)\n        OR (\"edge_command_executions\".\"status\" IN ('expired', 'absent') AND \"edge_command_executions\".\"decided_at\" IS NOT NULL AND \"edge_command_executions\".\"result\" IS NULL AND \"edge_command_executions\".\"code\" IS NULL)"
+        },
+        "edge_command_executions_purged_check": {
+          "name": "edge_command_executions_purged_check",
+          "value": "\"edge_command_executions\".\"purged_at\" IS NULL OR \"edge_command_executions\".\"status\" = 'succeeded'"
         }
       },
       "isRLSEnabled": false
@@ -53407,7 +53439,7 @@
           "name": "body",
           "type": "text",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "body_sha256": {
           "name": "body_sha256",
@@ -53456,6 +53488,12 @@
         },
         "settled_at": {
           "name": "settled_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "purged_at": {
+          "name": "purged_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
@@ -53520,6 +53558,34 @@
           ],
           "isUnique": false,
           "where": "\"edge_command_requests\".\"status\" IN ('pending', 'unknown')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "edge_command_requests_purge_idx": {
+          "name": "edge_command_requests_purge_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "outlet_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "settled_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"edge_command_requests\".\"purged_at\" IS NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -53588,11 +53654,15 @@
         },
         "edge_command_requests_sha_check": {
           "name": "edge_command_requests_sha_check",
-          "value": "\"edge_command_requests\".\"body_sha256\" ~ '^[0-9a-f]{64}$' AND \"edge_command_requests\".\"body_sha256\" = encode(sha256(convert_to(\"edge_command_requests\".\"body\", 'UTF8')), 'hex')"
+          "value": "\"edge_command_requests\".\"body_sha256\" ~ '^[0-9a-f]{64}$' AND (\"edge_command_requests\".\"body\" IS NULL OR \"edge_command_requests\".\"body_sha256\" = encode(sha256(convert_to(\"edge_command_requests\".\"body\", 'UTF8')), 'hex'))"
         },
         "edge_command_requests_status_check": {
           "name": "edge_command_requests_status_check",
-          "value": "(\"edge_command_requests\".\"status\" IN ('pending', 'unknown') AND \"edge_command_requests\".\"settled_at\" IS NULL AND \"edge_command_requests\".\"result\" IS NULL AND \"edge_command_requests\".\"code\" IS NULL)\n        OR (\"edge_command_requests\".\"status\" = 'succeeded' AND \"edge_command_requests\".\"settled_at\" IS NOT NULL AND \"edge_command_requests\".\"result\" IS NOT NULL AND \"edge_command_requests\".\"code\" IS NULL)\n        OR (\"edge_command_requests\".\"status\" = 'refused' AND \"edge_command_requests\".\"settled_at\" IS NOT NULL AND \"edge_command_requests\".\"result\" IS NULL AND \"edge_command_requests\".\"code\" IS NOT NULL)\n        OR (\"edge_command_requests\".\"status\" IN ('expired', 'absent') AND \"edge_command_requests\".\"settled_at\" IS NOT NULL AND \"edge_command_requests\".\"result\" IS NULL AND \"edge_command_requests\".\"code\" IS NULL)"
+          "value": "(\"edge_command_requests\".\"status\" IN ('pending', 'unknown') AND \"edge_command_requests\".\"settled_at\" IS NULL AND \"edge_command_requests\".\"result\" IS NULL AND \"edge_command_requests\".\"code\" IS NULL)\n        OR (\"edge_command_requests\".\"status\" = 'succeeded' AND \"edge_command_requests\".\"settled_at\" IS NOT NULL AND (\"edge_command_requests\".\"result\" IS NULL) = (\"edge_command_requests\".\"purged_at\" IS NOT NULL) AND \"edge_command_requests\".\"code\" IS NULL)\n        OR (\"edge_command_requests\".\"status\" = 'refused' AND \"edge_command_requests\".\"settled_at\" IS NOT NULL AND \"edge_command_requests\".\"result\" IS NULL AND \"edge_command_requests\".\"code\" IS NOT NULL)\n        OR (\"edge_command_requests\".\"status\" IN ('expired', 'absent') AND \"edge_command_requests\".\"settled_at\" IS NOT NULL AND \"edge_command_requests\".\"result\" IS NULL AND \"edge_command_requests\".\"code\" IS NULL)"
+        },
+        "edge_command_requests_purged_check": {
+          "name": "edge_command_requests_purged_check",
+          "value": "(\"edge_command_requests\".\"body\" IS NULL) = (\"edge_command_requests\".\"purged_at\" IS NOT NULL) AND (\"edge_command_requests\".\"purged_at\" IS NULL OR \"edge_command_requests\".\"settled_at\" IS NOT NULL)"
         },
         "edge_command_requests_attempts_check": {
           "name": "edge_command_requests_attempts_check",

@@ -21,8 +21,9 @@ import express, {
   type Response,
 } from "express";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
-import { CoreError, uuidSchema } from "@starter/shared/core";
+import { CoreError, isoDateTimeSchema, uuidSchema } from "@starter/shared/core";
 import {
+  EDGE_COMMAND_CLOCK_HEADER,
   EDGE_COMMAND_INSTANCE_HEADER,
   EDGE_COMMAND_MAX_BYTES,
   edgeCommandParamsSchema,
@@ -150,11 +151,18 @@ export function createEdgeCloudCommandRouter(
     async (req, res) => {
       const { node, edgeInstanceId } = callerOf(req);
       const bytes = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+      const clock = isoDateTimeSchema.safeParse(
+        req.get(EDGE_COMMAND_CLOCK_HEADER),
+      );
       res.json({
         data: await executeEdgeCommand(
           options.database,
           node,
-          { edgeInstanceId, bytes },
+          {
+            edgeInstanceId,
+            bytes,
+            ...(clock.success ? { edgeTime: new Date(clock.data) } : {}),
+          },
           options.handlers,
         ),
       });

@@ -10,6 +10,9 @@
 //   does. `absent` is the tombstone a status question leaves for an unknown id.
 //   The body itself is not kept in the cloud, only its digest.
 //
+// Body and result can hold personal data, so they are forgotten (`purged_at`)
+// a while after the outcome. The row stays: a key is spent forever.
+//
 // Tenant + outlet owned: RLS and the guards are in edge-cloud-command.custom.sql.
 // A command id is unique per tenant, so an id another outlet used is refused.
 import { sql } from "drizzle-orm";
@@ -48,8 +51,8 @@ export const edgeCommandRequests = pgTable(
     /** What the command locks, e.g. `order` + order id. */
     subjectType: varchar("subject_type", { length: 40 }).notNull(),
     subjectId: varchar("subject_id", { length: 36 }).notNull(),
-    /** The frozen body, sent byte for byte on every attempt. */
-    body: text("body").notNull(),
+    /** The frozen body, sent byte for byte on every attempt; null = purged. */
+    body: text("body"),
     bodySha256: varchar("body_sha256", { length: 64 }).notNull(),
     status: varchar("status", { length: 20 })
       .$type<EdgeCommandRequestStatus>()
@@ -63,6 +66,7 @@ export const edgeCommandRequests = pgTable(
       .defaultNow(),
     lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
     settledAt: timestamp("settled_at", { withTimezone: true }),
+    purgedAt: timestamp("purged_at", { withTimezone: true }),
   },
   (table) => [
     primaryKey({ columns: [table.tenantId, table.id] }),
@@ -77,20 +81,27 @@ export const edgeCommandRequests = pgTable(
     index("edge_command_requests_open_idx")
       .on(table.tenantId, table.outletId, table.createdAt)
       .where(sql`${table.status} IN ('pending', 'unknown')`),
+    index("edge_command_requests_purge_idx")
+      .on(table.tenantId, table.outletId, table.settledAt)
+      .where(sql`${table.purgedAt} IS NULL`),
     check(
       "edge_command_requests_kind_check",
       sql`${table.kind} ~ '^[a-z][a-z_]*(\\.[a-z][a-z_]*)+$'`,
     ),
     check(
       "edge_command_requests_sha_check",
-      sql`${table.bodySha256} ~ '^[0-9a-f]{64}$' AND ${table.bodySha256} = encode(sha256(convert_to(${table.body}, 'UTF8')), 'hex')`,
+      sql`${table.bodySha256} ~ '^[0-9a-f]{64}$' AND (${table.body} IS NULL OR ${table.bodySha256} = encode(sha256(convert_to(${table.body}, 'UTF8')), 'hex'))`,
     ),
     check(
       "edge_command_requests_status_check",
       sql`(${table.status} IN ('pending', 'unknown') AND ${table.settledAt} IS NULL AND ${table.result} IS NULL AND ${table.code} IS NULL)
-        OR (${table.status} = 'succeeded' AND ${table.settledAt} IS NOT NULL AND ${table.result} IS NOT NULL AND ${table.code} IS NULL)
+        OR (${table.status} = 'succeeded' AND ${table.settledAt} IS NOT NULL AND (${table.result} IS NULL) = (${table.purgedAt} IS NOT NULL) AND ${table.code} IS NULL)
         OR (${table.status} = 'refused' AND ${table.settledAt} IS NOT NULL AND ${table.result} IS NULL AND ${table.code} IS NOT NULL)
         OR (${table.status} IN ('expired', 'absent') AND ${table.settledAt} IS NOT NULL AND ${table.result} IS NULL AND ${table.code} IS NULL)`,
+    ),
+    check(
+      "edge_command_requests_purged_check",
+      sql`(${table.body} IS NULL) = (${table.purgedAt} IS NOT NULL) AND (${table.purgedAt} IS NULL OR ${table.settledAt} IS NOT NULL)`,
     ),
     check(
       "edge_command_requests_attempts_check",
@@ -119,6 +130,7 @@ export const edgeCommandExecutions = pgTable(
       .notNull()
       .defaultNow(),
     decidedAt: timestamp("decided_at", { withTimezone: true }),
+    purgedAt: timestamp("purged_at", { withTimezone: true }),
   },
   (table) => [
     primaryKey({ columns: [table.tenantId, table.id] }),
@@ -132,6 +144,9 @@ export const edgeCommandExecutions = pgTable(
       table.edgeNodeId,
       table.createdAt,
     ),
+    index("edge_command_executions_purge_idx")
+      .on(table.tenantId, table.decidedAt)
+      .where(sql`${table.status} = 'succeeded' AND ${table.purgedAt} IS NULL`),
     check(
       "edge_command_executions_kind_check",
       sql`${table.kind} ~ '^[a-z][a-z_]*(\\.[a-z][a-z_]*)+$'`,
@@ -143,9 +158,13 @@ export const edgeCommandExecutions = pgTable(
     check(
       "edge_command_executions_status_check",
       sql`(${table.status} = 'executing' AND ${table.decidedAt} IS NULL AND ${table.result} IS NULL AND ${table.code} IS NULL)
-        OR (${table.status} = 'succeeded' AND ${table.decidedAt} IS NOT NULL AND ${table.result} IS NOT NULL AND ${table.code} IS NULL)
+        OR (${table.status} = 'succeeded' AND ${table.decidedAt} IS NOT NULL AND (${table.result} IS NULL) = (${table.purgedAt} IS NOT NULL) AND ${table.code} IS NULL)
         OR (${table.status} = 'refused' AND ${table.decidedAt} IS NOT NULL AND ${table.result} IS NULL AND ${table.code} IS NOT NULL)
         OR (${table.status} IN ('expired', 'absent') AND ${table.decidedAt} IS NOT NULL AND ${table.result} IS NULL AND ${table.code} IS NULL)`,
+    ),
+    check(
+      "edge_command_executions_purged_check",
+      sql`${table.purgedAt} IS NULL OR ${table.status} = 'succeeded'`,
     ),
   ],
 );

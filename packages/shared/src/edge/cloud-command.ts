@@ -21,8 +21,15 @@ import {
 export const EDGE_COMMAND_PATH = "/api/edge-sync/commands";
 /** The edge database the command comes from (`edge_nodes.instance_id`). */
 export const EDGE_COMMAND_INSTANCE_HEADER = "X-Edge-Instance";
+/**
+ * The edge's own clock (ISO) when it sent the request. Not part of the frozen
+ * body and never trusted: it only tells a wrong edge clock from a late send.
+ */
+export const EDGE_COMMAND_CLOCK_HEADER = "X-Edge-Time";
 /** Largest command body, in bytes. */
 export const EDGE_COMMAND_MAX_BYTES = 16 * 1024;
+/** Largest `result` a kind may return, in bytes of JSON. */
+export const EDGE_COMMAND_MAX_RESULT_BYTES = 8 * 1024;
 /**
  * Longest time between `issuedAt` and `expiresAt`, and the furthest in the
  * future (cloud clock) an `expiresAt` may be, plus the skew allowance.

@@ -10,13 +10,21 @@
 //   back the row together with the effect.
 // - A kind handler may only write through the transaction it is given. An
 //   external call (payment provider) does not belong in a handler.
+// - Lock waits and statements are bounded; past the limit the answer is 503 and
+//   nothing is kept, so the edge stays `unknown` and asks again.
 // - A row of the same id that this outlet cannot see belongs to another outlet:
 //   403, never executed.
 import { createHash } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, isNull, lte, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
-import { CoreError, toIsoDateTime, z } from "@starter/shared/core";
 import {
+  CoreError,
+  toIsoDateTime,
+  z,
+  type ScopedTenantContext,
+} from "@starter/shared/core";
+import {
+  EDGE_COMMAND_MAX_RESULT_BYTES,
   EDGE_COMMAND_MAX_SKEW_MS,
   EDGE_COMMAND_MAX_TTL_MS,
   EDGE_COMMAND_TEST_KIND,
@@ -33,6 +41,7 @@ import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { edgeNodeContext } from "./edge-node.service.ts";
 import type { EdgeTx } from "./edge-queue.service.ts";
+import { notifyEdgeClockBehind } from "./edge-sync-conflict-alert.ts";
 import type { VerifiedEdgeNode } from "./staff-pin-sync.ts";
 
 type Database = NodePgDatabase<typeof schema>;
@@ -85,6 +94,43 @@ function parseBody(bytes: Uint8Array): EdgeCommandBody {
   return body.data;
 }
 
+const LOCK_TIMEOUT = "5s";
+const STATEMENT_TIMEOUT = "10s";
+/** lock_not_available, query_canceled (statement_timeout). */
+const TIME_LIMIT_CODES: unknown[] = ["55P03", "57014"];
+
+function isTimeLimit(error: unknown): boolean {
+  for (let e = error; e instanceof Error; e = e.cause)
+    if ("code" in e && TIME_LIMIT_CODES.includes(e.code)) return true;
+  return false;
+}
+
+/** One transaction of this node with bounded waits. */
+async function withinLimits<T>(
+  database: Database,
+  node: VerifiedEdgeNode,
+  work: (tx: EdgeTx) => Promise<T>,
+): Promise<T> {
+  try {
+    return await withTenant(database, edgeNodeContext(node), async (tx) => {
+      await tx.execute(
+        sql`SELECT set_config('lock_timeout', ${LOCK_TIMEOUT}, true), set_config('statement_timeout', ${STATEMENT_TIMEOUT}, true)`,
+      );
+      return work(tx);
+    });
+  } catch (error) {
+    if (isTimeLimit(error))
+      throw new HttpError(
+        503,
+        "EDGE_COMMAND_BUSY",
+        "Cloud sedang sibuk. Coba lagi.",
+      );
+    throw error;
+  }
+}
+
+// KEY SHARE: a revocation (FOR UPDATE) waits for this transaction and the other
+// way round, while the link's plain updates of the node row do not.
 async function assertActivePrimary(
   tx: EdgeTx,
   node: VerifiedEdgeNode,
@@ -100,7 +146,7 @@ async function assertActivePrimary(
         eq(edgeNodes.id, node.edgeNodeId),
       ),
     )
-    .for("share");
+    .for("key share");
   if (row?.role !== "primary" || row.status !== "active")
     throw new HttpError(
       403,
@@ -183,6 +229,12 @@ function toOutcome(row: ExecutionRow): EdgeCommandOutcome {
       "EDGE_COMMAND_IN_PROGRESS",
       "Perintah masih diproses.",
     );
+  if (row.purgedAt !== null)
+    throw new HttpError(
+      410,
+      "EDGE_COMMAND_RESULT_PURGED",
+      "Hasil perintah ini sudah dihapus.",
+    );
   return edgeCommandOutcomeSchema.parse({
     id: row.id,
     kind: row.kind,
@@ -222,13 +274,19 @@ async function decide(
   if (expiresAt > now + EDGE_COMMAND_MAX_TTL_MS + EDGE_COMMAND_MAX_SKEW_MS)
     return { status: "refused", code: "EXPIRY_OUT_OF_RANGE" };
   try {
-    const result = await tx.transaction((savepoint) =>
-      handler.execute(savepoint, {
+    const result = await tx.transaction(async (savepoint) => {
+      const value = await handler.execute(savepoint, {
         node,
         commandId: body.id,
         payload: payload.data,
-      }),
-    );
+      });
+      if (
+        Buffer.byteLength(JSON.stringify(value), "utf8") >
+        EDGE_COMMAND_MAX_RESULT_BYTES
+      )
+        throw new EdgeCommandRefusal("RESULT_TOO_LARGE");
+      return value;
+    });
     return { status: "succeeded", result };
   } catch (error) {
     if (error instanceof EdgeCommandRefusal)
@@ -237,16 +295,45 @@ async function decide(
   }
 }
 
+/**
+ * An expired command whose edge clock is further behind than the command lives
+ * means every command of this edge expires on arrival: alarm, once a day. In a
+ * savepoint and silent, a missing alarm must not lose the outcome.
+ */
+async function alarmClockBehind(
+  tx: EdgeTx,
+  node: VerifiedEdgeNode,
+  body: EdgeCommandBody,
+  edgeTime: Date | undefined,
+): Promise<void> {
+  if (edgeTime === undefined) return;
+  const ttl = Date.parse(body.expiresAt) - Date.parse(body.issuedAt);
+  const lag = Date.now() - edgeTime.getTime();
+  if (lag <= ttl) return;
+  try {
+    await tx.transaction((savepoint) =>
+      notifyEdgeClockBehind(savepoint, edgeNodeContext(node), {
+        tenantId: node.tenantId,
+        outletId: node.outletId,
+        edgeNodeId: node.edgeNodeId,
+        lagSeconds: Math.round(lag / 1000),
+      }),
+    );
+  } catch {
+    // Intentionally silent: no payload or ids in logs (ports.ts rule).
+  }
+}
+
 /** Executes one command at most once; a replay answers the recorded outcome. */
 export async function executeEdgeCommand(
   database: Database,
   node: VerifiedEdgeNode,
-  input: { edgeInstanceId: string; bytes: Uint8Array },
+  input: { edgeInstanceId: string; bytes: Uint8Array; edgeTime?: Date },
   handlers: EdgeCommandHandlers = EDGE_COMMAND_HANDLERS,
 ): Promise<EdgeCommandOutcome> {
   const body = parseBody(input.bytes);
   const bodySha256 = createHash("sha256").update(input.bytes).digest("hex");
-  return withTenant(database, edgeNodeContext(node), async (tx) => {
+  return withinLimits(database, node, async (tx) => {
     await assertActivePrimary(tx, node, input.edgeInstanceId);
     const claimed = await claim(tx, node, {
       id: body.id,
@@ -257,6 +344,8 @@ export async function executeEdgeCommand(
     });
     if (!claimed.inserted) return toOutcome(claimed.row);
     const decision = await decide(tx, node, body, handlers);
+    if (decision.status === "expired")
+      await alarmClockBehind(tx, node, body, input.edgeTime);
     const [decided] = await tx
       .update(edgeCommandExecutions)
       .set({ ...decision, decidedAt: new Date() })
@@ -285,7 +374,7 @@ export async function settleEdgeCommandStatus(
     request: EdgeCommandStatusRequest;
   },
 ): Promise<EdgeCommandOutcome> {
-  return withTenant(database, edgeNodeContext(node), async (tx) => {
+  return withinLimits(database, node, async (tx) => {
     await assertActivePrimary(tx, node, input.edgeInstanceId);
     const { row } = await claim(tx, node, {
       id: input.commandId,
@@ -294,5 +383,50 @@ export async function settleEdgeCommandStatus(
       status: "absent",
     });
     return toOutcome(row);
+  });
+}
+
+/** Days a result is kept in the cloud (guard trigger: 90). */
+export const EDGE_COMMAND_RESULT_RETENTION_DAYS = 90;
+const PURGE_BATCH = 500;
+
+/**
+ * Forgets results decided over the retention window; the key, digest and state
+ * stay, so the key is never executed again. Returns the number of rows, at most
+ * one batch. Scope is the caller's tenant and outlet scope.
+ */
+export async function purgeEdgeCommandResults(
+  database: Database,
+  context: ScopedTenantContext,
+  now: Date,
+): Promise<number> {
+  const tenantId = context.tenant.tenantId;
+  return withTenant(database, context, async (tx) => {
+    const due = tx
+      .select({ id: edgeCommandExecutions.id })
+      .from(edgeCommandExecutions)
+      .where(
+        and(
+          eq(edgeCommandExecutions.tenantId, tenantId),
+          eq(edgeCommandExecutions.status, "succeeded"),
+          isNull(edgeCommandExecutions.purgedAt),
+          lte(
+            edgeCommandExecutions.decidedAt,
+            sql`least(${now.toISOString()}::timestamptz, now()) - make_interval(days => ${EDGE_COMMAND_RESULT_RETENTION_DAYS}, secs => 1)`,
+          ),
+        ),
+      )
+      .limit(PURGE_BATCH);
+    const rows = await tx
+      .update(edgeCommandExecutions)
+      .set({ result: null, purgedAt: sql`now()` })
+      .where(
+        and(
+          eq(edgeCommandExecutions.tenantId, tenantId),
+          inArray(edgeCommandExecutions.id, due),
+        ),
+      )
+      .returning({ id: edgeCommandExecutions.id });
+    return rows.length;
   });
 }
