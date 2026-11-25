@@ -67,7 +67,10 @@ import { emergencySessionRouter } from "./emergency.routes";
 import { emergencyPressRouter } from "./emergency-press.routes";
 import { menuRecommendationRouter } from "./menu-recommendation.routes.ts";
 import { tableLinksRouter } from "./table-links.routes";
-import { tableSessionsRouter } from "./table-sessions.routes";
+import {
+  staffSessionRouter,
+  tableSessionsRouter,
+} from "./table-sessions.routes";
 import { paymentRouter } from "./payment.routes";
 import { paymentAdminRouter } from "./payment-admin.routes.ts";
 import { paymentRecurringRouter } from "./payment-recurring.routes.ts";
@@ -320,6 +323,7 @@ apiRouter.use("/outlets", outletFloorRouter);
 apiRouter.use(serviceRequestRouter);
 // Open-bill convert, approvers and outlet policy (legend-8cm4, legend-2zb5).
 apiRouter.use(openBillRouter);
+apiRouter.use(staffSessionRouter);
 apiRouter.use("/tables", tablesRouter);
 apiRouter.use("/table-links", tableLinksRouter);
 // WS-04 failed paid item recovery (legend-4qu): full contract paths across

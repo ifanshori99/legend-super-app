@@ -105,6 +105,7 @@ const AUDIT_SAFE_FIELDS = [
   "id",
   "status",
   "paymentMode",
+  "confirmedBy",
   "pax",
   "tableId",
   "outletId",
@@ -666,7 +667,7 @@ function scanResult(input: {
   });
 }
 
-function tokenExpired(row: SessionRow, now: Date): boolean {
+export function tokenExpired(row: SessionRow, now: Date): boolean {
   const expiresAt = new Date(
     tableSessionTokenExpiresAt({
       openedAt: row.openedAt.toISOString(),
@@ -1101,7 +1102,10 @@ export type OpenStaffSeatedSessionInput = {
   pax: number;
   /** The host who seats the party; doubles as the open-bill confirmer. */
   confirmedBy: string;
-  reservationId: string;
+  /** Null for a walk-in seated by staff (POS B1). */
+  reservationId: string | null;
+  /** Opening participant's device hash; defaults to the reservation's. */
+  deviceHash?: string;
   now: Date;
 };
 
@@ -1199,7 +1203,11 @@ export async function openStaffSeatedSession(
       tenantId,
       outletId: input.outletId,
       tableSessionId: sessionId,
-      deviceHash: `reservation:${input.reservationId}`,
+      deviceHash:
+        input.deviceHash ??
+        (input.reservationId === null
+          ? `staff-seat:${sessionId}`
+          : `reservation:${input.reservationId}`),
       joinedAt: now,
       lastSeenAt: now,
     })

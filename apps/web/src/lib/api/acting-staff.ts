@@ -171,7 +171,7 @@ export const ACTING_STAFF_HELD_MESSAGE =
 // guard; a held call there would block sign-out). /api/approvals is back office
 // only: its guard is strict, so a shared device is refused outright.
 const POS_PATH =
-  /^\/api\/(?:outlets\/[^/]+\/(?:pos|kitchen|floor|expo|pickup-display|pickup-calls|service-requests|order-issues|serving-time-estimate|open-bill-policy|open-bill\/approvers|orders\/[^/]+\/issues)(?:\/|$)|(?:floor|tables|table-links|pos-overrides)(?:\/|$)|table-sessions\/[^/]+\/(?:confirm|close|move|merge|move-items|open-bill)\/?$|pos\/orders\/[^/]+\/customer\/?$|order-items\/[^/]+\/issues\/?$|order-issues\/[^/]+\/resolve\/?$|order-issue-charges\/[^/]+\/collect-at-pos\/?$|service-requests\/[^/]+\/(?:acknowledge|resolve)\/?$|menu\/availability(?:\/|$))/;
+  /^\/api\/(?:outlets\/[^/]+\/(?:pos|kitchen|floor|expo|pickup-display|pickup-calls|service-requests|order-issues|serving-time-estimate|open-bill-policy|open-bill\/approvers|orders\/[^/]+\/issues)(?:\/|$)|(?:floor|tables|table-links|pos-overrides)(?:\/|$)|table-sessions\/[^/]+\/(?:confirm|close|move|merge|move-items|open-bill)\/?$|outlets\/[^/]+\/tables\/[^/]+\/staff-session\/?$|facility\/tickets\/pos\/?$|pos\/orders\/[^/]+\/(?:customer|points(?:\/(?:quote|redeem))?|tickets(?:\/[^/]+\/credential)?)\/?$|order-items\/[^/]+\/issues\/?$|order-issues\/[^/]+\/resolve\/?$|order-issue-charges\/[^/]+\/collect-at-pos\/?$|service-requests\/[^/]+\/(?:acknowledge|resolve)\/?$|menu\/availability(?:\/|$))/;
 
 /**
  * Headers for a `method` call to `path`. Returns null when the call must be

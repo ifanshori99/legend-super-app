@@ -1954,6 +1954,15 @@ export const closeTableSessionInputSchema = clientInputSchema({
   note: note.optional(),
 });
 
+/**
+ * Staff seats a walk-in party at an empty table (POS B1, brief 1268). The
+ * key makes a retry (lost answer, second tap) return the same session.
+ */
+export const openStaffSessionInputSchema = clientInputSchema({
+  pax: z.number().int().min(1).max(30),
+  idempotencyKey: idempotencyKeySchema,
+});
+
 // ---- Types ----------------------------------------------------------------
 
 export type FloorZoneId = z.infer<typeof floorZoneIdSchema>;

@@ -93,6 +93,8 @@ const RULES: readonly Rule[] = [
   rule("floor", ["GET"], "/api/floor"),
   rule("floor", ["GET"], `${OUTLET}/floor`),
   rule("floor", ["POST"], `/api/tables/${ID}/(?:qr|status)`),
+  // table-sessions.routes.ts staffSessionRouter: walk-in seating (legend-1268 B1)
+  rule("floor", ["POST"], `${OUTLET}/tables/${ID}/staff-session`),
   // table-links.routes.ts
   rule("floor", ["POST"], "/api/table-links"),
   rule("floor", ["POST"], `/api/table-links/${ID}/unlink`),

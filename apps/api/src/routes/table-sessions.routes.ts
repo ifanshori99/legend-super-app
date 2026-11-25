@@ -11,12 +11,14 @@
 import { Router } from "express";
 import {
   closeTableSessionInputSchema,
+  openStaffSessionInputSchema,
   mergeTableSessionsInputSchema,
   moveSessionItemsInputSchema,
   moveTableSessionInputSchema,
+  tableIdSchema,
   tableSessionIdSchema,
 } from "@starter/shared/qr-order";
-import { z } from "@starter/shared/core";
+import { outletIdSchema, z } from "@starter/shared/core";
 import {
   actorOf,
   requireActingStaffOnSharedDevice,
@@ -35,7 +37,8 @@ import {
   moveSessionItemsOperation,
   moveTableSessionOperation,
 } from "../services/table-session-operations.service";
-import { resolveFloorContext } from "./floor-access";
+import { openWalkInSession } from "../services/staff-open-session.service";
+import { resolveFloorContext, resolveOutletContext } from "./floor-access";
 
 const sessionParams = z.strictObject({ sessionId: tableSessionIdSchema });
 
@@ -128,6 +131,39 @@ tableSessionsRouter.post(
       data: await moveSessionItemsOperation(
         context,
         sessionId,
+        input,
+        actorOf(req),
+      ),
+    });
+  },
+);
+
+/**
+ * Walk-in seating (POS B1, brief 1268). Mounted at the API root like the
+ * open-bill router: the path starts with `/api/outlets/:outletId/…`. The outlet
+ * comes from the verified path; the key makes a retry return the same session.
+ */
+export const staffSessionRouter = Router();
+
+staffSessionRouter.post(
+  "/outlets/:outletId/tables/:tableId/staff-session",
+  ...staffGuard,
+  jsonBody,
+  async (req, res) => {
+    const { outletId, tableId } = z
+      .strictObject({ outletId: outletIdSchema, tableId: tableIdSchema })
+      .parse(req.params);
+    const input = openStaffSessionInputSchema.parse(req.body);
+    const context = await resolveOutletContext(
+      req,
+      "floor.table.operate",
+      outletId,
+    );
+    res.json({
+      data: await openWalkInSession(
+        context,
+        outletId,
+        tableId,
         input,
         actorOf(req),
       ),
