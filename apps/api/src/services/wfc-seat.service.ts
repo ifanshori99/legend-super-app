@@ -178,7 +178,7 @@ export async function countActiveWfcSeats(
 }
 
 /** The highest quota cell of the outlet (0 without one). */
-async function maxWfcQuota(
+export async function maxWfcQuota(
   tx: Tx,
   context: ScopedTenantContext,
   outletId: string,
