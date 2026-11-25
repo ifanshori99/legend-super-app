@@ -33,6 +33,18 @@ export async function signUp(
   return email;
 }
 
+// The edge serves no password sign-in: the session cookie comes from the cloud.
+export async function cloudSignIn(email: string): Promise<string> {
+  const response = await request(createApp({ edgeMode: false }))
+    .post("/api/auth/sign-in/email")
+    .set(originHeader)
+    .send({ email, password: "Test-password-123!" });
+  if (response.status !== 200)
+    throw new Error(`Sign-in failed with ${response.status}`);
+  const lines = response.headers["set-cookie"] as unknown as string[];
+  return lines.map((line) => line.split(";")[0]).join("; ");
+}
+
 // Roles are granted out of band, the way pnpm role:set does it.
 export async function setRole(email: string, role: string | null) {
   const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 1 });
