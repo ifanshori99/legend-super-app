@@ -560,6 +560,54 @@ export async function notifyEdgeDeviceRegistryHardStale(
   );
 }
 
+export type EdgeClockBehind = {
+  tenantId: TenantId;
+  outletId: OutletId;
+  edgeNodeId: string;
+  lagSeconds: number;
+};
+
+/**
+ * Notify the outlet's supervisors AND owners that the edge clock is so far
+ * behind that its commands to the cloud expire on arrival (card F1). One alert
+ * per outlet and UTC day.
+ */
+export async function notifyEdgeClockBehind(
+  tx: EdgeTx,
+  context: ScopedTenantContext,
+  behind: EdgeClockBehind,
+  now: Date = new Date(),
+): Promise<void> {
+  const day = now.toISOString().slice(0, 10);
+  const hex = createHash("sha256")
+    .update(`edge_command.clock_behind\0${behind.outletId}\0${day}`)
+    .digest("hex")
+    .slice(0, 32);
+  const id = uuidToUlid(
+    `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
+  );
+  await notifyOutletSupervisors(
+    tx,
+    context,
+    {
+      tenantId: behind.tenantId,
+      outletId: behind.outletId,
+      alsoOwners: true,
+      id,
+      eventName: "edge_command.clock_behind",
+      aggregateType: "edge_command",
+      aggregateId: id,
+      payload: {
+        edgeNodeId: behind.edgeNodeId,
+        lagSeconds: String(behind.lagSeconds),
+      },
+      title: "Jam server lokal tertinggal",
+      body: `Jam server lokal outlet ini tertinggal sekitar ${Math.round(behind.lagSeconds / 60)} menit, jadi perintahnya ke cloud ditolak karena kedaluwarsa. Betulkan tanggal dan jam di server lokal.`,
+    },
+    now,
+  );
+}
+
 export type EdgeEventParkedUnclassified = {
   tenantId: TenantId;
   outletId: OutletId;

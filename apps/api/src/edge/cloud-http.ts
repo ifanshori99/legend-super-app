@@ -138,12 +138,14 @@ async function readBoundedJson(response: Response): Promise<unknown> {
   ) as unknown;
 }
 
-async function cloudGet(
+async function cloudRequest(
   options: CloudGetOptions & {
     path: string;
     signal?: AbortSignal;
     headers?: Record<string, string>;
     allowNotModified?: boolean;
+    /** Sent as is, byte for byte, with POST; absent = GET. */
+    body?: Uint8Array<ArrayBuffer>;
   },
 ): Promise<CloudGetResult> {
   const base = cloudHttpBaseUrl(options.cloudUrl);
@@ -163,12 +165,16 @@ async function cloudGet(
 
   try {
     const init: EdgeRequestInit = {
-      method: "GET",
+      method: options.body === undefined ? "GET" : "POST",
       headers: {
         ...options.headers,
+        ...(options.body === undefined
+          ? {}
+          : { "Content-Type": "application/json" }),
         Authorization: `Bearer ${options.credential}`,
         Accept: "application/json",
       },
+      ...(options.body === undefined ? {} : { body: options.body }),
       redirect: "error",
       cache: "no-store",
       signal: request.signal,
@@ -218,7 +224,24 @@ export async function cloudGetJson(
     headers?: Record<string, string>;
   },
 ): Promise<unknown> {
-  const result = await cloudGet(options);
+  const result = await cloudRequest(options);
+  return result.status === 200 ? result.body : undefined;
+}
+
+/**
+ * One authenticated POST of exactly these bytes (an edge command, card F1),
+ * returning the parsed JSON body of a 2xx. Never retried here; any other answer
+ * or none is an EdgeCloudHttpError, so the caller treats the outcome as unknown.
+ */
+export async function cloudPostBytes(
+  options: CloudGetOptions & {
+    path: string;
+    body: Uint8Array<ArrayBuffer>;
+    signal?: AbortSignal;
+    headers?: Record<string, string>;
+  },
+): Promise<unknown> {
+  const result = await cloudRequest(options);
   return result.status === 200 ? result.body : undefined;
 }
 
@@ -246,7 +269,7 @@ export async function cloudGetJsonConditional(
     generatedAtHeader?: string;
   },
 ): Promise<CloudConditionalGetResult> {
-  const result = await cloudGet({
+  const result = await cloudRequest({
     ...options,
     headers: options.etag === null ? {} : { "If-None-Match": options.etag },
     allowNotModified: true,

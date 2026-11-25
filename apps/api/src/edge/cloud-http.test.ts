@@ -504,8 +504,12 @@ describe("createDeviceRecordsFetcher", () => {
     const second = new URL((fetchImpl.mock.calls[1] as unknown as [string])[0]);
     expect(first.searchParams.get("receiptWriteoffs")).toBe("1");
     expect(second.searchParams.has("receiptWriteoffs")).toBe(false);
+    // E2 asks for token hashes with the write-offs, so the retry drops both.
+    expect(first.searchParams.get("deviceTokenHashes")).toBe("1");
+    expect(second.searchParams.has("deviceTokenHashes")).toBe(false);
     // Everything else is the same request.
     first.searchParams.delete("receiptWriteoffs");
+    first.searchParams.delete("deviceTokenHashes");
     expect(second.toString()).toBe(first.toString());
     expect(second.searchParams.get("receiptRuns")).toBe("P1:3");
     expect(second.searchParams.get("receiptRefused")).toBe(

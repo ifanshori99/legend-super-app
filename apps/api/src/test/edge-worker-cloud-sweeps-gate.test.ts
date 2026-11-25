@@ -19,6 +19,7 @@ const cloudOwnedSweeps = [
   "expireDueSupportAccessGrants",
   "redriveEdgeOrderRefusalsForTenant",
   "runPayoutGlRecoverySweep",
+  "sweepEdgeCommandResults",
 ] as const;
 
 // legend-rs2xy (855) added two more gated blocks (fixed-asset depreciation and
