@@ -9,16 +9,24 @@
 // - The bank line is free, money in, dated on or after the report's end, on an
 //   active account that is the legal entity's mapped bank account (the journal
 //   debits that mapping), and equals the sum of the nets to the rupiah.
-// - No unmatched document books the same money already: a journal of the line
-//   amount or of one net, or a cash deposit of the line amount.
+// - No unmatched document books the same money already: any free journal that
+//   debits the bank and credits gateway_clearing (whatever its amount), a
+//   journal of the line amount or of one net, or a cash deposit of the line
+//   amount, from the report's start up to today.
+// - Every line's fee is within the cap of its payment method: the gateway
+//   integration config of the outlet (else of the tenant) holds
+//   `maxFeeBps_<method>` (basis points of the line) and `maxFeeFlatIdr_<method>`
+//   (rupiah, default 0). No number for the method, or an integration that is
+//   not active, refuses: a short payment never hides as a fee.
 // - One settlement per outlet on one bank line.
 // - Once, ever: the match row is kept, and an unmatch leaves a rejection row
 //   that blocks both the line and the settlement. The outbox key (aggregate,
 //   sequence 2; sequence 1 is `settlement.imported`) is the last guard.
-import { and, eq, inArray, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import {
   assertTrustedScopedContext,
   createUlid,
+  DEFAULT_TIME_ZONE,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import { eventEnvelopeSchema } from "@starter/shared/events";
@@ -34,6 +42,7 @@ import {
   bankStatementLines,
   bankStatementMatchRejections,
 } from "../db/schema/accounting-cash-bank.ts";
+import { paymentIntents } from "../db/schema/payment.ts";
 import {
   paymentReconciliationCases as cases,
   paymentReconciliationCorrections as corrections,
@@ -42,6 +51,7 @@ import {
   paymentSettlementLines as lines,
   paymentSettlements as settlements,
 } from "../db/schema/payment-settlement.ts";
+import { tenantIntegrations } from "../db/schema/platform-integrations.ts";
 import { outlets } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
@@ -55,6 +65,7 @@ import {
   hasUnmatchedDocument,
 } from "./accounting-bank-matching.ts";
 import { loadBankAccount, notFound } from "./accounting-cash-bank-shared.ts";
+import type { TenantTransaction } from "./accounting-shared.ts";
 import { loadMatchingPolicy } from "./accounting-finance-policy.service.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
@@ -68,6 +79,108 @@ const REF_TYPE = "gateway_settlement";
 
 const refuse = (message: string) =>
   new HttpError(409, "SETTLEMENT_NOT_RECONCILABLE", message);
+
+type FeeCap = { bps: number; flatIdr: number };
+
+/** A whole number in [0, max]; anything else is no number at all. */
+function capNumber(value: unknown, max: number): number | null {
+  return typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= 0 &&
+    value <= max
+    ? value
+    : null;
+}
+
+/**
+ * The fee cap of one payment method for one outlet's report: the outlet's
+ * active integration config of the provider, per key falling back to the
+ * tenant's. Null (refuse) when the provider has no active config or the
+ * method has neither number, or a number is not a whole, plausible value.
+ */
+function feeCapOf(
+  configs: readonly (Record<string, unknown> | null)[],
+  method: string,
+): FeeCap | null {
+  const pick = (key: string) => {
+    for (const config of configs)
+      if (config && key in config) return config[key];
+    return undefined;
+  };
+  const bpsRaw = pick(`maxFeeBps_${method}`);
+  const flatRaw = pick(`maxFeeFlatIdr_${method}`);
+  if (bpsRaw === undefined && flatRaw === undefined) return null;
+  const bps = bpsRaw === undefined ? 0 : capNumber(bpsRaw, 10_000);
+  const flatIdr = flatRaw === undefined ? 0 : capNumber(flatRaw, 1_000_000_000);
+  return bps === null || flatIdr === null ? null : { bps, flatIdr };
+}
+
+const todayOf = (now: Date) =>
+  new Intl.DateTimeFormat("en-CA", {
+    timeZone: DEFAULT_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now);
+
+/**
+ * Every line's fee is at most its method's cap (see header). The method is the
+ * one of the matched payment intent; a line without one cannot be capped.
+ */
+async function assertFeesWithinCap(
+  tx: TenantTransaction,
+  tenantId: string,
+  report: { id: string; outletId: string; provider: string },
+) {
+  const integrations = await tx
+    .select({
+      outletId: tenantIntegrations.outletId,
+      config: tenantIntegrations.config,
+    })
+    .from(tenantIntegrations)
+    .where(
+      and(
+        eq(tenantIntegrations.tenantId, tenantId),
+        eq(tenantIntegrations.provider, report.provider as never),
+        eq(tenantIntegrations.status, "active"),
+        or(
+          isNull(tenantIntegrations.outletId),
+          eq(tenantIntegrations.outletId, report.outletId),
+        ),
+      ),
+    );
+  const configs = [
+    integrations.find((row) => row.outletId === report.outletId)?.config,
+    integrations.find((row) => row.outletId === null)?.config,
+  ].map((config) => (config as Record<string, unknown> | undefined) ?? null);
+  const reportLines = await tx
+    .select({
+      amountIdr: lines.amountIdr,
+      feeIdr: lines.feeIdr,
+      method: paymentIntents.method,
+    })
+    .from(lines)
+    .leftJoin(
+      paymentIntents,
+      and(
+        eq(paymentIntents.tenantId, lines.tenantId),
+        eq(paymentIntents.id, lines.matchedPaymentIntentId),
+      ),
+    )
+    .where(
+      and(eq(lines.tenantId, tenantId), eq(lines.settlementId, report.id)),
+    );
+  for (const line of reportLines) {
+    const cap = line.method ? feeCapOf(configs, line.method) : null;
+    if (
+      !cap ||
+      line.feeIdr > Math.ceil((line.amountIdr * cap.bps) / 10_000) + cap.flatIdr
+    )
+      throw refuse(
+        "The fee of a settlement line has no limit configured or is above it.",
+      );
+  }
+}
 
 export async function reconcileSettlements(
   context: ScopedTenantContext,
@@ -157,8 +270,10 @@ export async function reconcileSettlements(
       if (bankLine.matchStatus !== "unmatched" || bankLine.amountIdr <= 0)
         throw refuse("The bank line is not a free incoming payment.");
       const accountMap = await loadAccountMap(tx, tenantId, legalEntityId);
+      const clearingAccountId = accountMap.get("gateway_clearing");
       if (
         !account.isActive ||
+        !clearingAccountId ||
         accountMap.get("bank") !== account.glAccountId ||
         reports.some((r) => r.legalEntityId !== legalEntityId)
       )
@@ -189,8 +304,13 @@ export async function reconcileSettlements(
             bankLine.amountIdr,
             ...reports.map((r) => r.netIdr),
           ],
+          clearingAccountId,
           from,
-          to: bankLine.postedOn,
+          // A journal dated after the line (month end, a late fix) books the
+          // same money just as well: the window runs up to today.
+          to: [bankLine.postedOn, todayOf(now)].reduce((a, b) =>
+            a > b ? a : b,
+          ),
           toleranceDays: matchingPolicy.dateToleranceDays,
         })
       )
@@ -259,6 +379,7 @@ export async function reconcileSettlements(
           total.feeIdr !== report.feeIdr
         )
           throw refuse("Every settlement line must match a POS transaction.");
+        await assertFeesWithinCap(tx, tenantId, report);
         const openCase = await tx
           .select({ id: cases.id })
           .from(cases)
