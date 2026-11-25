@@ -9,3 +9,12 @@
 5. **P3** `api.ts:505,424`: limit 100 tanpa kursor; hilang bersama no. 2, untuk `:424` baca semua halaman.
 
 Izin menjadi tingkat K: review architect sesudah perbaikan.
+
+## Review K akses 26 Nov (7d34546d2): TIDAK LULUS, 1 P1, 4 P2, 1 P3
+
+1. **P1** `services/pos-order.service.ts:697,953`: pemanggil `captainOnly` dengan `customerProfileId` tidak null = 403 (poin sendiri lolos lewat waiter lain). Test gagal-dulu.
+2. **P2, keputusan CTO (paling membatasi, PRD D10 dan baris 604: bayar di muka = dapur sesudah lunas):** untuk pemanggil `captainOnly`, sesi `pay_first` ditolak 409 dengan kode sendiri saat create, submit, dan fire (dibaca dari sesi di bawah kunci); layar captain menahan sebelum create dengan teks "Meja ini bayar di muka. Arahkan tamu ke kasir." Sesi `open_bill`: submit memanggil `assertOpenBillWithinLimit`, `OpenBillLimitExceeded` jadi 409, bukan 500. Pengguna dengan `pos.sale.create` tidak berubah. Alternatif (captain titip pesanan ke kasir) menunggu founder.
+3. **P2** tender nontunai dari pesanan captain tanpa shift: dikerjakan di W3 (legend-9yw78.7), bukan di sini.
+4. **P2** `services/floor.service.ts:384`: penanda hold dibatasi hari bisnis berjalan outlet. Test.
+5. **P2** `ws04-pos-order/api.ts:429`: baca juga draft milik sesi sebagai "belum terkirim", aksi lanjut submit (kunci yang sama, tanpa create kedua). Test.
+6. **P3** test: fire pesanan kanal lain via `itemIds`, badan diskon lengkap, waiter outlet A ke order outlet B untuk submit/fire.
