@@ -34,3 +34,7 @@ W2: boleh mulai di luar refund/batal, gabung sesudah no. 1 dan 3; pakai `lockWfc
 2. W1b wajib membuat id versi settings sebelum membuka approval.
 3. W3 WFC: rancang fakta refund provider untuk Duitku (sekarang hanya DOIT yang mencatat; untuk Duitku pengecualian belum pernah menyala, aman).
 4. Sesudah perbaikan: CTO cek diff guard + test, tanpa review architect ulang bila SQL sesuai no. 1.
+
+## Cek CTO 26 Nov (774babc22): LULUS
+
+SQL guard sama dengan spesifikasi no. 1; test pembayaran dobel, transaksi kedua, refund terpecah, ref/provider lain ditolak; refund bertahap pada transaksi pelunas diterima. Syarat: pembayaran dobel wajib selalu tercatat di `payment_unallocated_funds` (dijaga W3 WFC).
