@@ -4,6 +4,7 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 # The caller's shell must not leak into the checks (shell wins over env files).
 unset API_ENV_FILE WORKER_ENV_FILE DOIT_REFUNDS_ENABLED
+unset DUITKU_ALLOW_SANDBOX DUITKU_ENABLED_METHODS DEPLOYMENT_MODE DATA_CLASSIFICATION
 tmp=$(mktemp -d /tmp/legend-deploy-test.XXXXXXXX)
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 mkdir "$tmp/bin"
@@ -514,3 +515,69 @@ write_flag "$tmp/worker.env" 'DOIT_REFUNDS_ENABLED=true'
   exit 1
 }
 echo 'legend-3gna: empty value and comment checks passed'
+
+# legend-osqou.1 (1269 C0): the same check compares DUITKU_ALLOW_SANDBOX and
+# DUITKU_ENABLED_METHODS, so the worker never reads a code under other rules
+# than the API that issued it.
+set_duitku() {
+  # set_duitku <api line> <worker line>; an empty line means the key is absent.
+  for file in api worker; do
+    grep -Ev '^(DUITKU_|DEPLOYMENT_MODE|DATA_CLASSIFICATION)' "$tmp/$file.env" > "$tmp/$file.env.new" || true
+    mv "$tmp/$file.env.new" "$tmp/$file.env"
+  done
+  [ -z "$1" ] || printf '%s\n' "$1" >> "$tmp/api.env"
+  [ -z "$2" ] || printf '%s\n' "$2" >> "$tmp/worker.env"
+}
+duitku_same() {
+  set_duitku "$1" "$2"
+  "$check" --env-file "$tmp/compose.env" >/dev/null 2>"$tmp/err" || {
+    echo "legend-osqou.1: api '$1' worker '$2' was refused but means the same" >&2
+    exit 1
+  }
+}
+duitku_refused() {
+  # duitku_refused <key> <api line> <worker line>, then with the files swapped.
+  for pass in as-given swapped; do
+    if [ "$pass" = as-given ]; then set_duitku "$2" "$3"; else set_duitku "$3" "$2"; fi
+    check_refuses "api '$2' worker '$3' ($pass)" "$1"
+    if grep -E "DUITKU_[A-Z_]+=|qris|kartu" "$tmp/err" >/dev/null; then
+      echo "legend-osqou.1: the refusal for '$2' and '$3' printed a value" >&2
+      exit 1
+    fi
+    deploy_refuses "api '$2' worker '$3' ($pass)"
+  done
+}
+write_flag "$tmp/api.env" 'DOIT_REFUNDS_ENABLED=false'
+write_flag "$tmp/worker.env" 'DOIT_REFUNDS_ENABLED=false'
+duitku_same '' ''
+duitku_same 'DUITKU_ALLOW_SANDBOX=true' 'DUITKU_ALLOW_SANDBOX="1"'
+duitku_same 'DUITKU_ALLOW_SANDBOX=false #c' ''
+duitku_same 'DUITKU_ENABLED_METHODS=' ''
+duitku_same 'DUITKU_ENABLED_METHODS=qris,va' 'DUITKU_ENABLED_METHODS="va, qris"'
+duitku_refused DUITKU_ALLOW_SANDBOX 'DUITKU_ALLOW_SANDBOX=true' ''
+duitku_refused DUITKU_ALLOW_SANDBOX 'DUITKU_ALLOW_SANDBOX=true' 'DUITKU_ALLOW_SANDBOX=false'
+duitku_refused DUITKU_ALLOW_SANDBOX 'DUITKU_ALLOW_SANDBOX=' 'DUITKU_ALLOW_SANDBOX='
+duitku_refused DUITKU_ALLOW_SANDBOX 'DUITKU_ALLOW_SANDBOX' ''
+duitku_refused DUITKU_ENABLED_METHODS 'DUITKU_ENABLED_METHODS=qris' ''
+duitku_refused DUITKU_ENABLED_METHODS 'DUITKU_ENABLED_METHODS=qris,va' 'DUITKU_ENABLED_METHODS=qris'
+duitku_refused DUITKU_ENABLED_METHODS 'DUITKU_ENABLED_METHODS=kartu' 'DUITKU_ENABLED_METHODS=kartu'
+duitku_refused DUITKU_ENABLED_METHODS 'DUITKU_ENABLED_METHODS' ''
+# The sandbox switch is refused before any migration in production mode or with
+# real data, in either file (the API and the worker would refuse to start).
+on='DUITKU_ALLOW_SANDBOX=true'
+nl='
+'
+duitku_same "$on${nl}DEPLOYMENT_MODE=staging${nl}DATA_CLASSIFICATION=synthetic" "$on"
+duitku_same 'DUITKU_ALLOW_SANDBOX=false' 'DEPLOYMENT_MODE=production'
+for live in 'DEPLOYMENT_MODE=production' 'DEPLOYMENT_MODE="production" #c' \
+  'DATA_CLASSIFICATION=real' 'DEPLOYMENT_MODE' 'DEPLOYMENT_MODE=' \
+  'DATA_CLASSIFICATION' 'DEPLOYMENT_MODE=${MODE}'; do
+  duitku_refused DUITKU_ALLOW_SANDBOX "$on$nl$live" "$on"
+done
+set_duitku 'DUITKU_ENABLED_METHODS=qris' 'DUITKU_ENABLED_METHODS=qris'
+: > "$TEST_LOG"
+"$root/deploy.sh" --env-file "$tmp/compose.env" >/dev/null 2>&1 || {
+  echo 'legend-osqou.1: deploy refused matching Duitku settings' >&2
+  exit 1
+}
+echo 'legend-osqou.1: Duitku setting checks passed'

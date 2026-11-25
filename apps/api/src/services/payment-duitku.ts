@@ -17,6 +17,7 @@ import {
   type PaymentChannel,
   type PaymentInstructions,
 } from "@starter/shared/payment";
+import { env } from "../config/env";
 import { logger } from "../lib/logger";
 import type {
   GatewayHealth,
@@ -28,6 +29,7 @@ import type {
   OnlinePaymentMethod,
   PaymentGatewayPort,
 } from "./payment-gateway";
+import { duitkuSandboxRefused } from "./payment-duitku-sandbox-policy";
 import {
   duitkuGetPaymentMethods,
   duitkuInquiry,
@@ -82,7 +84,9 @@ export type DuitkuGatewayOptions = {
 /**
  * Credentials Duitku may have signed a callback with: the current ones first,
  * then the previous generation while `now < previousValidUntil` (D17-D18).
- * Empty when the current merchant code, API key or environment is unusable.
+ * Empty when the current merchant code, API key or environment is unusable;
+ * a sandbox account is unusable in production (1269 C0), so neither an intent,
+ * a status answer nor a callback of it counts there.
  * An incomplete or unreadable previous generation is ignored.
  */
 export function duitkuCredentialSet(
@@ -94,7 +98,8 @@ export function duitkuCredentialSet(
   if (
     !merchantCode ||
     !apiKey ||
-    (environment !== "sandbox" && environment !== "production")
+    (environment !== "sandbox" && environment !== "production") ||
+    (environment === "sandbox" && duitkuSandboxRefused())
   )
     return [];
   const set: DuitkuCredentials[] = [{ merchantCode, apiKey, environment }];
@@ -193,6 +198,21 @@ function groupMethods(
       channels: method === "qris" ? [] : inMethod.map(channelOf),
     };
   });
+}
+
+/** 1269 C0: a method takes money only once `DUITKU_ENABLED_METHODS` lists it. */
+function methodUnlocked(method: GatewayPaymentMethod): boolean {
+  return env.DUITKU_ENABLED_METHODS.some((enabled) => enabled === method);
+}
+
+function withoutLocked(
+  groups: readonly GatewayMethodAvailability[],
+): GatewayMethodAvailability[] {
+  return groups.map((entry) =>
+    methodUnlocked(entry.method)
+      ? entry
+      : { method: entry.method, enabled: false, channels: [] },
+  );
 }
 
 /** Records the HTTP outcome of calls so `testConnection` can tell a refused
@@ -343,8 +363,10 @@ export function createDuitkuGateway(
     // At the real bill amount: a method can be out of limits for it. The
     // probe amount keeps its cache; any other amount is read fresh.
     if (amountIdr !== undefined && amountIdr !== PROBE_AMOUNT_IDR)
-      return groupMethods(await fetchMethods(resolved, amountIdr));
-    return groupMethods(await cachedMethods(resolved));
+      return withoutLocked(
+        groupMethods(await fetchMethods(resolved, amountIdr)),
+      );
+    return withoutLocked(groupMethods(await cachedMethods(resolved)));
   }
 
   async function channels(
@@ -354,6 +376,7 @@ export function createDuitkuGateway(
   ): Promise<PaymentChannel[]> {
     // Channel-bearing methods only; QRIS and card need no pick.
     if (method !== "va" && method !== "ewallet") return [];
+    if (!methodUnlocked(method)) return [];
     const resolved = await resolveDetailed(context, outletId);
     if (typeof resolved === "string") return [];
     const group = groupMethods(await cachedMethods(resolved)).find(
@@ -435,8 +458,9 @@ export function createDuitkuGateway(
   async function createIntent(
     input: GatewayIntentRequest,
   ): Promise<GatewayIntent> {
-    // Duitku has no bank transfer rail (D24).
-    if (input.method === "bank_transfer")
+    // Duitku has no bank transfer rail (D24); a locked method is refused before
+    // any provider call.
+    if (input.method === "bank_transfer" || !methodUnlocked(input.method))
       throw validation("Metode pembayaran tidak tersedia.");
     const resolved = await requireCredentials(input.context, input.outletId);
     if (!resolved.notificationEmail) throw duitkuUnavailable();

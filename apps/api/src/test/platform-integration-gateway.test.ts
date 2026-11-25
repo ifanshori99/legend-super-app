@@ -16,6 +16,7 @@ import {
 } from "vitest";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
+import { env } from "../config/env.ts";
 import { createLogger } from "../lib/logger.ts";
 import { openSecret } from "../lib/secrets.ts";
 import {
@@ -393,6 +394,116 @@ describe("Duitku credential spec (D15)", () => {
       .send({ ...duitkuBody(), config: { vaName: "Cafe" } });
     expect(broken.status).toBe(422);
   });
+
+  it("1269 C0 refuses to save a duitku sandbox row in production, new or existing, unless staging allows it", async () => {
+    const { client } = await tenantMember("tenant_admin");
+    const saved = {
+      isProduction: env.isProduction,
+      allowSandbox: env.DUITKU_ALLOW_SANDBOX,
+    };
+    const put = (environment: string, credentials?: Record<string, string>) =>
+      client
+        .put("/api/org/integrations")
+        .set(originHeader)
+        .send({
+          ...duitkuBody(credentials),
+          config: { ...duitkuConfig, environment },
+        });
+    const storedEnvironments = async () => {
+      const { rows } = await owner.query<{ environment: string }>(
+        "SELECT config->>'environment' AS environment FROM tenant_integrations WHERE tenant_id = $1 AND provider = 'duitku'",
+        [seededTenantId],
+      );
+      return rows.map((row) => row.environment);
+    };
+    const expectRefused = (response: {
+      status: number;
+      body: { error: { code: string; message: string } };
+    }) => {
+      expect(response.status).toBe(422);
+      expect(response.body.error.code).toBe("VALIDATION_ERROR");
+      expect(response.body.error.message).toContain("environment");
+    };
+    const creds = secrets();
+    try {
+      env.isProduction = true;
+      env.DUITKU_ALLOW_SANDBOX = false;
+      const refused = await put("sandbox", creds);
+      expectRefused(refused);
+      expect(JSON.stringify(refused.body)).not.toContain(creds.apiKey);
+      expect(await storedEnvironments()).toEqual([]);
+
+      expect((await put("production", creds)).status).toBe(200);
+      expectRefused(await put("sandbox"));
+      expect(await storedEnvironments()).toEqual(["production"]);
+
+      env.DUITKU_ALLOW_SANDBOX = true;
+      expect((await put("sandbox")).status).toBe(200);
+      expect(await storedEnvironments()).toEqual(["sandbox"]);
+    } finally {
+      env.isProduction = saved.isProduction;
+      env.DUITKU_ALLOW_SANDBOX = saved.allowSandbox;
+    }
+  });
+
+  it.each([
+    ["a production build", { isProduction: true }],
+    ["production mode", { DEPLOYMENT_MODE: "production" }],
+    ["real data", { DATA_CLASSIFICATION: "real" }],
+  ] as const)(
+    "1269 C0 %s refuses to save or activate a stored sandbox row; disabling stays possible",
+    async (_name, live) => {
+      const { client } = await tenantMember("tenant_admin");
+      const put = (environment: string) =>
+        client
+          .put("/api/org/integrations")
+          .set(originHeader)
+          .send({
+            ...duitkuBody(secrets()),
+            config: { ...duitkuConfig, environment },
+          });
+      const created = await put("sandbox");
+      expect(created.status).toBe(200);
+      const id = created.body.data.id as string;
+      const setStatus = (status: "active" | "disabled") =>
+        client
+          .post(`/api/org/integrations/${id}/status`)
+          .set(originHeader)
+          .send({ status });
+      const storedStatus = async () =>
+        (
+          await owner.query<{ status: string }>(
+            "SELECT status FROM tenant_integrations WHERE id = $1",
+            [id],
+          )
+        ).rows[0]?.status;
+      const saved = {
+        isProduction: env.isProduction,
+        DEPLOYMENT_MODE: env.DEPLOYMENT_MODE,
+        DATA_CLASSIFICATION: env.DATA_CLASSIFICATION,
+        DUITKU_ALLOW_SANDBOX: env.DUITKU_ALLOW_SANDBOX,
+      };
+      try {
+        Object.assign(env, { DUITKU_ALLOW_SANDBOX: false }, live);
+        expect((await put("sandbox")).status).toBe(422);
+        const refused = await setStatus("active");
+        expect(refused.status).toBe(422);
+        expect(refused.body.error.code).toBe("VALIDATION_ERROR");
+        expect(await storedStatus()).toBe("draft");
+
+        Object.assign(env, saved);
+        expect((await setStatus("active")).status).toBe(200);
+        Object.assign(env, { DUITKU_ALLOW_SANDBOX: false }, live);
+        expect((await setStatus("disabled")).status).toBe(200);
+        expect((await setStatus("active")).status).toBe(422);
+        expect(await storedStatus()).toBe("disabled");
+        expect((await put("production")).status).toBe(200);
+        expect((await setStatus("active")).status).toBe(200);
+      } finally {
+        Object.assign(env, saved);
+      }
+    },
+  );
 });
 
 describe("Secret rotation keeps one previous generation (D17)", () => {

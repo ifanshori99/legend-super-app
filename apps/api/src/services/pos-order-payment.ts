@@ -528,13 +528,25 @@ export async function addPosTender(
             now,
             { orderLockedByCaller: true },
           );
+          // The intent names the gateway that issued the code (routing rule or
+          // its fallback); it committed before this read.
+          const [issued] = await tx
+            .select({ provider: paymentIntents.provider })
+            .from(paymentIntents)
+            .where(
+              and(
+                eq(paymentIntents.tenantId, tenantId),
+                eq(paymentIntents.id, intent.id),
+              ),
+            );
+          if (!issued) throw new Error("Payment intent not found");
           const tenderId = randomUUID();
           [inserted] = await tx
             .insert(posOrderTenders)
             .values({
               ...base,
               id: tenderId,
-              provider: "doit",
+              provider: issued.provider,
               paymentLinkId: opened.linkId,
               paymentLinkTokenSealed: sealSecret(
                 opened.token,

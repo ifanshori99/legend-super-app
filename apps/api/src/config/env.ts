@@ -285,6 +285,26 @@ const schema = z
       "Use the API's public origin, e.g. https://api.example.com.",
     ).optional(),
     DUITKU_RETURN_URL: z.url().max(255).optional(),
+    // 1269 C0: Duitku methods that may take money, comma-separated (qris, va,
+    // ewallet, card). Empty by default: every method stays locked until its
+    // sandbox proof exists. Status reads of codes already out are not gated.
+    DUITKU_ENABLED_METHODS: z
+      .string()
+      .optional()
+      .transform((value) =>
+        (value ?? "")
+          .split(",")
+          .map((item) => item.trim())
+          .filter(Boolean),
+      )
+      .pipe(z.array(z.enum(["qris", "va", "ewallet", "card"]))),
+    // A Duitku sandbox account is refused in production (its "paid" is not
+    // money). Only staging, which runs production builds, sets this; a process
+    // in production mode or with real data refuses to start with it.
+    DUITKU_ALLOW_SANDBOX: z
+      .enum(["true", "false", "1", "0"])
+      .optional()
+      .transform((value) => value === "true" || value === "1"),
     // Gate for supplier return posting (legend-65mgw). Off by default: a
     // return moves stock out without a journal until the goods receipt journal
     // (legend-29vw) runs, which would split the GL from the stock ledger. That
@@ -802,6 +822,17 @@ const schema = z
           message: "Use an https URL in production.",
         });
     }
+    if (
+      values.DUITKU_ALLOW_SANDBOX &&
+      (values.DEPLOYMENT_MODE === "production" ||
+        values.DATA_CLASSIFICATION === "real")
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["DUITKU_ALLOW_SANDBOX"],
+        message:
+          "The Duitku sandbox is for staging only: not with DEPLOYMENT_MODE=production or DATA_CLASSIFICATION=real.",
+      });
     if (values.NODE_ENV === "production" && values.AI_PROVIDER === "fake")
       ctx.addIssue({
         code: "custom",
