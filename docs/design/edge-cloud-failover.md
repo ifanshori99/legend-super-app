@@ -32,7 +32,7 @@ Related: legend-k0i8 (edge -> cloud POS order sync, not built), PRD v1.7 §3 F5
    when a manager opens a window while the edge is in fact still selling
    (split brain).
 3. **Cash is bridged, not merged.** At switchover each cashier counts the
-   drawer and opens a *failover shift* in the cloud with that count as float.
+   drawer and opens a _failover shift_ in the cloud with that count as float.
    At return the cashier closes the failover shift with a blind count. Sync-back
    writes two system cash movements into the edge shift that was open at the
    outage: `failover_out` (start count) and `failover_in` (end count). The edge
@@ -88,7 +88,7 @@ selling with neither edge nor cloud, standby promotion itself (EDG-04).
    mode cloud" to a manager (PIN). The back office shows the same action from
    the edge-node list.
 2. Cloud `POST /api/edge-failover/windows` `{ outletId, reason, override?,
-   idempotencyKey }`. Checks: permission, outlet has an active edge, no open
+idempotencyKey }`. Checks: permission, outlet has an active edge, no open
    window, heartbeat stale >= 120 s or `override` with reason.
 3. Same transaction: insert window (`active`), provision an F-series for every
    active receipt-taking device of the outlet (`RECEIPT_DEVICE_TYPES`), enqueue
@@ -235,16 +235,19 @@ activation; notify outlet managers on activate, close and every sync conflict.
 ## 8. Tests
 
 Contract (`tests/pos-contract.test.mjs`, shared):
+
 - `F<n>` prefix refused for device provisioning; new error codes and HTTP
   statuses; window and state schemas strict.
 
 DB (`apps/api/src/test/edge-failover-schema.test.ts`):
+
 - one open window per outlet; forward-only status; no delete.
 - `series`/prefix check both ways; unique (tenant, outlet, device, series).
 - migration preflight aborts on an existing `F<n>` device prefix.
 - failover rows immutable when the window is not `active`.
 
 Cloud service (`apps/api/src/test/edge-failover.test.ts`):
+
 - device sale on edge outlet without window -> `RECEIPT_DEVICE_ON_EDGE`.
 - activation refused with fresh heartbeat; allowed with override + reason;
   idempotent per key; F-series provisioned for every receipt device.
@@ -256,6 +259,7 @@ Cloud service (`apps/api/src/test/edge-failover.test.ts`):
   (`pos-receipt-provisioning.test.ts`, `pos-receipt-kfix.test.ts`).
 
 Edge (`apps/api/src/test/edge-failover-sync.test.ts`):
+
 - window state `active` blocks device sales and Tutup Hari on the edge.
 - full batch applies; replay of the same batch is a no-op.
 - missing event -> `sequence_gap` conflict, nothing after it applied, alert.
@@ -279,6 +283,7 @@ batch 3 owns migrations up to 0128 and the receipt provisioning code
 (legend-3yqy) that slice 1 changes.
 
 ### S1. Contract and schema (needs batch 3 merged)
+
 - `packages/shared/src/edge/failover.ts` (new), `packages/shared/src/edge/index.ts`
 - `packages/shared/src/pos/receipts.ts` (reserved `F` prefix, series type)
 - `packages/shared/src/pos/errors.ts` (`FAILOVER_EDGE_HEALTHY`,
@@ -291,9 +296,10 @@ batch 3 owns migrations up to 0128 and the receipt provisioning code
   (`failover_window_id`, cash movement types, freeze trigger)
 - `apps/api/drizzle/0129_*` and next
 - `tests/pos-contract.test.mjs`, `apps/api/src/test/edge-failover-schema.test.ts`
-Depends: batch 3 merged.
+  Depends: batch 3 merged.
 
 ### S2. Cloud window service and failover selling (needs batch 3 merged)
+
 - `apps/api/src/services/edge-failover.service.ts` (new: activate, cancel,
   start return, state event, audit, notify)
 - `apps/api/src/routes/edge-failover.routes.ts` (new), `apps/api/src/routes/index.ts`
@@ -303,43 +309,49 @@ Depends: batch 3 merged.
 - `apps/api/src/services/pos-shift.service.ts`, `pos-order.service.ts`
   (stamp window id, failover shift open/close)
 - `apps/api/src/test/edge-failover.test.ts`
-Depends: S1.
+  Depends: S1.
 
 ### S3. Edge window state and blocks
+
 - `apps/api/src/edge/failover-state-applier.ts` (new), `apps/api/src/edge/runtime.ts`
   (register in `applier-registry.ts`)
 - `apps/api/src/services/pos-receipt.service.ts` (edge refuses with
   `FAILOVER_ACTIVE`), `apps/api/src/services/pos-day.service.ts` (W6)
 - `apps/api/src/services/edge-status.service.ts`, `packages/shared/src/edge/schemas.ts`
   (`failover` field on edge status)
-Depends: S2 (emits the state event). Can run in parallel with S5.
+  Depends: S2 (emits the state event). Can run in parallel with S5.
 
 ### S4. Sync-back batch and edge applier (tier K: architect + second opinion)
+
 (Superseded by "Delta rc2 (26 Nov)": replaced by cards F4 and F5 in `docs/briefs/1271-edge-failover-cards.md`.)
+
 - `apps/api/src/services/edge-failover-sync.ts` (new: batch builder, enqueue,
   re-enqueue, close on ack)
 - `apps/api/src/edge/failover-sync-applier.ts` (new)
 - `apps/api/src/services/edge-queue.service.ts` (ack hook for the closing event)
 - `apps/api/src/services/pos-receipt.service.ts` (`applyFailoverReceiptRun`, edge side)
 - `apps/api/src/test/edge-failover-sync.test.ts`
-Depends: S2, S3.
+  Depends: S2, S3.
 
 ### S5. Web: terminal failover mode (mockup first, founder review)
+
 - `apps/web/src/features/ws02-edge/logic.ts`, `hooks.ts`, `api.ts`
 - `apps/web/src/features/ws02-edge/components/connectivity-banner.tsx`
 - `apps/web/src/features/ws02-edge/components/failover-panel.tsx` (new:
   activate, count, return checklist)
 - API base selection for the POS client (pinned cloud target per device)
 - `e2e/edge-failover.spec.ts`
-Depends: S2 contract; S4 for the full e2e.
+  Depends: S2 contract; S4 for the full e2e.
 
 ### S6. Echo guard and duplicate review (with legend-k0i8)
+
 (Superseded by "Delta rc2 (26 Nov)": D1 removes the echo, so no emitter guard is needed.)
+
 - k0i8 emitter skips `failover_window_id` rows (W7)
 - "possible duplicate" report: edge orders completed in the 15 min before
   the outage vs failover orders with the same items and total, for manager
   void through the normal approval path
-Depends: S4 and legend-k0i8.
+  Depends: S4 and legend-k0i8.
 
 ## 10. Open questions (business, founder)
 
@@ -360,7 +372,7 @@ Depends: S4 and legend-k0i8.
 2. Drawer count at switchover and at return: **required**.
 3. Without the edge, printers are unreachable: receipt is an **on-screen QR e-receipt**.
 4. Edge still down at end of day: **Tutup Hari from cloud data is allowed**; edge data that arrives later posts as a late adjustment (legend-k0i8 rule).
-Question 3 (visible `F1-000001` number) was not asked; CTO default stands: accepted.
+   Question 3 (visible `F1-000001` number) was not asked; CTO default stands: accepted.
 
 ## Delta rc2 (26 Nov)
 
