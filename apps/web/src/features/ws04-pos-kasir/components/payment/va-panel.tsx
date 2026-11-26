@@ -162,7 +162,7 @@ export function VaPanel(props: PaymentPanelProps) {
           <p className="text-base text-muted-foreground">
             {t("posKasirGateway.va.numberLabel")}
           </p>
-          <p className="tabular text-3xl font-semibold tracking-[0.05em] break-all">
+          <p className="tabular text-2xl font-semibold break-all sm:text-3xl sm:tracking-[0.05em]">
             {attempt.va.number}
           </p>
           <div className="mt-3 flex flex-wrap items-baseline justify-between gap-3 text-(length:--density-text)">
