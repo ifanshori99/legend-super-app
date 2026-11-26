@@ -61,6 +61,7 @@ import {
   endOfDayBlindRecapSchema,
   endOfDayRecapSchema,
   formatReceiptNumber,
+  isFailoverReceiptPrefix,
   PosError,
   POS_TENDER_METHODS,
   posEvents,
@@ -68,10 +69,13 @@ import {
   type EndOfDayRecapView,
 } from "@starter/shared/pos";
 import { db } from "../db/index.ts";
+import { posReceipts, receiptSequences } from "../db/schema/pos-receipt.ts";
 import { edgeNodes } from "../db/schema/edge-node.ts";
 import { edgeOrderIngests } from "../db/schema/edge-order-ingest.ts";
 import { edgePosIngests } from "../db/schema/edge-pos-ingest.ts";
+import { edgeAlertId } from "../edge/late-adjustment.ts";
 import { isHeartbeatFreshForDayClose } from "../edge/link-freshness.ts";
+import { logger } from "../lib/logger.ts";
 import {
   domainEventOutbox,
   outlets,
@@ -94,6 +98,7 @@ import { orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
+import { notifyOutletSupervisors } from "./edge-sync-conflict-alert.ts";
 import { outletTarget } from "./device-pin-support.ts";
 import { activeFailoverWindow } from "./edge-failover-window.ts";
 import { revokeActingStaffForOutlet } from "./pos-acting-staff-revoke.ts";
@@ -322,13 +327,144 @@ function newDevice(deviceId: string): DeviceAcc {
  * `edgeComparable` (1269 E3): what the edge froze, so no late adjustments, no
  * failover rows (1271 F5, D1: the edge never had them) and no receipt gaps.
  * `edgeMirror` (1271 F5, D5): the stored recap of an edge close whose date has
- * failover rows: the comparable rows plus the failover rows; only F-run gaps
- * (the edge reported its own).
+ * failover rows: the comparable rows plus the failover rows; only the F-run
+ * gaps of the date (the edge reported its own). `cloud` counts every other
+ * run's gaps outlet-wide and the F-run gaps of the date.
  */
 type RecapMode = "cloud" | "edgeComparable" | "edgeMirror";
 
-/** 1271 D3: the prefix of a failover (F) run, reserved both ways. */
-const FAILOVER_PREFIX = /^F[0-9]{1,4}$/;
+type OutletReceiptGap = { prefix: string; deviceId: string; missing: number[] };
+
+/**
+ * 1271 F5 (CTO 27 Nov): the missing numbers of F (failover) runs that belong
+ * to `businessDate`. An F number is issued in the sale's own transaction, so a
+ * gap cannot hide a paid sale: it never blocks Tutup Hari and is never written
+ * off, it is counted on its own date only. A missing number takes the date of
+ * the run's nearest issued receipt below it, else above it, else the date the
+ * run last moved.
+ */
+async function failoverGapsOnDate(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outlet: typeof outlets.$inferSelect,
+  gaps: readonly OutletReceiptGap[],
+  businessDate: string,
+): Promise<OutletReceiptGap[]> {
+  const runs = gaps.filter((run) => isFailoverReceiptPrefix(run.prefix));
+  if (runs.length === 0) return [];
+  const tenantId = context.tenant.tenantId;
+  const prefixes = runs.map((run) => run.prefix);
+  const issued = await tx
+    .select({
+      prefix: receiptSequences.prefix,
+      sequenceNumber: posReceipts.sequenceNumber,
+      businessDate: orders.businessDate,
+    })
+    .from(posReceipts)
+    .innerJoin(
+      receiptSequences,
+      and(
+        eq(receiptSequences.tenantId, posReceipts.tenantId),
+        eq(receiptSequences.id, posReceipts.sequenceId),
+      ),
+    )
+    .innerJoin(
+      orders,
+      and(
+        eq(orders.tenantId, posReceipts.tenantId),
+        eq(orders.id, posReceipts.orderId),
+      ),
+    )
+    .where(
+      and(
+        eq(posReceipts.tenantId, tenantId),
+        eq(receiptSequences.outletId, outlet.id as OutletId),
+        inArray(receiptSequences.prefix, prefixes),
+      ),
+    );
+  const moved = await tx
+    .select({
+      prefix: receiptSequences.prefix,
+      updatedAt: sql<Date>`max(${receiptSequences.updatedAt})`.mapWith(
+        (value: string | Date) => new Date(value),
+      ),
+    })
+    .from(receiptSequences)
+    .where(
+      and(
+        eq(receiptSequences.tenantId, tenantId),
+        eq(receiptSequences.outletId, outlet.id as OutletId),
+        inArray(receiptSequences.prefix, prefixes),
+      ),
+    )
+    .groupBy(receiptSequences.prefix);
+  const clock = outletBusinessDayClock(outlet);
+  const result: OutletReceiptGap[] = [];
+  for (const run of runs) {
+    const own = issued
+      .filter((row) => row.prefix === run.prefix)
+      .sort((a, b) => a.sequenceNumber - b.sequenceNumber);
+    const movedAt = moved.find((row) => row.prefix === run.prefix)?.updatedAt;
+    const dateOf = (n: number): string | null => {
+      const below = own.filter((row) => row.sequenceNumber < n).at(-1);
+      const above = own.find((row) => row.sequenceNumber > n);
+      const date = below?.businessDate ?? above?.businessDate;
+      if (date) return String(date);
+      return movedAt ? businessDateOf(movedAt, clock) : null;
+    };
+    const missing = run.missing.filter((n) => dateOf(n) === businessDate);
+    if (missing.length > 0) result.push({ ...run, missing });
+  }
+  return result;
+}
+
+/**
+ * 1271 F5 (CTO 27 Nov): owners (and the outlet's supervisors) hear once per
+ * outlet and date that F numbers are missing; the technical team investigates.
+ */
+export async function alertFailoverReceiptGaps(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: { outletId: OutletId; businessDate: string; count: number },
+): Promise<void> {
+  if (input.count <= 0) return;
+  const tenantId = context.tenant.tenantId;
+  const id = edgeAlertId(
+    "failover_receipt_gap",
+    tenantId,
+    input.outletId,
+    input.businessDate,
+  );
+  try {
+    await tx.transaction((sp) =>
+      notifyOutletSupervisors(
+        sp,
+        context,
+        {
+          tenantId,
+          outletId: input.outletId,
+          alsoOwners: true,
+          id,
+          eventName: "pos_day.failover_receipt_gap",
+          aggregateType: "pos_day",
+          aggregateId: id,
+          payload: {
+            businessDate: input.businessDate,
+            count: String(input.count),
+          },
+          title: "Nomor struk mode cloud hilang",
+          body: `Ada ${input.count} nomor struk mode cloud (F) yang hilang pada hari ${input.businessDate}. Tutup Hari tetap berjalan; tim teknis memeriksanya.`,
+        },
+        new Date(),
+      ),
+    );
+  } catch {
+    logger.warn(
+      { outletId: input.outletId },
+      "Failover receipt gap alert failed",
+    );
+  }
+}
 
 /** The recap of one business date, computed live from the rows (status open). */
 async function computeRecap(
@@ -886,13 +1022,23 @@ async function computeRecap(
   const sum = (pick: (device: DeviceAcc) => number) =>
     deviceRows.reduce((total, device) => total + pick(device), 0);
   // legend-21c8n: the same outlet-wide numbers RECEIPT_SEQUENCE_GAP names.
-  const receiptGaps =
+  // Review K F1 + CTO 27 Nov: an F-run gap counts on its own date only.
+  const outletGaps =
     mode === "edgeComparable"
       ? []
-      : (await posOutletReceiptGapsPort()(tx, context, { outletId })).filter(
-          // Review K F1: an F-run gap is reported, never written off.
-          (run) => mode === "cloud" || FAILOVER_PREFIX.test(run.prefix),
-        );
+      : await posOutletReceiptGapsPort()(tx, context, { outletId });
+  const receiptGaps = [
+    ...(mode === "cloud"
+      ? outletGaps.filter((run) => !isFailoverReceiptPrefix(run.prefix))
+      : []),
+    ...(await failoverGapsOnDate(
+      tx,
+      context,
+      outlet,
+      outletGaps,
+      businessDate,
+    )),
+  ];
   const unsyncedReceiptCount = receiptGaps.reduce(
     (total, run) => total + run.missing.length,
     0,
@@ -949,8 +1095,8 @@ export function computeEdgeComparableRecap(
 /**
  * 1271 F5 (D5): the cloud's recap of an edge-closed day with failover rows:
  * the edge's rows (as compared) plus the failover rows. Late adjustments stay
- * out, as in the comparable recap; `unsyncedReceiptCount` counts F-run gaps
- * only (the caller adds the edge's own count).
+ * out, as in the comparable recap; `unsyncedReceiptCount` counts the F-run
+ * gaps of the date only (the caller adds the edge's own count).
  */
 export function computeEdgeMirrorRecap(
   tx: Tx,
@@ -1049,8 +1195,16 @@ async function assertDayClosesOnCloud(
     )
     .limit(1);
   if (!edge) return { staleEdge: false };
-  if (isHeartbeatFreshForDayClose(edge.lastHeartbeatAt, now))
+  if (isHeartbeatFreshForDayClose(edge.lastHeartbeatAt, now)) {
+    // 1271 F5 (CTO 27 Nov): a window opened while the edge was live (override)
+    // blocks the close on both sides until the outlet is back on its edge.
+    if (await activeFailoverWindow(tx, context.tenant.tenantId, outletId))
+      throw new PosError(
+        "FAILOVER_ACTIVE",
+        "Selesaikan Kembali ke edge dulu, lalu Tutup Hari di kasir edge.",
+      );
     throw new PosError("DAY_CLOSE_ON_EDGE");
+  }
   return { staleEdge: true };
 }
 
@@ -1212,9 +1366,11 @@ export async function closePosDay(
     // result: they are for reconciliation display only and never block the
     // close. One check only (legend-sgh4l): a per-device loop before it hid
     // the message that names the missing numbers.
-    const outletGaps = await posOutletReceiptGapsPort()(tx, context, {
-      outletId,
-    });
+    // 1271 F5 (CTO 27 Nov): F-run gaps never block; the recap counts the
+    // ones of this date and the owners are alerted after the close.
+    const outletGaps = (
+      await posOutletReceiptGapsPort()(tx, context, { outletId })
+    ).filter((run) => !isFailoverReceiptPrefix(run.prefix));
     if (outletGaps.length > 0) {
       // Name the numbers: the run may be an idle device or the cloud
       // sequence, which no shift report shows. Capped at 20, like the merge.
@@ -1266,6 +1422,14 @@ export async function closePosDay(
       idempotencyKey: body.idempotencyKey,
       requestFingerprint: fingerprint,
     });
+
+    // Any other gap refused the close above, so the count is F of this date.
+    if (!isEdgeProcess())
+      await alertFailoverReceiptGaps(tx, context, {
+        outletId,
+        businessDate: body.businessDate,
+        count: recap.unsyncedReceiptCount,
+      });
 
     // legend-aruta: closing the day ends every acting cashier of the outlet.
     await revokeActingStaffForOutlet(tx, context.tenant, {

@@ -70,6 +70,7 @@ import type { EdgeTx } from "../services/edge-queue.service.ts";
 import { outletBusinessDayClock } from "../services/outlet-clock.ts";
 import { windowTouchesDate } from "../services/edge-failover-window.ts";
 import {
+  alertFailoverReceiptGaps,
   computeEdgeComparableRecap,
   computeEdgeMirrorRecap,
 } from "../services/pos-day.service.ts";
@@ -903,6 +904,12 @@ async function failoverRecap(
     return recap;
   if (!full.devices.every((d) => d.closed))
     throw new Waiting("failover_shift_open");
+  // F gaps of this date: counted, never blocking; the owners hear once.
+  await alertFailoverReceiptGaps(tx, context, {
+    outletId: recap.outletId as OutletId,
+    businessDate: recap.businessDate,
+    count: full.unsyncedReceiptCount,
+  });
   return endOfDayRecapSchema.parse({
     ...full,
     id: recap.id,
