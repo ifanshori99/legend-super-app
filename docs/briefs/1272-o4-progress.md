@@ -17,5 +17,7 @@
 - Pra-gate lulus: prettier, eslint, text-contract + i18n-area-split, typecheck web.
 
 ## Sisa
-- Screenshot `docs/review/img/o4-*-{390,1280}.png` (27 Nov: tertahan, 2 dev server sudah jalan di Mac (c3b, cetak) dan RAM merah): mode mock tidak punya antrean (`usePosOffline` null di `API_MOCK`), jadi butuh API lokal + shift terbuka + jaringan diputus di Playwright (`context.setOffline` tidak menghentikan ping `no-cors`? perlu dicek; alternatif rute `/api/health` diblokir lewat `page.route`).
+- Screenshot `docs/review/img/o4-*-{390,1280}.png`: BELUM ADA gambar. Spec opt-in sudah ditulis tapi BELUM PERNAH dijalankan: `e2e/o4-offline-shots.spec.ts` (dilewati tanpa `O4_SHOTS=1`). Isinya: menanam tenant, kasir, dua supervisor (PIN penyaksi), dua perangkat, menu dine-in/takeaway, pajak; membuka shift lewat API; ping `/api/health` diblok dengan `page.route`; scene banner, bayar, tersimpan, antrean, tutup, keluar, paksa-hitung, paksa-saksi, paksa-siap, paksa-selesai.
+  - Jalankan: `O4_SHOTS=1 heavy --browser pnpm test:e2e` (build produksi + semua spec e2e non-mock). Hasil di `test-results/screenshots/legend-wasr7.8/`; salin ke `docs/review/img/`.
+  - Risiko yang belum dicek: pemilih staf aktif / gerbang PIN di `/pos/kasir`, label pecahan uang (`/^Rp\s?100\.000$/`), nama tombol "Sign out", pilihan outlet otomatis, waktu deteksi offline (tunggu sampai 40 detik).
 - Belum diuji di browser nyata: alur bayar offline end-to-end (O5 drill).
