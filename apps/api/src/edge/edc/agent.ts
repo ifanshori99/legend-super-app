@@ -191,6 +191,10 @@ export interface EdcAgent {
   /** Rows left `pending` by a crashed process become `unknown`. Returns the
    * count. Called by `start`; needs the outlets of `ctx` to be owned. */
   recoverInFlight(ctx: ScopedTenantContext): Promise<number>;
+  /** 1269 E7: true when this agent owns the outlet and has an adapter for
+   * `bank`, so an ECR sale there can reach a terminal. Presentation only:
+   * `requestPayment` checks both again. */
+  canSell(tenantId: string, outletId: string, bank: string): boolean;
 }
 
 const PERMISSION = "pos.payment.accept" as const;
@@ -2143,6 +2147,16 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
       assertTrustedScopedContext(ctx);
       for (const outletId of scopeOutletIds(ctx))
         await releaseOutlet(ownedKey(ctx.tenant.tenantId, outletId));
+    },
+
+    canSell(tenantId, outletId, bank) {
+      if (!owned.has(ownedKey(tenantId, outletId))) return false;
+      try {
+        registry.get(bank);
+        return true;
+      } catch {
+        return false;
+      }
     },
 
     async recoverInFlight(ctx) {
