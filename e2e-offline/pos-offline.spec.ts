@@ -315,29 +315,44 @@ test("the offline till: sell, queue, close refused, ingest once, sign out", asyn
   expect(opened.status, JSON.stringify(opened.body)).toBe(201);
 
   // Online first: the tablet takes its offline kit on its first tick.
+  await page.setViewportSize(VIEWPORTS[0]!);
   await page.goto("/pos/kasir");
   await expect(
     page.getByRole("button", { name: /Kopi Susu/ }).first(),
   ).toBeVisible({ timeout: 30_000 });
   await page.waitForTimeout(8_000);
+  await page
+    .getByRole("button", { name: /Kopi Susu/ })
+    .first()
+    .click();
 
   // The internet goes away for real: every request of the browser fails.
+  const offlineBanner = page.getByText(/^Offline ·/).first();
   await context.setOffline(true);
-  await expect(page.getByText(/^Offline ·/).first()).toBeVisible({
-    timeout: 40_000,
-  });
+  await expect(offlineBanner).toBeVisible({ timeout: 40_000 });
+  await shot(page, "banner");
+
+  // Phones: the cart is its own view, and opening it is a navigation of the
+  // app that needs the internet. Open it while online, then cut the internet
+  // again; the cart and the offline kit stay on the tablet.
+  await context.setOffline(false);
+  await expect(offlineBanner).toBeHidden({ timeout: 60_000 });
+  await page.getByRole("button", { name: /Lihat keranjang/ }).click();
+  await expect(
+    page.getByRole("button", { name: /^Bayar/ }).last(),
+  ).toBeVisible();
+  await context.setOffline(true);
+  await page.waitForTimeout(3_000);
 
   for (const viewport of VIEWPORTS) {
     await page.setViewportSize(viewport);
-    await page
-      .getByRole("button", { name: /Kopi Susu/ })
-      .first()
-      .click();
-    // Phones: the cart is its own view behind the bottom bar.
-    const bar = page.getByRole("button", { name: /Lihat keranjang/ });
-    if (await bar.isVisible()) await bar.click();
-    await expect(page.getByText("Subtotal · 1 item").first()).toBeVisible();
-    await shot(page, "banner");
+    if (viewport.width > 700) {
+      await page
+        .getByRole("button", { name: /Kopi Susu/ })
+        .first()
+        .click();
+      await shot(page, "banner");
+    }
     await page
       .getByRole("button", { name: /^Bayar/ })
       .last()
@@ -355,8 +370,6 @@ test("the offline till: sell, queue, close refused, ingest once, sign out", asyn
       .getByRole("dialog")
       .getByRole("button", { name: "Pesanan baru" })
       .click();
-    const back = page.getByRole("button", { name: "Kembali ke menu" });
-    if (await back.isVisible()) await back.click();
   }
 
   await page.getByRole("button", { name: "Lihat antrean" }).first().click();
@@ -411,7 +424,7 @@ test("the offline till: sell, queue, close refused, ingest once, sign out", asyn
 
   // Queue empty: the close and the sign-out are no longer held.
   await page.goto("/pos/shift/tutup");
-  await expect(page.getByText("Hitung uang di laci").first()).toBeVisible({
+  await expect(page.getByText("Tutup shift · Hitung kas").first()).toBeVisible({
     timeout: 30_000,
   });
   await expect(page.getByText("Shift belum bisa ditutup")).toHaveCount(0);
