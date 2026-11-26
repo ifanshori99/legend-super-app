@@ -24,3 +24,6 @@ Reviewer: architect (Opus xhigh), 26 Nov. Hasil: **LULUS bersyarat**. Bukti: `ed
 - general_manager tidak dapat `pos.failover.manage` (sesuai brief; pilih yang membatasi). Owner/outlet_manager/supervisor cukup.
 - Window > 31 hari tidak realistis; batas 31 tetap. Edge mati > 31 hari = runbook cabut node (F7).
 - Nit check status dikerjakan sekalian bersama perbaikan no. 1 (migrasi masih di F1).
+
+## Re-review 27 Nov (5b7a416e1): LULUS
+FK user dihapus (skema, SQL, snapshot); 0529 dibuat ulang, rantai snapshot dan `when` benar. Check `return_by_check`/`cancelled_by_check` baru; DTO membawa `returnStartedBy`/`cancelledBy`; test salinan window tanpa manager di snapshot lulus. 67/67 + kontrak 4/4. Ralat F2/F4 sudah di brief.
