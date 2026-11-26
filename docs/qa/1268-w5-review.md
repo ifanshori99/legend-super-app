@@ -32,3 +32,10 @@ Read-only review. Tests, typecheck and the UI script were NOT run. Only isi-1280
 - No. 2: tombol per izin: "Kirim ke dapur" hanya bila izin fire (sama dengan route server); "Lanjut ke pembayaran" hanya bila `pos.payment.accept`. Test.
 - No. 3: order `draft`: tanpa tombol bayar, tampilkan "Lanjutkan di kasir".
 - No. 4: peringatan tautan lama hanya bila daftar segar (< 20 detik); selain itu sembunyikan.
+
+## Re-review (delta 49101364a..750a48f14, 750a48f14)
+Hasil: LULUS (tanpa temuan P1/P2). Hanya baca kode delta; tes/typecheck tidak dijalankan.
+- No. 1 OK: `openOrdersGate` mengarahkan akun `order.create` tanpa izin kasir ke `/pos/captain` (redirect), selain itu notFound; alasan ditulis di guard.ts. Akun yang punya `pos.payment.accept` tetap masuk.
+- No. 2 OK: `orderActionRights` meniru server (fire = `pos.sale.create | order.create`, bayar = `pos.payment.accept`). `primaryActionOf` murni dan diuji. SecondaryPay juga butuh `rights.pay`. Akses tidak terbaca -> semua tombol disembunyikan (gagal tertutup).
+- No. 3 OK dengan catatan: draft tidak lagi punya tombol bayar; diganti "Lanjutkan di kasir" (hanya `pos.sale.create`). Catatan P3: tautan ke `/pos/kasir` polos, tanpa id draft; belum terlihat kasir melanjutkan draft itu (continueDraft hanya ada di layar captain).
+- No. 4 OK dengan catatan P3: `oldLinkRemainingIdr` menolak daftar >= 20 dtk. Namun `useNow` tick tiap 5 dtk, jadi setelah tiap refetch `dataUpdatedAt` bisa > `now` -> umur negatif -> peringatan tersembunyi sampai tick berikut (maks 5 dtk), muncul-hilang tiap 20 dtk. Perbaikan kecil: umur = `Math.max(0, now - dataUpdatedAt)` atau `Date.now()` saat render. Tombol bayar tidak terpengaruh.
