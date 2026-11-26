@@ -17,7 +17,8 @@
 //   flagged blocks it (the same set `writeAhead` refuses to start over).
 // - One slip is one charge on the machine (legend-9yw78.15): the bank reference
 //   (no hyphens, upper case, as the resolve flow compares it) of an approved,
-//   pending or unknown sale of the same bank never pays a second bill. The
+//   pending or unknown sale of the tenant, whatever the bank or terminal, never
+//   pays a second bill (a look-alike across banks only costs a supervisor). The
 //   check runs under an advisory lock on that reference, so two bills sent
 //   together with one slip cannot both pass. Doubt refuses: the cashier asks
 //   the supervisor, who can see the slip.
@@ -126,7 +127,7 @@ export async function settlePosEdcStandalone(
   // sees every charge of this bank, whichever bill or path wrote it.
   const slip = slipNumber(input.bankRef);
   await tx.execute(
-    sql`SELECT pg_advisory_xact_lock(hashtext(${tenantId}), hashtext(${`edc-slip:${terminal.bankCode}:${slip}`}))`,
+    sql`SELECT pg_advisory_xact_lock(hashtext(${tenantId}), hashtext(${`edc-slip:${slip}`}))`,
   );
   const sameSlip = await tx
     .select({ id: edcTransactions.id })
@@ -134,7 +135,6 @@ export async function settlePosEdcStandalone(
     .where(
       and(
         eq(edcTransactions.tenantId, tenantId),
-        eq(edcTransactions.bank, terminal.bankCode),
         eq(edcTransactions.type, "sale"),
         inArray(edcTransactions.status, ["approved", "pending", "unknown"]),
         sql`upper(replace(${edcTransactions.rrn}, '-', '')) = ${slip}`,

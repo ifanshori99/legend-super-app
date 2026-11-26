@@ -62,7 +62,10 @@ import {
   wasRefused,
 } from "@/features/ws04-pos-kasir/payment-intent-store";
 import { isSendingIntent } from "@/features/ws04-pos-kasir/payment-intent-browser";
-import { edcApprovalKey } from "@/features/ws04-pos-kasir/components/payment/payment-helpers";
+import {
+  edcApprovalKey,
+  edcSlipRefProblem,
+} from "@/features/ws04-pos-kasir/components/payment/payment-helpers";
 import { trackSender } from "@/features/ws04-pos-kasir/sender-lock";
 
 type Tender = Record<string, unknown>;
@@ -1059,6 +1062,27 @@ describe("two separate pages (own modules, one localStorage)", () => {
     const keys = new Set(money().map((c) => c.body?.idempotencyKey));
     expect(keys.size).toBe(1);
   });
+});
+
+// legend-9yw78.15 review: the reference is read before the supervisor approval
+// is asked, whose reason text names it and is stored with the audit trail.
+describe("a reference that looks like a card number never reaches an approval", () => {
+  it.each([
+    "4111111111111111",
+    "4111-1111-1111-1111",
+    " 4111111111111111 ",
+    "A4111111111111111",
+    "12345",
+  ])("refuses %j", (ref) => {
+    expect(edcSlipRefProblem(ref)).toEqual(expect.any(String));
+  });
+
+  it.each(["736214805192", "7788-99AB1234", " 736214805192 "])(
+    "accepts %j",
+    (ref) => {
+      expect(edcSlipRefProblem(ref)).toBeUndefined();
+    },
+  );
 });
 
 describe("review 6: one PIN approves one slip", () => {

@@ -20,7 +20,7 @@ import {
 import type { EdcMode, EdcTerminal, PaymentBill } from "../../types";
 import { Notice, PosPanel, StatusPill } from "../shared";
 import { EdcLayout, useEdcErrorText } from "./edc-side";
-import { edcApprovalKey } from "./payment-helpers";
+import { edcApprovalKey, edcSlipRefProblem } from "./payment-helpers";
 import { INTENT_STORAGE_UNAVAILABLE } from "../../payment-intent-store";
 
 const PIN_LENGTH = 6;
@@ -60,12 +60,16 @@ export function EdcStandalone({
   const approvalRef = useRef<{ key: string; overrideId: string } | null>(null);
 
   const amountIdr = Number(slipAmount);
+  // The slip cannot change while it is sent, nor after a note is written for it.
   const slipLocked =
-    record.isError &&
-    !(
-      record.error instanceof ApiError &&
-      record.error.code === INTENT_STORAGE_UNAVAILABLE
-    );
+    record.isPending ||
+    (record.isError &&
+      !(
+        record.error instanceof ApiError &&
+        record.error.code === INTENT_STORAGE_UNAVAILABLE
+      ));
+  // Read before any approval: its reason names the reference and is stored.
+  const refProblem = bankRef.trim() ? edcSlipRefProblem(bankRef) : undefined;
   // Radix Select can report "" (no matching item yet): treat it as no choice.
   const approver = approverId || undefined;
   const pending = override.isPending || record.isPending;
@@ -74,11 +78,13 @@ export function EdcStandalone({
     amountIdr > 0 &&
     approver !== undefined &&
     bankRef.trim().length >= BANK_REF_MIN_LENGTH &&
+    refProblem === undefined &&
     pin.length === PIN_LENGTH &&
     !pending;
 
   async function submit() {
     if (!canSubmit || !terminal || !approver) return;
+    if (edcSlipRefProblem(bankRef) !== undefined) return;
     setPinError(undefined);
     record.reset();
     // An approval the record did not consume is reused for the same order,
@@ -227,6 +233,7 @@ export function EdcStandalone({
               <FormField
                 label={t("posKasirEdc.standalone.bankRef")}
                 hint={t("posKasirEdc.standalone.bankRefHint")}
+                error={refProblem}
                 required
               >
                 <Input
@@ -270,6 +277,7 @@ export function EdcStandalone({
                   name="approvalCode"
                   value={approvalCode}
                   onChange={(event) => setApprovalCode(event.target.value)}
+                  readOnly={slipLocked}
                   autoComplete="off"
                   spellCheck={false}
                   className="tabular"

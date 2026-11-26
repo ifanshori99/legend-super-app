@@ -23,6 +23,7 @@ import {
 } from "@starter/shared/core/server";
 import type { PosReceipt } from "@starter/shared/pos";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
+import { createPosOverrideSchema } from "@starter/shared/access/override";
 import { createApp } from "../app.ts";
 import { signDeviceToken } from "../lib/device-token.ts";
 import {
@@ -973,6 +974,64 @@ describe("POS standalone EDC tender (legend-m4fv, EDC-04)", () => {
         });
         expect(res.status, JSON.stringify([status, res.body])).toBe(201);
       }
+    });
+
+    it("refuses a slip booked under another bank, on any terminal of the tenant", async () => {
+      const mandiriId = randomUUID();
+      await asOwnerTenant(tenant.tenantId, (client) =>
+        client.query(
+          `INSERT INTO payment_edc_terminals
+             (id, tenant_id, outlet_id, bank_code, terminal_id, merchant_id, model,
+              connection, ip_address, supported_methods, status)
+           VALUES ($1, $2, $3, 'mandiri', 'TID-MD', 'MID-MD', 'Test EDC', 'lan',
+                   '10.0.0.9', ARRAY['card','qris'], 'active')`,
+          [mandiriId, tenant.tenantId, tenant.outletId],
+        ),
+      );
+      const first = await newOrder();
+      const bankRef = "778811223344";
+      const paid = await payStandalone(first, {
+        terminalId,
+        bankRef,
+        overrideId: await slipOverride(first),
+      });
+      expect(paid.status, JSON.stringify(paid.body)).toBe(201);
+      const second = await newOrder();
+      const res = await payStandalone(second, {
+        terminalId: mandiriId,
+        bankRef,
+        overrideId: await slipOverride(second),
+      });
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      await noTender(second.orderId);
+    });
+
+    it("an override reason of a hand-keyed EDC payment never holds a card number", () => {
+      const ask = (reason: string, action = "edc_standalone") =>
+        createPosOverrideSchema.safeParse({
+          outletId: tenant.outletId,
+          action,
+          valueIdr: 25_000,
+          reason,
+          objectType: "pos_order",
+          objectId: createUlid(),
+          approval: {
+            method: "supervisor_pin",
+            approverUserId: supervisor.userId,
+            pin: PIN,
+          },
+        });
+      for (const reason of [
+        "EDC standalone, referensi bank 4111111111111111",
+        "EDC standalone, referensi bank 4111 1111 1111 1111",
+        "EDC standalone, referensi bank 4111-1111-1111-1111",
+      ])
+        expect(ask(reason).success, reason).toBe(false);
+      expect(ask("EDC standalone, referensi bank 736214805192").success).toBe(
+        true,
+      );
+      // Other actions are not touched by this rule.
+      expect(ask("Struk 4111111111111111", "void").success).toBe(true);
     });
 
     it("two bills sent together with one slip: one is paid, one refused", async () => {
