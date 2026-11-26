@@ -344,6 +344,7 @@ beforeAll(async () => {
         "pos.payment.accept",
         "pos.void.request",
         "pos.refund.request",
+        "payment.reconcile",
         "shift.cash.approve_close",
         "pos.day.close",
         "pos.receipt.writeoff",
@@ -490,3 +491,101 @@ describe("1269 E3 POS_WRITE_ON_EDGE over HTTP", () => {
     }
   });
 });
+
+// 1269 E6 (docs/briefs/1269-e6-keputusan.md): back office refunds an edge
+// sale the cloud ingested on an outlet its edge serves; nothing else opens.
+describe("1269 E6 refund of an ingested edge sale on an edge outlet", () => {
+  const ingestedUlid = createUlid();
+  const failoverUlid = createUlid();
+  const corrections = (ulid: string, action: string) =>
+    `${base()}/pos/orders/${encodeURIComponent(ulid)}/corrections/${action}`;
+
+  async function seed(): Promise<void> {
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SET LOCAL session_replication_role = replica");
+      const t = tenant.tenantId;
+      const o = tenant.outletId;
+      const windowId = randomUUID();
+      await client.query(
+        `INSERT INTO outlet_failover_windows (id, tenant_id, outlet_id, edge_node_id, status,
+           reason, idempotency_key, activated_by, business_date_from, business_date_to,
+           return_started_at, return_started_by, closed_at)
+         VALUES ($1, $2, $3, $4, 'closed', 'Server lokal mati', $5, 'owner', '2026-11-20',
+           '2026-11-20', now(), 'owner', now())`,
+        [windowId, t, o, randomUUID(), randomUUID()],
+      );
+      for (const [ulid, window] of [
+        [ingestedUlid, null],
+        [failoverUlid, windowId],
+      ] as const) {
+        const id = ulidToUuid(ulid);
+        await client.query(
+          `INSERT INTO orders
+             (id, tenant_id, outlet_id, number, channel, service_type, payment_mode,
+              subtotal_idr, discount_idr, service_charge_idr, tax_idr, rounding_idr, total_idr,
+              status, business_date, placed_at, deposit_applied_idr)
+           VALUES ($1, $2, $3, $4, 'pos', 'takeaway', 'pay_first', 10000, 0, 0, 0, 0, 10000,
+                   'completed', '2026-11-20', now(), 0)`,
+          [id, t, o, `E6-${ulid.slice(-6)}`],
+        );
+        await client.query(
+          `INSERT INTO pos_orders (order_id, tenant_id, outlet_id, channel, submitted_at,
+             completed_at, failover_window_id)
+           VALUES ($1, $2, $3, 'pos', now(), now(), $4)`,
+          [id, t, o, window],
+        );
+      }
+      await client.query(
+        `INSERT INTO edge_order_ingests (tenant_id, order_id, outlet_id, paid_event_id, state)
+         VALUES ($1, $2, $3, $4, 'ingested')`,
+        [t, ulidToUuid(ingestedUlid), o, ulidToUuid(createUlid())],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  it("the refund of an ingested edge sale reaches its handler; its void and every other order stay refused", async () => {
+    await seed();
+    const id = await addEdge("primary");
+    try {
+      const refund = await post([
+        "refund",
+        () => corrections(ingestedUlid, "refund"),
+        key,
+      ]);
+      expect(refund.body.error?.code).not.toBe("POS_WRITE_ON_EDGE");
+      const payout = await post([
+        "payout",
+        () => `${corrections(ingestedUlid, "refunds")}/${randomUUID()}/payout`,
+        key,
+      ]);
+      expect(payout.body.error?.code).not.toBe("POS_WRITE_ON_EDGE");
+      // D3: no void after payment from back office.
+      const voided = await post([
+        "void",
+        () => corrections(ingestedUlid, "void"),
+        key,
+      ]);
+      expect(voided.status).toBe(409);
+      expect(voided.body.error.code).toBe("POS_WRITE_ON_EDGE");
+      // A failover order (F series) after the return stays refused (F3 v1).
+      const failover = await post([
+        "failover refund",
+        () => corrections(failoverUlid, "refund"),
+        key,
+      ]);
+      expect(failover.status).toBe(409);
+      expect(failover.body.error.code).toBe("POS_WRITE_ON_EDGE");
+    } finally {
+      await revoke(id);
+    }
+  });
+});
+

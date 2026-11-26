@@ -38,6 +38,8 @@ import {
   registerEdcLedgerEdgeApplier,
 } from "../edge/edc-ledger-applier.ts";
 import type { EdgeApplyMeta } from "../edge/ports.ts";
+import { resolveEdcReconciliation } from "../services/edc-reconciliation.service.ts";
+import { hasOpenEdcRequest } from "../services/pos-order-support.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import {
@@ -318,12 +320,13 @@ type EdcRow = {
   mode: string;
   terminal_id: string;
   idempotency_key: string;
+  message: string | null;
 };
 
 async function rowsOf(id: string): Promise<EdcRow[]> {
   return q<EdcRow>(
     `SELECT status, amount_idr::text, rrn, approval_code, masked_pan, needs_reconciliation,
-            mode, terminal_id, idempotency_key
+            mode, terminal_id, idempotency_key, message
        FROM edc_transactions WHERE tenant_id = $1 AND id = $2`,
     [tenantId, id],
   );
@@ -376,6 +379,9 @@ afterAll(async () => {
       [tenantId],
     );
     for (const table of [
+      "edge_order_ingests",
+      "pos_orders",
+      "orders",
       "edge_edc_ingests",
       "edc_transactions",
       "payment_edc_terminals",
@@ -506,7 +512,7 @@ describe("1269 E4 edge EDC ledger mirrored in the cloud", () => {
     await deliver([c.created()]);
     await deliver([c.approved(2, { amountIdr: 70000 })]);
     expect(await rowsOf(c.id)).toEqual([
-      expect.objectContaining({ status: "pending", amount_idr: "75000" }),
+      expect.objectContaining({ status: "failed", amount_idr: "75000" }),
     ]);
     expect(await ledger(c.id)).toMatchObject({
       state: "refused",
@@ -514,7 +520,7 @@ describe("1269 E4 edge EDC ledger mirrored in the cloud", () => {
     });
     // A later, consistent event never revives it: finance decides.
     await deliver([c.flagged(3)]);
-    expect((await rowsOf(c.id))[0]!.status).toBe("pending");
+    expect((await rowsOf(c.id))[0]!.status).toBe("failed");
     expect(await ledger(c.id)).toMatchObject({
       state: "refused",
       reason: "charge_changed",
@@ -532,8 +538,9 @@ describe("1269 E4 edge EDC ledger mirrored in the cloud", () => {
       bank: "mandiri",
     });
     await deliver([second.created(), second.approved()]);
-    // Pending (no slip yet) is mirrored; the approval with the used slip is not.
-    expect((await rowsOf(second.id))[0]!.status).toBe("pending");
+    // Pending (no slip yet) is mirrored; the approval with the used slip is
+    // not, and the pending row is closed as failed (E6, E4 review P3 a).
+    expect((await rowsOf(second.id))[0]!.status).toBe("failed");
     expect(await ledger(second.id)).toMatchObject({
       state: "refused",
       reason: "slip_used",
@@ -555,7 +562,7 @@ describe("1269 E4 edge EDC ledger mirrored in the cloud", () => {
       reference: first.base.reference,
     };
     await deliver([second.created(sameBill), second.approved(2, sameBill)]);
-    expect((await rowsOf(second.id))[0]!.status).toBe("pending");
+    expect((await rowsOf(second.id))[0]!.status).toBe("failed");
     expect(await ledger(second.id)).toMatchObject({
       state: "refused",
       reason: "reference_approved_twice",
@@ -603,7 +610,7 @@ describe("1269 E4 edge EDC ledger mirrored in the cloud", () => {
     const c = charge({ rrn: PAN });
     await deliver([c.created(), c.approved()]);
     // The approval carried the card number: refused, never mirrored.
-    expect((await rowsOf(c.id))[0]!.status).toBe("pending");
+    expect((await rowsOf(c.id))[0]!.status).toBe("failed");
     expect(await ledger(c.id)).toMatchObject({
       state: "refused",
       reason: "card_number",
@@ -667,5 +674,133 @@ describe("1269 E4 edge EDC ledger mirrored in the cloud", () => {
       expect(
         edcTransactionEventPayloadSchema.safeParse({ ...ok, rrn }).success,
       ).toBe(false);
+  });
+});
+
+// 1269 E6 (docs/briefs/1269-e6-keputusan.md, E4 review P3 a-c).
+describe("1269 E6 edge EDC rows after E4", () => {
+  it("P3a a refusal after created was mirrored closes the pending row as failed (edge_refused), once", async () => {
+    const c = charge();
+    await deliver([c.created()]);
+    await deliver([c.approved(2, { amountIdr: 70000 })]);
+    const [row] = await rowsOf(c.id);
+    expect(row).toMatchObject({ status: "failed", message: "edge_refused" });
+    const [{ completed_at: first }] = await q<{ completed_at: Date }>(
+      "SELECT completed_at FROM edc_transactions WHERE tenant_id = $1 AND id = $2",
+      [tenantId, c.id],
+    );
+    // Later events stay refused and never move the row again.
+    await deliver([c.flagged(3)]);
+    await ingestDirect(c.approved(4));
+    const [after] = await q<{ status: string; completed_at: Date }>(
+      "SELECT status, completed_at FROM edc_transactions WHERE tenant_id = $1 AND id = $2",
+      [tenantId, c.id],
+    );
+    expect(after).toEqual({ status: "failed", completed_at: first });
+  });
+
+  it("P3a a refusal never touches a row already final", async () => {
+    const c = charge();
+    await deliver([c.created(), c.declined()]);
+    await deliver([c.approved(3)]);
+    expect((await rowsOf(c.id))[0]).toMatchObject({
+      status: "declined",
+      message: null,
+    });
+  });
+
+  it("P3b cloud reconciliation never changes an edge row", async () => {
+    const c = charge();
+    await deliver([c.created(), c.flagged(2)]);
+    const before = await rowsOf(c.id);
+    const context = scopeOf([outletA]);
+    await expect(
+      withTenant(db, context, (tx) =>
+        resolveEdcReconciliation(tx, context, {
+          edcTransactionId: c.id,
+          outcome: "approved",
+          evidence: {
+            source: "terminal_receipt",
+            note: "Cek struk terminal",
+            chargedAmountIdr: 75000,
+          },
+          actorUserId: actor,
+        } as Parameters<typeof resolveEdcReconciliation>[2]),
+      ),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(await rowsOf(c.id)).toEqual(before);
+    // The edge's own resolve still goes through.
+    await deliver([c.declined(3)]);
+    expect((await rowsOf(c.id))[0]!.status).toBe("declined");
+  });
+
+  it("P3c an approved edge charge of an ingested sale leaves no open EDC request", async () => {
+    const c = charge();
+    await deliver([c.created(), c.approved()]);
+    const number = String(c.base.reference);
+    const context = scopeOf([outletA]);
+    const open = () =>
+      withTenant(db, context, (tx) =>
+        hasOpenEdcRequest(tx, context, {
+          outletId: outletIdSchema.parse(outletA),
+          number,
+        }),
+      );
+    // Before the sale arrives the approved charge has no tender: open.
+    expect(await open()).toBe(true);
+    const orderUuid = ulidToUuid(createUlid());
+    await q(
+      `INSERT INTO orders (id, tenant_id, outlet_id, number, channel, service_type,
+         payment_mode, subtotal_idr, discount_idr, service_charge_idr, tax_idr,
+         rounding_idr, total_idr, status, business_date, placed_at)
+       VALUES ($1, $2, $3, $4, 'pos', 'takeaway', 'pay_first', 75000, 0, 0, 0, 0,
+         75000, 'completed', '2026-11-26', now())`,
+      [orderUuid, tenantId, outletA, number],
+    );
+    await q(
+      `INSERT INTO pos_orders (order_id, tenant_id, outlet_id, channel, submitted_at, completed_at)
+       VALUES ($1, $2, $3, 'pos', now(), now())`,
+      [orderUuid, tenantId, outletA],
+    );
+    await q(
+      `INSERT INTO edge_order_ingests (tenant_id, order_id, outlet_id, paid_event_id, state)
+       VALUES ($1, $2, $3, $4, 'ingested')`,
+      [tenantId, orderUuid, outletA, ulidToUuid(createUlid())],
+    );
+    expect(await open()).toBe(false);
+  });
+
+  it("P3c a pending edge charge stays open even after the sale is ingested", async () => {
+    const c = charge();
+    await deliver([c.created()]);
+    const number = String(c.base.reference);
+    const orderUuid = ulidToUuid(createUlid());
+    await q(
+      `INSERT INTO orders (id, tenant_id, outlet_id, number, channel, service_type,
+         payment_mode, subtotal_idr, discount_idr, service_charge_idr, tax_idr,
+         rounding_idr, total_idr, status, business_date, placed_at)
+       VALUES ($1, $2, $3, $4, 'pos', 'takeaway', 'pay_first', 75000, 0, 0, 0, 0,
+         75000, 'completed', '2026-11-26', now())`,
+      [orderUuid, tenantId, outletA, number],
+    );
+    await q(
+      `INSERT INTO pos_orders (order_id, tenant_id, outlet_id, channel, submitted_at, completed_at)
+       VALUES ($1, $2, $3, 'pos', now(), now())`,
+      [orderUuid, tenantId, outletA],
+    );
+    await q(
+      `INSERT INTO edge_order_ingests (tenant_id, order_id, outlet_id, paid_event_id, state)
+       VALUES ($1, $2, $3, $4, 'ingested')`,
+      [tenantId, orderUuid, outletA, ulidToUuid(createUlid())],
+    );
+    const context = scopeOf([outletA]);
+    expect(
+      await withTenant(db, context, (tx) =>
+        hasOpenEdcRequest(tx, context, {
+          outletId: outletIdSchema.parse(outletA),
+          number,
+        }),
+      ),
+    ).toBe(true);
   });
 });

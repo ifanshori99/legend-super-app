@@ -332,6 +332,7 @@ afterAll(async () => {
       [seededTenantId, deviceId],
     );
     for (const table of [
+      "pos_refund_payouts",
       "edge_order_ingests",
       "pos_order_voids",
       "pos_order_refunds",
@@ -357,23 +358,36 @@ afterAll(async () => {
 });
 
 describe("legend-771dl cloud corrections of an ingested edge sale are blocked", () => {
-  for (const state of ["ingested", "voided"] as const) {
-    it(`a cloud refund of an order whose ledger state is ${state} is refused with 409 EDGE_ORDER_CORRECTION_BLOCKED`, async () => {
-      const bill = await sale(100_000, state);
-      await expect(refund(bill)).rejects.toMatchObject(BLOCKED);
-      expect(await correctionRows(bill)).toEqual(NONE);
-    });
+  // 1269 E6 (docs/briefs/1269-e6-keputusan.md): an `ingested` sale is now
+  // refunded by back office (edge-sale-back-office-refund.test.ts); a void
+  // after payment stays refused (D3), and a voided sale is never refunded.
+  it("a cloud refund of an order whose ledger state is voided is refused with 409 EDGE_ORDER_CORRECTION_BLOCKED", async () => {
+    const bill = await sale(100_000, "voided");
+    await expect(refund(bill)).rejects.toMatchObject(BLOCKED);
+    expect(await correctionRows(bill)).toEqual(NONE);
+  });
 
+  for (const state of ["ingested", "voided"] as const)
     it(`a cloud void of an order whose ledger state is ${state} is refused with 409 EDGE_ORDER_CORRECTION_BLOCKED`, async () => {
       const bill = await sale(100_000, state);
       await expect(voidOrder(bill)).rejects.toMatchObject(BLOCKED);
       expect(await correctionRows(bill)).toEqual(NONE);
     });
-  }
+
+  it("E6 a cloud refund of an ingested order is a back-office refund: no drawer touched", async () => {
+    const bill = await sale(100_000, "ingested");
+    const result = await refund(bill, 50_000);
+    expect(Number(result.amountIdr)).toBe(50_000);
+    const { rows } = await owner.query<{ shift_id: string | null }>(
+      "SELECT shift_id FROM pos_order_refunds WHERE tenant_id = $1 AND order_id = $2",
+      [seededTenantId, bill.orderUuid],
+    );
+    expect(rows).toEqual([{ shift_id: null }]);
+  });
 
   it("the refusal leaves the order completed and a second attempt is refused the same way", async () => {
     const bill = await sale(100_000, "ingested");
-    await expect(refund(bill)).rejects.toMatchObject(BLOCKED);
+    await expect(voidOrder(bill)).rejects.toMatchObject(BLOCKED);
     await expect(voidOrder(bill)).rejects.toMatchObject(BLOCKED);
     const { rows } = await owner.query<{ status: string }>(
       "SELECT status FROM orders WHERE tenant_id = $1 AND id = $2",
@@ -383,17 +397,15 @@ describe("legend-771dl cloud corrections of an ingested edge sale are blocked", 
     expect(await correctionRows(bill)).toEqual(NONE);
   });
 
-  it("the refusal says offline cashier refunds are unsupported in release 1, points to finance and promises no cloud void", async () => {
+  it("the void refusal points to the back-office refund and promises no cloud void", async () => {
     const bill = await sale(100_000, "ingested");
-    for (const attempt of [refund(bill), voidOrder(bill)]) {
-      const error = await attempt.then(
-        () => null,
-        (e: unknown) => e as Error,
-      );
-      expect(error?.message).toMatch(/belum didukung di rilis 1/);
-      expect(error?.message).toMatch(/hubungi finance/);
-      expect(error?.message).not.toMatch(/akan di-?(void|refund)/i);
-    }
+    const error = await voidOrder(bill).then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+    expect(error?.message).toMatch(/tidak bisa di-void dari pusat/);
+    expect(error?.message).toMatch(/refund dari back office/);
+    expect(error?.message).not.toMatch(/akan di-?(void|refund)/i);
   });
 
   it("an ordinary cloud order (no ledger row) can still be refunded", async () => {
