@@ -58,7 +58,10 @@ import {
 } from "../middleware/acting-staff.ts";
 import { requireAuthAllowSharedDevice } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
-import { requireCorePosWriteOnCloud } from "../middleware/pos-on-cloud.ts";
+import {
+  requireCorePosWriteOnCloud,
+  requireFinishPosWriteOnCloud,
+} from "../middleware/pos-on-cloud.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
   getAccessSnapshot,
@@ -328,7 +331,7 @@ posOrderRouter.post(
 posOrderRouter.post(
   "/orders/:orderId/complete",
   sell,
-  requireCorePosWriteOnCloud,
+  requireFinishPosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId } = completePosOrder.params.parse(req.params);
@@ -347,7 +350,7 @@ posOrderRouter.post(
 posOrderRouter.post(
   "/orders/:orderId/void",
   voids,
-  requireCorePosWriteOnCloud,
+  requireFinishPosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId } = voidPosOrder.params.parse(req.params);
@@ -489,7 +492,7 @@ posOrderRouter.get("/qris/reconciliations", reconcile, async (req, res) => {
 posOrderRouter.post(
   "/orders/:orderId/qris/cancel",
   pay,
-  requireCorePosWriteOnCloud,
+  requireFinishPosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId } = cancelPosQris.params.parse(req.params);
@@ -509,7 +512,7 @@ posOrderRouter.post(
 posOrderRouter.post(
   "/orders/:orderId/qris/release",
   pay,
-  requireCorePosWriteOnCloud,
+  requireFinishPosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId } = releasePosQris.params.parse(req.params);
@@ -531,7 +534,7 @@ posOrderRouter.post(
 posOrderRouter.post(
   "/orders/:orderId/payment-intents/resolve",
   pay,
-  requireCorePosWriteOnCloud,
+  requireFinishPosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId } = resolvePosPaymentIntent.params.parse(
@@ -553,7 +556,7 @@ posOrderRouter.post(
 posOrderRouter.post(
   "/orders/:orderId/va/release",
   pay,
-  requireCorePosWriteOnCloud,
+  requireFinishPosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId } = releasePosVa.params.parse(req.params);

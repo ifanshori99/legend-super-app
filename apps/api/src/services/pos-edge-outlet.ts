@@ -13,7 +13,12 @@
 // and captain orders, payment, shift and drawer, receipts, KDS/expo and the
 // cashier sign-in. Every other caller keeps the default (refused): QR guests,
 // table links, table sessions, order customer, delivery, order recovery,
-// points and tickets. In `returning` the cloud refuses again. On the edge, a
+// points and tickets. With the kill switch off during a window, only the
+// paths that finish rows the window already holds stay open
+// (`{ failover: "finish" }`: count, close and force-close a shift, decide a
+// drawer request, void, complete, cancel or release QRIS/VA, resolve a
+// payment intent), so the outlet can still be handed back; nothing new is
+// created. In `returning` the cloud refuses again. On the edge, a
 // POS write is refused with FAILOVER_ACTIVE while its window copy is
 // `active` or `returning`, so edge and cloud never sell at the same time.
 import { and, eq, sql } from "drizzle-orm";
@@ -94,8 +99,13 @@ export type PosWriteGateOptions = {
    * window is `active` (cashier/captain order, payment, shift and drawer,
    * receipt, KDS/expo, cashier sign-in). Omitted: refused like any other
    * write of an edge outlet.
+   *
+   * `finish`: a core path that only finishes a row the window already holds
+   * (shift count/close/force-close, drawer decision, order void/complete,
+   * QRIS/VA cancel or release, payment-intent resolve). Also open while
+   * EDGE_FAILOVER_ENABLED is off, so the window can still be returned.
    */
-  readonly failover?: "core";
+  readonly failover?: "core" | "finish";
   /** The row the write acts on (core writes on an existing row). */
   readonly target?: PosWriteTarget;
 };
@@ -169,7 +179,10 @@ export async function posWriteFailoverWindowId(
     return null;
   }
   if (!(await outletHasActiveEdge(tx, tenantId, outletId))) return null;
-  if (options.failover === "core" && edgeFailoverEnabled()) {
+  if (
+    options.failover === "finish" ||
+    (options.failover === "core" && edgeFailoverEnabled())
+  ) {
     const [window] = await tx
       .select({ id: outletFailoverWindows.id })
       .from(outletFailoverWindows)
@@ -193,6 +206,24 @@ export async function posWriteFailoverWindowId(
     }
   }
   throw new PosError("POS_WRITE_ON_EDGE");
+}
+
+/**
+ * The gate for a write on an order the caller has already locked: on an edge
+ * outlet only an order of the active window is written (1271 F3).
+ */
+export async function assertPosOrderWriteOnCloud(
+  tx: Tx,
+  tenantId: TenantId,
+  outletId: OutletId,
+  orderWindowId: string | null,
+  failover: "core" | "finish",
+): Promise<void> {
+  const windowId = await posWriteFailoverWindowId(tx, tenantId, outletId, {
+    failover,
+  });
+  if (windowId !== null && orderWindowId !== windowId)
+    throw new PosError("POS_WRITE_ON_EDGE");
 }
 
 /** The gate without the window id (see posWriteFailoverWindowId). */

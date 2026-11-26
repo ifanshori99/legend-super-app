@@ -125,7 +125,8 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
     );
 
   // 1271 F3: what still blocks a failover return or cancel, one detail per
-  // id (`unpaidOrderIds`, `openShiftIds`, `qrisHoldOrderIds`).
+  // id (`orderIds`, `unpaidOrderIds`, `openShiftIds`, `qrisHoldOrderIds`,
+  // `parkedOrderIds`).
   if (error instanceof FailoverOpenWorkError)
     return send(
       error.status,

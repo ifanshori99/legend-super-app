@@ -44,7 +44,10 @@ import {
 } from "../middleware/acting-staff.ts";
 import { requireAuthAllowSharedDevice } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
-import { requireCorePosWriteOnCloud } from "../middleware/pos-on-cloud.ts";
+import {
+  requireCorePosWriteOnCloud,
+  requireFinishPosWriteOnCloud,
+} from "../middleware/pos-on-cloud.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
   getScopedTenantContext,
@@ -181,7 +184,7 @@ posShiftRouter.get("/shifts/:shiftId", readShift, async (req, res) => {
 posShiftRouter.post(
   "/shifts/:shiftId/counts",
   operateOrApproveClose,
-  requireCorePosWriteOnCloud,
+  requireFinishPosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, shiftId } = submitPosShiftCount.params.parse(req.params);
@@ -213,7 +216,7 @@ posShiftRouter.get("/shifts/:shiftId/counts", readShift, async (req, res) => {
 posShiftRouter.post(
   "/shifts/:shiftId/close",
   operate,
-  requireCorePosWriteOnCloud,
+  requireFinishPosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, shiftId } = closePosShift.params.parse(req.params);
@@ -233,7 +236,7 @@ posShiftRouter.post(
 posShiftRouter.post(
   "/shifts/:shiftId/force-close",
   approveClose,
-  requireCorePosWriteOnCloud,
+  requireFinishPosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, shiftId } = forceClosePosShift.params.parse(req.params);
@@ -295,7 +298,7 @@ posShiftRouter.get(
 posShiftRouter.post(
   "/shifts/:shiftId/cash-movements/:movementId/decision",
   decideHeldCash,
-  requireCorePosWriteOnCloud,
+  requireFinishPosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, shiftId, movementId } =

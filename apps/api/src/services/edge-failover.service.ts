@@ -27,7 +27,17 @@
 // (`edge.failover.*`); the outlet's managers are notified, the owner too on
 // an override.
 import { createHash } from "node:crypto";
-import { and, asc, desc, eq, inArray, notInArray, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gte,
+  inArray,
+  isNull,
+  notInArray,
+  sql,
+} from "drizzle-orm";
 import {
   CoreError,
   outletIdSchema,
@@ -63,6 +73,7 @@ import { outletFailoverWindows } from "../db/schema/edge-failover.ts";
 import { edgeNodes } from "../db/schema/edge-node.ts";
 import { orders } from "../db/schema/qr-order.ts";
 import { posOrders } from "../db/schema/pos-order.ts";
+import { posParkedOrders } from "../db/schema/pos-parked-order.ts";
 import { posQrisHolds } from "../db/schema/pos-qris-hold.ts";
 import { posShifts } from "../db/schema/pos-shift.ts";
 import { withTenant } from "../db/tenant.ts";
@@ -428,8 +439,9 @@ export async function activateFailoverWindow(
 async function openWorkOf(
   tx: EdgeTx,
   tenantId: TenantId,
-  windowId: string,
+  window: FailoverWindowRow,
 ): Promise<FailoverOpenWork> {
+  const windowId = window.id;
   const unpaid = await tx
     .select({ orderId: posOrders.orderId })
     .from(posOrders)
@@ -480,10 +492,27 @@ async function openWorkOf(
     )
     .orderBy(asc(posQrisHolds.orderId))
     .limit(MAX_OPEN_WORK);
+  // A parked cart carries no window id; on an edge outlet the cloud parks
+  // only while a window is active, so a cart parked since it opened and not
+  // resumed is this window's (CTO 27 Nov: counted as open work).
+  const parked = await tx
+    .select({ id: posParkedOrders.id })
+    .from(posParkedOrders)
+    .where(
+      and(
+        eq(posParkedOrders.tenantId, tenantId),
+        eq(posParkedOrders.outletId, window.outletId),
+        gte(posParkedOrders.parkedAt, window.activatedAt),
+        isNull(posParkedOrders.consumedAt),
+      ),
+    )
+    .orderBy(asc(posParkedOrders.id))
+    .limit(MAX_OPEN_WORK);
   return failoverOpenWorkSchema.parse({
     unpaidOrderIds: unpaid.map((row) => row.orderId),
     openShiftIds: shifts.map((row) => row.id),
     qrisHoldOrderIds: holds.map((row) => row.orderId),
+    parkedOrderIds: parked.map((row) => row.id),
   });
 }
 
@@ -491,7 +520,8 @@ function hasOpenWork(work: FailoverOpenWork): boolean {
   return (
     work.unpaidOrderIds.length > 0 ||
     work.openShiftIds.length > 0 ||
-    work.qrisHoldOrderIds.length > 0
+    work.qrisHoldOrderIds.length > 0 ||
+    work.parkedOrderIds.length > 0
   );
 }
 
@@ -570,9 +600,8 @@ export async function cancelFailoverWindow(
     if (orderRows.length > 0 || shiftRows.length > 0)
       throw new FailoverOpenWorkError(
         failoverOpenWorkSchema.parse({
-          unpaidOrderIds: orderRows.map((row) => row.orderId),
+          orderIds: orderRows.map((row) => row.orderId),
           openShiftIds: shiftRows.map((row) => row.id),
-          qrisHoldOrderIds: [],
         }),
       );
     const outlet = await loadOutlet(tx, context, current.outletId);
@@ -704,7 +733,7 @@ export async function startFailoverReturn(
         FAILOVER_RETURN_FRESH_HEARTBEAT_MS
     )
       throw new PosError("FAILOVER_EDGE_OFFLINE");
-    const work = await openWorkOf(tx, tenantId, windowId);
+    const work = await openWorkOf(tx, tenantId, current);
     if (hasOpenWork(work)) throw new FailoverOpenWorkError(work);
     const counts = await tx
       .select()

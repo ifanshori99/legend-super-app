@@ -6,7 +6,8 @@
 // 1271 F3: the `Core` variants mark the core POS paths the cloud serves while
 // the outlet's failover window is `active` (CTO allowlist: cashier/captain
 // order, payment, shift and drawer, receipt, KDS/expo, cashier sign-in). Every
-// other write uses the plain variant and stays refused during a window.
+// other write uses the plain variant and stays refused during a window. The
+// `Finish` variant marks the core paths that only finish a window row.
 import type { NextFunction, Request, Response } from "express";
 import { outletIdSchema } from "@starter/shared/core";
 import { db } from "../db/index.ts";
@@ -81,10 +82,13 @@ function targetOf(
   return typeof id === "string" && extra ? { kind: extra, id } : undefined;
 }
 
-function coreGate(extra?: PosWriteTarget["kind"]): Middleware {
+function coreGate(
+  extra?: PosWriteTarget["kind"],
+  failover: "core" | "finish" = "core",
+): Middleware {
   return async (req, _res, next) => {
     await assertPosWriteOnCloud(req, req.params.outletId, {
-      failover: "core",
+      failover,
       target: targetOf(req, extra),
     });
     next();
@@ -97,6 +101,17 @@ function coreGate(extra?: PosWriteTarget["kind"]): Middleware {
  * ticket) must belong to that window.
  */
 export const requireCorePosWriteOnCloud: Middleware = coreGate();
+
+/**
+ * A core path that only finishes a row of the window (shift count, close,
+ * force-close, drawer decision; order complete, void, QRIS/VA cancel or
+ * release, payment-intent resolve): still open while EDGE_FAILOVER_ENABLED
+ * is off, so the outlet can be handed back to its edge.
+ */
+export const requireFinishPosWriteOnCloud: Middleware = coreGate(
+  undefined,
+  "finish",
+);
 
 /** The KDS `/ticket-items/:itemId` variant (the item names its order). */
 export const requireCoreKitchenItemWriteOnCloud: Middleware = coreGate(

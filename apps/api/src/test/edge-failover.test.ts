@@ -35,6 +35,7 @@ import {
   posWriteFailoverWindowId,
   setPosWriteGateEdgeModeForTests,
 } from "../services/pos-edge-outlet.ts";
+import { refundPosOrder } from "../services/pos-order-corrections.ts";
 import { openPosShift } from "../services/pos-shift.service.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
 import {
@@ -127,6 +128,62 @@ async function codeOf(promise: Promise<unknown>): Promise<string | null> {
   } catch (error) {
     return (error as { code?: string }).code ?? String(error);
   }
+}
+
+function deviceToken(): string {
+  return signDeviceToken({
+    version: 1,
+    issuedAt: Math.floor(Date.now() / 1000),
+    tenantId: tenant.tenantId,
+    brandId: null,
+    deviceId: ids.device,
+  });
+}
+
+/** A cashier POS write of the outlet over HTTP (device-signed). */
+function pos(path: string, body: object) {
+  return cashier.client
+    .post(`/api/outlets/${encodeURIComponent(tenant.outletId)}/pos${path}`)
+    .set(headers)
+    .set(originHeader)
+    .set(DEVICE_TOKEN_HEADER, deviceToken())
+    .send({ idempotencyKey: key(), ...body });
+}
+
+function createOrder() {
+  return pos("/orders", {
+    channel: "pos",
+    serviceType: "takeaway",
+    items: [{ menuItemId: ids.kopi, quantity: 1, modifierIds: [] }],
+  });
+}
+
+/** Open a window on a dead edge, with a failover shift and one unpaid order. */
+async function windowWithSale(reason: string) {
+  await heartbeat(600);
+  const opened = await send(manager, windows, {
+    outletId: tenant.outletId,
+    reason,
+    idempotencyKey: key(),
+  });
+  expect(opened.status, JSON.stringify(opened.body)).toBe(201);
+  const shift = await openPosShift(
+    context(),
+    { userId: userIdSchema.parse(cashier.userId), deviceId: ids.device },
+    outletIdSchema.parse(tenant.outletId),
+    {
+      openingFloatIdr: idr(C1_IDR),
+      openingCounts: COUNT_C1,
+      idempotencyKey: key(),
+    },
+  );
+  const order = await createOrder();
+  expect(order.status, JSON.stringify(order.body)).toBe(201);
+  return {
+    id: opened.body.data.id as string,
+    shiftId: shift.id as string,
+    orderId: order.body.data.id as string,
+  };
 }
 
 async function queued(window: string) {
@@ -558,24 +615,8 @@ describe("1271 F3 failover window", () => {
   });
 
   it("a cashier order in the cloud carries the window; a strict write stays refused over HTTP", async () => {
-    const token = signDeviceToken({
-      version: 1,
-      issuedAt: Math.floor(Date.now() / 1000),
-      tenantId: tenant.tenantId,
-      brandId: null,
-      deviceId: ids.device,
-    });
-    const created = await cashier.client
-      .post(`/api/outlets/${encodeURIComponent(tenant.outletId)}/pos/orders`)
-      .set(headers)
-      .set(originHeader)
-      .set(DEVICE_TOKEN_HEADER, token)
-      .send({
-        idempotencyKey: key(),
-        channel: "pos",
-        serviceType: "takeaway",
-        items: [{ menuItemId: ids.kopi, quantity: 1, modifierIds: [] }],
-      });
+    const token = deviceToken();
+    const created = await createOrder();
     expect(created.status, JSON.stringify(created.body)).toBe(201);
     failoverOrderId = created.body.data.id as string;
     const { rows } = await owner.query<{ window: string }>(
@@ -600,6 +641,18 @@ describe("1271 F3 failover window", () => {
     });
     expect(response.status).toBe(409);
     expect(response.body.error.code).toBe("FAILOVER_OPEN_WORK");
+    // Review K F3 P3: every order of the window, paid or not, as `orderIds`.
+    expect(response.body.error.details).toEqual(
+      expect.arrayContaining([
+        { field: "orderIds", message: failoverOrderId },
+        { field: "openShiftIds", message: failoverShiftId },
+      ]),
+    );
+    expect(
+      (response.body.error.details as { field: string }[]).some(
+        (detail) => detail.field === "unpaidOrderIds",
+      ),
+    ).toBe(false);
   });
 
   it("return is refused while the edge is silent, then lists the open work", async () => {
@@ -620,6 +673,35 @@ describe("1271 F3 failover window", () => {
         { field: "openShiftIds", message: failoverShiftId },
       ]),
     );
+  });
+
+  it("review K F3 P3: a cloud cart parked in the window blocks the return until resumed", async () => {
+    // The cart's own contract is not under test: park the row directly.
+    const parkedId = randomUUID();
+    await owner.query(
+      `INSERT INTO pos_parked_orders
+         (id, tenant_id, outlet_id, creator_user_id, idempotency_key, request_hash, snapshot, label)
+       VALUES ($1, $2, $3, $4, $5, $6, '{"items":[]}'::jsonb, 'Meja depan')`,
+      [
+        parkedId,
+        tenant.tenantId,
+        tenant.outletId,
+        cashier.userId,
+        key(),
+        "e".repeat(64),
+      ],
+    );
+    const open = await send(manager, `${windows}/${windowId}/return`, {
+      idempotencyKey: key(),
+    });
+    expect(open.body.error.details).toEqual(
+      expect.arrayContaining([{ field: "parkedOrderIds", message: parkedId }]),
+    );
+    const resumed = await pos(
+      `/parked-orders/${encodeURIComponent(parkedId)}/resume`,
+      {},
+    );
+    expect(resumed.status, JSON.stringify(resumed.body)).toBe(200);
   });
 
   it("F2 review no. 4: a sale holding the gate makes the return wait; then the return closes with C1", async () => {
@@ -707,33 +789,86 @@ describe("1271 F3 failover window", () => {
     expect(await codeOf(gate({ failover: "core" }))).toBe("POS_WRITE_ON_EDGE");
   });
 
-  it("F2 review no. 4: a transition holding the window makes a sale wait, then refuses it", async () => {
-    await heartbeat(600);
-    const opened = await send(manager, windows, {
-      outletId: tenant.outletId,
-      reason: "Server lokal mati lagi",
-      idempotencyKey: key(),
-    });
-    expect(opened.status, JSON.stringify(opened.body)).toBe(201);
-    const id = opened.body.data.id as string;
+  it("review K F3 P2 no. 1: with the switch off mid-window nothing new is sold, the window's rows still finish and the return goes through", async () => {
+    const window = await windowWithSale("Server lokal mati, uji saklar");
+    flag.EDGE_FAILOVER_ENABLED = false;
+    try {
+      const created = await createOrder();
+      expect(created.body.error?.code).toBe("POS_WRITE_ON_EDGE");
+      expect(await codeOf(gate({ failover: "core" }))).toBe("POS_WRITE_ON_EDGE");
+      expect(
+        await gate({
+          failover: "finish",
+          target: { kind: "shift", id: window.shiftId },
+        }),
+      ).toBe(window.id);
+      // Finishing paths pass the gate (they fail on their own rules here).
+      const close = await pos(`/shifts/${window.shiftId}/close`, {});
+      expect(close.body.error?.code).not.toBe("POS_WRITE_ON_EDGE");
+      expect(close.status).not.toBe(403);
+      const complete = await pos(`/orders/${window.orderId}/complete`, {
+        expectedStatus: "awaiting_payment",
+      });
+      expect(complete.body.error?.code).not.toBe("POS_WRITE_ON_EDGE");
+      expect(complete.status).not.toBe(403);
+      await owner.query(
+        "UPDATE orders SET status = 'voided' WHERE tenant_id = $1 AND id = $2",
+        [tenant.tenantId, window.orderId],
+      );
+      await closeShift(window.shiftId, C1_IDR);
+      await heartbeat(5);
+      const returned = await send(manager, `${windows}/${window.id}/return`, {
+        idempotencyKey: key(),
+      });
+      expect(returned.status, JSON.stringify(returned.body)).toBe(200);
+      expect(returned.body.data.status).toBe("returning");
+      await owner.query(
+        `UPDATE sync_cursors SET acked_out_seq = next_out_seq
+          WHERE edge_node_id = $1 AND direction = 'cloud_to_edge'`,
+        [ids.edge],
+      );
+      const closed = await read(manager, `${windows}/${window.id}`);
+      expect(closed.body.data.status).toBe("closed");
+    } finally {
+      flag.EDGE_FAILOVER_ENABLED = true;
+    }
+  });
+
+  it("F2 review no. 4 + review K F3 P2 no. 2: a transition holding the window makes a sale and a refund wait, then refuses both", async () => {
+    const window = await windowWithSale("Server lokal mati lagi");
     const client = await owner.connect();
     try {
       await client.query("BEGIN");
       await client.query(
         "SELECT id FROM outlet_failover_windows WHERE id = $1 FOR UPDATE",
-        [id],
+        [window.id],
       );
       await client.query(
         `UPDATE outlet_failover_windows SET status = 'returning', return_started_at = now(),
            return_started_by = $2, business_date_to = business_date_from,
            closing_event_id = gen_random_uuid()
          WHERE id = $1`,
-        [id, manager.userId],
+        [window.id, manager.userId],
       );
       const sale = codeOf(gate({ failover: "core" }));
-      await waitForLockWaiters(1);
+      const refund = codeOf(
+        refundPosOrder(
+          context(),
+          {
+            userId: userIdSchema.parse(cashier.userId),
+            deviceId: ids.device,
+          },
+          outletIdSchema.parse(tenant.outletId),
+          window.orderId,
+          {
+            idempotencyKey: key(),
+          } as unknown as Parameters<typeof refundPosOrder>[4],
+        ),
+      );
+      await waitForLockWaiters(2);
       await client.query("COMMIT");
       expect(await sale).toBe("POS_WRITE_ON_EDGE");
+      expect(await refund).toBe("POS_WRITE_ON_EDGE");
     } finally {
       client.release();
     }

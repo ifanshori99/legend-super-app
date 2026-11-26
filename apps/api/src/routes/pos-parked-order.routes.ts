@@ -13,7 +13,10 @@ import {
 } from "../middleware/acting-staff.ts";
 import { requireAuthAllowSharedDevice } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
-import { requireCorePosWriteOnCloud } from "../middleware/pos-on-cloud.ts";
+import {
+  requireCorePosWriteOnCloud,
+  requireFinishPosWriteOnCloud,
+} from "../middleware/pos-on-cloud.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
   getScopedTenantContext,
@@ -92,7 +95,7 @@ posParkedOrderRouter.get(
 posParkedOrderRouter.post(
   "/parked-orders/:parkedOrderId/resume",
   sell,
-  requireCorePosWriteOnCloud,
+  requireFinishPosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, parkedOrderId } = resumePosParkedOrder.params.parse(

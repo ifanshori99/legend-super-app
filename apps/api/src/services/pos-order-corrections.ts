@@ -78,6 +78,7 @@ import {
   cashOutExceedsDrawer,
   lockCashierShiftForCash,
 } from "./pos-cash-guard.ts";
+import { assertPosOrderWriteOnCloud } from "./pos-edge-outlet.ts";
 import { posPromoRefundPort, posReceiptPort } from "./pos-order-ports.ts";
 import {
   appendOrderEvent,
@@ -217,6 +218,15 @@ async function correct<T>(
           context,
           input.outletId,
           input.orderId,
+        );
+        // 1271 F3: the window share-locked in this transaction, so a return
+        // started meanwhile waits and no correction lands after its closing event.
+        await assertPosOrderWriteOnCloud(
+          tx,
+          context.tenant.tenantId,
+          input.outletId,
+          locked.pos.failoverWindowId,
+          "core",
         );
         assertCorrectionTargetsFinalOrder({ status: locked.order.status });
         await assertNotEdgeIngested(tx, context, locked.order.id);

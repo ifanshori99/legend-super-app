@@ -168,6 +168,7 @@ import {
   releasePosTicketsOfVoidedLines,
 } from "./facility-pos-tickets.ts";
 import {
+  assertPosOrderWriteOnCloud,
   posWriteFailoverWindowId,
   type PosWriteGateOptions,
 } from "./pos-edge-outlet.ts";
@@ -184,6 +185,14 @@ type EventsQuery = z.output<typeof listEventsEndpoint.query>;
 
 const OJOL_CHANNELS = new Set(["gofood", "grabfood", "shopeefood"]);
 const ACTIVE_SESSION_STATUSES = new Set(["open", "bill_requested"]);
+// 1271 F3: order writes that only finish a failover order, still open while
+// EDGE_FAILOVER_ENABLED is off (services/pos-edge-outlet.ts `finish`).
+const FINISHING_OPERATIONS = new Set([
+  "order.void",
+  "order.complete",
+  "order.qris_cancel",
+  "order.qris_release",
+]);
 
 /**
  * A caller who only holds `order.create` (waiter, captain) may work on
@@ -325,17 +334,13 @@ export async function mutatePosOrder<T>(
         // 1271 F3: the gate again inside the write transaction (the window
         // row share-locked, so a cancel or return waits for this write). On
         // an edge outlet the cloud writes only orders of the active window.
-        const failoverWindowId = await posWriteFailoverWindowId(
+        await assertPosOrderWriteOnCloud(
           tx,
           context.tenant.tenantId,
           input.outletId,
-          { failover: "core" },
+          locked.pos.failoverWindowId,
+          FINISHING_OPERATIONS.has(input.operation) ? "finish" : "core",
         );
-        if (
-          failoverWindowId !== null &&
-          locked.pos.failoverWindowId !== failoverWindowId
-        )
-          throw new PosError("POS_WRITE_ON_EDGE");
         assertCaptainOnly(caller, locked.order.channel);
         if (caller.captainOnly === true) {
           const session = await captainSessionOf(tx, context, locked.order);

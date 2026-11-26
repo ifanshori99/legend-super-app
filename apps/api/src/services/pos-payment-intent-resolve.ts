@@ -32,6 +32,7 @@ import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { outletContext } from "./device-pin-support.ts";
 import type { Tx } from "./menu-internals.ts";
+import { assertPosOrderWriteOnCloud } from "./pos-edge-outlet.ts";
 import { assertNoOpenFundsOfPosOrderTx } from "./pos-order-open-funds.ts";
 import {
   assertNoOpenEdcRequest,
@@ -277,6 +278,15 @@ export async function resolvePosPaymentIntent(
   return withTenant(db, context, async (tx) => {
     if (key !== null) await lockPosIdempotencyKey(tx, context, outletId, key);
     const locked = await lockPosOrder(tx, context, outletId, orderId);
+    // 1271 F3: the failover window share-locked in this transaction (a return
+    // waits for the settlement); finishing only, so also with the switch off.
+    await assertPosOrderWriteOnCloud(
+      tx,
+      tenant.tenantId,
+      outletId,
+      locked.pos.failoverWindowId,
+      "finish",
+    );
     // A role that ended while the PIN was checked fails closed.
     await assertApprover(tx);
     await assertNotVoidingRecorded(tx, context, orderId, input);
