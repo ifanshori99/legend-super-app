@@ -571,7 +571,10 @@ describe("Review O1 fixes", () => {
 
   it("review O3 P2 1: a shift with a kit closes only with its device's queue count; a force close marks it", async () => {
     const till = await newTill(app);
-    const supervisorId = await outletSupervisor(app, "Offline Unverified Close");
+    const supervisorId = await outletSupervisor(
+      app,
+      "Offline Unverified Close",
+    );
     const close = (offlineQueuePending: number | null) =>
       closeShiftExactly({
         scope,

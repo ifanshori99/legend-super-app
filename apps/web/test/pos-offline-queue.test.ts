@@ -545,7 +545,10 @@ describe("sync to the cloud", () => {
     cloud.reportDown = true;
     const first = await queue.sync();
     expect(first.error).toBeInstanceOf(TypeError);
-    expect(first).toMatchObject({ settled: 1, remaining: 2 });
+    expect(first.remaining).toBe(2);
+    expect((await queue.pending()).map((sale) => sale.eventId)).toEqual([
+      sales[2]!.eventId,
+    ]);
     const parked = await queue.parked();
     expect(parked.map((row) => [row.eventId, row.reason])).toEqual([
       [sales[1]!.eventId, "OFFLINE_EVENT_CONFLICT"],
@@ -563,6 +566,7 @@ describe("sync to the cloud", () => {
       remaining: 0,
       error: null,
     });
+    expect(cloud.reports.has(sales[1]!.eventId)).toBe(true);
     expect(cloud.reportCalls.at(-1)).toBe(sales[1]!.eventId);
     expect(cloud.stored.has(sales[2]!.eventId)).toBe(true);
     expect(await queue.pendingCount()).toBe(0);

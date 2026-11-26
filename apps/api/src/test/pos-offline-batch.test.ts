@@ -1102,9 +1102,14 @@ describe("Review O3 P1: a conflicting sale is reported, never lost", () => {
     const middle = sale(kit, menu, kit.receiptRun.lastNumber + 2);
     const last = sale(kit, menu, kit.receiptRun.lastNumber + 3);
     // Another kit already holds the middle sale's eventId.
-    const twin = sale(otherKit, menuOf(otherKit), otherKit.receiptRun.lastNumber + 1, {
-      eventId: middle.eventId,
-    });
+    const twin = sale(
+      otherKit,
+      menuOf(otherKit),
+      otherKit.receiptRun.lastNumber + 1,
+      {
+        eventId: middle.eventId,
+      },
+    );
     expect((await submit(other, [twin])).results[0]!.status).toBe("ingested");
 
     await expect(submit(till, [first, middle, last])).rejects.toMatchObject({
@@ -1135,7 +1140,10 @@ describe("Review O3 P1: a conflicting sale is reported, never lost", () => {
     expect(conflictOrder).not.toBe(middle.eventId);
 
     // The slot is filled: the rest of the queue goes in.
-    const rest = await submit(till, [first, middle, last].filter((e) => e !== middle));
+    const rest = await submit(
+      till,
+      [first, middle, last].filter((e) => e !== middle),
+    );
     expect(rest.results.map((row) => row.status)).toEqual([
       "duplicate",
       "ingested",

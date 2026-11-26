@@ -27,10 +27,7 @@ import { callEndpoint } from "@/lib/api/endpoint";
 import { ApiError } from "@/lib/api/errors";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { contractPending, local, METHOD_LABELS } from "./api";
-import {
-  closeOfflineKit,
-  countPendingOfflineSales,
-} from "./offline/queue";
+import { closeOfflineKit, countPendingOfflineSales } from "./offline/queue";
 import { defaultOfflineBackend } from "./offline/store";
 import { runPosKasirMock } from "./mock-engine";
 import {

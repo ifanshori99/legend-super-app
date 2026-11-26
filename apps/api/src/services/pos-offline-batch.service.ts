@@ -304,7 +304,8 @@ export async function reportPosOfflineConflict(
         ),
       ),
   );
-  const conflicting = stored !== undefined && !sameId(stored.kitId, event.kitId);
+  const conflicting =
+    stored !== undefined && !sameId(stored.kitId, event.kitId);
   const outcome = await ingestOne(context, caller.userId, deviceId, {
     outletId,
     event: conflicting
@@ -561,10 +562,10 @@ async function ingestInTransaction(
         conflictOf !== null && reason === null
           ? `Struk ${receiptNumber} (${formatRupiah(Number(event.totalIdr))}) dari kasir offline memakai id penjualan yang sudah tercatat dari bekal lain. Penjualan dicatat sebagai pesanan sendiri; tunainya masuk Kas Offline Belum Dicocokkan, finance mencocokkannya dengan laci shift.`
           : reason !== null
-          ? `Struk ${receiptNumber} (${formatRupiah(Number(event.totalIdr))}) dari kasir offline disimpan tanpa pesanan (${reason}). Uangnya sudah diterima; hubungi finance.`
-          : closedShift !== null
-            ? `Struk ${receiptNumber} (${formatRupiah(Number(event.totalIdr))}) dari kasir offline masuk sesudah ${closedShift} ditutup. Tunainya tidak ada di hitungan laci shift itu; finance mencocokkannya dengan selisih shift (${flags.join(", ")}).`
-            : `Struk ${receiptNumber} (${formatRupiah(Number(event.totalIdr))}) dari kasir offline sudah masuk, tetapi perlu dicek (${flags.join(", ")}).`,
+            ? `Struk ${receiptNumber} (${formatRupiah(Number(event.totalIdr))}) dari kasir offline disimpan tanpa pesanan (${reason}). Uangnya sudah diterima; hubungi finance.`
+            : closedShift !== null
+              ? `Struk ${receiptNumber} (${formatRupiah(Number(event.totalIdr))}) dari kasir offline masuk sesudah ${closedShift} ditutup. Tunainya tidak ada di hitungan laci shift itu; finance mencocokkannya dengan selisih shift (${flags.join(", ")}).`
+              : `Struk ${receiptNumber} (${formatRupiah(Number(event.totalIdr))}) dari kasir offline sudah masuk, tetapi perlu dicek (${flags.join(", ")}).`,
     });
   return {
     result: result(event, reason === null ? "ingested" : "held", {

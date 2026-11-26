@@ -14,25 +14,26 @@ import { hrisKeys } from "@/features/ws10-hris-employee/queries";
 
 export function SignOutButton() {
   const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState(false);
+  // Review O3 P2 3: offline sales still on this tablet block the sign-out.
+  const [unsent, setUnsent] = useState(0);
   const router = useRouter();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   async function signOut() {
     setPending(true);
-    setError(null);
+    setError(false);
+    setUnsent(0);
     try {
       // Review O3 P2 3: offline sales still on this tablet (unsent or waiting
       // on a conflict report) would be stranded by a new login. Unreadable
       // storage holds none this button can protect, so it does not block.
-      const unsent = await countPendingOfflineSales(
+      const held = await countPendingOfflineSales(
         defaultOfflineBackend(),
         null,
       ).catch(() => 0);
-      if (unsent > 0) {
-        setError(
-          `${unsent} offline sale${unsent === 1 ? " is" : "s are"} not sent yet. Connect to the internet and wait before signing out.`,
-        );
+      if (held > 0) {
+        setUnsent(held);
         return;
       }
       // While the session still exists: drop this browser's alarm push
@@ -52,16 +53,22 @@ export function SignOutButton() {
       await router.invalidate();
       await navigate({ to: "/sign-in", replace: true });
     } catch {
-      setError("Couldn’t sign out. Try again.");
+      setError(true);
     } finally {
       setPending(false);
     }
   }
   return (
     <div className="flex flex-wrap items-center gap-2">
+      {unsent > 0 && (
+        <p role="alert" className="text-sm text-destructive">
+          {unsent} offline sale(s) not sent yet. Connect to the internet and
+          wait before signing out.
+        </p>
+      )}
       {error && (
         <p role="alert" className="text-sm text-destructive">
-          {error}
+          Couldn’t sign out. Try again.
         </p>
       )}
       <Button onClick={signOut} disabled={pending} variant="outline" size="sm">
