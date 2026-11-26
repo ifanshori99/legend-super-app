@@ -30,3 +30,10 @@
 ## Langkah 4: harness e2e offline (27 Nov)
 - Dibuat: `playwright.offline.config.ts`, `e2e-offline/pos-offline.spec.ts`, mode `e2e-offline` di `scripts/test.mjs` (API `api.legend.test:4101`, web `o5-offline.legend.test:3101`, `COOKIE_DOMAIN=.legend.test`, `LEGEND_E2E_SKIP_BUILD=1` untuk iterasi spec).
 - Percobaan 1 gagal: API `NODE_ENV=development` crash (pino-pretty worker, `__dirname` di bundle ESM). Dipindah ke `NODE_ENV=test` (tanpa pretty, aturan https produksi tak disentuh). Web tetap production.
+
+## Langkah 5: e2e offline, hasil sesudah percobaan nyata (27 Nov)
+Harness TERBUKTI jalan: build web `VITE_API_URL=http://api.legend.test:4101`, API `NODE_ENV=test` (production menolak http non-localhost; development crash pino-pretty di bundle), `COOKIE_DOMAIN=.legend.test`, Chromium `--host-resolver-rules`, tenant_domains diseed, sign-in lewat browser di host tenant, buka shift, `/pos/kasir` tampil dengan menu, bekal offline terambil, `context.setOffline(true)` memunculkan banner "Offline · penjualan disimpan di tablet" (screenshot `docs/review/img/o5-banner-390.png`).
+Buntu di langkah jual (penyebab persis):
+1. Di viewport 390, klik tile menu "Kopi Susu" (server asli, online maupun offline) TIDAK menambah item: bar tetap "Keranjang kosong", "Lihat keranjang" membuka `?v=keranjang` dengan "Keranjang masih kosong". Penyebab belum diketahui (bukan modifier dialog, bukan soldOut; perlu trace UI/`pick` di `cashier-main-screen.tsx`). Spec o4 mock tidak punya masalah ini.
+2. Temuan produk (bukan harness): di 390 saat offline, "Lihat keranjang" (navigasi `?v=keranjang`) menjatuhkan halaman ke layar "Terjadi kesalahan" karena navigasi router butuh jaringan. Tablet lebar (>700 px) tidak memakai tampilan keranjang terpisah, jadi aman; tapi ponsel offline rusak. Perlu keputusan CTO: perbaiki (O3/O4) atau terima.
+Belum dijalankan: bayar/tersimpan/antrean/tutup ditahan/ingest sesudah online/keluar, dan screenshot 390/1280 lainnya. Spec `e2e-offline/pos-offline.spec.ts` berisi skenario lengkap (WIP, di luar suite default). Jalankan: `heavy --browser node scripts/test.mjs e2e-offline` (`LEGEND_E2E_SKIP_BUILD=1` memakai build terakhir).

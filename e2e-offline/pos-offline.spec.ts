@@ -1,6 +1,11 @@
 // O5 (legend-wasr7.9): the cashier tablet offline, in a real browser on a
 // tenant host. See playwright.offline.config.ts for the harness.
 //
+// STATUS (27 Nov): WIP, blocked at the first sale. Harness proven (tenant host,
+// cookie domain, session, shift, kit, real offline, screenshots); a click on the
+// menu tile "Kopi Susu" does not add it to the cart in this build, see
+// docs/briefs/1272-o5-progress.md.
+//
 // Story: online cashier screen (the kit is fetched) -> the internet goes away
 // -> cash sale saved on the tablet -> queue sheet -> shift close refused while
 // the queue is not empty -> internet back -> the queue sends itself, the
@@ -338,9 +343,7 @@ test("the offline till: sell, queue, close refused, ingest once, sign out", asyn
   await context.setOffline(false);
   await expect(offlineBanner).toBeHidden({ timeout: 60_000 });
   await page.getByRole("button", { name: /Lihat keranjang/ }).click();
-  await expect(
-    page.getByRole("button", { name: /^Bayar/ }).last(),
-  ).toBeVisible();
+  await expect(page.getByText("Subtotal · 1 item").first()).toBeVisible();
   await context.setOffline(true);
   await page.waitForTimeout(3_000);
 
