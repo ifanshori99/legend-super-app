@@ -16,3 +16,6 @@ Reviewer: architect (Opus), 27 Nov. Baca kode saja. Hasil: **LULUS**, 0 P1, 2 P2
 2. P2 file sama: dua kunci berbeda untuk satu tagihan berpacu lewat route = satu sale, lainnya 409.
 3. P3 `edge/edc/runtime.ts:69`: `setEdgeEdcAgentForTests` dijaga `NODE_ENV==="test"`.
 4. P3 `services/pos-edc-request.service.ts:64-77`: baca ulang kunci tambah `eq(outletId)`.
+
+## Cek CTO 27 Nov (724577ffc)
+Temuan 1-4 tertutup: test e7-7..e7-10 (403 tanpa izin tanpa ledger, outlet lain 404, cancel, dua kunci = satu sale), penjaga `NODE_ENV` dan filter outlet. Gate gabung: typecheck api+web, 8 file/143 test lulus.
