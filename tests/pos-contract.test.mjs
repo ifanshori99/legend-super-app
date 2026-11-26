@@ -12,6 +12,8 @@ import * as pos from "../packages/shared/src/pos/index.ts";
 import * as menu from "../packages/shared/src/menu/index.ts";
 import * as events from "../packages/shared/src/events/index.ts";
 import * as api from "../packages/shared/src/api/index.ts";
+import * as edge from "../packages/shared/src/edge/index.ts";
+import * as access from "../packages/shared/src/access/index.ts";
 
 const fixtures = pos.cafeLegendPosFixtures;
 const parsed = pos.posFixtureSchema.parse(fixtures);
@@ -1730,4 +1732,203 @@ test("POS-02: posApprovalPolicySchema accepts a threshold of 1..5000 bp and refu
       `${bp} bp refused`,
     );
   }
+});
+
+// 1271 F1 (docs/briefs/1271-edge-failover-cards.md D2-D4): edge -> cloud
+// failover. The F-run belongs to the cloud only, so a caller can never choose
+// an `F<n>` prefix; the window contract travels cloud -> edge.
+test("1271 F1: an F<n> prefix is reserved for the cloud failover series", () => {
+  assert.deepEqual(pos.RECEIPT_SERIES, ["device", "cloud", "failover"]);
+  for (const prefix of ["F1", "F12", "F9999", "F123456"])
+    assert.equal(pos.receiptPrefixSchema.safeParse(prefix).success, false);
+  for (const prefix of ["P1", "F", "FA1", "CLB-F1", "F1A", "C"])
+    assert.equal(pos.receiptPrefixSchema.safeParse(prefix).success, true);
+  assert.equal(pos.isFailoverReceiptPrefix("F1"), true);
+  assert.equal(pos.isFailoverReceiptPrefix("F12345"), false);
+  assert.equal(pos.isFailoverReceiptPrefix("P1"), false);
+  // The cloud still formats and parses its own F-run numbers.
+  assert.equal(pos.formatReceiptNumber("F1", 1), "F1-000001");
+  assert.deepEqual(pos.parseReceiptNumber("F2-000050"), {
+    prefix: "F2",
+    sequenceNumber: 50,
+  });
+  assert.equal(pos.receiptRunPrefixSchema.safeParse("F1").success, true);
+  // An edge-bound sequence can never carry an F-run.
+  assert.equal(
+    edge.deviceReceiptSequenceSyncSchema.safeParse({
+      id: "00000000-0000-4000-8000-000000000001",
+      outletId: "00000000-0000-4000-8000-000000000002",
+      deviceId: "00000000-0000-4000-8000-000000000003",
+      prefix: "F1",
+      lastNumber: 0,
+      edgeNodeId: "00000000-0000-4000-8000-000000000004",
+      edgeInstanceId: "00000000-0000-4000-8000-000000000005",
+    }).success,
+    false,
+  );
+});
+
+test("1271 F1: failover error codes and HTTP statuses", () => {
+  for (const code of [
+    "FAILOVER_EDGE_HEALTHY",
+    "FAILOVER_ACTIVE",
+    "FAILOVER_OPEN_WORK",
+    "FAILOVER_NOT_ACTIVE",
+  ]) {
+    assert.equal(pos.POS_ERROR_CODES.includes(code), true, code);
+    assert.equal(new pos.PosError(code).status, 409, code);
+  }
+  assert.equal(new pos.PosError("FAILOVER_DISABLED").status, 403);
+});
+
+test("1271 F1: failover window contract", () => {
+  assert.deepEqual(edge.FAILOVER_WINDOW_STATUSES, [
+    "active",
+    "returning",
+    "closed",
+    "cancelled",
+  ]);
+  assert.equal(edge.isFailoverWindowOpen("active"), true);
+  assert.equal(edge.isFailoverWindowOpen("returning"), true);
+  assert.equal(edge.isFailoverWindowOpen("closed"), false);
+  assert.equal(edge.isFailoverWindowOpen("cancelled"), false);
+
+  const outletId = "00000000-0000-4000-8000-000000000002";
+  const activate = {
+    outletId,
+    reason: "Mini PC mati",
+    override: false,
+    idempotencyKey: "failover-activate-0001",
+  };
+  assert.equal(
+    edge.activateFailoverWindowInputSchema.safeParse(activate).success,
+    true,
+  );
+  // Reason and idempotency key are required; the tenant never comes from the body.
+  for (const bad of [
+    { ...activate, reason: "  " },
+    { ...activate, idempotencyKey: undefined },
+    { ...activate, tenantId: outletId },
+  ])
+    assert.equal(
+      edge.activateFailoverWindowInputSchema.safeParse(bad).success,
+      false,
+    );
+  assert.equal(
+    edge.cancelFailoverWindowInputSchema.safeParse({
+      reason: "Salah tekan",
+      idempotencyKey: "failover-cancel-0001",
+    }).success,
+    true,
+  );
+  assert.equal(
+    edge.startFailoverReturnInputSchema.safeParse({
+      idempotencyKey: "failover-return-0001",
+    }).success,
+    true,
+  );
+
+  const window = {
+    id: "00000000-0000-4000-8000-000000000010",
+    outletId,
+    edgeNodeId: "00000000-0000-4000-8000-000000000004",
+    status: "active",
+    reason: "Mini PC mati",
+    override: false,
+    activatedBy: "00000000-0000-4000-8000-000000000020",
+    activatedAt: "2026-11-26T03:00:00.000Z",
+    edgeHeartbeatAt: "2026-11-26T02:55:00.000Z",
+    businessDateFrom: "2026-11-26",
+    businessDateTo: null,
+    returnStartedAt: null,
+    closedAt: null,
+    cancelledAt: null,
+  };
+  assert.equal(edge.failoverWindowSchema.safeParse(window).success, true);
+  assert.equal(
+    edge.failoverWindowStatePayloadSchema.safeParse({ window }).success,
+    true,
+  );
+  assert.equal(edge.windowTouchesDate(window, "2026-11-26"), true);
+  assert.equal(edge.windowTouchesDate(window, "2026-11-25"), false);
+  assert.equal(edge.windowTouchesDate(window, "2026-11-30"), true);
+  assert.equal(
+    edge.windowTouchesDate({ ...window, businessDateTo: "2026-11-27" }, "2026-11-28"),
+    false,
+  );
+
+  const closed = {
+    windowId: window.id,
+    status: "closed",
+    businessDates: ["2026-11-26"],
+    shifts: [
+      {
+        deviceId: "00000000-0000-4000-8000-000000000003",
+        cashierId: "00000000-0000-4000-8000-000000000021",
+        countedAt: "2026-11-26T03:01:00.000Z",
+        counts: [{ denominationIdr: 100_000, quantity: 9 }],
+        totalIdr: 900_000,
+      },
+    ],
+  };
+  assert.equal(
+    edge.failoverWindowClosedPayloadSchema.safeParse(closed).success,
+    true,
+  );
+  // The total must equal the count sheet; a window closes as closed or cancelled.
+  for (const bad of [
+    { ...closed, shifts: [{ ...closed.shifts[0], totalIdr: 900_001 }] },
+    { ...closed, status: "active" },
+    { ...closed, shifts: [closed.shifts[0], closed.shifts[0]] },
+  ])
+    assert.equal(
+      edge.failoverWindowClosedPayloadSchema.safeParse(bad).success,
+      false,
+    );
+  assert.equal(edge.FAILOVER_WINDOW_AGGREGATE, "pos_failover_window");
+  assert.equal(edge.failoverWindowStateEvent.name, "pos_failover_window.state");
+  assert.equal(
+    edge.failoverWindowClosedEvent.name,
+    "pos_failover_window.closed",
+  );
+
+  // The edge status DTO may carry the outlet's open window (F4 fills it).
+  const status = {
+    id: "00000000-0000-4000-8000-000000000004",
+    label: "local",
+    role: "primary",
+    outlet: { id: outletId, name: "Outlet" },
+    version: null,
+    link: "disconnected",
+    lastHeartbeatAt: null,
+    alerts: [],
+  };
+  assert.equal(edge.edgeNodeStatusSchema.safeParse(status).success, true);
+  assert.equal(
+    edge.edgeNodeStatusSchema.safeParse({
+      ...status,
+      failover: {
+        windowId: window.id,
+        status: "active",
+        activatedAt: window.activatedAt,
+      },
+    }).success,
+    true,
+  );
+});
+
+test("1271 F1: pos.failover.manage is held by owner, outlet manager and supervisor, not cashier", () => {
+  assert.equal(access.PERMISSION_CODES.includes("pos.failover.manage"), true);
+  for (const key of ["owner", "outlet_manager", "supervisor"])
+    assert.equal(
+      access.roleTemplate(key).permissions.includes("pos.failover.manage"),
+      true,
+      key,
+    );
+  for (const key of ["cashier", "tenant_admin", "waiter"])
+    assert.equal(
+      access.roleTemplate(key).permissions.includes("pos.failover.manage"),
+      false,
+      key,
+    );
 });
