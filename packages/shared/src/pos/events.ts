@@ -152,7 +152,7 @@ const orderPaidLineSchema = z.strictObject({
  * writes the same rows a cloud-paid order gets, so the sale journal splits
  * PBJT from the revenue the same way.
  */
-const orderPaidTaxSchema = z.strictObject({
+export const orderPaidTaxSchema = z.strictObject({
   taxRuleId: taxRuleIdSchema,
   code: ruleCodeSchema,
   version: z.number().int().positive(),

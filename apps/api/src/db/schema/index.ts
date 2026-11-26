@@ -115,6 +115,8 @@ export * from "./customer-display";
 export * from "./platform-config";
 export * from "./pos-receipt";
 export * from "./pos-receipt-writeoff";
+export * from "./pos-offline";
+export * from "./pos-offline-sale";
 // WS-04 KDS routing + ticket lifecycle (legend-4d5).
 export * from "./kds";
 export * from "./expo-pickup";

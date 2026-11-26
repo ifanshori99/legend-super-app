@@ -113,6 +113,7 @@ import {
   type ReceiptSequenceRetiredReason,
 } from "../db/schema/pos-receipt.ts";
 import { receiptNumberWriteoffs } from "../db/schema/pos-receipt-writeoff.ts";
+import { posOfflineSales } from "../db/schema/pos-offline-sale.ts";
 import type { PosReceiptPort } from "./pos-order-ports.ts";
 import { reportReceiptsArrivedAfterWriteoff } from "./pos-receipt-writeoff-arrival.ts";
 import type { Tx } from "./permission-resolver.ts";
@@ -168,13 +169,15 @@ async function lockOutletSequences(
  * `cloud`); `failover` = the device's `F<n>` run. A device has at most one
  * current run of each (receipt_sequences_device_current_key), so a `regular`
  * lookup never meets the F-run and the edge paths never touch it.
+ * O1: the device's offline `L<n>` run is outside `regular` too; only the
+ * offline kit service (pos-offline-kit.service.ts) reads or creates it.
  */
 type SequenceKind = "regular" | "failover";
 
 const seriesOf = (kind: SequenceKind) =>
   kind === "failover"
     ? eq(receiptSequences.series, "failover")
-    : ne(receiptSequences.series, "failover");
+    : notInArray(receiptSequences.series, ["failover", "offline"]);
 
 /** The key's current (not retired) sequence of `kind`; legend-zsdd. */
 async function findSequenceRow(
@@ -453,6 +456,105 @@ async function ensureFailoverSequence(
     prefix: nextFreeFailoverPrefix(used),
     series: "failover",
   });
+}
+
+/** Review O1 P3 2 (CTO): new offline epochs one device may open per hour. */
+export const OFFLINE_EPOCHS_PER_HOUR = 6;
+
+/** O1: highest offline prefix (`L999999`, OFFLINE_RECEIPT_PREFIX_PATTERN). */
+const OFFLINE_PREFIX_MAX = 999_999;
+
+/**
+ * O1: first of `L1`, `L2`, ... not used by any row of the outlet, retired runs
+ * included. Past `L999999` there is none: the kit is refused rather than
+ * reusing a prefix.
+ */
+function nextFreeOfflinePrefix(used: ReadonlyMap<string, string>): string {
+  for (let n = 1; n <= OFFLINE_PREFIX_MAX; n += 1)
+    if (!used.has(`L${n}`)) return `L${n}`;
+  throw new Error("No free offline receipt prefix left in this outlet");
+}
+
+/** O1: the device's offline run as the kit hands it out. */
+export type OfflineReceiptRun = {
+  sequenceId: string;
+  prefix: string;
+  lastNumber: number;
+  startedAt: Date;
+};
+
+/**
+ * O1 (cloud-only-release.md §2): the device's offline `L<n>` run, one epoch.
+ * `resumeSequenceId` naming the device's current offline run continues it
+ * (the tablet still holds its local counter). Anything else (null, a retired
+ * run, another device's run) means the tablet lost its storage: the current
+ * run, if any, is retired (`offline_epoch`) and a new one opens under the
+ * next never-used `L` prefix of the outlet. Never edge-bound. Called inside
+ * the kit's transaction.
+ */
+export async function ensureOfflineReceiptRun(
+  tx: Tx,
+  tenantId: TenantId,
+  outletId: OutletId,
+  deviceId: string,
+  resumeSequenceId: string | null,
+): Promise<OfflineReceiptRun> {
+  // Serialise per outlet first: two kit requests of one device never both
+  // retire and create, and two devices never pick the same prefix.
+  await lockOutletSequences(tx, tenantId, outletId);
+  const [current] = await tx
+    .select()
+    .from(receiptSequences)
+    .where(
+      and(
+        eq(receiptSequences.tenantId, tenantId),
+        eq(receiptSequences.outletId, outletId),
+        eq(receiptSequences.deviceId, deviceId),
+        eq(receiptSequences.series, "offline"),
+        isNull(receiptSequences.retiredAt),
+      ),
+    );
+  const runOf = (row: SequenceRow): OfflineReceiptRun => ({
+    sequenceId: row.id,
+    prefix: row.prefix,
+    lastNumber: row.lastNumber,
+    startedAt: row.createdAt,
+  });
+  if (current && current.id === resumeSequenceId) return runOf(current);
+  // Review O1 P3 2 (CTO): at most OFFLINE_EPOCHS_PER_HOUR new epochs per
+  // device, counted under the outlet lock; more is RATE_LIMITED (429).
+  const [recent] = await tx
+    .select({
+      count: sql<number>`count(*)::int`,
+      retryAfter: sql<number>`greatest(1, ceil(extract(epoch from min(${receiptSequences.createdAt}) + interval '1 hour' - now())))::int`,
+    })
+    .from(receiptSequences)
+    .where(
+      and(
+        eq(receiptSequences.tenantId, tenantId),
+        eq(receiptSequences.outletId, outletId),
+        eq(receiptSequences.deviceId, deviceId),
+        eq(receiptSequences.series, "offline"),
+        sql`${receiptSequences.createdAt} > now() - interval '1 hour'`,
+      ),
+    );
+  if ((recent?.count ?? 0) >= OFFLINE_EPOCHS_PER_HOUR)
+    throw new CoreError(
+      "RATE_LIMITED",
+      "Bekal offline baru terlalu sering diminta dari perangkat ini; coba lagi nanti.",
+      { retryAfterSeconds: recent?.retryAfter ?? 3600 },
+    );
+  if (current) await retireSequence(tx, tenantId, current.id, "offline_epoch");
+  const used = await prefixesOfOutlet(tx, tenantId, outletId);
+  return runOf(
+    await insertSequence(tx, {
+      tenantId,
+      outletId,
+      deviceId,
+      prefix: nextFreeOfflinePrefix(used),
+      series: "offline",
+    }),
+  );
 }
 
 export async function findReceiptForOrder(
@@ -1428,6 +1530,8 @@ export async function localReceiptRunReport(
         eq(receiptSequences.outletId, outletId as OutletId),
         isNull(receiptSequences.retiredAt),
         sql`${receiptSequences.deviceId} <> ${receiptSequences.outletId}`,
+        // Review O1 P2: an offline L-run is the cloud's, never an edge run.
+        ne(receiptSequences.series, "offline"),
       ),
     );
   return new Map(rows.map((row) => [row.prefix, row.lastNumber]));
@@ -2111,6 +2215,14 @@ export async function receiptGapsForOutlet(
           inArray(receiptNumberWriteoffs.sequenceId, sequenceIds),
         ),
       ),
+    // Review O2 P2 1: a held offline sale used its number (no receipt row).
+    tx
+      .select({
+        sequenceId: posOfflineSales.sequenceId,
+        sequenceNumber: posOfflineSales.sequenceNumber,
+      })
+      .from(posOfflineSales)
+      .where(heldOfflineNumber(tenantId, sequenceIds)),
   );
   const bySequence = new Map<string, { sequenceNumber: number }[]>();
   for (const row of present) {
@@ -2191,10 +2303,18 @@ export async function receiptGapsForOutletFast(
     tenantId,
     counted.map((row) => row.sequence.id),
   );
+  // Review O2 P2 1: held offline sales have no receipt either, never a
+  // write-off (their number is not missing), so the sum stays exact.
+  const held = await heldOfflineOrdinalsBySequence(
+    tx,
+    tenantId,
+    counted.map((row) => row.sequence.id),
+  );
   const suspect = counted.filter(
     (row) =>
       row.issued +
-        countUpTo(writeoffs.get(row.sequence.id), row.sequence.lastNumber) !==
+        countUpTo(writeoffs.get(row.sequence.id), row.sequence.lastNumber) +
+        countUpTo(held.get(row.sequence.id), row.sequence.lastNumber) !==
       row.sequence.lastNumber,
   );
   if (suspect.length === 0) return [];
@@ -2228,6 +2348,7 @@ export async function receiptGapsForOutletFast(
       missing: receiptGaps(sequence, [
         ...(bySequence.get(sequence.id) ?? []),
         ...asOrdinals(writeoffs.get(sequence.id)),
+        ...asOrdinals(held.get(sequence.id)),
       ]),
     }))
     .filter((entry) => entry.missing.length > 0);
@@ -2315,8 +2436,14 @@ async function receiptGapsOfRun(
       sequence.id,
     ) ?? [];
   if (sequence.lastNumber === 0) return { missing: [], writtenOff };
+  const held =
+    (await heldOfflineOrdinalsBySequence(tx, tenantId, [sequence.id])).get(
+      sequence.id,
+    ) ?? [];
   if (
-    (counted?.issued ?? 0) + countUpTo(writtenOff, sequence.lastNumber) ===
+    (counted?.issued ?? 0) +
+      countUpTo(writtenOff, sequence.lastNumber) +
+      countUpTo(held, sequence.lastNumber) ===
     sequence.lastNumber
   )
     return { missing: [], writtenOff };
@@ -2330,9 +2457,51 @@ async function receiptGapsOfRun(
       ),
     );
   return {
-    missing: receiptGaps(sequence, [...issued, ...asOrdinals(writtenOff)]),
+    missing: receiptGaps(sequence, [
+      ...issued,
+      ...asOrdinals(writtenOff),
+      ...asOrdinals(held),
+    ]),
     writtenOff,
   };
+}
+
+/**
+ * Review O2 P2 1: an offline sale stored `held` used its `L<n>` number without
+ * a receipt row (no order); its number is present, not a gap. A
+ * `number_taken` hold shares the number of the sale that holds it, so it is
+ * not counted again.
+ */
+function heldOfflineNumber(tenantId: TenantId, sequenceIds: string[]) {
+  return and(
+    eq(posOfflineSales.tenantId, tenantId),
+    inArray(posOfflineSales.sequenceId, sequenceIds),
+    eq(posOfflineSales.state, "held"),
+    ne(posOfflineSales.reason, "number_taken"),
+  );
+}
+
+async function heldOfflineOrdinalsBySequence(
+  tx: Tx,
+  tenantId: TenantId,
+  sequenceIds: string[],
+): Promise<Map<string, number[]>> {
+  const bySequence = new Map<string, number[]>();
+  if (sequenceIds.length === 0) return bySequence;
+  const rows = await tx
+    .select({
+      sequenceId: posOfflineSales.sequenceId,
+      sequenceNumber: posOfflineSales.sequenceNumber,
+    })
+    .from(posOfflineSales)
+    .where(heldOfflineNumber(tenantId, sequenceIds))
+    .orderBy(asc(posOfflineSales.sequenceNumber));
+  for (const row of rows) {
+    const list = bySequence.get(row.sequenceId) ?? [];
+    list.push(row.sequenceNumber);
+    bySequence.set(row.sequenceId, list);
+  }
+  return bySequence;
 }
 
 /**

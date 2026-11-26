@@ -33,6 +33,7 @@ import {
   getEndOfDayRecap,
   getPosShift,
   getPosShiftPrint,
+  issuePosOfflineKit,
   listPosCashMovements,
   listPosShifts,
   openPosShift,
@@ -56,6 +57,7 @@ import {
 } from "../middleware/permissions.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
 import * as day from "../services/pos-day.service.ts";
+import * as offlineKit from "../services/pos-offline-kit.service.ts";
 import * as cashApproval from "../services/pos-shift-cash-approval.service.ts";
 import * as shifts from "../services/pos-shift.service.ts";
 import { currentDeviceIdOf } from "./device-id.ts";
@@ -261,6 +263,28 @@ posShiftRouter.post(
     const body = forceClosePosShift.body.parse(req.body);
     res.json({
       data: await shifts.forceClosePosShift(
+        getScopedTenantContext(req),
+        await caller(req),
+        outletId,
+        shiftId,
+        body,
+      ),
+    });
+  },
+);
+
+// O1 offline kit (cloud-only-release.md §2): the shift's own device takes the
+// priced snapshot and its offline receipt run while it is still online.
+posShiftRouter.post(
+  "/shifts/:shiftId/offline-kit",
+  operate,
+  requireCorePosWriteOnCloud,
+  jsonBody,
+  async (req, res) => {
+    const { outletId, shiftId } = issuePosOfflineKit.params.parse(req.params);
+    const body = issuePosOfflineKit.body.parse(req.body);
+    res.status(201).json({
+      data: await offlineKit.issuePosOfflineKit(
         getScopedTenantContext(req),
         await caller(req),
         outletId,

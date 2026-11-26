@@ -81,6 +81,7 @@ export const accountingMappingMessages = {
     edc_clearing: "Kliring EDC",
     accounts_receivable: "Piutang usaha",
     employee_receivable: "Piutang karyawan",
+    offline_cash_clearing: "Kas offline belum dicocokkan",
     inventory: "Persediaan bahan baku",
     inventory_semi_finished: "Persediaan barang setengah jadi",
     ppn_input: "PPN masukan",

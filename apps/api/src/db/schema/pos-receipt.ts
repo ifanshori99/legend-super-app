@@ -57,7 +57,12 @@ const updatedAt = timestamp("updated_at", { withTimezone: true })
 
 /** legend-yd0h8: why a device run was retired. */
 export type ReceiptSequenceRetiredReason =
-  "claim_rotated" | "cloud_takeover" | "edge_replaced" | "edge_regressed";
+  | "claim_rotated"
+  | "cloud_takeover"
+  | "edge_replaced"
+  | "edge_regressed"
+  // O1: the tablet lost its local storage; its next kit opens a new epoch.
+  | "offline_epoch";
 
 /** `receipt_sequences` (T, E): §6 C, one gapless run per outlet and device. */
 export const receiptSequences = pgTable(
@@ -72,8 +77,9 @@ export const receiptSequences = pgTable(
     /**
      * 1271 F1: who numbers this run. `device` = the outlet edge (or the device
      * offline), `cloud` = the cloud-owned `C` run, `failover` = the `F<n>` run
-     * the cloud numbers while the edge is down (never edge-bound). Fixed for
-     * the life of the row.
+     * the cloud numbers while the edge is down (never edge-bound), `offline`
+     * = O1 `L<n>`, one epoch a tablet numbers offline (cloud-issued, never
+     * edge-bound). Fixed for the life of the row.
      */
     series: varchar("series", { length: 10 })
       .$type<ReceiptSeries>()
@@ -132,7 +138,7 @@ export const receiptSequences = pgTable(
     ),
     check(
       "receipt_sequences_series_check",
-      sql`${table.series} IN ('device', 'cloud', 'failover')`,
+      sql`${table.series} IN ('device', 'cloud', 'failover', 'offline')`,
     ),
     // 1271 F1 (N2): `F1`..`F9999` belongs to the failover series and only to it.
     check(
@@ -143,6 +149,16 @@ export const receiptSequences = pgTable(
     check(
       "receipt_sequences_failover_cloud_check",
       sql`${table.series} <> 'failover' OR ${table.edgeNodeId} IS NULL`,
+    ),
+    // O1: `L1`..`L999999` belongs to the offline series and only to it.
+    check(
+      "receipt_sequences_offline_prefix_check",
+      sql`(${table.series} = 'offline') = (${table.prefix} ~ '^L[0-9]{1,6}$')`,
+    ),
+    // O1: an offline run is issued by the cloud only; it is never edge-bound.
+    check(
+      "receipt_sequences_offline_cloud_check",
+      sql`${table.series} <> 'offline' OR ${table.edgeNodeId} IS NULL`,
     ),
     check(
       "receipt_sequences_last_number_check",
@@ -158,7 +174,7 @@ export const receiptSequences = pgTable(
     ),
     check(
       "receipt_sequences_retired_reason_check",
-      sql`${table.retiredReason} IS NULL OR (${table.retiredAt} IS NOT NULL AND ${table.retiredReason} IN ('claim_rotated','cloud_takeover','edge_replaced','edge_regressed'))`,
+      sql`${table.retiredReason} IS NULL OR (${table.retiredAt} IS NOT NULL AND ${table.retiredReason} IN ('claim_rotated','cloud_takeover','edge_replaced','edge_regressed','offline_epoch'))`,
     ),
   ],
 );

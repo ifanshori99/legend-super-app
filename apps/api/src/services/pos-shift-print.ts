@@ -4,11 +4,12 @@
 // bytes remain immutable under the deterministic shift key.
 // Queue insertion shares the close transaction. The agent consumes it only
 // after commit; a print-side failure rolls back its savepoint, never the close.
-import { and, asc, eq, isNull, or, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, notExists, or, sql } from "drizzle-orm";
 import type { ScopedTenantContext } from "@starter/shared/core";
 import { messagesId } from "@starter/shared/i18n";
 import { edgePrinters } from "../db/schema/edge-print.ts";
 import { outlets } from "../db/schema/platform-org.ts";
+import { posOfflineSales } from "../db/schema/pos-offline-sale.ts";
 import {
   posOrderRefunds,
   posOrders,
@@ -51,37 +52,7 @@ export async function buildShiftReportData(
     .limit(1);
   if (!outlet || !cashier || !shift.closedAt) return null;
 
-  // Cash tenders name the drawer they entered; noncash tenders have no
-  // drawer id and belong to the order's originating shift instead.
-  const captured = await tx
-    .select({
-      method: posOrderTenders.method,
-      count: sql<string>`count(distinct ${posOrderTenders.orderId})::text`,
-      amount: sql<string>`coalesce(sum(${posOrderTenders.amountIdr}), 0)::text`,
-    })
-    .from(posOrderTenders)
-    .innerJoin(
-      posOrders,
-      and(
-        eq(posOrders.tenantId, posOrderTenders.tenantId),
-        eq(posOrders.outletId, posOrderTenders.outletId),
-        eq(posOrders.orderId, posOrderTenders.orderId),
-      ),
-    )
-    .where(
-      and(
-        eq(posOrderTenders.tenantId, shift.tenantId),
-        eq(posOrderTenders.outletId, shift.outletId),
-        eq(posOrderTenders.status, "captured"),
-        eq(posOrders.isTraining, false),
-        or(
-          eq(posOrderTenders.shiftId, shift.id),
-          and(isNull(posOrderTenders.shiftId), eq(posOrders.shiftId, shift.id)),
-        ),
-      ),
-    )
-    .groupBy(posOrderTenders.method)
-    .orderBy(asc(posOrderTenders.method));
+  const captured = await shiftCapturedTenders(tx, shift);
 
   const [refunds] = await tx
     .select({
@@ -217,4 +188,58 @@ export async function enqueueClosedShiftReport(
       "Shift report enqueue failed; closed shift remains committed",
     );
   }
+}
+
+/**
+ * Captured sale tenders of a shift per method. Cash tenders name the drawer
+ * they entered; noncash tenders have no drawer id and belong to the order's
+ * originating shift instead. Review O2 P3 4: an offline sale ingested after
+ * its kit shift closed (`shift_closed`) is not that drawer's sale and is left
+ * out, so a close replay never prints it.
+ */
+export async function shiftCapturedTenders(
+  tx: Tx,
+  shift: Pick<ShiftRow, "id" | "tenantId" | "outletId">,
+): Promise<{ method: string; count: string; amount: string }[]> {
+  return tx
+    .select({
+      method: posOrderTenders.method,
+      count: sql<string>`count(distinct ${posOrderTenders.orderId})::text`,
+      amount: sql<string>`coalesce(sum(${posOrderTenders.amountIdr}), 0)::text`,
+    })
+    .from(posOrderTenders)
+    .innerJoin(
+      posOrders,
+      and(
+        eq(posOrders.tenantId, posOrderTenders.tenantId),
+        eq(posOrders.outletId, posOrderTenders.outletId),
+        eq(posOrders.orderId, posOrderTenders.orderId),
+      ),
+    )
+    .where(
+      and(
+        eq(posOrderTenders.tenantId, shift.tenantId),
+        eq(posOrderTenders.outletId, shift.outletId),
+        eq(posOrderTenders.status, "captured"),
+        eq(posOrders.isTraining, false),
+        or(
+          eq(posOrderTenders.shiftId, shift.id),
+          and(isNull(posOrderTenders.shiftId), eq(posOrders.shiftId, shift.id)),
+        ),
+        notExists(
+          tx
+            .select({ one: sql`1` })
+            .from(posOfflineSales)
+            .where(
+              and(
+                eq(posOfflineSales.tenantId, posOrderTenders.tenantId),
+                eq(posOfflineSales.eventId, posOrderTenders.orderId),
+                sql`${posOfflineSales.flags} @> '["shift_closed"]'::jsonb`,
+              ),
+            ),
+        ),
+      ),
+    )
+    .groupBy(posOrderTenders.method)
+    .orderBy(asc(posOrderTenders.method));
 }
