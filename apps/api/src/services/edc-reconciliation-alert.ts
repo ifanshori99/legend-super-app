@@ -46,8 +46,9 @@ function alertUlid(key: readonly string[]): string {
 const rupiah = (value: number) => `Rp ${value.toLocaleString("id-ID")}`;
 
 export type EdcReconciliationMismatch = {
-  /** `amount`: another charged amount; `reference`: another bank RRN. */
-  kind: "amount" | "reference";
+  /** `amount`: another charged amount; `reference`: another bank RRN;
+   * `terminal` (X2): the bank line names the RRN on another terminal. */
+  kind: "amount" | "reference" | "terminal";
   edcTransactionId: string;
   outletId: string;
   amountIdr: number;
@@ -77,7 +78,9 @@ export async function alertEdcReconciliationMismatch(
   const body =
     mismatch.kind === "amount" && mismatch.chargedAmountIdr !== null
       ? `Bukti bank menyebut ${rupiah(mismatch.chargedAmountIdr)}, tercatat ${rupiah(mismatch.amountIdr)}. Transaksi tetap perlu dicek; periksa slip dan laporan bank sebelum memutuskan koreksi.`
-      : `Nomor referensi di laporan bank tidak sama dengan slip EDC manual yang dicatat kasir (${rupiah(mismatch.amountIdr)}). Transaksi tetap perlu dicek; periksa slip dan laporan bank sebelum memutuskan koreksi.`;
+      : mismatch.kind === "terminal"
+        ? `Laporan bank mencatat nomor referensi ini di terminal EDC lain (${rupiah(mismatch.amountIdr)}). Transaksi tetap perlu dicek; periksa slip dan laporan bank sebelum memutuskan koreksi.`
+        : `Nomor referensi di laporan bank tidak sama dengan slip EDC manual yang dicatat kasir (${rupiah(mismatch.amountIdr)}). Transaksi tetap perlu dicek; periksa slip dan laporan bank sebelum memutuskan koreksi.`;
   try {
     await withTenant(db, context, (tx) =>
       notifyOutletSupervisors(

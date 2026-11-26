@@ -1445,3 +1445,271 @@ describe("EDC-03 resolving an unknown request as approved books the payment exac
     }
   });
 });
+
+// ---- X2 EDC settlement CSV per bank (legend-wasr7.11) -------------------------
+//
+// Money rule: the import never changes an amount or a payment status. A bank
+// line naming the sale's own terminal + RRN + amount only clears the "perlu
+// dicek" flag of an approved, booked sale; any difference stays flagged and
+// alerts. Idempotent per file and per line; another tenant's outlet is 404.
+describe("X2 EDC settlement CSV import matches terminal + RRN + amount and never moves money", () => {
+  const otherTerminalCode = "TID-RECON2";
+  let otherOutletId: string;
+
+  beforeAll(async () => {
+    await asOwnerTenant((client) =>
+      client.query(
+        `INSERT INTO payment_edc_terminals
+           (id, tenant_id, outlet_id, bank_code, terminal_id, merchant_id, model,
+            connection, ip_address, supported_methods, status)
+         VALUES ($1, $2, $3, 'bca', $4, 'MID-RECON2', 'Test EDC', 'lan',
+                 '10.0.0.9', ARRAY['card'], 'active')`,
+        [randomUUID(), tenant.tenantId, tenant.outletId, otherTerminalCode],
+      ),
+    );
+    otherOutletId = (
+      await createIsolatedTenant(`edx-${randomUUID().slice(0, 6)}`)
+    ).outletId;
+  });
+
+  function importCsv(
+    who: Member,
+    csv: string,
+    extra: Record<string, unknown> = {},
+  ) {
+    return who.client
+      .post("/api/payments/admin/edc/settlement-csv")
+      .set(headers)
+      .set(originHeader)
+      .send({
+        outletId: tenant.outletId,
+        bank: "bca",
+        fileName: "settlement-bca.csv",
+        csv,
+        ...extra,
+      });
+  }
+
+  const header = "No;TID;No Kartu;Approval Code;RRN;Nominal;Batch";
+  const line = (no: number, tid: string, rrn: string, amount: string) =>
+    `${no};${tid};4111********1111;A1B2C3;${rrn};${amount};000777`;
+  const file = (...lines: string[]) => [header, ...lines].join("\r\n");
+
+  /** A hand-keyed slip booked as a live tender, flagged, as X1 leaves it. */
+  async function manualSlip(rrn: string) {
+    const order = await newOrder();
+    const id = await ledgerSale({
+      reference: order.number,
+      amountIdr: order.totalIdr,
+      status: "approved",
+      flagged: false,
+    });
+    expect((await payEdc(order, id)).status).toBe(201);
+    await asOwnerTenant((client) =>
+      client.query(
+        `UPDATE edc_transactions
+           SET mode = 'standalone', needs_reconciliation = true, rrn = $2
+         WHERE id = $1`,
+        [id, rrn],
+      ),
+    );
+    return { order, id };
+  }
+
+  const mismatchAlerts = async (id: string) =>
+    (
+      await owner.query<{ payload: Record<string, unknown> }>(
+        `SELECT payload FROM notification_outbox
+         WHERE tenant_id = $1 AND event_type = 'edc_transaction.reconciliation_mismatch'
+           AND payload->>'edcTransactionId' = $2`,
+        [tenant.tenantId, id],
+      )
+    ).rows;
+
+  const rupiah = (value: number) => value.toLocaleString("id-ID");
+
+  it("a line with the slip's own terminal, RRN and amount clears the flag only; amount, status and tender stay", async () => {
+    const { order, id } = await manualSlip("X2RRN000001");
+    const csv = file(
+      line(1, "tid-recon", "X2-RRN-000001", rupiah(order.totalIdr)),
+    );
+    const res = await importCsv(financeUser, csv);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.data).toMatchObject({
+      rowCount: 1,
+      matched: 1,
+      cleared: 1,
+      mismatch: 0,
+      unmatched: 0,
+      duplicate: 0,
+      replayed: false,
+    });
+    expect(await row(id)).toMatchObject({
+      status: "approved",
+      needs_reconciliation: false,
+      amount_idr: String(order.totalIdr),
+      rrn: "X2RRN000001",
+    });
+    expect(await liveTenders(order.orderId)).toEqual({
+      count: 1,
+      sumIdr: order.totalIdr,
+    });
+    expect(await auditRows(id)).toHaveLength(1);
+    // The card column is never stored.
+    const stored = await owner.query(
+      `SELECT r.* FROM edc_settlement_rows r WHERE r.tenant_id = $1`,
+      [tenant.tenantId],
+    );
+    expect(JSON.stringify(stored.rows)).not.toContain("4111");
+
+    // The same file again: a replay, nothing written twice.
+    const again = await importCsv(financeUser, csv);
+    expect(again.status, JSON.stringify(again.body)).toBe(200);
+    expect(again.body.data).toMatchObject({
+      id: res.body.data.id,
+      replayed: true,
+      cleared: 1,
+    });
+    expect(await auditRows(id)).toHaveLength(1);
+
+    // A re-export repeating the line plus a new one: the old line is a duplicate.
+    const second = await manualSlip("X2RRN000002");
+    const next = await importCsv(
+      financeUser,
+      file(
+        line(1, "TID-RECON", "X2RRN000001", String(order.totalIdr)),
+        line(2, "TID-RECON", "X2RRN000002", String(second.order.totalIdr)),
+      ),
+      { fileName: "settlement-bca-ulang.csv" },
+    );
+    expect(next.status, JSON.stringify(next.body)).toBe(200);
+    expect(next.body.data).toMatchObject({
+      rowCount: 2,
+      matched: 1,
+      cleared: 1,
+      duplicate: 1,
+      replayed: false,
+    });
+    expect(await row(second.id)).toMatchObject({
+      needs_reconciliation: false,
+    });
+    expect(await auditRows(id)).toHaveLength(1);
+  });
+
+  it("the same RRN with another amount stays flagged, books nothing and alerts once", async () => {
+    const { order, id } = await manualSlip("X2RRN000010");
+    const res = await importCsv(
+      financeUser,
+      file(line(1, "TID-RECON", "X2RRN000010", String(order.totalIdr + 1000))),
+    );
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.data).toMatchObject({ matched: 0, mismatch: 1 });
+    expect(await row(id)).toMatchObject({
+      status: "approved",
+      needs_reconciliation: true,
+      amount_idr: String(order.totalIdr),
+    });
+    expect(await liveTenders(order.orderId)).toEqual({
+      count: 1,
+      sumIdr: order.totalIdr,
+    });
+    expect(await auditRows(id)).toHaveLength(0);
+    const sent = await mismatchAlerts(id);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.payload).toMatchObject({
+      kind: "amount",
+      amountIdr: String(order.totalIdr),
+      chargedAmountIdr: String(order.totalIdr + 1000),
+    });
+  });
+
+  it("the same RRN on another terminal of the outlet stays flagged and alerts", async () => {
+    const { order, id } = await manualSlip("X2RRN000020");
+    const res = await importCsv(
+      financeUser,
+      file(line(1, otherTerminalCode, "X2RRN000020", String(order.totalIdr))),
+    );
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.data).toMatchObject({ matched: 0, mismatch: 1 });
+    expect(await row(id)).toMatchObject({ needs_reconciliation: true });
+    const sent = await mismatchAlerts(id);
+    expect(sent.map((alert) => alert.payload.kind)).toEqual(["terminal"]);
+  });
+
+  it("a void line for the RRN in the same file keeps the sale flagged", async () => {
+    const { order, id } = await manualSlip("X2RRN000030");
+    const res = await importCsv(
+      financeUser,
+      [
+        "TID;RRN;Nominal;Jenis",
+        `TID-RECON;X2RRN000030;${order.totalIdr};SALE`,
+        `TID-RECON;X2RRN000030;${order.totalIdr};VOID`,
+      ].join("\n"),
+    );
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.data).toMatchObject({ matched: 0, cleared: 0 });
+    expect(await row(id)).toMatchObject({ needs_reconciliation: true });
+  });
+
+  it("an unknown ECR sale is never approved by an import (no status change)", async () => {
+    const order = await newOrder();
+    const id = await ledgerSale({
+      reference: order.number,
+      amountIdr: order.totalIdr,
+      status: "unknown",
+      rrn: "X2RRN000040",
+    });
+    const res = await importCsv(
+      financeUser,
+      file(line(1, "TID-RECON", "X2RRN000040", String(order.totalIdr))),
+    );
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.data).toMatchObject({ matched: 0, unmatched: 1 });
+    expect(await row(id)).toMatchObject({
+      status: "unknown",
+      needs_reconciliation: true,
+    });
+    expect(await liveTenders(order.orderId)).toEqual({ count: 0, sumIdr: 0 });
+    await expectBillLocked(order);
+  });
+
+  it("a line no sale names is unmatched; an unreadable file is 422 and records nothing", async () => {
+    const res = await importCsv(
+      financeUser,
+      file(line(1, "TID-RECON", "X2NOSUCHRRN", "55000")),
+    );
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.data).toMatchObject({ matched: 0, unmatched: 1 });
+    const before = await owner.query(
+      `SELECT count(*)::int AS n FROM edc_settlement_files WHERE tenant_id = $1`,
+      [tenant.tenantId],
+    );
+    const bad = await importCsv(
+      financeUser,
+      file(line(1, "TID-RECON", "X2RRN000050", "55000,50")),
+    );
+    expect(bad.status, JSON.stringify(bad.body)).toBe(422);
+    const after = await owner.query(
+      `SELECT count(*)::int AS n FROM edc_settlement_files WHERE tenant_id = $1`,
+      [tenant.tenantId],
+    );
+    expect(after.rows[0]?.n).toBe(before.rows[0]?.n);
+  });
+
+  it("another tenant's outlet is 404, a cashier 403, an owner without a second factor MFA_REQUIRED", async () => {
+    const { order, id } = await manualSlip("X2RRN000060");
+    const csv = file(
+      line(1, "TID-RECON", "X2RRN000060", String(order.totalIdr)),
+    );
+    const foreign = await importCsv(financeUser, csv, {
+      outletId: otherOutletId,
+    });
+    expect(foreign.status, JSON.stringify(foreign.body)).toBe(404);
+    const byCashier = await importCsv(cashier, csv);
+    expect(byCashier.status, JSON.stringify(byCashier.body)).toBe(403);
+    const noMfa = await importCsv(ownerNoMfa, csv);
+    expect(noMfa.status, JSON.stringify(noMfa.body)).toBe(403);
+    expect(noMfa.body.error?.code).toBe("MFA_REQUIRED");
+    expect(await row(id)).toMatchObject({ needs_reconciliation: true });
+  });
+});
