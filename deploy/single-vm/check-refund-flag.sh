@@ -11,6 +11,11 @@
 # DUITKU_ALLOW_SANDBOX is such a flag, DUITKU_ENABLED_METHODS is a comma list
 # compared as a set (missing or empty = all locked, an unknown method fails).
 # DUITKU_ALLOW_SANDBOX on is refused in production mode or with real data.
+# Cloud-only release (docs/design/cloud-only-release.md section 1): this stack is
+# the cloud, so the edge switches must be off in api.env and worker.env
+# (EDGE_MODE, EDGE_NODES_ENABLED, EDGE_FAILOVER_ENABLED, EDC_AGENT_ENABLED). One
+# active edge node makes the cloud refuse sales of its outlet. Remove this guard
+# when edge outlets return.
 # Prints only file and setting names, never values or URLs.
 #
 #   check-refund-flag.sh --env-file /absolute/path/compose.env
@@ -113,3 +118,10 @@ fi
 api_methods=$(methods_of "$api_env")
 worker_methods=$(methods_of "$worker_env")
 same_or_fail DUITKU_ENABLED_METHODS "$api_methods" "$worker_methods"
+# Cloud-only release: the edge switches stay off (see the header).
+for file in "$api_env" "$worker_env"; do
+  for flag in EDGE_MODE EDGE_NODES_ENABLED EDGE_FAILOVER_ENABLED EDC_AGENT_ENABLED; do
+    [ "$(flag_of "$file" "$flag")" = 0 ] ||
+      fail "$flag is on in $(basename "$file"). The cloud-only release keeps all edge switches off."
+  done
+done

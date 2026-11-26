@@ -33,6 +33,13 @@ fi
 # No listener and a private socket prevent accidental access from the network.
 pg_ctl -D "$target" -o "-c archive_mode=off -c listen_addresses='' -c unix_socket_directories='$socket_dir' -c port=55432" -w start
 started=1
+# pg_ctl returns once connections are accepted, which is while WAL is still
+# replayed: wait until recovery has ended (the target is reached and the server
+# promoted) before querying, or the drill reads half-restored data and the
+# measured time is too short. Gives up after 30 minutes.
+psql -X -v ON_ERROR_STOP=1 -h "$socket_dir" -p 55432 -U "${POSTGRES_USER:-replace_me}" -d postgres \
+  -c "SET statement_timeout = '1800s'" \
+  -c 'DO $$ BEGIN WHILE pg_is_in_recovery() LOOP PERFORM pg_sleep(0.5); END LOOP; END $$;'
 psql -X -v ON_ERROR_STOP=1 -h "$socket_dir" -p 55432 -U "${POSTGRES_USER:-replace_me}" -d postgres -c 'SELECT now() AS restored_at, pg_is_in_recovery() AS in_recovery;'
 end=$(date +%s)
 echo "Restore and startup completed in $((end - start)) seconds; verify data and archived WAL timestamps against the recovery target."

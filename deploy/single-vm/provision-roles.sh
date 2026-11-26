@@ -308,6 +308,10 @@ if [ "$mode" = audit ]; then
   compose --profile provisioning run --rm provision-roles node dist/provision-roles.js --audit
   exit 0
 fi
+# Same env agreement and edge-switch guard as deploy.sh, so the first-boot
+# migration cannot run with an edge switch on (cloud-only release).
+"$script_dir/check-refund-flag.sh" --env-file "$env_file" ||
+  { echo "Env agreement check failed: nothing was migrated. Turn every edge switch off and make the refund and Duitku settings agree in api.env and worker.env (docs/deploy/runbook-founder.md)." >&2; exit 1; }
 compose up -d --wait postgres
 compose --profile migration run --rm migrate node dist/predeploy-check.js
 compose --profile migration run --rm migrate
