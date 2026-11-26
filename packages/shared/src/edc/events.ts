@@ -17,12 +17,20 @@
 
 import {
   idrSchema,
+  isoDateTimeSchema,
   outletIdSchema,
   tenantIdSchema,
   uuidSchema,
   z,
 } from "../core/index.ts";
 import { defineDomainEvent } from "../events/define.ts";
+
+/** 13 or more digits, alone or split by dashes: looks like a card number. */
+const PAN_LIKE = /\d(?:-*\d){12,}/;
+export const edcEventRrnSchema = z
+  .string()
+  .regex(/^[A-Za-z0-9-]{1,24}$/)
+  .refine((value) => !PAN_LIKE.test(value), "RRN looks like a card number");
 
 const payload = z.strictObject({
   transactionId: uuidSchema,
@@ -51,6 +59,16 @@ const payload = z.strictObject({
     .regex(/^(?:\d{6}|\d{0,4})[*Xx]{2,}\d{4}$/, "masked PAN only")
     .nullable(),
   needsReconciliation: z.boolean(),
+  // 1269 E4: what the cloud needs to mirror the edge ledger row. Optional so
+  // an event written before E4 still parses; the cloud refuses to mirror one
+  // without them (edge/edc-ledger-applier.ts).
+  method: z.enum(["card", "qris"]).optional(),
+  type: z.enum(["sale", "void", "refund"]).optional(),
+  mode: z.enum(["ecr", "standalone"]).optional(),
+  /** Bank reference (RRN / slip number); never anything that looks like a
+   * card number (13+ digits, also split by dashes). */
+  rrn: edcEventRrnSchema.nullable().optional(),
+  completedAt: isoDateTimeSchema.nullable().optional(),
 });
 export type EdcTransactionEventPayload = z.infer<typeof payload>;
 

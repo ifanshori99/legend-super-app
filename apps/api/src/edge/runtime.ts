@@ -85,6 +85,7 @@ import {
   type WifiQuotaWorkerHandle,
 } from "./wifi-quota-queue-worker.ts";
 import { registerOrderEdgeApplier } from "./order-edge-applier.ts";
+import { registerEdcLedgerEdgeApplier } from "./edc-ledger-applier.ts";
 import { registerShiftDayEdgeApplier } from "./shift-day-applier.ts";
 import { registerReceiptRunEdgeApplier } from "./receipt-run-applier.ts";
 import {
@@ -1687,6 +1688,8 @@ export async function registerEdgeLink(
   registerOrderEdgeApplier();
   // 1269 E3: edge shifts, cash movements and Tutup Hari mirrored in the cloud.
   registerShiftDayEdgeApplier();
+  // 1269 E4: the edge's EDC ledger (edc_transaction.*) mirrored in the cloud.
+  registerEdcLedgerEdgeApplier();
   // legend-zy43: receipt_run.reported merged with mergeDeviceReceiptRun. Its
   // aggregate is excluded from posDeferredAggregates (one handler per event).
   registerReceiptRunEdgeApplier();
