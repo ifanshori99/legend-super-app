@@ -34,7 +34,11 @@
 //     rethrown: the receive batch rolls back and the edge sends it again.
 import { createHash } from "node:crypto";
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
-import type { OutletId, ScopedTenantContext } from "@starter/shared/core";
+import type {
+  OutletId,
+  ScopedTenantContext,
+  TenantId,
+} from "@starter/shared/core";
 import {
   EDC_TRANSACTION_EVENTS,
   edcTransactionEventPayloadSchema,
@@ -197,7 +201,7 @@ function assertForward(row: Row, payload: Mirrored): void {
 /** R4: one slip, one charge, across the tenant. */
 async function assertSlipFree(
   tx: EdgeTx,
-  tenantId: string,
+  tenantId: TenantId,
   payload: Mirrored,
 ): Promise<void> {
   if (
@@ -250,7 +254,7 @@ async function lockTransaction(
   );
 }
 
-async function ledgerOf(tx: EdgeTx, tenantId: string, transactionId: string) {
+async function ledgerOf(tx: EdgeTx, tenantId: TenantId, transactionId: string) {
   const [row] = await tx
     .select()
     .from(edgeEdcIngests)
