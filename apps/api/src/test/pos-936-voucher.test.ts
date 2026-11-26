@@ -863,7 +863,13 @@ describe("1272 V1 P3 1: a member voucher reaches the engine with the attached me
         `INSERT INTO vouchers (id, tenant_id, promotion_id, customer_profile_id, code_hash, source,
                                value_idr, valid_from, valid_until)
          VALUES ($1, $2, NULL, $3, $4, 'manual', $5, now() - interval '1 hour', NULL)`,
-        [randomUUID(), world.tenant.tenantId, profileId, sha256(code), valueIdr],
+        [
+          randomUUID(),
+          world.tenant.tenantId,
+          profileId,
+          sha256(code),
+          valueIdr,
+        ],
       ),
     );
     return code;
