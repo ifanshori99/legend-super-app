@@ -2,8 +2,11 @@
 // outlet's active EDC terminals. Presentation only: every tender is checked
 // again when it is added (pos-order-payment.ts). A failed read is "no".
 //
-// - VA, e-wallet and online card are locked (no POS tender path yet) and ECR is
-//   off: EDC is keyed by hand with a supervisor approval (EDC-04).
+// - VA, e-wallet and online card are locked (no POS tender path yet).
+// - ECR (1269 E7) is on only where this process runs the outlet's EDC agent
+//   and an active terminal's bank has an adapter; otherwise EDC is keyed by
+//   hand with a supervisor approval (EDC-04). Production has no adapter until
+//   legend-vpx, so ECR stays locked there.
 // - Nothing secret leaves: no merchant id, address, full terminal id, gateway
 //   name or credential.
 
@@ -19,6 +22,7 @@ import {
 import { db } from "../db/index.ts";
 import { paymentEdcTerminals } from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
+import { getEdgeEdcAgent } from "../edge/edc/runtime.ts";
 import { logger } from "../lib/logger.ts";
 import { selectGatewayForNewIntent } from "./payment-gateway-select.ts";
 import {
@@ -107,6 +111,12 @@ export async function getPosPaymentOptions(
     edc_card: edc("card"),
     edc_qris: edc("qris"),
   };
+  const agent = getEdgeEdcAgent();
+  const ecrEnabled =
+    agent !== null &&
+    terminals.some((row) =>
+      agent.canSell(context.tenant.tenantId, outletId, row.bankCode),
+    );
   return posPaymentOptionsSchema.parse({
     outletId,
     methods: POS_PAYMENT_OPTION_METHODS.map((method) => ({
@@ -115,7 +125,7 @@ export async function getPosPaymentOptions(
       unavailableReason: reasons[method],
     })),
     edc: {
-      ecrEnabled: false,
+      ecrEnabled,
       terminals: terminals.map((row) => ({
         id: row.id,
         bankCode: row.bankCode,

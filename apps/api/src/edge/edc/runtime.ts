@@ -65,6 +65,20 @@ export function getEdgeEdcAgent(): EdcAgent | null {
   return current;
 }
 
+/** Tests only: the agent the POS ECR routes see (1269 E7). */
+export function setEdgeEdcAgentForTests(agent: EdcAgent | null): void {
+  if (process.env.NODE_ENV !== "test")
+    throw new Error("setEdgeEdcAgentForTests is for tests only");
+  current = agent;
+}
+
+/** The registry every production agent gets: never a simulator, and no bank
+ * adapter until legend-vpx registers one. Empty means every ECR sale is
+ * refused (`EDC_PROVIDER_UNKNOWN`) before a ledger row exists. */
+export function createProductionEdcRegistry() {
+  return createDefaultEdcRegistry({ simulator: false });
+}
+
 export type EdgeEdcAgentOptions = {
   /** Default `env.EDC_AGENT_ENABLED` (off by default). */
   enabled?: boolean;
@@ -82,7 +96,7 @@ export type EdgeEdcAgentOptions = {
 function productionAgent(hooks: { onOutletLost: () => void }): EdcAgent {
   return createEdcAgent({
     db,
-    registry: createDefaultEdcRegistry({ simulator: false }),
+    registry: createProductionEdcRegistry(),
     saleTimeoutMs: EDC_SALE_TIMEOUT_MS,
     onOutletLost: hooks.onOutletLost,
   });
