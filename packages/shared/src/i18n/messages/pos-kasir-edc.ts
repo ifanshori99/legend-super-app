@@ -38,6 +38,7 @@ export const posKasirEdcMessages = {
     fromBill: "Dari tagihan POS",
     locked: "Nominal terkunci",
     matchesRemaining: "Sesuai sisa tagihan",
+    notFilled: "Belum diisi",
     paidPill: "Lunas",
     pickTerminal: "Pilih terminal EDC",
     pickTerminalDetail: "Kartu atau QRIS melalui mesin bank",
@@ -175,6 +176,9 @@ export const posKasirEdcMessages = {
     bankRefHint:
       "Salin dari struk EDC (RRN), 6 sampai 24 huruf atau angka. Dicocokkan dengan mutasi bank besok.",
     bankRefRequired: "Isi nomor referensi bank dari struk EDC.",
+    amountRequired: "Isi nominal dari struk EDC, lebih dari Rp0.",
+    amountMismatch:
+      "Nominal slip berbeda dari sisa {remaining}. Cek slip lagi.",
     approval: "Kode persetujuan",
     confirm:
       "Pembayaran {amount} dicatat sebagai EDC manual dan dicocokkan dengan mutasi bank H+1.",

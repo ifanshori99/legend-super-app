@@ -14,7 +14,9 @@ const OUT = join(ROOT, "docs/review/img");
 const PORT = 3372;
 const URL_BASE = `http://localhost:${PORT}`;
 const ORDER = "0b0b0048-0000-4000-8000-000000000048";
-const THEMES = ["light", "dark"];
+// C3B_THEMES=light C3B_SCENES=edc-manual: reshoot only those.
+const THEMES = (process.env.C3B_THEMES ?? "light,dark").split(",");
+const ONLY = process.env.C3B_SCENES?.split(",");
 const VIEWPORTS = [
   { w: 390, h: 844 },
   { w: 1280, h: 1000 },
@@ -108,6 +110,7 @@ try {
   for (const vp of VIEWPORTS)
     for (const theme of THEMES)
       for (const [name, run] of Object.entries(SCENES)) {
+        if (ONLY && !ONLY.includes(name)) continue;
         const ctx = await browser.newContext({
           viewport: { width: vp.w, height: vp.h },
           colorScheme: theme,

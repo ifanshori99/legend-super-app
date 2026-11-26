@@ -96,7 +96,7 @@ export const posKasirGatewayMessages = {
     statusWaiting: "Menunggu transfer",
     readyHeading: "Nomor VA sudah tersedia",
     readyBody:
-      "Tunjukkan nomor ini ke pelanggan untuk transfer dari aplikasi bank atau ATM.",
+      "{bank} · Tunjukkan nomor ini ke pelanggan untuk transfer dari aplikasi bank atau ATM.",
     numberLabel: "Nomor Virtual Account",
     deadline: "Batas pembayaran",
     noticeTitle: "Belum lunas",
@@ -125,6 +125,9 @@ export const posKasirGatewayMessages = {
     pageHint:
       "QR ini membuka halaman bayar untuk nominal tagihan. Hanya berlaku untuk tagihan ini.",
     openPage: "Buka halaman bayar",
+    openPageLabel: "Buka halaman bayar {wallet} di tab baru",
+    pageUnsafe:
+      "Halaman bayar dari penyedia tidak aman untuk dibuka. Minta pelanggan memakai cara bayar lain, atau batalkan kode ini.",
     expiredHeading: "Permintaan e-wallet kedaluwarsa",
     expiredBody: "Pelanggan belum menyetujui pembayaran.",
     expiredNoticeBody:

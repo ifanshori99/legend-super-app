@@ -26,6 +26,7 @@ import {
   remainingMsOf,
   useNow,
 } from "./gateway-parts";
+import { useEdcErrorText } from "./edc-side";
 import { formatClock } from "./payment-helpers";
 
 /** Q93: a manager may release a code from 30 minutes after it lapsed. */
@@ -110,7 +111,11 @@ export function OnlineCodeHold({
         noticeBody={shown ? noticeBody : t("posKasirGateway.code.oneCodeBody")}
         action={
           canRelease ? (
-            <Button variant="outline" onClick={() => setReleasing(true)}>
+            <Button
+              variant="outline"
+              onClick={() => setReleasing(true)}
+              className="w-full sm:w-auto"
+            >
               {t("posKasirGateway.code.release")}
             </Button>
           ) : (
@@ -118,6 +123,7 @@ export function OnlineCodeHold({
               <Button
                 variant="outline"
                 loading={cancel.isPending}
+                className="w-full sm:w-auto"
                 onClick={() =>
                   cancel.mutate({ orderId, attemptId: attempt.id, method })
                 }
@@ -174,6 +180,7 @@ function ReleaseCodeDialog({
   const t = useT();
   const approvers = useResolveApprovers("void", open);
   const release = useReleaseOnlineCode();
+  const errorText = useEdcErrorText();
   const [pickedId, setPickedId] = useState<string>();
   const [formError, setFormError] = useState<string | null>(null);
   const options = approvers.data ?? [];
@@ -254,7 +261,7 @@ function ReleaseCodeDialog({
       error={
         formError ??
         (release.error
-          ? `${t("posKasirGateway.code.releaseError")}: ${release.error.message}`
+          ? `${t("posKasirGateway.code.releaseError")}: ${errorText(release.error)}`
           : null)
       }
       minReasonLength={4}

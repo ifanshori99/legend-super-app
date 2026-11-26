@@ -15,6 +15,16 @@ import {
   useGatewayAttempt,
 } from "./gateway-parts";
 import { OnlineCodeHold } from "./online-code-parts";
+import { BlockNotice } from "./gateway-parts";
+import { Notice } from "../shared";
+
+function isHttpsUrl(value: string): boolean {
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
 import type { PaymentPanelProps } from "./panel-types";
 import { PosPanel, StateBlock } from "../shared";
 
@@ -131,7 +141,9 @@ export function EwalletPanel(props: PaymentPanelProps) {
   if (attempt.status !== "waiting" && attempt.status !== "cancelling")
     return null;
 
-  const page = attempt.ewallet?.paymentUrl;
+  // Only a provider page over https is shown or opened (review C3b P3).
+  const url = attempt.ewallet?.paymentUrl;
+  const page = url && isHttpsUrl(url) ? url : undefined;
   return (
     <OnlineCodeHold
       orderId={orderId}
@@ -143,6 +155,13 @@ export function EwalletPanel(props: PaymentPanelProps) {
       noticeTitle={t("posKasirGateway.common.waitingNoticeTitle")}
       noticeBody={t("posKasirGateway.common.waitingNoticeBody")}
     >
+      {url !== undefined && page === undefined && (
+        <BlockNotice>
+          <Notice tone="warning" title={t("posKasirGateway.code.oneCodeTitle")}>
+            {t("posKasirGateway.ewallet.pageUnsafe")}
+          </Notice>
+        </BlockNotice>
+      )}
       {page && (
         <div className="flex w-full max-w-3xl flex-col items-center gap-3 rounded-container bg-muted p-5 text-center">
           <QrCode
@@ -155,7 +174,14 @@ export function EwalletPanel(props: PaymentPanelProps) {
             {t("posKasirGateway.ewallet.pageHint")}
           </p>
           <Button asChild variant="outline">
-            <a href={page} target="_blank" rel="noopener noreferrer">
+            <a
+              href={page}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label={t("posKasirGateway.ewallet.openPageLabel", {
+                wallet,
+              })}
+            >
               {t("posKasirGateway.ewallet.openPage")}
               <ExternalLink aria-hidden="true" />
             </a>

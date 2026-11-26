@@ -12,6 +12,10 @@ import { EdcLayout, useEdcErrorText } from "./edc-side";
 import { edcSlipRefProblem } from "./payment-helpers";
 import { INTENT_STORAGE_UNAVAILABLE } from "../../payment-intent-store";
 
+/** "148.000": the slip amount as the slip prints it. */
+const formatThousands = (value: number) =>
+  new Intl.NumberFormat("id-ID").format(value);
+
 /** Same minimum the record endpoint enforces (6-24, never a card number). */
 const BANK_REF_MIN_LENGTH = 6;
 
@@ -42,8 +46,19 @@ export function EdcStandalone({
   const [slipAmount, setSlipAmount] = useState("");
   const [approvalCode, setApprovalCode] = useState("");
   const [refTouched, setRefTouched] = useState(false);
+  const [amountTouched, setAmountTouched] = useState(false);
 
   const amountIdr = Number(slipAmount);
+  // Strictest rule (CTO, review C3b P3): a slip that is not the remaining bill
+  // is never sent, so a typo cannot lock the bill as an unknown payment.
+  const mismatch = amountIdr > 0 && amountIdr !== bill.remainingIdr;
+  const amountProblem = mismatch
+    ? t("posKasirEdc.standalone.amountMismatch", {
+        remaining: formatRupiah(bill.remainingIdr),
+      })
+    : amountTouched && amountIdr <= 0
+      ? t("posKasirEdc.standalone.amountRequired")
+      : undefined;
   // The slip cannot change while it is sent, nor after a note is written for it.
   const slipLocked =
     record.isPending ||
@@ -61,12 +76,14 @@ export function EdcStandalone({
   const canSubmit =
     terminal !== undefined &&
     amountIdr > 0 &&
+    !mismatch &&
     trimmedRef.length >= BANK_REF_MIN_LENGTH &&
     edcSlipRefProblem(bankRef) === undefined &&
     !record.isPending;
 
   function submit() {
     setRefTouched(true);
+    setAmountTouched(true);
     if (!canSubmit || !terminal) return;
     record.reset();
     // A refused record shows below; the session updates itself on success.
@@ -86,7 +103,7 @@ export function EdcStandalone({
       bill={bill}
       headPill={{ tone: "warning", label: t("posKasirEdc.pill.standalone") }}
       sideLabel={t("posKasirEdc.side.proof")}
-      sideAmountIdr={amountIdr > 0 ? amountIdr : bill.remainingIdr}
+      sideAmountIdr={amountIdr > 0 ? amountIdr : null}
       sidePill={
         amountIdr === bill.remainingIdr
           ? {
@@ -124,6 +141,7 @@ export function EdcStandalone({
                 variant="outline"
                 onClick={onBack}
                 disabled={record.isPending}
+                className="w-full sm:w-auto"
               >
                 {t("posKasirEdc.standalone.back")}
               </Button>
@@ -131,6 +149,7 @@ export function EdcStandalone({
                 type="submit"
                 disabled={!canSubmit}
                 loading={record.isPending}
+                className="w-full sm:w-auto"
               >
                 {t(
                   record.isPending
@@ -151,21 +170,19 @@ export function EdcStandalone({
             <div className="grid gap-4 md:grid-cols-2">
               <FormField
                 label={t("posKasirPayment.unresolved.slipAmount")}
-                hint={
-                  amountIdr > 0
-                    ? formatRupiah(amountIdr)
-                    : t("posKasirPayment.unresolved.slipAmountHint")
-                }
+                hint={t("posKasirPayment.unresolved.slipAmountHint")}
+                error={amountProblem}
                 required
               >
                 <Input
                   name="slipAmount"
-                  value={slipAmount}
+                  value={amountIdr > 0 ? formatThousands(amountIdr) : ""}
                   onChange={(event) =>
                     setSlipAmount(
                       event.target.value.replace(/\D/g, "").slice(0, 12),
                     )
                   }
+                  onBlur={() => setAmountTouched(true)}
                   inputMode="numeric"
                   autoComplete="off"
                   className="tabular"
@@ -185,7 +202,8 @@ export function EdcStandalone({
                   onBlur={() => setRefTouched(true)}
                   readOnly={slipLocked}
                   maxLength={24}
-                  inputMode="numeric"
+                  inputMode="text"
+                  autoCapitalize="characters"
                   autoComplete="off"
                   spellCheck={false}
                   className="tabular"
@@ -197,6 +215,8 @@ export function EdcStandalone({
                   value={approvalCode}
                   onChange={(event) => setApprovalCode(event.target.value)}
                   readOnly={slipLocked}
+                  maxLength={12}
+                  autoCapitalize="characters"
                   autoComplete="off"
                   spellCheck={false}
                   className="tabular"
@@ -211,11 +231,13 @@ export function EdcStandalone({
                 {errorText(record.error)}
               </Notice>
             )}
-            <p className="text-base text-muted-foreground">
-              {t("posKasirEdc.standalone.confirm", {
-                amount: formatRupiah(amountIdr),
-              })}
-            </p>
+            {amountIdr > 0 && !mismatch && (
+              <p className="text-base text-muted-foreground">
+                {t("posKasirEdc.standalone.confirm", {
+                  amount: formatRupiah(amountIdr),
+                })}
+              </p>
+            )}
           </div>
         </PosPanel>
       </form>

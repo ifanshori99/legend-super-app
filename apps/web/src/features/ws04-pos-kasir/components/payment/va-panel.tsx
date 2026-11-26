@@ -153,7 +153,9 @@ export function VaPanel(props: PaymentPanelProps) {
       title={title}
       statusLabel={t("posKasirGateway.va.statusWaiting")}
       heading={t("posKasirGateway.va.readyHeading")}
-      description={`${attempt.va?.bank ?? ""} · ${t("posKasirGateway.va.readyBody")}`}
+      description={t("posKasirGateway.va.readyBody", {
+        bank: attempt.va?.bank ?? t("posKasirGateway.method.va"),
+      })}
       noticeTitle={t("posKasirGateway.va.noticeTitle")}
       noticeBody={t("posKasirGateway.va.noticeBody")}
     >
@@ -165,7 +167,7 @@ export function VaPanel(props: PaymentPanelProps) {
           <p className="tabular text-2xl font-semibold break-all sm:text-3xl sm:tracking-[0.05em]">
             {attempt.va.number}
           </p>
-          <div className="mt-3 flex flex-wrap items-baseline justify-between gap-3 text-(length:--density-text)">
+          <div className="mt-3 flex flex-col items-center gap-1 text-(length:--density-text) sm:flex-row sm:items-baseline sm:justify-between sm:gap-3">
             <span>{t("posKasirGateway.va.deadline")}</span>
             <strong className="tabular">
               {formatDeadline(attempt.va.deadline, timeZone)}
