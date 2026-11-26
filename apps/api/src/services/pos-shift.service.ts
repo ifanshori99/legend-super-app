@@ -131,6 +131,7 @@ import { isEdgeProcess, posWriteFailoverWindowId } from "./pos-edge-outlet.ts";
 import { markReprint } from "../edge/print/escpos.ts";
 import { renderShiftReport } from "../edge/print/templates.ts";
 import { toPrintPayload } from "./pos-receipt-edge-print.ts";
+import { recordTabletPrint } from "./tablet-print-mark.service.ts";
 import {
   buildShiftReportData,
   enqueueClosedShiftReport,
@@ -482,11 +483,19 @@ export async function getPosShiftPrint(
       );
     const report = await buildShiftReportData(tx, row);
     if (!report) throw new CoreError("NOT_FOUND", "Shift tidak ditemukan.");
+    // Only after every refusal above: a refused ask is not a print.
+    const { printedBefore } = await recordTabletPrint(tx, context, {
+      kind: "shift_report",
+      refId: row.id,
+      outletId,
+      userId: caller.userId,
+    });
+    const marked = reprint || printedBefore;
     const bytes = renderShiftReport(report, paperWidth);
     return toPrintPayload(
-      reprint ? markReprint(bytes) : bytes,
+      marked ? markReprint(bytes) : bytes,
       paperWidth,
-      reprint,
+      marked,
     );
   });
 }

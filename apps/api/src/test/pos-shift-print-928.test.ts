@@ -596,38 +596,41 @@ describe("P1 cloud shift report bytes (legend-wasr7.2)", () => {
     expect(bad.status).toBe(422);
   });
 
-  it("marks a reprint of the closing report only when the tablet asks (P3)", async () => {
+  it("the cloud remembers the first report print: every later GET is CETAK ULANG (P3)", async () => {
     const fixture = await openShift();
     const supervisor = await member(roleIds.supervisor, "Supervisor Ulang");
     expect((await closeShift(fixture)).status).toBe(200);
+    const text = (res: { body: { data: { escposBase64: string } } }) =>
+      Buffer.from(res.body.data.escposBase64, "base64").toString("latin1");
 
-    const first = await get(
-      supervisor.client,
-      printPath(fixture.shiftId, "paperWidth=32&reprint=false"),
-    );
-    expect(first.body.data.reprint).toBe(false);
-    expect(
-      Buffer.from(first.body.data.escposBase64, "base64").toString("latin1"),
-    ).not.toContain("CETAK ULANG");
-
-    const again = await get(
-      supervisor.client,
-      printPath(fixture.shiftId, "paperWidth=32&reprint=true"),
-    );
-    expect(again.status, JSON.stringify(again.body)).toBe(200);
-    expect(again.body.data.reprint).toBe(true);
-    const text = Buffer.from(again.body.data.escposBase64, "base64").toString(
-      "latin1",
-    );
-    expect(text).toContain("CETAK ULANG");
-    expect(text).toContain("LAPORAN TUTUP SHIFT");
-
-    // The cashier of that shift stays blind, reprint or not.
+    // The blind cashier is refused and that refusal is not a print.
     const blind = await get(
       fixture.cashier.client,
       printPath(fixture.shiftId, "paperWidth=32&reprint=true"),
     );
     expect(blind.status).toBe(403);
+
+    const first = await get(supervisor.client, printPath(fixture.shiftId));
+    expect(first.body.data.reprint).toBe(false);
+    expect(text(first)).not.toContain("CETAK ULANG");
+
+    for (const query of ["paperWidth=32", "paperWidth=32&reprint=false"]) {
+      const again = await get(
+        supervisor.client,
+        printPath(fixture.shiftId, query),
+      );
+      expect(again.status, JSON.stringify(again.body)).toBe(200);
+      expect(again.body.data.reprint).toBe(true);
+      expect(text(again)).toContain("CETAK ULANG");
+      expect(text(again)).toContain("LAPORAN TUTUP SHIFT");
+    }
+    const [mark] = (
+      await owner.query(
+        "SELECT print_count FROM tablet_print_marks WHERE kind = 'shift_report' AND ref_id = $1",
+        [fixture.shiftId],
+      )
+    ).rows;
+    expect(mark.print_count).toBe(3);
   });
 
   it("refuses a supervisor who is also the cashier of that shift (blind count)", async () => {

@@ -36,7 +36,8 @@ export async function printFromCloud(
   const payload = await load({ paperWidth: printer.paperWidth, reprint });
   const { outcome } = deliverToTabletPrinter(payload, printer, io);
   if (outcome === "sent") sent.add(key);
-  return { outcome, reprint };
+  // The cloud decides: it marks every later print of a key it already served.
+  return { outcome, reprint: payload.reprint };
 }
 
 /** True once this page sent `key` to the printer: the next print is a reprint. */
