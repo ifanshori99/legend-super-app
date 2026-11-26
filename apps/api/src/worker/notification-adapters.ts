@@ -1526,7 +1526,7 @@ async function reportSchedulePausedRule(input: RuleInput): Promise<Rule> {
         0,
         120,
       ),
-      body: "Pemilik jadwal diblokir atau tidak lagi punya akses di bisnis ini, jadi pengiriman laporan dihentikan. Buka menu Laporan > Jadwal untuk menghapusnya atau memindahkannya ke pemilik lain.",
+      body: "Pemilik jadwal diblokir atau tidak lagi punya akses di bisnis ini, jadi pengiriman laporan dihentikan. Jadwal tetap dijeda. Buat jadwal baru dengan pemilik yang masih aktif bila laporan ini masih dibutuhkan.",
       link: null,
     },
   };
