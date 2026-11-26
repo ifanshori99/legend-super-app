@@ -1739,7 +1739,12 @@ test("POS-02: posApprovalPolicySchema accepts a threshold of 1..5000 bp and refu
 // failover. The F-run belongs to the cloud only, so a caller can never choose
 // an `F<n>` prefix; the window contract travels cloud -> edge.
 test("1271 F1: an F<n> prefix is reserved for the cloud failover series", () => {
-  assert.deepEqual(pos.RECEIPT_SERIES, ["device", "cloud", "failover"]);
+  assert.deepEqual(pos.RECEIPT_SERIES, [
+    "device",
+    "cloud",
+    "failover",
+    "offline",
+  ]);
   for (const prefix of ["F1", "F12", "F9999", "F123456"])
     assert.equal(pos.receiptPrefixSchema.safeParse(prefix).success, false);
   for (const prefix of ["P1", "F", "FA1", "CLB-F1", "F1A", "C"])

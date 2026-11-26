@@ -32,8 +32,15 @@ export const receiptRunPrefixSchema = z
  * `device` = numbered by the outlet edge (or the device offline), `cloud` =
  * the cloud-owned `C` run, `failover` = `F<n>`, numbered by the cloud only
  * while the outlet's edge is down. Each series has exactly one allocator.
+ * O1 (cloud-only-release.md §2): `offline` = `L<n>`, one epoch of a tablet
+ * selling offline; the tablet numbers it, the cloud only takes the numbers in.
  */
-export const RECEIPT_SERIES = ["device", "cloud", "failover"] as const;
+export const RECEIPT_SERIES = [
+  "device",
+  "cloud",
+  "failover",
+  "offline",
+] as const;
 export const receiptSeriesSchema = z.enum(RECEIPT_SERIES);
 export type ReceiptSeries = z.infer<typeof receiptSeriesSchema>;
 
@@ -41,6 +48,15 @@ export type ReceiptSeries = z.infer<typeof receiptSeriesSchema>;
 export const FAILOVER_RECEIPT_PREFIX_PATTERN = /^F[0-9]{1,4}$/;
 /** Any `F<digits>` prefix; refused as a caller-chosen or edge-bound prefix. */
 const RESERVED_FAILOVER_PREFIX = /^F[0-9]+$/;
+
+/** O1: `L1`..`L999999`, one offline epoch of one device (cloud-issued only). */
+export const OFFLINE_RECEIPT_PREFIX_PATTERN = /^L[0-9]{1,6}$/;
+/** Any `L<digits>` prefix; refused as a caller-chosen or edge-bound prefix. */
+const RESERVED_OFFLINE_PREFIX = /^L[0-9]+$/;
+
+export function isOfflineReceiptPrefix(prefix: string): boolean {
+  return OFFLINE_RECEIPT_PREFIX_PATTERN.test(prefix);
+}
 
 export function isFailoverReceiptPrefix(prefix: string): boolean {
   return FAILOVER_RECEIPT_PREFIX_PATTERN.test(prefix);
@@ -51,10 +67,15 @@ export function isFailoverReceiptPrefix(prefix: string): boolean {
  * failover series (1271 F1), so a caller or an edge can never claim it. Use
  * `receiptRunPrefixSchema` where any series may appear (cloud DTOs, formatting).
  */
-export const receiptPrefixSchema = receiptRunPrefixSchema.refine(
-  (prefix) => !RESERVED_FAILOVER_PREFIX.test(prefix),
-  "Receipt prefix F<number> is reserved for cloud failover sales",
-);
+export const receiptPrefixSchema = receiptRunPrefixSchema
+  .refine(
+    (prefix) => !RESERVED_FAILOVER_PREFIX.test(prefix),
+    "Receipt prefix F<number> is reserved for cloud failover sales",
+  )
+  .refine(
+    (prefix) => !RESERVED_OFFLINE_PREFIX.test(prefix),
+    "Receipt prefix L<number> is reserved for offline tablet sales",
+  );
 export type ReceiptPrefix = z.infer<typeof receiptPrefixSchema>;
 
 /**

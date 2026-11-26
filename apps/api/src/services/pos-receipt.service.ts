@@ -62,7 +62,6 @@ import {
   eq,
   inArray,
   isNull,
-  ne,
   notExists,
   notInArray,
   or,
@@ -168,13 +167,15 @@ async function lockOutletSequences(
  * `cloud`); `failover` = the device's `F<n>` run. A device has at most one
  * current run of each (receipt_sequences_device_current_key), so a `regular`
  * lookup never meets the F-run and the edge paths never touch it.
+ * O1: the device's offline `L<n>` run is outside `regular` too; only the
+ * offline kit service (pos-offline-kit.service.ts) reads or creates it.
  */
 type SequenceKind = "regular" | "failover";
 
 const seriesOf = (kind: SequenceKind) =>
   kind === "failover"
     ? eq(receiptSequences.series, "failover")
-    : ne(receiptSequences.series, "failover");
+    : notInArray(receiptSequences.series, ["failover", "offline"]);
 
 /** The key's current (not retired) sequence of `kind`; legend-zsdd. */
 async function findSequenceRow(
@@ -453,6 +454,79 @@ async function ensureFailoverSequence(
     prefix: nextFreeFailoverPrefix(used),
     series: "failover",
   });
+}
+
+/** O1: highest offline prefix (`L999999`, OFFLINE_RECEIPT_PREFIX_PATTERN). */
+const OFFLINE_PREFIX_MAX = 999_999;
+
+/**
+ * O1: first of `L1`, `L2`, ... not used by any row of the outlet, retired runs
+ * included. Past `L999999` there is none: the kit is refused rather than
+ * reusing a prefix.
+ */
+function nextFreeOfflinePrefix(used: ReadonlyMap<string, string>): string {
+  for (let n = 1; n <= OFFLINE_PREFIX_MAX; n += 1)
+    if (!used.has(`L${n}`)) return `L${n}`;
+  throw new Error("No free offline receipt prefix left in this outlet");
+}
+
+/** O1: the device's offline run as the kit hands it out. */
+export type OfflineReceiptRun = {
+  sequenceId: string;
+  prefix: string;
+  lastNumber: number;
+  startedAt: Date;
+};
+
+/**
+ * O1 (cloud-only-release.md §2): the device's offline `L<n>` run, one epoch.
+ * `resumeSequenceId` naming the device's current offline run continues it
+ * (the tablet still holds its local counter). Anything else (null, a retired
+ * run, another device's run) means the tablet lost its storage: the current
+ * run, if any, is retired (`offline_epoch`) and a new one opens under the
+ * next never-used `L` prefix of the outlet. Never edge-bound. Called inside
+ * the kit's transaction.
+ */
+export async function ensureOfflineReceiptRun(
+  tx: Tx,
+  tenantId: TenantId,
+  outletId: OutletId,
+  deviceId: string,
+  resumeSequenceId: string | null,
+): Promise<OfflineReceiptRun> {
+  // Serialise per outlet first: two kit requests of one device never both
+  // retire and create, and two devices never pick the same prefix.
+  await lockOutletSequences(tx, tenantId, outletId);
+  const [current] = await tx
+    .select()
+    .from(receiptSequences)
+    .where(
+      and(
+        eq(receiptSequences.tenantId, tenantId),
+        eq(receiptSequences.outletId, outletId),
+        eq(receiptSequences.deviceId, deviceId),
+        eq(receiptSequences.series, "offline"),
+        isNull(receiptSequences.retiredAt),
+      ),
+    );
+  const runOf = (row: SequenceRow): OfflineReceiptRun => ({
+    sequenceId: row.id,
+    prefix: row.prefix,
+    lastNumber: row.lastNumber,
+    startedAt: row.createdAt,
+  });
+  if (current && current.id === resumeSequenceId) return runOf(current);
+  if (current) await retireSequence(tx, tenantId, current.id, "offline_epoch");
+  const used = await prefixesOfOutlet(tx, tenantId, outletId);
+  return runOf(
+    await insertSequence(tx, {
+      tenantId,
+      outletId,
+      deviceId,
+      prefix: nextFreeOfflinePrefix(used),
+      series: "offline",
+    }),
+  );
 }
 
 export async function findReceiptForOrder(
