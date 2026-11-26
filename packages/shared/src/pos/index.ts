@@ -8,6 +8,7 @@ export * from "./receipts.ts";
 export * from "./receipt-writeoff.ts";
 export * from "./receipt-run-event.ts";
 export * from "./events.ts";
+export * from "./print-payload.ts";
 export * from "./endpoints.ts";
 export * from "./parked.ts";
 export * from "./payment-intent.ts";

@@ -553,3 +553,37 @@ describe("legend-2lp.4 shift close Print Agent integration", () => {
     await printAgent.stop();
   });
 });
+
+describe("P1 cloud shift report bytes (legend-wasr7.2)", () => {
+  const printPath = (shiftId: string, query = "paperWidth=32") =>
+    `${shiftsPath()}/${shiftId}/print?${query}`;
+  const get = (client: ReturnType<typeof agent>, path: string) =>
+    client.get(path).set({ Host: tenant.hostname });
+
+  it("returns the closing report as ESC/POS bytes to a supervisor, and refuses the blind cashier and an open shift", async () => {
+    const fixture = await openShift();
+    const supervisor = await member(roleIds.supervisor, "Supervisor Bytes");
+
+    const open = await get(supervisor.client, printPath(fixture.shiftId));
+    expect(open.status, JSON.stringify(open.body)).toBe(409);
+
+    const closed = await closeShift(fixture);
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+
+    const blind = await get(fixture.cashier.client, printPath(fixture.shiftId));
+    expect(blind.status, JSON.stringify(blind.body)).toBe(403);
+
+    const res = await get(supervisor.client, printPath(fixture.shiftId));
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.data).toMatchObject({ paperWidth: 32, reprint: false });
+    const bytes = Buffer.from(res.body.data.escposBase64, "base64");
+    expect([...bytes.subarray(0, 2)]).toEqual([0x1b, 0x40]);
+    expect(bytes.toString("latin1")).toContain("LAPORAN TUTUP SHIFT");
+
+    const bad = await get(
+      supervisor.client,
+      printPath(fixture.shiftId, "paperWidth=40"),
+    );
+    expect(bad.status).toBe(422);
+  });
+});

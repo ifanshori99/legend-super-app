@@ -27,6 +27,11 @@ import {
 import { posOverrideIdSchema } from "../access/override.ts";
 import { defineEndpoint } from "../api/endpoint.ts";
 import { edcMethodSchema, edcTransactionSchema } from "../edc/index.ts";
+import {
+  printPaperWidthSchema,
+  printPaperWidthQuerySchema,
+  printPayloadSchema,
+} from "./print-payload.ts";
 import { tableSessionIdSchema } from "../qr-order/schemas.ts";
 import {
   cashMovementIdSchema,
@@ -684,6 +689,15 @@ export const getPosShift = defineEndpoint({
   response: dataResponseSchema(posShiftReportSchema),
 });
 
+/** P1: the closing report of a closed shift as ESC/POS bytes for the tablet. */
+export const getPosShiftPrint = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/pos/shifts/:shiftId/print",
+  params: shiftParams,
+  query: clientInputSchema({ paperWidth: printPaperWidthQuerySchema }),
+  response: dataResponseSchema(printPayloadSchema),
+});
+
 /** POS-03: a blind count submission (cashier); the answer is blind too. */
 export const submitPosShiftCount = defineEndpoint({
   method: "POST",
@@ -785,6 +799,11 @@ export const issuePosReceipt = defineEndpoint({
     /** Defaults to printing once; `link` adds the e-receipt URL. */
     deliveries: z.array(receiptDeliveryChannelSchema).min(1).max(3).optional(),
     email: z.string().email().max(200).optional(),
+    /**
+     * P1: the tablet's printer width. With `print` on the cloud, the answer
+     * carries the ESC/POS bytes for the tablet to print.
+     */
+    paperWidth: printPaperWidthSchema.optional(),
     idempotencyKey: idempotencyKeySchema,
   }),
   response: dataResponseSchema(posReceiptIssueResultSchema),

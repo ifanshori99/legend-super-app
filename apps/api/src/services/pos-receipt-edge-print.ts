@@ -8,7 +8,12 @@ import {
   type UserId,
 } from "@starter/shared/core";
 import { messagesId } from "@starter/shared/i18n";
-import type { ReceiptDocument, ReceiptPrintResult } from "@starter/shared/pos";
+import type {
+  PrintPaperWidth,
+  PrintPayload,
+  ReceiptDocument,
+  ReceiptPrintResult,
+} from "@starter/shared/pos";
 import { edgePrinters } from "../db/schema/edge-print.ts";
 import { getEdgeRuntimeState } from "../edge/runtime.ts";
 import { markReprint } from "../edge/print/escpos.ts";
@@ -48,9 +53,45 @@ export function receiptData(document: ReceiptDocument): ReceiptData {
   };
 }
 
-/** Only the edge owns printers; on the cloud a print request prints nothing. */
-export function receiptPrintResult(): ReceiptPrintResult {
-  return getEdgeRuntimeState().edgeMode ? "queued_to_printer" : "not_printed";
+/**
+ * The edge queues the job on its printer. The cloud has no printer: without a
+ * `paperWidth` it prints nothing; with one (P1) it hands the bytes to the
+ * tablet, which sends them to its own printer ("sent", never "printed").
+ */
+export function receiptPrintResult(
+  paperWidth?: PrintPaperWidth,
+): ReceiptPrintResult {
+  return getEdgeRuntimeState().edgeMode || paperWidth !== undefined
+    ? "queued_to_printer"
+    : "not_printed";
+}
+
+/** Marks a print delivery whose bytes went to the tablet (not a legacy row). */
+export const TABLET_PRINT_DESTINATION = "printer tablet";
+
+/** Same bytes as the edge print job, as the payload a tablet prints (P1). */
+export function receiptPrintPayload(
+  document: ReceiptDocument,
+  paperWidth: PrintPaperWidth,
+): PrintPayload {
+  const bytes = renderReceipt(receiptData(document), paperWidth);
+  return toPrintPayload(
+    document.reprint ? markReprint(bytes) : bytes,
+    paperWidth,
+    document.reprint,
+  );
+}
+
+export function toPrintPayload(
+  bytes: Uint8Array,
+  paperWidth: PrintPaperWidth,
+  reprint: boolean,
+): PrintPayload {
+  return {
+    paperWidth,
+    escposBase64: Buffer.from(bytes).toString("base64"),
+    reprint,
+  };
 }
 
 export async function enqueueReceiptOnEdge(

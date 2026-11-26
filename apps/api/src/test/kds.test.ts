@@ -2390,3 +2390,33 @@ describe("KDS realtime staff login (resolveKdsStaffConnection)", () => {
       expect(await resolveKdsStaffConnection(request)).toBeNull();
   });
 });
+
+describe("P1 cloud station ticket bytes (legend-wasr7.2)", () => {
+  const printOf = (ticketId: string, who: Member = cook, query = "32") =>
+    who.client
+      .get(
+        `/api/outlets/${encodeURIComponent(tenant.outletId)}/kitchen/tickets/${ticketId}/print?paperWidth=${query}`,
+      )
+      .set(headers)
+      .set(originHeader);
+
+  it("returns the station ticket as ESC/POS bytes to a cook of that station only", async () => {
+    const placed = await placeOrder([{ menuItemId: ids.kopi }]);
+    const ticketId = await ticketOn(placed.orderId, ids.barA);
+    const res = await printOf(ticketId);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.data).toMatchObject({ paperWidth: 32, reprint: false });
+    const bytes = Buffer.from(res.body.data.escposBase64, "base64");
+    expect([...bytes.subarray(0, 2)]).toEqual([0x1b, 0x40]);
+    expect(bytes.toString("latin1")).toContain("Kopi");
+
+    // The barista of Bar A prints Bar A, but a kitchen ticket answers like an
+    // unknown ticket (404).
+    expect((await printOf(ticketId, barista)).status).toBe(200);
+    const hot = await placeOrder([{ menuItemId: ids.nasi }]);
+    const hotTicket = await ticketOn(hot.orderId, ids.kitchenA);
+    expect((await printOf(hotTicket, barista)).status).toBe(404);
+    expect((await printOf(uuidToUlid(randomUUID()))).status).toBe(404);
+    expect((await printOf(ticketId, cook, "40")).status).toBe(422);
+  });
+});

@@ -37,6 +37,7 @@ import {
   sql,
 } from "drizzle-orm";
 import { AccessError } from "@starter/shared/access";
+import type { PrintPaperWidth, PrintPayload } from "@starter/shared/pos";
 import {
   assertOutletInScope,
   CoreError,
@@ -110,6 +111,7 @@ import {
   permittedStationIds,
   stationScopeCondition,
 } from "./station-access.ts";
+import { stationTicketPayload } from "./kds-print.service.ts";
 
 export type { KdsActor };
 
@@ -1450,6 +1452,42 @@ export async function getKitchenTicketDetail(
     const [detail] = await ticketDetails(tx, context, [ticket]);
     if (!detail) throw ticketNotFound();
     return detail;
+  });
+}
+
+/** P1: the ticket as ESC/POS bytes for the tablet's own printer. */
+export async function getKitchenTicketPrint(
+  context: ScopedTenantContext,
+  actor: KdsActor,
+  outletRef: string,
+  ticketId: string,
+  paperWidth: PrintPaperWidth,
+  now: Date,
+): Promise<PrintPayload> {
+  const outletId = outletIdSchema.parse(outletRef);
+  return withTenant(db, context, async (tx) => {
+    const ticket = await readTicket(tx, context, outletId, ticketId, false);
+    await assertTicketStationPermission(
+      tx,
+      context,
+      actor.userId,
+      ticket.stationId,
+      now,
+      ticketNotFound,
+    );
+    const [detail] = await ticketDetails(tx, context, [ticket]);
+    if (!detail) throw ticketNotFound();
+    const [station] = await tx
+      .select({ name: stations.name })
+      .from(stations)
+      .where(
+        and(
+          eq(stations.tenantId, context.tenant.tenantId),
+          eq(stations.outletId, outletId),
+          eq(stations.id, ticket.stationId),
+        ),
+      );
+    return stationTicketPayload(detail, station?.name ?? "Dapur", paperWidth);
   });
 }
 

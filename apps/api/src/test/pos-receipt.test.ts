@@ -1776,6 +1776,57 @@ describe("POS-07 receipt document (legend-93a)", () => {
     expect(res.body.data.receipt.reprintCount).toBe(0);
   });
 
+  it("P1 a cloud print with paperWidth returns ESC/POS bytes, recorded as sent to the printer; a reprint carries the banner", async () => {
+    const outletId = await freshOutlet();
+    const { orderId } = await completedSale(outletId);
+    const text = (print: { escposBase64: string }) =>
+      Buffer.from(print.escposBase64, "base64").toString("latin1");
+    const first = await api(outletId).post(`/orders/${orderId}/receipts`, {
+      deliveries: ["print"],
+      paperWidth: 32,
+      idempotencyKey: randomUUID(),
+    });
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    const data = first.body.data;
+    expect(data.printResult).toBe("queued_to_printer");
+    expect(data.print).toMatchObject({ paperWidth: 32, reprint: false });
+    const bytes = Buffer.from(data.print.escposBase64, "base64");
+    expect([...bytes.subarray(0, 2)]).toEqual([0x1b, 0x40]);
+    expect(text(data.print)).toContain(data.document.receiptNumber);
+    expect(text(data.print)).not.toContain("CETAK ULANG");
+    expect(data.deliveries).toEqual([
+      expect.objectContaining({
+        channel: "print",
+        status: "sent",
+        failureReason: null,
+      }),
+    ]);
+
+    const again = await api(outletId).post(`/orders/${orderId}/receipts`, {
+      deliveries: ["print"],
+      paperWidth: 48,
+      idempotencyKey: randomUUID(),
+    });
+    expect(again.status, JSON.stringify(again.body)).toBe(200);
+    expect(again.body.data.print).toMatchObject({
+      paperWidth: 48,
+      reprint: true,
+    });
+    expect(text(again.body.data.print)).toContain("CETAK ULANG");
+  });
+
+  it("P1 without paperWidth the cloud still answers not printed and sends no bytes", async () => {
+    const outletId = await freshOutlet();
+    const { orderId } = await completedSale(outletId);
+    const res = await api(outletId).post(`/orders/${orderId}/receipts`, {
+      deliveries: ["print"],
+      idempotencyKey: randomUUID(),
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.data.printResult).toBe("not_printed");
+    expect(res.body.data.print ?? null).toBeNull();
+  });
+
   it("POS-07 the same request replayed returns the same deliveries and link; a new print counts as a reprint", async () => {
     const s = await showcase();
     const replay = await api(s.outletId).post(`/orders/${s.orderId}/receipts`, {
