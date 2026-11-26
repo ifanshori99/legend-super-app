@@ -680,7 +680,7 @@ const reportSeeds: readonly ReportDefinition[] = [
       "Penjualan bersih, HPP, laba kotor, dan laba bersih periode tertutup.",
     family: "finance",
     metrics: ["net_sales", "cogs", "gross_profit", "net_profit"],
-    dimensions: ["outlet"],
+    dimensions: ["outlet", "legal_entity"],
   }),
   defineReport({
     code: "finance.prime_cost",
@@ -697,7 +697,7 @@ const reportSeeds: readonly ReportDefinition[] = [
     description: "EBITDA dan laba bersih periode tertutup.",
     family: "finance",
     metrics: ["ebitda", "net_profit"],
-    dimensions: ["outlet"],
+    dimensions: ["outlet", "legal_entity"],
   }),
   defineReport({
     code: "finance.cash_position",
@@ -705,7 +705,7 @@ const reportSeeds: readonly ReportDefinition[] = [
     description: "Saldo kas dan bank pada akhir periode.",
     family: "finance",
     metrics: ["cash_balance", "bank_balance"],
-    dimensions: ["outlet"],
+    dimensions: ["outlet", "legal_entity"],
     // A cash position is monitored daily even though finance reports are
     // monthly by default, so the presets stay open for the owner tile.
     periodPresets: REPORT_PERIOD_PRESETS,
@@ -734,7 +734,7 @@ const reportSeeds: readonly ReportDefinition[] = [
     description: "Laba kotor dan margin kotor per outlet dan kategori.",
     family: "finance",
     metrics: ["gross_profit", "gross_margin_pct"],
-    dimensions: ["outlet", "menu_category"],
+    dimensions: ["outlet", "menu_category", "legal_entity"],
   }),
   defineReport({
     code: "finance.profit_trend",
@@ -742,7 +742,7 @@ const reportSeeds: readonly ReportDefinition[] = [
     description: "Laba bersih dan EBITDA antar periode tertutup.",
     family: "finance",
     metrics: ["net_profit", "ebitda"],
-    dimensions: ["outlet"],
+    dimensions: ["outlet", "legal_entity"],
   }),
 
   // ---- Loyalty -------------------------------------------------------------

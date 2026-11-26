@@ -1,15 +1,19 @@
-// POS standalone EDC tender (bead legend-m4fv; EDC-04).
+// POS standalone EDC tender (bead legend-m4fv; EDC-04; X1 legend-wasr7.10).
 //
-// The EDC agent is down, so the cashier keyed the sale on the terminal by hand.
-// The API never calls a terminal here. It books what the supervisor approved:
-// a supervisor PIN override (`edc_standalone`, worth exactly the remaining
-// bill) plus the bank reference printed on the slip.
+// The cashier keyed the sale on the terminal by hand. The API never calls a
+// terminal here. Since X1 (cloud-only release §3) this is the normal EDC path:
+// the bank reference printed on the slip is required and books the remaining
+// bill (computed here, never sent by the till) without a supervisor PIN. A
+// supervisor override (`edc_standalone`, worth exactly the remaining bill) is
+// still accepted and spent when the till sends one. Nothing counts as settled
+// with the bank: every entry stays flagged until the H+1 reconciliation
+// matches it (edc-reconciliation.service.ts; overdue entries alert their shift).
 //
 // - One `edc_transactions` row is written in the order transaction: mode
 //   `standalone`, status `approved`, `needs_reconciliation` true (a human
 //   matches it to the bank settlement later), `rrn` = the bank reference. The
 //   tender links to it through `edc_transaction_id`; no tender column is new.
-// - The override is spent in `pos_order_approval_uses` (purpose
+// - An override, when sent, is spent in `pos_order_approval_uses` (purpose
 //   `edc_standalone`): one approval pays one bill once.
 // - The advisory lock is the agent's `writeAhead` lock for this reference, so
 //   a standalone entry cannot interleave with a sale the agent is starting. A
@@ -21,7 +25,9 @@
 //   pays a second bill (a look-alike across banks only costs a supervisor). The
 //   check runs under an advisory lock on that reference, so two bills sent
 //   together with one slip cannot both pass. Doubt refuses: the cashier asks
-//   the supervisor, who can see the slip.
+//   the supervisor, who can see the slip. The ledger key is the slip number
+//   (`standalone:slip:<ref>`), so the unique (tenant, idempotency_key) index
+//   backs the check: one slip is one manual entry, whatever the lock does.
 
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq, inArray, or, sql } from "drizzle-orm";
@@ -56,7 +62,8 @@ export type PosStandaloneEdcInput = {
   readonly terminalId: string;
   readonly bankRef: string;
   readonly approvalCode: string | null;
-  readonly overrideId: string;
+  /** Optional since X1: the slip reference alone books a manual payment. */
+  readonly overrideId: string | null;
   readonly cashierId: UserId;
   readonly deviceId: string | null;
   readonly at: Date;
@@ -64,7 +71,8 @@ export type PosStandaloneEdcInput = {
 
 export type PosStandaloneEdcSettlement = {
   readonly reference: string;
-  readonly approvedBy: UserId;
+  /** The supervisor of a sent override; null for the normal manual path. */
+  readonly approvedBy: UserId | null;
   readonly edcTransactionId: string;
 };
 
@@ -146,39 +154,44 @@ export async function settlePosEdcStandalone(
       "CONFLICT",
       "Slip EDC ini sudah dipakai untuk tagihan lain. Periksa nomor referensi di slip.",
     );
-  // The approver comes from the override row, never from the client; the
-  // shared check below still requires it to be someone other than the cashier.
-  const overrideUlid = ulidSchema.safeParse(input.overrideId);
-  if (!overrideUlid.success) throw refuse();
-  const [stored] = await tx
-    .select({ approvedBy: posOverrides.approvedBy })
-    .from(posOverrides)
-    .where(
-      and(
-        eq(posOverrides.tenantId, tenantId),
-        eq(posOverrides.outletId, outletId),
-        eq(posOverrides.id, overrideUlid.data),
-      ),
-    )
-    .limit(1);
-  if (!stored?.approvedBy) throw refuse();
-  const override = await consumeApproval(tx, context, {
-    action: "edc_standalone",
-    purpose: "edc_standalone",
-    outletId,
-    orderId: input.orderId,
-    objectType: "pos_order",
-    objectId: input.orderId,
-    requesterId: input.cashierId,
-    approvedBy: stored.approvedBy,
-    overrideId: overrideUlid.data,
-    minValueIdr: input.amountIdr,
-    deviceId: input.deviceId,
-    now: input.at,
-  });
-  // Exactly the remaining bill: a bigger approval is not a licence to book
-  // less, and a smaller one never reaches here (minValueIdr).
-  if (override.valueIdr !== input.amountIdr) throw refuse();
+  let approvedBy: UserId | null = null;
+  if (input.overrideId !== null) {
+    // The approver comes from the override row, never from the client; the
+    // shared check below still requires it to be someone other than the
+    // cashier.
+    const overrideUlid = ulidSchema.safeParse(input.overrideId);
+    if (!overrideUlid.success) throw refuse();
+    const [stored] = await tx
+      .select({ approvedBy: posOverrides.approvedBy })
+      .from(posOverrides)
+      .where(
+        and(
+          eq(posOverrides.tenantId, tenantId),
+          eq(posOverrides.outletId, outletId),
+          eq(posOverrides.id, overrideUlid.data),
+        ),
+      )
+      .limit(1);
+    if (!stored?.approvedBy) throw refuse();
+    const override = await consumeApproval(tx, context, {
+      action: "edc_standalone",
+      purpose: "edc_standalone",
+      outletId,
+      orderId: input.orderId,
+      objectType: "pos_order",
+      objectId: input.orderId,
+      requesterId: input.cashierId,
+      approvedBy: stored.approvedBy,
+      overrideId: overrideUlid.data,
+      minValueIdr: input.amountIdr,
+      deviceId: input.deviceId,
+      now: input.at,
+    });
+    // Exactly the remaining bill: a bigger approval is not a licence to book
+    // less, and a smaller one never reaches here (minValueIdr).
+    if (override.valueIdr !== input.amountIdr) throw refuse();
+    approvedBy = stored.approvedBy as UserId;
+  }
   const row = {
     id: randomUUID(),
     tenantId,
@@ -186,8 +199,8 @@ export async function settlePosEdcStandalone(
     terminalId: terminal.id,
     bank: terminal.bankCode,
     reference: input.orderNumber,
-    // One override, one entry: the key is unique by construction.
-    idempotencyKey: `standalone:${override.id}`,
+    // One slip, one entry: the unique (tenant, key) index backs the check.
+    idempotencyKey: `standalone:slip:${slip}`,
     requestFingerprint: createHash("sha256")
       .update(
         `${input.orderNumber}:${input.amountIdr}:${edcMethod}:${input.bankRef}`,
@@ -215,7 +228,7 @@ export async function settlePosEdcStandalone(
   });
   return {
     reference: input.bankRef,
-    approvedBy: stored.approvedBy as UserId,
+    approvedBy,
     edcTransactionId: inserted.id,
   };
 }

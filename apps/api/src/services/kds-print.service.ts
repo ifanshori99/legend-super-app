@@ -1,4 +1,6 @@
 import { and, eq, isNull } from "drizzle-orm";
+import type { KitchenTicketDetail } from "@starter/shared/kitchen";
+import type { PrintPaperWidth, PrintPayload } from "@starter/shared/pos";
 import {
   assertOutletInScope,
   CoreError,
@@ -8,8 +10,11 @@ import {
 import { db } from "../db/index.ts";
 import { stations } from "../db/schema/menu.ts";
 import { withTenant } from "../db/tenant.ts";
+import { markReprint } from "../edge/print/escpos.ts";
 import { getEdgePrintAgent } from "../edge/print/runtime.ts";
+import { renderStationTicket } from "../edge/print/templates.ts";
 import { getEdgeRuntimeState } from "../edge/runtime.ts";
+import { toPrintPayload } from "./pos-receipt-edge-print.ts";
 import { assertStationPermission } from "./station-access.ts";
 
 /** Only an external heartbeat reports liveness; server-side KDS reads do not. */
@@ -55,4 +60,47 @@ export async function recordKitchenStationHeartbeat(
     return { recorded: false };
   agent.recordKdsHeartbeat(stationId);
   return { recorded: true };
+}
+
+/**
+ * P1: a station ticket as ESC/POS bytes for the KDS tablet's own printer. Same
+ * lines the edge fallback prints (voided and served lines stay off). A ticket
+ * with no line left to cook has nothing to print.
+ */
+export function stationTicketPayload(
+  ticket: KitchenTicketDetail,
+  stationName: string,
+  paperWidth: PrintPaperWidth,
+  /** A second print of the same ticket is marked "CETAK ULANG". */
+  reprint = false,
+): PrintPayload {
+  const items = ticket.items
+    .filter((item) => item.status !== "voided" && item.status !== "served")
+    .map((item) => ({
+      name: item.name,
+      qty: item.quantity,
+      modifiers: item.modifiers,
+      note: item.note,
+    }));
+  if (items.length === 0)
+    throw new CoreError(
+      "CONFLICT",
+      "Tiket ini tidak punya baris untuk dicetak.",
+    );
+  const bytes = renderStationTicket(
+    {
+      stationName,
+      ticketNumber: `K-${String(ticket.ticketNo).padStart(3, "0")}`,
+      orderLabel: ticket.tableLabel ?? `#${ticket.ticketNo}`,
+      orderType: ticket.channel,
+      createdAt: new Date(ticket.firedAt),
+      items,
+    },
+    paperWidth,
+  );
+  return toPrintPayload(
+    reprint ? markReprint(bytes) : bytes,
+    paperWidth,
+    reprint,
+  );
 }

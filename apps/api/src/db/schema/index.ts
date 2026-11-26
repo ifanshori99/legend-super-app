@@ -85,6 +85,7 @@ export * from "./edge-deferred-event";
 export * from "./edge-link-dead-letter";
 export * from "./edge-order-ingest";
 export * from "./edge-edc-ingest";
+export * from "./tablet-print-marks";
 export * from "./edge-pos-ingest";
 export * from "./edge-failover";
 export * from "./edge-failover-switchover";

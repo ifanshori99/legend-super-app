@@ -27,6 +27,8 @@ import {
 } from "@starter/shared/core/server";
 import type { PaymentInstructions } from "@starter/shared/payment";
 import { env } from "../config/env.ts";
+import { pollPendingGatewayIntents } from "../services/payment.service.ts";
+import { resetGatewayHealthCache } from "../services/payment-failover.service.ts";
 import { createDuitkuGateway } from "../services/payment-duitku.ts";
 import { receiveDuitkuCallback } from "../services/payment-duitku-webhook.service.ts";
 import {
@@ -88,6 +90,7 @@ class Gateway implements PaymentGatewayPort {
     this.failMethods = false;
     this.down = false;
     this.channelLimits.clear();
+    this.statusAnswer = { status: "pending" };
     this.created.length = 0;
   }
   async health() {
@@ -139,9 +142,13 @@ class Gateway implements PaymentGatewayPort {
       expiresAt: input.expiresAt,
     };
   }
+  /** What the provider answers to a status read (Duitku `02` = expired). */
+  statusAnswer: { status: "pending" | "expired"; rawStatus?: string } = {
+    status: "pending",
+  };
   async getStatus(input: { providerRef: string }) {
     return {
-      status: "pending" as const,
+      ...this.statusAnswer,
       providerRef: input.providerRef,
       amountIdr: null,
     };
@@ -179,7 +186,7 @@ afterAll(async () => {
 });
 
 /** A bill that belongs to no order, like a reservation DP link. */
-const openBill = (totalIdr = 100_000) =>
+const openBill = (totalIdr = 100_000, expiresInMinutes?: number) =>
   createPaymentLink(
     fx.context,
     {
@@ -194,6 +201,7 @@ const openBill = (totalIdr = 100_000) =>
       roundingIdr: 0,
       totalIdr,
       returnPath: "/reservation",
+      ...(expiresInMinutes === undefined ? {} : { expiresInMinutes }),
     } as Parameters<typeof createPaymentLink>[1],
     "system:reservation",
   );
@@ -208,6 +216,32 @@ const pay = (
     channelCode,
     idempotencyKey: randomUUID(),
   });
+
+/** Failover marks written for this bill's link (one per link and incident). */
+async function failoverMarks(intentId: string) {
+  const { rows } = await owner.query<{ n: number }>(
+    `SELECT count(*)::int AS n FROM audit_logs a
+       JOIN payment_intents i ON i.payment_link_id::text = a.event->>'objectId'
+      WHERE a.tenant_id = $1 AND i.id = $2
+        AND a.event->>'action' = 'payment.link_failover_to_cashier'`,
+    [fx.tenant.tenantId, intentId],
+  );
+  return rows[0]!.n;
+}
+
+/** The provider said the code is dead (so the guard lets a new one in) ... */
+const markFinal = (intentId: string) =>
+  owner.query(
+    "UPDATE payment_intents SET status = 'expired', provider_final_at = now() WHERE tenant_id = $1 AND id = $2",
+    [fx.tenant.tenantId, intentId],
+  );
+/** ... then it turns out the code can still be paid (the race both-paid tests
+ * need: two collectible codes of one link). */
+const revive = (intentId: string) =>
+  owner.query(
+    "UPDATE payment_intents SET status = 'pending', provider_final_at = NULL WHERE tenant_id = $1 AND id = $2",
+    [fx.tenant.tenantId, intentId],
+  );
 
 async function releaseCount(intentId: string) {
   const { rows } = await owner.query<{ n: number }>(
@@ -287,22 +321,33 @@ describe("e-wallet and card on a link", () => {
     ["ewallet", "OV"],
     ["card", null],
   ] as const)(
-    "%s: issues the bill amount and a lapsed code is refreshed",
+    "%s: issues the bill amount; a lapsed code is refreshed only after the provider says it is final",
     async (method, channelCode) => {
       const { token } = await openBill();
       const intent = await pay(token, method, channelCode);
       expect(intent).toMatchObject({ method, amountIdr: 100_000 });
       const later = new Date(Date.parse(intent.expiresAt) + 1_000);
+      // The provider has not said the code is dead: it may still be paid.
+      await expect(
+        refreshIntent(fx.context, token, intent.id, later),
+      ).rejects.toMatchObject({ status: 409, code: "ORDER_CODE_ACTIVE" });
+      expect(gw.created).toHaveLength(1);
+      await owner.query(
+        "UPDATE payment_intents SET status = 'expired', provider_final_at = now() WHERE tenant_id = $1 AND id = $2",
+        [fx.tenant.tenantId, intent.id],
+      );
       const fresh = await refreshIntent(fx.context, token, intent.id, later);
       expect(fresh.id).not.toBe(intent.id);
       expect(fresh).toMatchObject({ method, amountIdr: 100_000 });
     },
   );
 
-  it("e-wallet then QRIS, both paid: the strict settlement refuses the second (the callback parks it, below)", async () => {
+  it("QRIS then e-wallet, both paid: the strict settlement refuses the second (the callback parks it, below)", async () => {
     const { token, linkId } = await openBill();
-    const wallet = await pay(token, "ewallet", "OV");
     const qris = await pay(token, "qris", null);
+    await markFinal(qris.id);
+    const wallet = await pay(token, "ewallet", "OV");
+    await revive(qris.id);
     const settle = async (id: string, method: "qris" | "ewallet") => {
       const row = await owner.query<{ provider_ref: string }>(
         "SELECT provider_ref FROM payment_intents WHERE tenant_id = $1 AND id = $2",
@@ -377,8 +422,9 @@ describe("real Duitku adapter and callback", () => {
     return new Response(JSON.stringify(answer), { status: 200 });
   }) as typeof fetch;
 
-  const paidCallback = (intentId: string) =>
+  const paidCallback = (intentId: string, now?: Date) =>
     receiveDuitkuCallback({
+      ...(now ? { now } : {}),
       tenantId: fx.tenant.tenantId,
       rawBody: Buffer.from(
         new URLSearchParams({
@@ -442,19 +488,23 @@ describe("real Duitku adapter and callback", () => {
   afterAll(() => setPaymentGateway(gw));
 
   it.each([
-    ["the new QRIS first", ["qris", "ewallet"]],
-    ["the replaced e-wallet first", ["ewallet", "qris"]],
+    ["the new e-wallet first", ["ewallet", "qris"]],
+    ["the replaced QRIS first", ["qris", "ewallet"]],
   ] as const)(
     "both codes paid, %s: the bill is paid once, the second payment is parked",
     async (_name, order) => {
       const { token, linkId } = await openBill();
+      const qrisId = (await pay(token, "qris", null)).id;
+      await markFinal(qrisId);
       const ids = {
+        qris: qrisId,
         ewallet: (await pay(token, "ewallet", "OV")).id,
-        qris: (await pay(token, "qris", null)).id,
       };
-      // A repeat of a delivery changes nothing.
-      for (const method of [...order, ...order])
-        await paidCallback(ids[method]);
+      await revive(qrisId);
+      // A repeat of a delivery, a minute later, changes nothing.
+      const retry = new Date(Date.now() + 61_000);
+      for (const method of order) await paidCallback(ids[method]);
+      for (const method of order) await paidCallback(ids[method], retry);
       const { rows } = await owner.query<{ paid: number }>(
         "SELECT paid_idr::int AS paid FROM payment_links WHERE tenant_id = $1 AND id = $2",
         [fx.tenant.tenantId, linkId],
@@ -532,7 +582,11 @@ describe("a refused method voids no live code (finding 7)", () => {
         bankCode,
         idempotencyKey: randomUUID(),
       });
-    return { vaId: va.body.data.id as string, toQris, toVa };
+    return {
+      vaId: va.body.data.id as string,
+      toQris,
+      toVa,
+    };
   }
 
   async function linkVa() {
@@ -590,18 +644,75 @@ describe("a refused method voids no live code (finding 7)", () => {
   );
 
   it.each([
-    ["the method list cannot be read", () => void (gw.failMethods = true)],
-    ["the gateway is down", () => void (gw.down = true)],
-  ])("a swap answers 503 and keeps the VA while %s", async (_n, arrange) => {
-    const guest = await guestVa();
-    const link = await linkVa();
-    arrange();
-    const swaps = [await guest.toQris(), await link.post("qris", null)];
-    for (const swap of swaps)
-      expect(swap.status, JSON.stringify(swap.body)).toBe(503);
-    await expectStillLive(guest.vaId);
-    await expectStillLive(link.vaId);
+    ["the method list cannot be read", () => void (gw.failMethods = true), 503],
+    // The link keeps the real refusal: the old code is still live (409).
+    ["the gateway is down", () => void (gw.down = true), 409],
+  ])(
+    "a swap keeps the VA while %s (QR guest 503)",
+    async (_n, arrange, linkStatus) => {
+      const guest = await guestVa();
+      const link = await linkVa();
+      arrange();
+      const swapped = await guest.toQris();
+      expect(swapped.status, JSON.stringify(swapped.body)).toBe(503);
+      expect(JSON.stringify(swapped.body)).not.toMatch(/kasir/i);
+      const refused = await link.post("qris", null);
+      expect(refused.status, JSON.stringify(refused.body)).toBe(linkStatus);
+      if (linkStatus === 409)
+        expect(refused.body.error.code).toBe("ORDER_CODE_ACTIVE");
+      await expectStillLive(guest.vaId);
+      await expectStillLive(link.vaId);
+    },
+  );
+
+  it("QR guest: a 503 because the gateway is down records the incident on the bill", async () => {
+    const { vaId, toQris } = await guestVa();
+    resetGatewayHealthCache();
+    expect(await failoverMarks(vaId)).toBe(0);
+    gw.down = true;
+    const swapped = await toQris();
+    expect(swapped.status, JSON.stringify(swapped.body)).toBe(503);
+    expect(await failoverMarks(vaId)).toBe(1);
+    await expectStillLive(vaId);
   });
+
+  it("QR guest: the same pending VA is returned while the list cannot be read", async () => {
+    const { vaId, toVa } = await guestVa();
+    gw.failMethods = true;
+    const again = await toVa("BC");
+    expect(again.status, JSON.stringify(again.body)).toBe(201);
+    expect(again.body.data.id).toBe(vaId);
+    expect(gw.created).toHaveLength(1);
+  });
+
+  it.each([
+    ["ewallet", "OV"],
+    ["card", undefined],
+  ] as const)(
+    "QR guest: %s answers 503, not 400, while the list cannot be read; the pending one is still returned",
+    async (method, bankCode) => {
+      const guest = await fx.newGuest();
+      const order = await fx.qrOrder(guest);
+      const post = () =>
+        fx.guestPost(guest, "/payments", {
+          target: { kind: "order", orderId: order.id },
+          method,
+          ...(bankCode ? { bankCode } : {}),
+          idempotencyKey: randomUUID(),
+        });
+      gw.failMethods = true;
+      const refused = await post();
+      expect(refused.status, JSON.stringify(refused.body)).toBe(503);
+      gw.failMethods = false;
+      const first = await post();
+      expect(first.status, JSON.stringify(first.body)).toBe(201);
+      gw.failMethods = true;
+      const again = await post();
+      expect(again.status, JSON.stringify(again.body)).toBe(201);
+      expect(again.body.data.id).toBe(first.body.data.id);
+      expect(gw.created).toHaveLength(1);
+    },
+  );
 
   it("QR guest: VA to a QRIS the gateway does not list keeps the VA", async () => {
     const { vaId, toQris } = await guestVa();
@@ -653,8 +764,154 @@ describe("a refused method voids no live code (finding 7)", () => {
   );
 });
 
+describe("a link with no order takes one live code (legend-osqou.41)", () => {
+  it.each([
+    ["qris", null, "va", "BC"],
+    ["qris", null, "ewallet", "OV"],
+    ["qris", null, "qris", null],
+    ["va", "BC", "qris", null],
+    ["va", "BC", "va", "I1"],
+    ["va", "BC", "ewallet", "OV"],
+    ["va", "BC", "card", null],
+    ["ewallet", "OV", "card", null],
+    ["card", null, "va", "BC"],
+    ["ewallet", "OV", "qris", null],
+  ] as const)(
+    "%s live, then %s: 409 and nothing is issued",
+    async (first, firstChannel, next, nextChannel) => {
+      const { token } = await openBill();
+      const live = await pay(token, first, firstChannel);
+      await expect(pay(token, next, nextChannel)).rejects.toMatchObject({
+        status: 409,
+        code: "ORDER_CODE_ACTIVE",
+      });
+      expect(gw.created).toHaveLength(1);
+      await expectStillLive(live.id);
+    },
+  );
+
+  it("a live VA answers 409 while the gateway list cannot be read (never 503)", async () => {
+    const { token } = await openBill();
+    const live = await pay(token, "va", "BC");
+    gw.failMethods = true;
+    // The public route passes the guest swap, which reads the gateway first for
+    // a link with an order; a link with no order must not.
+    const refused = await agent(fx.app)
+      .post(`/api/payments/links/${token}/intents`)
+      .send({
+        method: "qris",
+        channelCode: null,
+        idempotencyKey: randomUUID(),
+      });
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(refused.body.error.code).toBe("ORDER_CODE_ACTIVE");
+    await expectStillLive(live.id);
+  });
+
+  it("a VA past its time that the provider has not finalised still blocks", async () => {
+    const { token } = await openBill();
+    const va = await pay(token, "va", "BC");
+    await owner.query(
+      "UPDATE payment_intents SET expires_at = now() - interval '1 hour' WHERE tenant_id = $1 AND id = $2",
+      [fx.tenant.tenantId, va.id],
+    );
+    await expect(pay(token, "qris", null)).rejects.toMatchObject({
+      status: 409,
+    });
+    expect(gw.created).toHaveLength(1);
+    await markFinal(va.id);
+    await expect(pay(token, "qris", null)).resolves.toMatchObject({
+      method: "qris",
+    });
+  });
+
+  it("two VAs in parallel with different keys: one stored, one 409, the loser kept as an orphan", async () => {
+    const { token, linkId } = await openBill();
+    const results = await Promise.allSettled([
+      pay(token, "va", "BC"),
+      pay(token, "va", "I1"),
+    ]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    const lost = results.find((r) => r.status === "rejected") as
+      PromiseRejectedResult | undefined;
+    expect(lost?.reason).toMatchObject({
+      status: 409,
+      code: "ORDER_CODE_ACTIVE",
+    });
+    // Both codes exist at the provider: the loser stays as a known orphan.
+    expect(gw.created).toHaveLength(2);
+    const { rows } = await owner.query<{ status: string }>(
+      "SELECT status FROM payment_intents WHERE tenant_id = $1 AND payment_link_id = $2 ORDER BY created_at",
+      [fx.tenant.tenantId, linkId],
+    );
+    expect(rows).toHaveLength(2);
+    expect(rows.filter((row) => row.status === "pending")).toHaveLength(1);
+  });
+});
+
+describe("a lapsed code is finalised by the poll, then a new one is issued (legend-osqou.41)", () => {
+  it.each([
+    ["qris", null],
+    ["va", "BC"],
+    ["ewallet", "OV"],
+  ] as const)(
+    "%s past its time: 409, the worker poll reads the provider, final, new code 201",
+    async (method, channelCode) => {
+      const { token } = await openBill();
+      const old = await pay(token, method, channelCode);
+      const lapsed = new Date(Date.parse(old.expiresAt) + 120_000);
+      // Still pending at the provider: the poll changes nothing, the guard holds.
+      await pollPendingGatewayIntents(fx.context, lapsed, 100);
+      await expect(pay(token, "qris", null)).rejects.toMatchObject({
+        status: 409,
+        code: "ORDER_CODE_ACTIVE",
+      });
+      // The provider now says the code is dead (Duitku `02`).
+      gw.statusAnswer = { status: "expired", rawStatus: "02" };
+      await owner.query(
+        "UPDATE payment_intents SET gateway_polled_at = NULL WHERE tenant_id = $1 AND id = $2",
+        [fx.tenant.tenantId, old.id],
+      );
+      await pollPendingGatewayIntents(fx.context, lapsed, 100);
+      const row = await intentRow(fx.tenant.tenantId, old.id);
+      expect(row.status).toBe("expired");
+      expect(row.provider_final_at).not.toBeNull();
+      const fresh = await pay(token, "qris", null);
+      expect(fresh).toMatchObject({ method: "qris", status: "pending" });
+      expect(fresh.id).not.toBe(old.id);
+    },
+  );
+});
+
+describe("VA lifetime follows the link (legend-osqou.41)", () => {
+  const minutes = (intent: { expiresAt: string }) =>
+    (Date.parse(intent.expiresAt) - Date.now()) / 60_000;
+
+  it.each([
+    ["a link of 60 minutes: the VA ends with the link", 60, 59, 60],
+    ["a link of 3 minutes: the VA keeps 10 minutes", 3, 9, 10],
+    ["a long link: the method default of 180 minutes", 600, 179, 180],
+  ])("%s", async (_name, linkMinutes, low, high) => {
+    const { token } = await openBill(100_000, linkMinutes);
+    const va = await pay(token, "va", "BC");
+    expect(minutes(va)).toBeGreaterThan(low);
+    expect(minutes(va)).toBeLessThanOrEqual(high);
+    expect(Date.parse(gw.created[0]!.expiresAt)).toBe(Date.parse(va.expiresAt));
+  });
+
+  it.each([
+    ["ewallet", "OV"],
+    ["card", null],
+  ] as const)("%s is never shortened by a short link", async (method, ch) => {
+    const { token } = await openBill(100_000, 5);
+    const intent = await pay(token, method, ch);
+    expect(minutes(intent)).toBeGreaterThan(29);
+  });
+});
+
 describe("return URL", () => {
-  it("is the same for every Duitku payment and carries no token", async () => {
+  it("is the same for every Duitku payment and carries no token; the expiry is rounded down", async () => {
+    const base = new Date();
     const bodies: Record<string, unknown>[] = [];
     const port = createDuitkuGateway({
       fetch: (async (url: string | URL | Request, init?: RequestInit) => {
@@ -682,6 +939,7 @@ describe("return URL", () => {
       }) as typeof fetch,
       callbackBaseUrl: "https://api.example.test",
       returnUrl: "https://app.example.test/bayar/kembali",
+      now: () => base,
       loadCredentials: async () => ({
         integration: {
           id: randomUUID(),
@@ -706,11 +964,13 @@ describe("return URL", () => {
           channelCode: "OV",
           amountIdr,
           idempotencyKey: randomUUID(),
-          expiresAt: new Date(Date.now() + 600_000).toISOString(),
+          // 10 minutes and 59 seconds: Duitku must not keep it past that.
+          expiresAt: new Date(base.getTime() + 659_000).toISOString(),
         });
     } finally {
       env.DUITKU_ENABLED_METHODS = saved;
     }
+    expect(bodies.map((body) => body.expiryPeriod)).toEqual([10, 10]);
     expect(bodies.map((body) => body.returnUrl)).toEqual([
       "https://app.example.test/bayar/kembali",
       "https://app.example.test/bayar/kembali",

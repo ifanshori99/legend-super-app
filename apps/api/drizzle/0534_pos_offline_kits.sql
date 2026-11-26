@@ -3,7 +3,7 @@
 -- (append-only, tenant + outlet RLS); receipt_sequences.series gains
 -- 'offline' with the `L<n>` prefix reserved for it (cloud-issued, never
 -- edge-bound) and the retire reason 'offline_epoch'. No existing order,
--- shift or receipt number changes. Temporary number 0533 (CTO 27 Nov),
+-- shift or receipt number changes. Temporary number 0534 (CTO 27 Nov),
 -- renumbered at merge. Foreign keys are inline in CREATE TABLE (contracts.md
 -- legend-m007 pattern 1: no validation scan under FORCE RLS).
 --
@@ -64,7 +64,7 @@ ALTER TABLE "receipt_sequences" ADD CONSTRAINT "receipt_sequences_retired_reason
 --> statement-breakpoint
 ALTER TABLE public.receipt_sequences FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint
--- O1 offline kits (0533). Tenant RLS (TEN-01/02) plus the outlet backstop
+-- O1 offline kits (0534). Tenant RLS (TEN-01/02) plus the outlet backstop
 -- (TEN-03), like the other POS tables.
 SELECT app.enforce_tenant_rls('public.pos_offline_kits'::regclass);
 --> statement-breakpoint

@@ -13,7 +13,9 @@
 // mapped account, so sub-accounts opened under it are never dropped. A term
 // with `sourceTypes` reads only lines of journals posted from those sources; a
 // reversal counts as the source of the entry it reverses (a voided sale is a
-// sale, a corrected remittance is not).
+// sale, a corrected remittance is not). A term with `exclude` leaves the
+// accounts of its roles (and their descendants) out of the whole component,
+// whatever other term matches them (EBITDA, legend-qlirp).
 //
 // The registry formula of each metric here (`formula.expression`, sent to
 // Tanya AI and MCP through `definitionRef`) must describe this source; a
@@ -32,6 +34,13 @@ export type GlTerm = {
   readonly sign: 1 | -1;
   /** Only journals of these sources (reversals by the reversed entry's). */
   readonly sourceTypes?: readonly Exclude<JournalSourceType, "reversal">[];
+  /**
+   * The accounts of `roles` never count in this component, in any order of
+   * terms; `sign` is then unused. An entity that has not mapped one of the
+   * roles keeps those lines in the figure, and the answer carries a note
+   * naming the role (`GL_EXCLUDED_ROLE_LABELS`), never a guess.
+   */
+  readonly exclude?: true;
 };
 
 export type GlComponent = readonly GlTerm[];
@@ -129,6 +138,7 @@ export const GL_METRIC_SOURCES: Readonly<Record<string, GlMetricSource>> = {
     kind: "ratio",
     numerator: GROSS_PROFIT,
     denominator: NET_SALES,
+    splitFrom: { numerator: "gross_profit", denominator: "net_sales" },
   },
   // Output tax and service charge: sales credit them, refunds debit them; the
   // remittance and the payroll payout are left out (SALE_SOURCES).
@@ -174,20 +184,35 @@ export const NON_GL_MONEY_METRICS: readonly string[] = [
   "revpash",
   "shower_revenue",
   "facility_product_revenue",
-  "ebitda",
   "gross_sales",
   "refund_amount",
   "void_amount",
   "avg_ticket",
   "sales_target",
   "promo_cost",
-  "cash_balance",
-  "bank_balance",
   "pending_settlement",
   "cash_variance",
   "gateway_settlement",
   "edc_settlement",
 ];
+
+/** Lowercase role names for the "Belum memisahkan ..." note of an exclusion. */
+export const GL_EXCLUDED_ROLE_LABELS: Readonly<
+  Partial<Record<PostingAccountRole, string>>
+> = {
+  depreciation_expense: "beban penyusutan",
+  amortization_expense: "beban amortisasi",
+  interest_expense: "beban bunga",
+  income_tax_expense: "beban pajak penghasilan",
+};
+
+/** Note of a figure whose excluded roles some entity has not mapped. */
+export function glUnmappedExclusionNote(
+  roles: readonly PostingAccountRole[],
+): string {
+  const names = roles.map((role) => GL_EXCLUDED_ROLE_LABELS[role] ?? role);
+  return `Belum memisahkan ${names.join(", ")}; angkanya masih ikut dihitung.`;
+}
 
 export function glComponentsOf(source: GlMetricSource): GlComponent[] {
   return source.kind !== "ratio"

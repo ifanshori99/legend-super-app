@@ -330,6 +330,19 @@ async function intentRowsOf(linkId: string) {
   return rows;
 }
 
+/** The provider says the code is final (legend-osqou.41: a link with no order
+ * takes a new code only after the old one is final). */
+const markFinal = (intentId: string) =>
+  owner.query(
+    "UPDATE payment_intents SET status = 'expired', provider_final_at = now() WHERE tenant_id = $1 AND id = $2",
+    [tenantId, intentId],
+  );
+const revive = (intentId: string) =>
+  owner.query(
+    "UPDATE payment_intents SET status = 'pending', provider_final_at = NULL WHERE tenant_id = $1 AND id = $2",
+    [tenantId, intentId],
+  );
+
 describe("PAY-01 server-priced intents behind a payment link", () => {
   it("PAY-01 the link view carries the server bill and payable methods", async () => {
     const { token } = await openBill();
@@ -486,19 +499,27 @@ describe("PAY-01 server-priced intents behind a payment link", () => {
     expect(otherChannel.body.error.code).toBe("IDEMPOTENCY_KEY_REUSED");
   });
 
-  it("PAY-01 a new intent supersedes the previous pending code", async () => {
+  it("PAY-01 a link with no order refuses a new code while the previous one is live (legend-osqou.41)", async () => {
     const { token } = await openBill();
     const first = await agent(app)
       .post(`/api/payments/links/${token}/intents`)
       .send({ method: "qris", channelCode: null, idempotencyKey: "old-key-1" });
-    await agent(app)
+    const second = await agent(app)
       .post(`/api/payments/links/${token}/intents`)
       .send({ method: "qris", channelCode: null, idempotencyKey: "new-key-1" });
+    expect(second.status).toBe(409);
+    expect(second.body.error.code).toBe("ORDER_CODE_ACTIVE");
     const oldIntent = await agent(app).get(
       `/api/payments/links/${token}/intents/${first.body.data.id}`,
     );
     expect(oldIntent.status).toBe(200);
-    expect(oldIntent.body.data.status).toBe("expired");
+    expect(oldIntent.body.data.status).toBe("pending");
+    // Once the provider says the code is final, the next code is issued.
+    await markFinal(first.body.data.id);
+    const third = await agent(app)
+      .post(`/api/payments/links/${token}/intents`)
+      .send({ method: "qris", channelCode: null, idempotencyKey: "new-key-2" });
+    expect(third.status).toBe(201);
   });
 
   it("P1 a create whose gateway answer was lost binds the same DOIT payment on retry", async () => {
@@ -779,8 +800,10 @@ describe("PAY-04 unallocated funds", () => {
         channelCode: null,
         idempotencyKey: "race-intent-a",
       });
-    // The second intent supersedes the first code; a late payment on the first
-    // is still accepted (PRD §3.13 "Siklus Pembayaran").
+    // The provider closed the first code, a second one was issued, and the
+    // first still turns out payable: two collectible codes (PRD §3.13
+    // "Siklus Pembayaran", a late payment on the first is still accepted).
+    await markFinal(first.body.data.id);
     const second = await agent(app)
       .post(`/api/payments/links/${token}/intents`)
       .send({
@@ -788,6 +811,7 @@ describe("PAY-04 unallocated funds", () => {
         channelCode: null,
         idempotencyKey: "race-intent-b",
       });
+    await revive(first.body.data.id);
 
     // Hold the first settlement inside its link update long enough for the
     // second one to read the same balance without the FOR UPDATE lock.
@@ -915,7 +939,8 @@ describe("PAY-04 unallocated funds", () => {
           .send({ method: "qris", channelCode: null, idempotencyKey: key }),
       ),
     );
-    expect(responses.map((r) => r.status)).toEqual([201, 201, 201]);
+    // One wins; the others are refused (409) and their codes kept as orphans.
+    expect(responses.map((r) => r.status).sort()).toEqual([201, 409, 409]);
     const { rows } = await owner.query<{ count: string }>(
       "SELECT count(*)::text AS count FROM payment_intents WHERE tenant_id = $1 AND payment_link_id = $2 AND status = 'pending'",
       [tenantId, linkId],
@@ -928,6 +953,8 @@ describe("PAY-04 unallocated funds", () => {
     const first = await agent(app)
       .post(`/api/payments/links/${token}/intents`)
       .send({ method: "qris", channelCode: null, idempotencyKey: "prepare-a" });
+    // The provider closed the first code, so a second one may be prepared.
+    await markFinal(first.body.data.id);
     // The gateway call for the second code happens after the plan was read;
     // the first code settles in between.
     const originalCreate = gateway.createIntent.bind(gateway);
@@ -1087,6 +1114,12 @@ describe("late payment and refresh", () => {
         idempotencyKey: "refresh-key",
       });
     await new Promise((resolve) => setTimeout(resolve, 80));
+    // The lapsed code stays live until the provider says it is final.
+    const early = await agent(app).post(
+      `/api/payments/links/${token}/intents/${created.body.data.id}/refresh`,
+    );
+    expect(early.status).toBe(409);
+    await markFinal(created.body.data.id);
     const refreshed = await agent(app).post(
       `/api/payments/links/${token}/intents/${created.body.data.id}/refresh`,
     );
@@ -1107,6 +1140,7 @@ describe("late payment and refresh", () => {
         idempotencyKey: "refresh-lost-key",
       });
     await new Promise((resolve) => setTimeout(resolve, 80));
+    await markFinal(created.body.data.id);
     // One clock for both taps: the refresh key is per minute.
     const now = new Date();
     gateway.loseNextAnswer = true;
@@ -1145,6 +1179,7 @@ describe("late payment and refresh", () => {
         idempotencyKey: "refresh-stuck-key",
       });
     await new Promise((resolve) => setTimeout(resolve, 80));
+    await markFinal(created.body.data.id);
     const refreshPath = `/api/payments/links/${token}/intents/${created.body.data.id}/refresh`;
     // The gateway mints the code, then the bill changes before the local write
     // (a cash part-payment landed): the refresh fails after DOIT accepted it.

@@ -23,8 +23,9 @@
 //   catalog, never another family's reports.
 // - "No data" for a period without journal lines: either no rows or every
 //   cell null, never 0 (same assumption as the GL parity suite).
-// - Metrics with no source use `finance.cash_position` (cash_balance,
-//   bank_balance). When a family card builds those sources, repoint
+// - Metrics with no source use `finance.pending_settlement`
+//   (pending_settlement; cash_balance moved to the ledger in F6, legend-qlirp).
+//   When a family card builds that source, repoint
 //   UNBUILT_REPORT / UNBUILT_METRIC at a metric that is still unbuilt.
 // - Ledger numbers are asserted for `net_sales`, `cogs` and `gross_profit`
 //   only: net sales = revenue credit minus debit (discount is a contra
@@ -96,8 +97,8 @@ const FINANCIAL = [
 ];
 
 const INCOME_STATEMENT = "finance.income_statement"; // GL metrics, outlet split
-const UNBUILT_REPORT = "finance.cash_position";
-const UNBUILT_METRIC = "cash_balance";
+const UNBUILT_REPORT = "finance.pending_settlement";
+const UNBUILT_METRIC = "pending_settlement";
 const JUNE = { startDate: "2025-06-01", endDate: "2025-06-30" };
 const EMPTY = { startDate: "2024-01-01", endDate: "2024-01-31" };
 

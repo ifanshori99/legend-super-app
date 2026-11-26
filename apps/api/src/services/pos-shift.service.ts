@@ -60,6 +60,8 @@ import {
   type PosShiftReport,
   formatReceiptNumber,
   posShiftReportSchema,
+  type PrintPaperWidth,
+  type PrintPayload,
 } from "@starter/shared/pos";
 import { db } from "../db/index.ts";
 import { approvalPolicies } from "../db/schema/platform-access.ts";
@@ -126,7 +128,14 @@ import {
 import { revokeActingStaffForDevice } from "./pos-acting-staff-revoke.ts";
 import { POS_OVERRIDE_SOURCE_MODULE } from "./staff-override.service.ts";
 import { isEdgeProcess, posWriteFailoverWindowId } from "./pos-edge-outlet.ts";
-import { enqueueClosedShiftReport } from "./pos-shift-print.ts";
+import { markReprint } from "../edge/print/escpos.ts";
+import { renderShiftReport } from "../edge/print/templates.ts";
+import { toPrintPayload } from "./pos-receipt-edge-print.ts";
+import { recordTabletPrint } from "./tablet-print-mark.service.ts";
+import {
+  buildShiftReportData,
+  enqueueClosedShiftReport,
+} from "./pos-shift-print.ts";
 
 export type { ShiftCaller } from "./pos-shift-support.ts";
 
@@ -438,6 +447,56 @@ export async function getPosShiftReport(
           : null,
       })),
     });
+  });
+}
+
+/**
+ * P1: the closing report of a closed shift as ESC/POS bytes for the tablet's
+ * own printer. It carries expected cash and variance, so it follows the blind
+ * count rule: only a caller who sees live figures (a supervisor who is not the
+ * shift's cashier) gets it; the cashier's own shift answers 403.
+ */
+export async function getPosShiftPrint(
+  context: ScopedTenantContext,
+  caller: ShiftCaller,
+  outletId: OutletId,
+  shiftId: string,
+  paperWidth: PrintPaperWidth,
+  /** The tablet prints this report again: the bytes carry the banner. */
+  reprint = false,
+): Promise<PrintPayload> {
+  return withTenant(db, context, async (tx) => {
+    await loadOutlet(tx, context, outletId);
+    const row = await findShift(tx, context, outletId, shiftId);
+    const { seesLiveFigures } = await assertCanRead(
+      tx,
+      context,
+      caller,
+      outletId,
+      row,
+    );
+    if (!seesLiveFigures) throw permissionDenied();
+    if (row.status !== "closed" || row.closedAt === null)
+      throw new CoreError(
+        "CONFLICT",
+        "Laporan tutup shift hanya untuk shift yang sudah ditutup.",
+      );
+    const report = await buildShiftReportData(tx, row);
+    if (!report) throw new CoreError("NOT_FOUND", "Shift tidak ditemukan.");
+    // Only after every refusal above: a refused ask is not a print.
+    const { printedBefore } = await recordTabletPrint(tx, context, {
+      kind: "shift_report",
+      refId: row.id,
+      outletId,
+      userId: caller.userId,
+    });
+    const marked = reprint || printedBefore;
+    const bytes = renderShiftReport(report, paperWidth);
+    return toPrintPayload(
+      marked ? markReprint(bytes) : bytes,
+      paperWidth,
+      marked,
+    );
   });
 }
 

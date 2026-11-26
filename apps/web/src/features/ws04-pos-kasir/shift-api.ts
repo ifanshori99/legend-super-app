@@ -7,6 +7,7 @@ import {
   closePosShift,
   getEndOfDayRecap,
   getPosShift,
+  getPosShiftPrint,
   listPosCashMovements,
   listPosShifts,
   openPosShift,
@@ -15,6 +16,7 @@ import {
   submitPosShiftCount,
   type EndOfDayRecapView,
   type PosShift,
+  type PrintPaperWidth,
 } from "@starter/shared/pos";
 import {
   createPosOverride,
@@ -85,6 +87,20 @@ export async function fetchShiftReport(
     { params: { outletId, shiftId } },
     { signal },
   );
+  return data;
+}
+
+/** P3: the closing report as ESC/POS bytes for this tablet's own printer. */
+export async function fetchShiftPrint(
+  outletId: string,
+  shiftId: string,
+  paperWidth: PrintPaperWidth,
+  reprint: boolean,
+) {
+  const { data } = await callEndpoint(getPosShiftPrint, {
+    params: { outletId, shiftId },
+    query: { paperWidth, reprint: reprint ? "true" : "false" },
+  });
   return data;
 }
 

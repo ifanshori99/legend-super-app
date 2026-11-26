@@ -1,5 +1,5 @@
 -- Custom SQL migration file, put your code below! ---
--- O1 offline kits (0533). Tenant RLS (TEN-01/02) plus the outlet backstop
+-- O1 offline kits (0534). Tenant RLS (TEN-01/02) plus the outlet backstop
 -- (TEN-03), like the other POS tables.
 SELECT app.enforce_tenant_rls('public.pos_offline_kits'::regclass);
 --> statement-breakpoint

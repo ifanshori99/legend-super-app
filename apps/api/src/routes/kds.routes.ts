@@ -30,6 +30,7 @@ import {
   getKitchenStationFeed,
   getKitchenStationSummary,
   getKitchenTicket,
+  getKitchenTicketPrint,
   getPacing,
   getStationCapacityRules,
   listCapacityRules,
@@ -249,6 +250,24 @@ kdsRouter.get("/pacing", processTicket, async (req, res) => {
 });
 
 // ---- Tickets ---------------------------------------------------------------
+
+// P1: the station ticket as ESC/POS bytes for the tablet's own printer.
+kdsRouter.get("/tickets/:ticketId/print", processTicket, async (req, res) => {
+  const { outletId, ticketId } = getKitchenTicketPrint.params.parse(req.params);
+  const { paperWidth, reprint } = getKitchenTicketPrint.query.parse(req.query);
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json({
+    data: await kds.getKitchenTicketPrint(
+      ticketContext(req),
+      actor(req),
+      outletId,
+      ticketId,
+      paperWidth,
+      new Date(),
+      reprint === true,
+    ),
+  });
+});
 
 kdsRouter.get("/tickets/:ticketId", processTicket, async (req, res) => {
   const { outletId, ticketId } = getKitchenTicket.params.parse(req.params);

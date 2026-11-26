@@ -301,6 +301,16 @@ const schema = z
       .enum(["true", "false", "1", "0"])
       .optional()
       .transform((value) => value === "true" || value === "1"),
+    // Gate for enrolling edge nodes (K0, docs/design/cloud-only-release.md
+    // section 1). Off by default: POST /api/edge-nodes answers 403
+    // FEATURE_DISABLED and writes nothing, because one active edge node makes
+    // the cloud refuse sales of its outlet. Existing nodes keep list, revoke
+    // and rotate. The edge code is frozen, not removed; turn on only when edge
+    // outlets return.
+    EDGE_NODES_ENABLED: z
+      .enum(["true", "false", "1", "0"])
+      .optional()
+      .transform((value) => value === "true" || value === "1"),
     // Gate for the DOIT recurring billing back office, /api/payments/recurring
     // (legend-6c6). Off by default: the adapter calls /v1/recurring/*, but the
     // DOIT docs publish /v1/billing/*, so a live call would hit a path DOIT does

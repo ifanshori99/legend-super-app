@@ -569,6 +569,8 @@ export const metricAvailabilitySchema = z.discriminatedUnion("status", [
   z.strictObject({
     metricCode: metricCodeSchema,
     status: z.literal("available"),
+    /** A caveat of the figure, e.g. EBITDA roles an entity has not mapped. */
+    note: z.string().min(1).max(200).optional(),
   }),
   z.strictObject({
     metricCode: metricCodeSchema,

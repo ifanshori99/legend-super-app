@@ -1,6 +1,6 @@
 {
-  "id": "a7779c8c-7f0d-46ed-9bfb-9dc096c838b6",
-  "prevId": "4d65f59a-d03a-4832-9ff1-4427d231bde9",
+  "id": "4d65f59a-d03a-4832-9ff1-4427d231bde9",
+  "prevId": "5473103c-dc89-425e-a3fe-cfc11e7b99e8",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -48865,6 +48865,115 @@
       },
       "isRLSEnabled": false
     },
+    "public.tablet_print_marks": {
+      "name": "tablet_print_marks",
+      "schema": "",
+      "columns": {
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ref_id": {
+          "name": "ref_id",
+          "type": "varchar(40)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outlet_id": {
+          "name": "outlet_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "first_printed_by": {
+          "name": "first_printed_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "first_printed_at": {
+          "name": "first_printed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "last_printed_at": {
+          "name": "last_printed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "print_count": {
+          "name": "print_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "tablet_print_marks_tenant_id_tenants_id_fk": {
+          "name": "tablet_print_marks_tenant_id_tenants_id_fk",
+          "tableFrom": "tablet_print_marks",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "tablet_print_marks_outlet_id_outlets_id_fk": {
+          "name": "tablet_print_marks_outlet_id_outlets_id_fk",
+          "tableFrom": "tablet_print_marks",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "tablet_print_marks_tenant_id_kind_ref_id_pk": {
+          "name": "tablet_print_marks_tenant_id_kind_ref_id_pk",
+          "columns": [
+            "tenant_id",
+            "kind",
+            "ref_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "tablet_print_marks_kind_check": {
+          "name": "tablet_print_marks_kind_check",
+          "value": "\"tablet_print_marks\".\"kind\" IN ('kds_ticket', 'shift_report')"
+        },
+        "tablet_print_marks_count_check": {
+          "name": "tablet_print_marks_count_check",
+          "value": "\"tablet_print_marks\".\"print_count\" > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.edge_pos_ingests": {
       "name": "edge_pos_ingests",
       "schema": "",
@@ -60328,34 +60437,6 @@
         }
       },
       "indexes": {
-        "pos_offline_sales_sequence_number_uidx": {
-          "name": "pos_offline_sales_sequence_number_uidx",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "sequence_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "sequence_number",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"pos_offline_sales\".\"reason\" IS DISTINCT FROM 'number_taken'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "pos_offline_sales_outlet_idx": {
           "name": "pos_offline_sales_outlet_idx",
           "columns": [
@@ -60500,7 +60581,17 @@
           ]
         }
       },
-      "uniqueConstraints": {},
+      "uniqueConstraints": {
+        "pos_offline_sales_sequence_number_key": {
+          "name": "pos_offline_sales_sequence_number_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "sequence_id",
+            "sequence_number"
+          ]
+        }
+      },
       "policies": {},
       "checkConstraints": {
         "pos_offline_sales_state_check": {

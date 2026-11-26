@@ -3,7 +3,7 @@
 -- (source `offline_tablet`, apart from the edge's edge_order_ingests). One row
 -- per (tenant, event id); (sequence_id, sequence_number) unique so one offline
 -- receipt number is never two sales. New empty table only: no existing order,
--- shift or receipt changes. Temporary number 0534 (after O1's 0533),
+-- shift or receipt changes. Temporary number 0535 (after O1's 0534),
 -- renumbered at merge. Foreign keys are inline in CREATE TABLE (contracts.md
 -- legend-m007 pattern 1: no validation scan under FORCE RLS).
 CREATE TABLE "pos_offline_sales" (
@@ -42,7 +42,7 @@ CREATE TABLE "pos_offline_sales" (
 --> statement-breakpoint
 CREATE INDEX "pos_offline_sales_outlet_idx" ON "pos_offline_sales" USING btree ("tenant_id","outlet_id","state","created_at");
 --> statement-breakpoint
--- O2 offline sales ledger (0534). Tenant RLS (TEN-01/02) plus the outlet
+-- O2 offline sales ledger (0535). Tenant RLS (TEN-01/02) plus the outlet
 -- backstop (TEN-03), like the other POS tables.
 SELECT app.enforce_tenant_rls('public.pos_offline_sales'::regclass);
 --> statement-breakpoint

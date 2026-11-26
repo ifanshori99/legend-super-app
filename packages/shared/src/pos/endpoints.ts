@@ -27,6 +27,12 @@ import {
 import { posOverrideIdSchema } from "../access/override.ts";
 import { defineEndpoint } from "../api/endpoint.ts";
 import { edcMethodSchema, edcTransactionSchema } from "../edc/index.ts";
+import {
+  printPaperWidthSchema,
+  printPaperWidthQuerySchema,
+  printReprintQuerySchema,
+  printPayloadSchema,
+} from "./print-payload.ts";
 import { tableSessionIdSchema } from "../qr-order/schemas.ts";
 import {
   cashMovementIdSchema,
@@ -333,7 +339,12 @@ export const posStandaloneEdcSchema = z
       .string()
       .regex(/^[A-Za-z0-9]{1,12}$/, "Kode persetujuan tidak valid.")
       .optional(),
-    overrideId: posOverrideIdSchema,
+    /**
+     * X1 (cloud-only release §3): manual EDC is the normal path, so the slip
+     * reference alone books it (flagged for the H+1 reconciliation). A
+     * supervisor override is still accepted and spent when the till sends one.
+     */
+    overrideId: posOverrideIdSchema.optional(),
   })
   .strict();
 
@@ -499,8 +510,19 @@ export const addPosTender = defineEndpoint({
       .optional(),
     /** A points tender: the member's QR token for this order and amount. */
     memberToken: z.string().min(1).max(512).optional(),
+    /** 1269 C3a: the bank / e-wallet code of a VA or e-wallet tender. */
+    channelCode: z.string().min(1).max(40).optional(),
     ...expectedStatus,
   })
+    .refine(
+      (value) =>
+        (value.method === "va" || value.method === "ewallet") ===
+        (value.channelCode !== undefined),
+      {
+        message: "VA and e-wallet name a channel; no other method sends one",
+        path: ["channelCode"],
+      },
+    )
     .refine(
       (value) =>
         value.method === "cash"
@@ -684,6 +706,18 @@ export const getPosShift = defineEndpoint({
   response: dataResponseSchema(posShiftReportSchema),
 });
 
+/** P1: the closing report of a closed shift as ESC/POS bytes for the tablet. */
+export const getPosShiftPrint = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/pos/shifts/:shiftId/print",
+  params: shiftParams,
+  query: clientInputSchema({
+    paperWidth: printPaperWidthQuerySchema,
+    reprint: printReprintQuerySchema.optional(),
+  }),
+  response: dataResponseSchema(printPayloadSchema),
+});
+
 /** POS-03: a blind count submission (cashier); the answer is blind too. */
 export const submitPosShiftCount = defineEndpoint({
   method: "POST",
@@ -785,6 +819,11 @@ export const issuePosReceipt = defineEndpoint({
     /** Defaults to printing once; `link` adds the e-receipt URL. */
     deliveries: z.array(receiptDeliveryChannelSchema).min(1).max(3).optional(),
     email: z.string().email().max(200).optional(),
+    /**
+     * P1: the tablet's printer width. With `print` on the cloud, the answer
+     * carries the ESC/POS bytes for the tablet to print.
+     */
+    paperWidth: printPaperWidthSchema.optional(),
     idempotencyKey: idempotencyKeySchema,
   }),
   response: dataResponseSchema(posReceiptIssueResultSchema),

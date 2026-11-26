@@ -80,6 +80,7 @@ import {
   createSplitPartIntent,
   getIntentView,
   readIntentView,
+  recordGatewayDownForLink,
 } from "./payment.service.ts";
 import {
   failedOrderCodeWithOpenFundTx,
@@ -319,12 +320,20 @@ export async function assertGuestChannel(
   // Checked at the real bill amount when known (a channel can be out of limits
   // for it); a gateway without `methods()` answers from `channels()`.
   let channels: readonly PaymentChannel[];
-  if (amountIdr !== undefined && port.methods) {
-    const listed = await port.methods(context, outletId, amountIdr);
-    channels =
-      listed.find((entry) => entry.method === method && entry.enabled)
-        ?.channels ?? [];
-  } else channels = await port.channels(context, method, outletId);
+  // A failed read is unknown, never "not offered": 503, not 400.
+  try {
+    if (amountIdr !== undefined && port.methods) {
+      const listed = await port.methods(context, outletId, amountIdr);
+      channels =
+        listed.find((entry) => entry.method === method && entry.enabled)
+          ?.channels ?? [];
+    } else channels = await port.channels(context, method, outletId);
+  } catch {
+    throw new CoreError(
+      "SERVICE_UNAVAILABLE",
+      "Metode pembayaran belum dapat diperiksa. Coba lagi.",
+    );
+  }
   if (!channels.some((channel) => channel.code === code))
     throw new CoreError(
       "VALIDATION_ERROR",
@@ -350,19 +359,21 @@ async function assertGuestMethodOffered(
   const routing = await withTenant(db, context, (tx) =>
     resolveRoutingRule(tx, context, outletId, method),
   );
-  const selected = await selectGatewayForNewIntent(context, outletId, routing);
-  if (
-    !routing.enabled ||
-    selected.provider === null ||
-    !(await gatewayListsMethod(
-      context,
-      selected.port,
-      method,
-      outletId,
-      amountIdr,
-    ))
-  )
-    throw methodNotOffered();
+  // A failed read throws 503 (unknown, not "not offered").
+  const issuable = await methodIssuable(context, outletId, routing, {
+    method,
+    channelCode: null,
+    amountIdr,
+  });
+  if (issuable === "not_offered") throw methodNotOffered();
+  if (issuable === "gateway_down") throw gatewayDownError();
+}
+
+function gatewayDownError(): CoreError {
+  return new CoreError(
+    "SERVICE_UNAVAILABLE",
+    "Gateway pembayaran sedang tidak tersedia. Coba lagi nanti.",
+  );
 }
 
 function methodNotOffered(): CoreError {
@@ -525,6 +536,58 @@ function partIntentKey(
 }
 
 /**
+ * True when the bill's live code is the same method and bank the guest asks
+ * for and still pending: the main transaction answers with that code, so no
+ * list of the gateway may be read first (a failed read would hide a code the
+ * guest can already pay). Read only.
+ */
+async function pendingSameChoice(
+  context: ScopedTenantContext,
+  credential: string,
+  sessionId: string,
+  orderId: string,
+  splitId: string | null,
+  request: { method: GuestPaymentMethod; bankCode: string | null },
+  now: Date,
+): Promise<boolean> {
+  return withTenant(db, context, async (tx) => {
+    const session = await lockGuestSessionForPayment(
+      tx,
+      context,
+      credential,
+      sessionId,
+      now,
+      "share",
+    );
+    const [order] = await tx
+      .select()
+      .from(orders)
+      .where(
+        and(
+          eq(orders.tenantId, context.tenant.tenantId),
+          eq(orders.id, orderId),
+          eq(orders.tableSessionId, session.id),
+        ),
+      );
+    if (!order || order.paymentLinkId === null) return false;
+    const live =
+      splitId === null
+        ? await orderLiveCodeTx(tx, context, order.paymentLinkId)
+        : await partLiveCodeTx(
+            tx,
+            context,
+            (await lockSplitPartTx(tx, context, session.id, splitId)).id,
+          );
+    return (
+      live !== null &&
+      live.status === "pending" &&
+      live.method === request.method &&
+      (!namesChannel(request.method) || live.channelCode === request.bankCode)
+    );
+  });
+}
+
+/**
  * legend-9vmit (founder Q15): a guest who switches method or bank gets the old
  * VA / bank transfer code voided first, outside the main transaction, because
  * the void reads the provider over the network and commits its own release row
@@ -653,11 +716,11 @@ async function voidOldCodesForChange(
     amountIdr,
   });
   if (issuable === "not_offered") throw methodNotOffered();
-  if (issuable === "gateway_down")
-    throw new CoreError(
-      "SERVICE_UNAVAILABLE",
-      "Gateway pembayaran sedang tidak tersedia. Bayar di kasir.",
-    );
+  if (issuable === "gateway_down") {
+    // The old code is still payable, so the guest is not sent to the cashier.
+    await recordGatewayDownForLink(context, scope.paymentLinkId, now);
+    throw gatewayDownError();
+  }
   // `next` is read again where the candidates are read: a twin request that
   // issued this very choice between the two reads must not be voided.
   await voidLiveCodesForMethodChange(
@@ -884,43 +947,61 @@ export async function createGuestPayment(
     });
     if (replay !== undefined) return replay;
   }
-  // Checked after the session lock so the outlet's own channel list decides,
-  // at the real bill amount and before any old code is voided (legend-kt3t1).
-  if (parsed.method === "ewallet" || parsed.method === "card") {
-    const amountIdr = await billAmountIdr(
-      context,
-      credential,
-      sessionId,
-      orderId,
-      splitId,
-      now,
-    );
-    await assertGuestMethodOffered(context, parsed.method, outletId, amountIdr);
-    if (bankCode !== null && parsed.method === "ewallet")
+  // Skipped when the same pending code is answered below: its list must not be
+  // read (a failed read would hide a code the guest can already pay).
+  const answersPending = await pendingSameChoice(
+    context,
+    credential,
+    sessionId,
+    orderId,
+    splitId,
+    { method: parsed.method, bankCode },
+    now,
+  );
+  if (!answersPending) {
+    // Checked after the session lock so the outlet's own channel list decides,
+    // at the real bill amount and before any old code is voided (legend-kt3t1).
+    if (parsed.method === "ewallet" || parsed.method === "card") {
+      const amountIdr = await billAmountIdr(
+        context,
+        credential,
+        sessionId,
+        orderId,
+        splitId,
+        now,
+      );
+      await assertGuestMethodOffered(
+        context,
+        parsed.method,
+        outletId,
+        amountIdr,
+      );
+      if (bankCode !== null && parsed.method === "ewallet")
+        await assertGuestChannel(
+          context,
+          parsed.method,
+          bankCode,
+          outletId,
+          amountIdr,
+        );
+    } else if (bankCode !== null && namesChannel(parsed.method)) {
+      const amountIdr = await billAmountIdr(
+        context,
+        credential,
+        sessionId,
+        orderId,
+        splitId,
+        now,
+      );
+      // A paid bill has no amount to ask for; its stored answer is served below.
       await assertGuestChannel(
         context,
         parsed.method,
         bankCode,
         outletId,
-        amountIdr,
+        amountIdr > 0 ? amountIdr : undefined,
       );
-  } else if (bankCode !== null && namesChannel(parsed.method)) {
-    const amountIdr = await billAmountIdr(
-      context,
-      credential,
-      sessionId,
-      orderId,
-      splitId,
-      now,
-    );
-    // A paid bill has no amount to ask for; its stored answer is served below.
-    await assertGuestChannel(
-      context,
-      parsed.method,
-      bankCode,
-      outletId,
-      amountIdr > 0 ? amountIdr : undefined,
-    );
+    }
   }
   // legend-9vmit: a changed method or bank voids the old code first.
   await voidOldCodesForChange(

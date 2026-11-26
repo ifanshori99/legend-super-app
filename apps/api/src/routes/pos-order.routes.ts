@@ -433,8 +433,14 @@ posOrderRouter.post(
       body,
     );
     // legend-yhia9 D-08 (C3): a QR issued from a terminal puts that bill on
-    // its paired display. Best effort; never fails the tender.
-    if (body.method === "qris" && tenderCaller.deviceId !== null)
+    // its paired display (1269 C3a: a VA / e-wallet code too). Best effort;
+    // never fails the tender.
+    if (
+      (body.method === "qris" ||
+        body.method === "va" ||
+        body.method === "ewallet") &&
+      tenderCaller.deviceId !== null
+    )
       await selectBillAfterQrisIssued(
         getTenantContext(req),
         outletId,

@@ -29,12 +29,15 @@ import {
   type InvoiceDocument,
   type PosReceipt,
   type PosReceiptIssueResult,
+  type PrintPaperWidth,
+  type PrintPayload,
   type ReceiptDelivery,
   type ReceiptDocument,
   type ReceiptLink,
   type ReceiptPrintResult,
 } from "@starter/shared/pos";
 import { env } from "../config/env.ts";
+import { getEdgeRuntimeState } from "../edge/runtime.ts";
 import { db } from "../db/index.ts";
 import {
   posInvoices,
@@ -55,7 +58,9 @@ import {
 import { maskEmail } from "./pos-receipt-email.ts";
 import { renderDocumentPdf } from "./pos-receipt-pdf.ts";
 import {
+  TABLET_PRINT_DESTINATION,
   enqueueReceiptOnEdge,
+  receiptPrintPayload,
   receiptPrintResult,
 } from "./pos-receipt-edge-print.ts";
 import {
@@ -119,8 +124,11 @@ export function receiptLinkUrl(token: string): string {
 
 function toDelivery(row: DeliveryRow): ReceiptDelivery {
   // Cloud rows written before 1268 B2 say `sent` though nothing was printed.
+  // Print rows whose bytes went to the tablet (P1) are marked and stay sent.
   const notPrinted =
-    row.channel === "print" && receiptPrintResult() === "not_printed";
+    row.channel === "print" &&
+    receiptPrintResult() === "not_printed" &&
+    row.destinationMasked !== TABLET_PRINT_DESTINATION;
   return receiptDeliverySchema.parse({
     id: row.id,
     tenantId: row.tenantId,
@@ -269,6 +277,8 @@ type InsertDelivery = {
   requestedBy: string;
   now: Date;
   email?: string;
+  /** Print on the cloud with bytes for the tablet (P1). */
+  tablet?: boolean;
 };
 
 /** Inserts the delivery of a channel; true when this call created the row. */
@@ -287,8 +297,11 @@ async function insertDelivery(
       receiptId: receipt.id,
       channel: input.channel,
       status: input.status,
-      destinationMasked:
-        input.email === undefined ? null : maskEmail(input.email),
+      destinationMasked: input.tablet
+        ? TABLET_PRINT_DESTINATION
+        : input.email === undefined
+          ? null
+          : maskEmail(input.email),
       destinationSealed:
         input.email === undefined
           ? null
@@ -362,6 +375,8 @@ export async function issueReceiptDeliveries(
     deliveries?: readonly Channel[] | undefined;
     email?: string | undefined;
     idempotencyKey: string;
+    /** P1: the tablet's printer width; the cloud answers with the bytes. */
+    paperWidth?: PrintPaperWidth | undefined;
   },
 ): Promise<PosReceiptIssueResult> {
   const channels = [...new Set(input.deliveries ?? (["print"] as const))];
@@ -393,6 +408,11 @@ export async function issueReceiptDeliveries(
     if (!receipt)
       throw new CoreError("CONFLICT", "Struk pesanan ini belum diterbitkan.");
     let printDocument: ReceiptDocument | undefined;
+    let tabletPrint: PrintPayload | undefined;
+    let printCreated = false;
+    const tabletWidth = getEdgeRuntimeState().edgeMode
+      ? undefined
+      : input.paperWidth;
 
     if (channels.includes("print")) {
       const printRows = await tx
@@ -411,11 +431,14 @@ export async function issueReceiptDeliveries(
       const hadPrint = printRows.length > 0;
       const created = await insertDelivery(tx, context, receipt, {
         channel: "print",
-        status: receiptPrintResult() === "not_printed" ? "failed" : "sent",
+        status:
+          receiptPrintResult(tabletWidth) === "not_printed" ? "failed" : "sent",
         idempotencyKey: key,
         requestedBy,
         now,
+        tablet: tabletWidth !== undefined,
       });
+      printCreated = created;
       // POS-06: a print after the first one is a reprint.
       if (created && hadPrint && receipt.reprintCount < MAX_REPRINT_COUNT)
         receipt = await markReceiptReprinted(tx, context, receipt.id);
@@ -427,6 +450,15 @@ export async function issueReceiptDeliveries(
           printDocument,
           requestedBy,
           key,
+        );
+      }
+      // The bytes are rendered on every call, also on a replay (P1).
+      if (tabletWidth !== undefined) {
+        printDocument ??= await buildReceiptDocument(tx, context, receipt);
+        tabletPrint = receiptPrintPayload(
+          printDocument,
+          tabletWidth,
+          !printCreated,
         );
       }
     }
@@ -460,7 +492,10 @@ export async function issueReceiptDeliveries(
         printDocument ?? (await buildReceiptDocument(tx, context, receipt)),
       deliveries: await deliveriesOf(tx, context, receipt.id, key),
       link: linkRow ? toLink(linkRow) : null,
-      printResult: channels.includes("print") ? receiptPrintResult() : null,
+      printResult: channels.includes("print")
+        ? receiptPrintResult(tabletWidth)
+        : null,
+      ...(tabletPrint ? { print: tabletPrint } : {}),
     });
   });
 }

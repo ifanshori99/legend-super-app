@@ -865,6 +865,12 @@ export async function cancelSupersededAtGateway(
 export type CreateIntentOptions = {
   orderLockedByCaller?: boolean;
   /**
+   * 1269 C3a review P3 2: the code may come from this provider only. The rule
+   * must name it and its fallback is never used; anything else is refused
+   * before the provider is called (the cashier VA / e-wallet: Duitku).
+   */
+  onlyProvider?: string;
+  /**
    * legend-9vmit (founder Q15): set by a guest-facing caller that may change
    * method. When the pre-provider guard refuses because a live VA or bank
    * transfer code of the same scope exists, this voids those codes (provider
@@ -1003,7 +1009,30 @@ async function assertLinkOrderCanIssueTx(
   billSplitId: string | null,
 ): Promise<void> {
   const orderId = await linkOrderIdTx(tx, context, paymentLinkId);
-  if (orderId === null) return;
+  if (orderId === null) {
+    // legend-osqou.41: a link with no order (a reservation DP) takes one live
+    // code at a time, QRIS included (CTO 27 Nov, strictest rule): no provider
+    // can cancel a code at the gateway (QRIS has no cancel either), so a code
+    // replaced locally could still be paid and the guest would pay twice.
+    const [liveCode] = await tx
+      .select({ id: paymentIntents.id })
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, context.tenant.tenantId),
+          eq(paymentIntents.paymentLinkId, paymentLinkId),
+          liveCodeWhere(),
+        ),
+      )
+      .limit(1);
+    if (liveCode)
+      throw new HttpError(
+        409,
+        "ORDER_CODE_ACTIVE",
+        "Kode pembayaran sebelumnya masih berlaku; selesaikan atau tunggu sampai berakhir.",
+      );
+    return;
+  }
   if (billSplitId === null) {
     await assertNoActiveQrisHold(tx, context, orderId);
   } else if (
@@ -1172,6 +1201,35 @@ async function gatewayDownRefusal(
   );
 }
 
+/**
+ * legend-osqou.41: a guest path (QR checkout) that refused a swap because the
+ * gateway is down records the same incident and failover mark the link path
+ * does. Bookkeeping only: it never changes the answer and never throws.
+ */
+export async function recordGatewayDownForLink(
+  context: ScopedTenantContext,
+  paymentLinkId: string,
+  now: Date,
+): Promise<void> {
+  try {
+    const link = await withTenant(db, context, async (tx) => {
+      const [row] = await tx
+        .select()
+        .from(paymentLinks)
+        .where(
+          and(
+            eq(paymentLinks.tenantId, context.tenant.tenantId),
+            eq(paymentLinks.id, paymentLinkId),
+          ),
+        );
+      return row ?? null;
+    });
+    if (link) await gatewayDownRefusal(context, link, now);
+  } catch (error) {
+    logger.warn({ err: error, paymentLinkId }, "gateway down record failed");
+  }
+}
+
 async function createIntentCore(
   context: ScopedTenantContext,
   token: string,
@@ -1227,6 +1285,14 @@ async function createIntentCore(
       (error.code === "ORDER_CODE_ACTIVE" || error.code === "SPLIT_CODE_ACTIVE")
     ))
       throw error;
+    // A link with no order has no code the guest may void: the refusal stands
+    // and the gateway is not read (a failed read must not turn 409 into 503).
+    if (
+      (await withTenant(db, context, (tx) =>
+        linkOrderIdTx(tx, context, plan.link.id),
+      )) === null
+    )
+      throw error;
     // 1269 C2a: a method that cannot be issued voids nothing.
     const issuable = await methodIssuable(
       context,
@@ -1238,8 +1304,12 @@ async function createIntentCore(
         amountIdr,
       },
     );
-    if (issuable === "gateway_down")
-      throw await gatewayDownRefusal(context, plan.link, now);
+    // The incident is still recorded; the answer stays the original refusal
+    // (a live code the guest can still pay), never "pay at the cashier".
+    if (issuable === "gateway_down") {
+      await gatewayDownRefusal(context, plan.link, now);
+      throw error;
+    }
     if (issuable === "not_offered") throw error;
     const { voided } = await options.voidLiveCodesForChange({
       paymentLinkId: plan.link.id,
@@ -1265,13 +1335,33 @@ async function createIntentCore(
       ),
     );
   }
+  if (
+    options.onlyProvider !== undefined &&
+    plan.routing.provider !== options.onlyProvider
+  )
+    throw new HttpError(
+      422,
+      "VALIDATION_ERROR",
+      "This payment method is not available.",
+    );
   const selected = await selectGatewayForNewIntent(
     context,
     plan.link.outletId,
-    plan.routing,
+    options.onlyProvider === undefined
+      ? plan.routing
+      : { ...plan.routing, fallbackProvider: null },
   );
   if (selected.provider === null)
     throw await gatewayDownRefusal(context, plan.link, now);
+  if (
+    options.onlyProvider !== undefined &&
+    selected.provider !== options.onlyProvider
+  )
+    throw new HttpError(
+      422,
+      "VALIDATION_ERROR",
+      "This payment method is not available.",
+    );
 
   // The caller may shorten the lifetime (a QR guest's session ends sooner);
   // never lengthen it past the method default.
@@ -1287,7 +1377,17 @@ async function createIntentCore(
       "VALIDATION_ERROR",
       "The payment expiry must be in the future.",
     );
-  const requestedExpiry = new Date(Math.min(methodExpiry, callerExpiry));
+  // legend-osqou.41: a VA / bank transfer code lives no longer than the link
+  // (never under 10 minutes, so a late tap still gets a usable code). An
+  // e-wallet or card is never shortened.
+  const linkCap =
+    (parsed.method === "va" || parsed.method === "bank_transfer") &&
+    plan.link.expiresAt !== null
+      ? Math.max(plan.link.expiresAt.getTime(), now.getTime() + 10 * 60_000)
+      : Number.POSITIVE_INFINITY;
+  const requestedExpiry = new Date(
+    Math.min(methodExpiry, callerExpiry, linkCap),
+  );
   // Same key, same id, same DOIT request: see intentIdFor.
   const intentId = intentIdFor(context.tenant.tenantId, parsed.idempotencyKey);
   const created: GatewayIntent = await selected.port.createIntent({

@@ -22,9 +22,11 @@ import { isContractPending } from "../../hooks";
 import {
   useApproveShiftClose,
   useRequestOverride,
+  useShiftPrintLoader,
   useShiftReview,
   useSupervisorOptions,
 } from "../../shift-hooks";
+import { CloudPrintButton } from "../../print/cloud-print-button";
 import type { ShiftReview } from "../../types";
 import { HeldCashOutGate } from "./held-cash-out-gate";
 import { ShiftForceClose } from "./shift-force-close";
@@ -504,6 +506,7 @@ function ClosedPanel({
   onBack: () => void;
 }) {
   const t = useT();
+  const loadPrint = useShiftPrintLoader(review.shiftId);
   return (
     <PosPanel
       title={t("posKasirSupervisor.closed.title")}
@@ -536,6 +539,15 @@ function ClosedPanel({
                 : t("posKasirSupervisor.closed.noNote")}
             </p>
           </div>
+        )}
+        {/* The report carries expected cash and variance: only a caller who
+          sees live figures (never the shift's own blind cashier) gets it. */}
+        {review.expectedIdr !== null && (
+          <CloudPrintButton
+            kind="shift"
+            printKey={`shift-report:${review.shiftId}`}
+            load={loadPrint}
+          />
         )}
       </div>
     </PosPanel>

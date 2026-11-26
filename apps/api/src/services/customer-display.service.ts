@@ -18,6 +18,10 @@ import {
   type TenantContext,
   type TenantId,
 } from "@starter/shared/core";
+import {
+  posOnlineCodeInstructionsSchema,
+  type PosOnlineCodeInstructions,
+} from "@starter/shared/pos";
 import { env } from "../config/env.ts";
 import { db } from "../db/index.ts";
 import {
@@ -737,11 +741,18 @@ async function buildState(tx: Tx, pairing: PairingRow, now: Date) {
     )
     .orderBy(desc(posQrisHolds.openedAt))
     .limit(1);
+  // 1269 C3a: a cashier VA / e-wallet code, under the same rules as the QR.
+  let onlineCode: {
+    amountIdr: number;
+    instructions: PosOnlineCodeInstructions;
+    expiresAt: string;
+  } | null = null;
   // D-08: the hold must be open AND exactly the remaining amount.
   if (hold && remaining > 0 && Number(hold.amountIdr) === remaining) {
     const [intent] = await tx
       .select({
         provider: paymentIntents.provider,
+        method: paymentIntents.method,
         instructions: paymentIntents.instructions,
         expiresAt: paymentIntents.expiresAt,
       })
@@ -769,6 +780,21 @@ async function buildState(tx: Tx, pairing: PairingRow, now: Date) {
         payload: instructions.qrPayload,
         expiresAt: intent.expiresAt.toISOString(),
       };
+    const code = posOnlineCodeInstructionsSchema.safeParse(
+      intent?.instructions,
+    );
+    if (
+      intent &&
+      code.success &&
+      intent.provider === "duitku" &&
+      code.data.method === intent.method &&
+      intent.expiresAt.getTime() > now.getTime()
+    )
+      onlineCode = {
+        amountIdr: remaining,
+        instructions: code.data,
+        expiresAt: intent.expiresAt.toISOString(),
+      };
   }
   const changes = tenders
     .map((t) => (t.changeIdr === null ? null : Number(t.changeIdr)))
@@ -779,7 +805,7 @@ async function buildState(tx: Tx, pairing: PairingRow, now: Date) {
   return {
     ...base,
     state:
-      qris !== null
+      qris !== null || onlineCode !== null
         ? ("awaiting_payment" as const)
         : remaining === 0 && total > 0
           ? ("paid" as const)
@@ -805,6 +831,8 @@ async function buildState(tx: Tx, pairing: PairingRow, now: Date) {
     depositAppliedIdr: deposit,
     remainingIdr: remaining,
     qris,
+    // Absent unless a VA / e-wallet code is shown (older screens ignore it).
+    ...(onlineCode ? { onlineCode } : {}),
     tenders: tenders.map((t) => ({
       method: t.method,
       amountIdr: Number(t.amountIdr),

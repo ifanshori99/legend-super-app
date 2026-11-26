@@ -12,6 +12,7 @@ import { confirmedAllocations } from "./payment-helpers";
 import { PaidTicketCard } from "./paid-ticket-card";
 import type { PaymentPanelProps } from "./panel-types";
 import { ReceiptNotPrinted, wasQueued } from "./receipt-result-notice";
+import { ReceiptSent } from "./receipt-sent-notice";
 
 function Row({ label, amountIdr }: { label: string; amountIdr: number }) {
   return (
@@ -47,6 +48,8 @@ export function SuccessPanel({ orderId }: PaymentPanelProps) {
     print.data && !wasQueued(print.data) ? print.data : undefined;
   const held = completion === "held";
   const toNewTransaction = () => void navigate({ to: "/pos/meja" });
+  const reprint = () => print.mutate({ orderId });
+  const sent = print.data && wasQueued(print.data) ? print.data : undefined;
 
   return (
     <PosPanel
@@ -65,27 +68,29 @@ export function SuccessPanel({ orderId }: PaymentPanelProps) {
           >
             {t("posKasirPayment.success.eReceipt")}
           </Button>
-          <Button
-            type="button"
-            variant={hasIssuedTicket ? "outline" : "default"}
-            disabled={print.isPending || held}
-            aria-busy={print.isPending}
-            onClick={() =>
-              print.mutate(
-                { orderId },
-                {
-                  onSuccess: (result) => {
-                    if (wasQueued(result)) toNewTransaction();
-                  },
-                },
-              )
-            }
-          >
-            {print.isPending
-              ? t("posKasirPayment.success.printing")
-              : t("posKasirPayment.success.printAndNew")}
-            <ArrowRight aria-hidden="true" />
-          </Button>
+          {print.data ? (
+            // After a print the screen stays (review P2 no. 2): moving on is a tap.
+            <Button
+              type="button"
+              variant={hasIssuedTicket ? "outline" : "default"}
+              onClick={toNewTransaction}
+            >
+              {t("posKasirCommon.printer.next")}
+              <ArrowRight aria-hidden="true" />
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              variant={hasIssuedTicket ? "outline" : "default"}
+              disabled={print.isPending || held}
+              aria-busy={print.isPending}
+              onClick={reprint}
+            >
+              {print.isPending
+                ? t("posKasirPayment.success.printing")
+                : t("posKasirCommon.printer.print")}
+            </Button>
+          )}
         </>
       }
     >
@@ -159,8 +164,20 @@ export function SuccessPanel({ orderId }: PaymentPanelProps) {
             {t("posKasirPayment.success.heldHint")}
           </Notice>
         )}
+        {sent && (
+          <ReceiptSent
+            receiptNo={sent.receiptNo}
+            onReprint={reprint}
+            reprinting={print.isPending}
+          />
+        )}
         {notPrinted && (
-          <ReceiptNotPrinted result={notPrinted} onSkip={toNewTransaction} />
+          <ReceiptNotPrinted
+            result={notPrinted}
+            onSkip={toNewTransaction}
+            onReprint={reprint}
+            reprinting={print.isPending}
+          />
         )}
         {print.isError && print.error.code === ORDER_COMPLETE_FAILED && (
           <Notice

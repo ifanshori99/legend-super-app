@@ -4,7 +4,8 @@
 //
 //   GET  /?outletId=          device.registry.manage on the outlet
 //   POST /                    device.registry.manage on body.outletId; 201
-//                             with the link credential, shown ONCE
+//                             with the link credential, shown ONCE; 403
+//                             FEATURE_DISABLED unless EDGE_NODES_ENABLED (K0)
 //   POST /:edgeNodeId/revoke  device.registry.revoke on body.outletId;
 //                             terminal, closes the node's link
 //   POST /:edgeNodeId/rotate-credential
@@ -26,6 +27,7 @@ import {
 import { AccessError } from "@starter/shared/access";
 import { z } from "zod";
 import { CoreError, outletIdSchema, uuidSchema } from "@starter/shared/core";
+import { env } from "../config/env.ts";
 import { getAuth, requireAuth } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireBackOfficeSurface } from "../middleware/identity-surface.ts";
@@ -75,6 +77,16 @@ const bodyOutlet = (req: { body?: unknown }) =>
   outletIdSchema.parse(
     (req.body as { outletId?: unknown } | undefined)?.outletId,
   );
+
+/** K0: enrolling is off unless EDGE_NODES_ENABLED (cloud-only release). */
+const requireEdgeEnrollEnabled: RequestHandler = (_req, _res, next) => {
+  if (!env.EDGE_NODES_ENABLED)
+    throw new CoreError(
+      "FEATURE_DISABLED",
+      "Pendaftaran server outlet belum diaktifkan.",
+    );
+  next();
+};
 
 const notFound = () => new CoreError("NOT_FOUND", "Edge node tidak ditemukan.");
 const nodeOutlets = new WeakMap<Request, string>();
@@ -138,6 +150,7 @@ edgeNodesRouter.post(
   "/",
   jsonBody,
   requireOutletPermission("device.registry.manage", bodyOutlet),
+  requireEdgeEnrollEnabled,
   async (req, res) => {
     const input = registerEdgeNodeSchema.parse(req.body);
     const result = await registerEdgeNode(

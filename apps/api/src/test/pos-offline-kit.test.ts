@@ -629,9 +629,9 @@ describe("Review O1 fixes", () => {
     );
   });
 
-  it("P3 3: the 0533 preflight stops on a run already printing under L<n>", async () => {
+  it("P3 3: the 0534 preflight stops on a run already printing under L<n>", async () => {
     const migration = readFileSync(
-      new URL("../../drizzle/0533_pos_offline_kits.sql", import.meta.url),
+      new URL("../../drizzle/0534_pos_offline_kits.sql", import.meta.url),
       "utf8",
     );
     const preflight = /DO \$\$[\s\S]*?END \$\$;/.exec(migration)?.[0];
@@ -643,7 +643,7 @@ describe("Review O1 fixes", () => {
         "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
         [seededTenantId],
       );
-      // The state before 0533: no L rule yet, a device run named L<n>.
+      // The state before 0534: no L rule yet, a device run named L<n>.
       await client.query(
         "ALTER TABLE receipt_sequences DROP CONSTRAINT receipt_sequences_offline_prefix_check",
       );
