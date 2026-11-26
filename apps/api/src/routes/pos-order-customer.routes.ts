@@ -15,6 +15,7 @@ import {
 } from "../middleware/acting-staff";
 import { requireAuthAllowSharedDevice } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
+import { requirePosWriteOnCloudFor } from "../middleware/pos-on-cloud";
 import { requireTrustedOrigin } from "../middleware/origin";
 import {
   getScopedTenantContext,
@@ -61,6 +62,7 @@ posOrderCustomerRouter.put(
     next();
   },
   sell,
+  requirePosWriteOnCloudFor((req) => outlets.get(req)),
   async (req, res) => {
     const { orderId } = setOrderCustomerEndpoint.params.parse(req.params);
     const input = setOrderCustomerEndpoint.body.parse(req.body);

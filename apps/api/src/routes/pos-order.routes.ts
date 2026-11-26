@@ -347,6 +347,7 @@ posOrderRouter.post(
 posOrderRouter.post(
   "/orders/:orderId/void",
   voids,
+  requirePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId } = voidPosOrder.params.parse(req.params);
@@ -488,6 +489,7 @@ posOrderRouter.get("/qris/reconciliations", reconcile, async (req, res) => {
 posOrderRouter.post(
   "/orders/:orderId/qris/cancel",
   pay,
+  requirePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId } = cancelPosQris.params.parse(req.params);
@@ -507,6 +509,7 @@ posOrderRouter.post(
 posOrderRouter.post(
   "/orders/:orderId/qris/release",
   pay,
+  requirePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId } = releasePosQris.params.parse(req.params);
@@ -528,6 +531,7 @@ posOrderRouter.post(
 posOrderRouter.post(
   "/orders/:orderId/payment-intents/resolve",
   pay,
+  requirePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId } = resolvePosPaymentIntent.params.parse(
@@ -549,6 +553,7 @@ posOrderRouter.post(
 posOrderRouter.post(
   "/orders/:orderId/va/release",
   pay,
+  requirePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId } = releasePosVa.params.parse(req.params);
@@ -611,6 +616,7 @@ posOrderRouter.delete(
 posOrderRouter.post(
   "/orders/:orderId/corrections/void",
   voids,
+  requirePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId } = voidPosOrderCorrection.params.parse(
@@ -632,6 +638,7 @@ posOrderRouter.post(
 posOrderRouter.post(
   "/orders/:orderId/corrections/refund",
   refund,
+  requirePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId } = refundPosOrder.params.parse(req.params);

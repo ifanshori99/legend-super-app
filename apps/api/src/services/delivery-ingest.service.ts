@@ -15,7 +15,10 @@
 //   accepted (`needs_review`, contract `assertDeliveryOrderInjectable`);
 // - a closed or paused channel rejects the order through the delivery machine;
 // - an open channel injects the order to the POS/KDS (delivery-inject.ts) and
-//   then auto-accepts it on the platform through the adapter.
+//   then auto-accepts it on the platform through the adapter;
+// - an outlet its edge serves (E3b, CTO 26 Nov) cooks on the edge, which never
+//   sees a cloud order: the order is stored, NOT injected and NOT accepted (the
+//   platform cancels it on its own), logged and the outlet's supervisors alerted.
 // Nothing here logs the payload (customer note, prices): ids only.
 import { createHash } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
@@ -27,6 +30,7 @@ import {
   outletIdSchema,
   tenantIdSchema,
   uuidSchema,
+  uuidToUlid,
   type OutletId,
   type ScopedTenantContext,
   type TenantId,
@@ -49,6 +53,9 @@ import {
   deliveryChannels,
 } from "../db/schema/delivery.ts";
 import { withTenant } from "../db/tenant.ts";
+import { logger } from "../lib/logger.ts";
+import { notifyOutletSupervisors } from "./edge-sync-conflict-alert.ts";
+import { posWritesOnEdge } from "./pos-edge-outlet.ts";
 import { deliveryChannelAdapterFor } from "./delivery-ports.ts";
 import { recordAudit } from "./core-audit.ts";
 import {
@@ -754,7 +761,9 @@ export async function ingestDeliveryWebhook(
       const retryAccept =
         existing.status === "received" &&
         existing.orderId !== null &&
-        (await loadChannel(tx, tenantId, outletId, platform))?.isOpen === true;
+        (await loadChannel(tx, tenantId, outletId, platform))?.isOpen ===
+          true &&
+        !(await posWritesOnEdge(tx, tenantId, outletId));
       return {
         result: outcome("duplicate", existing),
         accept: retryAccept ? existing : null,
@@ -890,6 +899,30 @@ export async function ingestDeliveryWebhook(
       return { result: outcome("rejected", row), accept: null, rejected: row };
     }
 
+    // E3b: the edge's kitchen never sees a cloud order, so none is injected or
+    // accepted for an outlet its edge serves (until delivery reaches the edge).
+    if (await posWritesOnEdge(tx, tenantId, outletId)) {
+      const row = await storeWithoutInjection(tx, context, {
+        outletId,
+        platform,
+        payload,
+        payloadHash,
+        signedAt,
+        commissionIdr,
+        lines,
+        status: "received",
+        closeReason: null,
+        existing,
+        now,
+      });
+      if (!existing) await alertDeliveryOnEdge(tx, context, row, now);
+      return {
+        result: outcome("needs_review", row),
+        accept: null,
+        rejected: null,
+      };
+    }
+
     // needs_review: an unmatched line keeps the order out of the KDS and out
     // of auto-accept until staff resolve the mapping.
     if (!deliveryOrderIsInjectable({ lines })) {
@@ -986,6 +1019,47 @@ export async function ingestDeliveryWebhook(
     return outcome(stored.result.result, accepted);
   }
   return stored.result;
+}
+
+/**
+ * A platform order the cloud left alone because the outlet's edge serves it:
+ * logged (ids only) and one alert to the outlet's supervisors (or owners),
+ * keyed on the delivery order so a replay never alerts twice.
+ */
+async function alertDeliveryOnEdge(
+  tx: Tx,
+  context: ScopedTenantContext,
+  row: DeliveryChannelOrderRow,
+  now: Date,
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  logger.warn(
+    {
+      tenantId,
+      outletId: row.outletId,
+      deliveryOrderId: row.id,
+      platform: row.platform,
+    },
+    "Delivery order not injected: the outlet is served by its edge",
+  );
+  await notifyOutletSupervisors(
+    tx,
+    context,
+    {
+      tenantId,
+      outletId: outletIdSchema.parse(row.outletId),
+      alsoOwners: true,
+      id: uuidToUlid(row.id),
+      eventName: "delivery_order.edge_not_injected",
+      aggregateType: "delivery_order",
+      aggregateId: row.id,
+      payload: { deliveryOrderId: row.id, platform: row.platform },
+      title: "Pesanan delivery tidak diterima",
+      body: `Pesanan ${row.platform} ${row.externalOrderId} tidak masuk dapur karena outlet ini memakai server lokal. Platform akan membatalkannya.`,
+      recordEmpty: true,
+    },
+    now,
+  );
 }
 
 async function pushRejection(

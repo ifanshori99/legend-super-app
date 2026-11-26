@@ -11,12 +11,17 @@ import { uuidSchema, z } from "@starter/shared/core";
 import { reportOrderIssue, resolveOrderIssue } from "@starter/shared/qr-order";
 import { memberTenantContext } from "../db/member-scope.ts";
 import { db } from "../db/index.ts";
-import { orderIssueCharges, orderIssues } from "../db/schema/kds-issues.ts";
+import {
+  orderIssueChargeManualRefunds,
+  orderIssueCharges,
+  orderIssues,
+} from "../db/schema/kds-issues.ts";
 import { orderItems } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import { getTenantContext } from "./tenant.ts";
 
 const chargeParams = z.strictObject({ chargeId: uuidSchema });
+const manualRefundParams = z.strictObject({ id: uuidSchema });
 
 /** Outlet of the dearer-swap charge named by the `:chargeId` param. */
 export async function chargeOutletOf(req: Request): Promise<string | null> {
@@ -65,6 +70,27 @@ export async function issueOutletOfParam(req: Request): Promise<string | null> {
         and(
           eq(orderIssues.tenantId, tenantId),
           eq(orderIssues.id, orderIssueId),
+        ),
+      )
+      .limit(1);
+    return row?.outletId ?? null;
+  });
+}
+
+/** Outlet of the charge manual refund named by the `:id` param (E3b gate). */
+export async function chargeManualRefundOutletOf(
+  req: Request,
+): Promise<string | null> {
+  const { id } = manualRefundParams.parse(req.params);
+  const tenantId = getTenantContext(req).tenantId;
+  return withTenant(db, memberTenantContext(tenantId), async (tx) => {
+    const [row] = await tx
+      .select({ outletId: orderIssueChargeManualRefunds.outletId })
+      .from(orderIssueChargeManualRefunds)
+      .where(
+        and(
+          eq(orderIssueChargeManualRefunds.tenantId, tenantId),
+          eq(orderIssueChargeManualRefunds.id, id),
         ),
       )
       .limit(1);

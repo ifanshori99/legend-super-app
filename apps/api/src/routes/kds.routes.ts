@@ -57,6 +57,7 @@ import {
 } from "../middleware/acting-staff.ts";
 import { requireAuthAllowSharedDevice } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
+import { requirePosWriteOnCloud } from "../middleware/pos-on-cloud.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
   getScopedTenantContext,
@@ -121,6 +122,7 @@ function actor(req: Request): KdsActor {
 kdsRouter.post(
   "/stations/:stationId/heartbeat",
   ...processStation,
+  requirePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, stationId } = recordKitchenStationHeartbeat.params.parse(
@@ -258,39 +260,50 @@ kdsRouter.get("/tickets/:ticketId", processTicket, async (req, res) => {
   });
 });
 
-kdsRouter.post("/tickets/:ticketId/start", processTicket, async (req, res) => {
-  const { outletId, ticketId } = startKitchenTicket.params.parse(req.params);
-  res.json({
-    data: await kds.applyKitchenTicketAction(
-      ticketContext(req),
-      actor(req),
-      outletId,
-      ticketId,
-      "start",
-      {},
-      new Date(),
-    ),
-  });
-});
+kdsRouter.post(
+  "/tickets/:ticketId/start",
+  processTicket,
+  requirePosWriteOnCloud,
+  async (req, res) => {
+    const { outletId, ticketId } = startKitchenTicket.params.parse(req.params);
+    res.json({
+      data: await kds.applyKitchenTicketAction(
+        ticketContext(req),
+        actor(req),
+        outletId,
+        ticketId,
+        "start",
+        {},
+        new Date(),
+      ),
+    });
+  },
+);
 
-kdsRouter.post("/tickets/:ticketId/bump", processTicket, async (req, res) => {
-  const { outletId, ticketId } = bumpKitchenTicket.params.parse(req.params);
-  res.json({
-    data: await kds.applyKitchenTicketAction(
-      ticketContext(req),
-      actor(req),
-      outletId,
-      ticketId,
-      "bump",
-      {},
-      new Date(),
-    ),
-  });
-});
+kdsRouter.post(
+  "/tickets/:ticketId/bump",
+  processTicket,
+  requirePosWriteOnCloud,
+  async (req, res) => {
+    const { outletId, ticketId } = bumpKitchenTicket.params.parse(req.params);
+    res.json({
+      data: await kds.applyKitchenTicketAction(
+        ticketContext(req),
+        actor(req),
+        outletId,
+        ticketId,
+        "bump",
+        {},
+        new Date(),
+      ),
+    });
+  },
+);
 
 kdsRouter.post(
   "/tickets/:ticketId/recall",
   processTicket,
+  requirePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, ticketId } = recallKitchenTicket.params.parse(req.params);
@@ -312,6 +325,7 @@ kdsRouter.post(
 kdsRouter.post(
   "/tickets/:ticketId/void",
   processTicket,
+  requirePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, ticketId } = voidKitchenTicket.params.parse(req.params);
@@ -333,6 +347,7 @@ kdsRouter.post(
 kdsRouter.patch(
   "/tickets/:ticketId/priority",
   processTicket,
+  requirePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, ticketId } = setKitchenTicketPriority.params.parse(
@@ -357,6 +372,7 @@ kdsRouter.patch(
 kdsRouter.post(
   "/ticket-items/:itemId/status",
   processTicket,
+  requirePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, itemId } = updateKitchenTicketItem.params.parse(

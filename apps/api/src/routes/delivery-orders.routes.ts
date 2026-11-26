@@ -28,6 +28,7 @@ import {
 } from "../middleware/acting-staff.ts";
 import { requireAuthAllowSharedDevice } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
+import { requirePosWriteOnCloud } from "../middleware/pos-on-cloud.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
   getScopedTenantContext,
@@ -78,22 +79,28 @@ deliveryOrdersRouter.get("/", handle, async (req, res) => {
 });
 
 // Registered before `/:deliveryOrderId` so "manual" is never read as an id.
-deliveryOrdersRouter.post("/manual", handle, jsonBody, async (req, res) => {
-  const { outletId } = createManualDeliveryOrder.params.parse(req.params);
-  const body = createManualDeliveryOrder.body.parse(req.body);
-  const data = await deliveryOrders.createManualDeliveryOrder(
-    getScopedTenantContext(req),
-    caller(req),
-    outletId,
-    body,
-  );
-  res
-    .status(201)
-    .location(
-      `/api/outlets/${encodeURIComponent(outletId)}/delivery-orders/${encodeURIComponent(data.id)}`,
-    )
-    .json({ data });
-});
+deliveryOrdersRouter.post(
+  "/manual",
+  handle,
+  requirePosWriteOnCloud,
+  jsonBody,
+  async (req, res) => {
+    const { outletId } = createManualDeliveryOrder.params.parse(req.params);
+    const body = createManualDeliveryOrder.body.parse(req.body);
+    const data = await deliveryOrders.createManualDeliveryOrder(
+      getScopedTenantContext(req),
+      caller(req),
+      outletId,
+      body,
+    );
+    res
+      .status(201)
+      .location(
+        `/api/outlets/${encodeURIComponent(outletId)}/delivery-orders/${encodeURIComponent(data.id)}`,
+      )
+      .json({ data });
+  },
+);
 
 deliveryOrdersRouter.get("/:deliveryOrderId", handle, async (req, res) => {
   const { outletId, deliveryOrderId } = getDeliveryOrder.params.parse(
@@ -111,6 +118,7 @@ deliveryOrdersRouter.get("/:deliveryOrderId", handle, async (req, res) => {
 deliveryOrdersRouter.post(
   "/:deliveryOrderId/status",
   handle,
+  requirePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, deliveryOrderId } =
@@ -176,6 +184,7 @@ deliveryOrdersRouter.post(
 deliveryOrdersRouter.post(
   "/:deliveryOrderId/map-lines",
   handle,
+  requirePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, deliveryOrderId } = mapDeliveryOrderLines.params.parse(

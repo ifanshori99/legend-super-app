@@ -21,13 +21,17 @@ import {
   requireActingStaffOnSharedDevice,
   resolveActingStaff,
 } from "../middleware/acting-staff.ts";
-import { chargeOutletOf } from "../middleware/acting-staff-outlet.ts";
+import {
+  chargeManualRefundOutletOf,
+  chargeOutletOf,
+} from "../middleware/acting-staff-outlet.ts";
 import {
   getAuth,
   requireAuth,
   requireAuthAllowSharedDevice,
 } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
+import { requirePosWriteOnCloudOfTarget } from "../middleware/pos-on-cloud.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
   getScopedTenantContext,
@@ -79,6 +83,14 @@ const rejectGuard = [
   requireAnyMenuPermission("order.recovery.handle", "pos.refund.approve"),
 ];
 
+// E3b: the recovery flow writes edge-owned rows (swap lines and KDS ticket,
+// drawer cash), so an outlet its edge serves is refused the whole flow, the
+// gateway refund included (in doubt, no money out). After the permission guard.
+const chargeOnCloud = requirePosWriteOnCloudOfTarget(chargeOutletOf);
+const manualRefundOnCloud = requirePosWriteOnCloudOfTarget(
+  chargeManualRefundOutletOf,
+);
+
 /** Passes when the caller holds at least one of the permissions (else the last denial). */
 function requireAnyMenuPermission(
   ...permissions: readonly PermissionCode[]
@@ -111,6 +123,7 @@ for (const action of [
   orderRecoveryChargeRouter.post(
     `/order-issue-charges/:chargeId/${action}`,
     ...staffGuard,
+    chargeOnCloud,
     jsonBody,
     async (req, res) => {
       const { chargeId } = params.parse(req.params);
@@ -137,6 +150,7 @@ const refundBody = z.strictObject({
 orderRecoveryChargeRouter.post(
   "/order-issue-charges/:chargeId/refund",
   ...staffGuard,
+  chargeOnCloud,
   jsonBody,
   async (req, res) => {
     const { chargeId } = params.parse(req.params);
@@ -174,6 +188,7 @@ const manualRefundBody = z.discriminatedUnion("method", [
 orderRecoveryChargeRouter.post(
   "/order-issue-charges/:chargeId/manual-refund",
   ...staffGuard,
+  chargeOnCloud,
   jsonBody,
   async (req, res) => {
     const { chargeId } = params.parse(req.params);
@@ -192,6 +207,7 @@ orderRecoveryChargeRouter.post(
 orderRecoveryChargeRouter.post(
   "/order-issue-charge-manual-refunds/:id/approve",
   ...approveGuard,
+  manualRefundOnCloud,
   jsonBody,
   async (req, res) => {
     const { id } = manualRefundParams.parse(req.params);
@@ -212,6 +228,7 @@ orderRecoveryChargeRouter.post(
 orderRecoveryChargeRouter.post(
   "/order-issue-charge-manual-refunds/:id/reject",
   ...rejectGuard,
+  manualRefundOnCloud,
   jsonBody,
   async (req, res) => {
     const { id } = manualRefundParams.parse(req.params);
@@ -240,6 +257,7 @@ orderRecoveryChargeRouter.post(
   requireActingStaffOnSharedDevice,
   refuseActingStaffOtherOutlet(chargeOutletOf),
   requireMenuPermission("pos.payment.accept"),
+  chargeOnCloud,
   jsonBody,
   async (req, res) => {
     const { chargeId } = params.parse(req.params);

@@ -19,7 +19,7 @@
 // - Strict contract schemas parse params, query and body.
 
 import { Router } from "express";
-import { userIdSchema } from "@starter/shared/core";
+import { userIdSchema, type ScopedTenantContext } from "@starter/shared/core";
 import {
   chooseOrderIssueResolution,
   getOrderIssueOptions,
@@ -39,6 +39,7 @@ import {
 } from "../middleware/acting-staff-outlet.ts";
 import { requireAuthAllowSharedDevice } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
+import { requirePosWriteOnCloudOfTarget } from "../middleware/pos-on-cloud.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { ACTING_STAFF_ERROR_CODES } from "@starter/shared/pos/acting-staff";
 import { isRequestOnSharedDevice } from "../middleware/shared-device-allowlist.ts";
@@ -49,6 +50,7 @@ import {
 } from "../middleware/permissions.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
 import * as recovery from "../services/order-recovery.service.ts";
+import { assertTargetOutletNotOnEdge } from "../services/pos-edge-outlet.ts";
 import { guestContext, sessionCredential } from "./qr-order.routes.ts";
 
 export const orderRecoveryRouter = Router();
@@ -66,12 +68,21 @@ const staffGuardFor = (
   refuseActingStaffOtherOutlet(outletOf),
   requireMenuPermission("order.recovery.handle"),
 ];
+/** The one outlet a guest session context reaches, else null. */
+function soleOutletOf(context: ScopedTenantContext): string | null {
+  const scope = context.outletScope;
+  return scope.kind === "outlets" && scope.outletIds.length === 1
+    ? (scope.outletIds[0] ?? null)
+    : null;
+}
+
 const guestRead = [requireTenantContext];
 const guestWrite = [requireTenantContext, requireTrustedOrigin];
 
 orderRecoveryRouter.post(
   "/order-items/:orderItemId/issues",
   ...staffGuardFor(itemOutletOf),
+  requirePosWriteOnCloudOfTarget(itemOutletOf),
   jsonBody,
   async (req, res) => {
     const { orderItemId } = reportOrderIssue.params.parse(req.params);
@@ -91,6 +102,7 @@ orderRecoveryRouter.post(
 orderRecoveryRouter.post(
   "/order-issues/:orderIssueId/resolve",
   ...staffGuardFor(issueOutletOfParam),
+  requirePosWriteOnCloudOfTarget(issueOutletOfParam),
   jsonBody,
   async (req, res) => {
     const { orderIssueId } = resolveOrderIssue.params.parse(req.params);
@@ -160,9 +172,13 @@ orderRecoveryRouter.post(
     );
     const body = chooseOrderIssueResolution.body.parse(req.body);
     const credential = sessionCredential(req);
+    const context = await guestContext(req, credential);
+    // E3b: a guest choice writes swap lines and a KDS ticket; on an outlet its
+    // edge serves that is the edge's (the guest context names one outlet).
+    await assertTargetOutletNotOnEdge(context, soleOutletOf(context));
     res.json({
       data: await recovery.chooseOrderIssueResolution(
-        await guestContext(req, credential),
+        context,
         credential,
         orderIssueId,
         body,
