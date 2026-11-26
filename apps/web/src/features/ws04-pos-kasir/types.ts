@@ -141,7 +141,8 @@ export type PaymentAttempt = {
   amountIdr: number;
   expiresAt?: string;
   va?: { bank: string; number: string; deadline: string };
-  ewallet?: { code: string; label: string };
+  /** `paymentUrl`: the Duitku payment page the customer opens (1269 C3a). */
+  ewallet?: { code: string; label: string; paymentUrl?: string };
   edc?: {
     terminalId: string;
     terminalLabel: string;

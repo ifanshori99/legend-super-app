@@ -14,6 +14,7 @@ import {
   getPosQris,
   issuePosReceipt,
   posStandaloneEdcSchema,
+  releasePosQris,
   removePosDiscount,
   resolvePosPaymentIntent,
   type PosOrderDetail,
@@ -215,21 +216,67 @@ function voidedQrisAttempt(
   };
 }
 
-/** The QRIS hold is live: the provider may still take the customer's money. */
+/**
+ * 1269 C3a: the hold's method. A VA or e-wallet code is held like a QRIS; the
+ * tender says which one (the instructions are null once hidden).
+ */
+function holdMethod(
+  order: PosOrderDetail,
+  qris: PosQrisStatus,
+): "qris" | "va" | "ewallet" {
+  const tender = order.tenders.find((t) => t.id === qris.tenderId);
+  const method = tender?.method ?? qris.instructions?.method;
+  return method === "va" || method === "ewallet" ? method : "qris";
+}
+
+/** What the cashier shows for a live VA or e-wallet code; nothing otherwise. */
+function onlineCodeOf(
+  qris: PosQrisStatus,
+): Pick<PaymentAttempt, "va" | "ewallet"> {
+  const code = qris.instructions;
+  if (!code || qris.state !== "open") return {};
+  if (code.method === "va")
+    return qris.expiresAt
+      ? {
+          va: {
+            bank: code.channelName,
+            number: code.virtualAccountNumber,
+            deadline: qris.expiresAt,
+          },
+        }
+      : {};
+  return {
+    ewallet: {
+      code: code.channelCode,
+      label: code.channelName,
+      paymentUrl: code.paymentUrl,
+    },
+  };
+}
+
+/**
+ * The QRIS (or VA / e-wallet) hold is live: the provider may still take the
+ * customer's money, so the bill stays locked whatever the clock says.
+ */
 function liveQrisAttempt(
   order: PosOrderDetail,
   qris: PosQrisStatus | null,
 ): PaymentAttempt | null {
   if (!qris || (qris.state !== "open" && qris.state !== "cancelling"))
     return null;
+  const method = holdMethod(order, qris);
   return {
     id: qris.tenderId ?? qris.id,
     sequence: sequenceOf(order, qris.tenderId),
-    method: "qris",
+    method,
     status: qris.state === "open" ? "waiting" : "cancelling",
     amountIdr: Number(qris.amountIdr),
     ...(qris.expiresAt ? { expiresAt: qris.expiresAt } : {}),
-    qrShown: qris.qrPayload !== null,
+    qrShown:
+      method === "qris"
+        ? qris.qrPayload !== null
+        : (qris.instructions ?? null) !== null,
+    ...(method === "qris" ? {} : onlineCodeOf(qris)),
     cancellable: qris.tenderId !== null && qris.state === "open",
   };
 }
@@ -250,7 +297,7 @@ function closedQrisAttempt(
   return {
     id: latest.id,
     sequence: order.tenders.length,
-    method: "qris",
+    method: holdMethod(order, qris),
     status: qris.closeReason === "provider_expired" ? "expired" : "failed",
     amountIdr: Number(qris.amountIdr),
   };
@@ -587,7 +634,13 @@ const GRID_METHODS = [
 }[];
 
 /** Methods this screen can really take; the rest stay locked. */
-const WIRED_METHODS: readonly PaymentMethodCode[] = ["qris", "cash", "edc"];
+const WIRED_METHODS: readonly PaymentMethodCode[] = [
+  "qris",
+  "va",
+  "ewallet",
+  "cash",
+  "edc",
+];
 
 export async function fetchPaymentMethods(
   outletId: string,
@@ -633,10 +686,27 @@ export async function fetchEdcTerminals(
   }));
 }
 
-export const fetchVaBanks = (): Promise<VaBank[]> =>
-  local("bank Virtual Account", (engine) => engine.vaBanks());
-export const fetchEwallets = (): Promise<Ewallet[]> =>
-  local("dompet digital", (engine) => engine.ewallets());
+/** 1269 C3a: the Duitku channels the server lists for this method now. */
+async function fetchChannels(
+  outletId: string,
+  method: "va" | "ewallet",
+): Promise<{ code: string; label: string }[]> {
+  const { methods } = await fetchPaymentOptions(outletId);
+  const row = methods.find((item) => item.method === method && item.enabled);
+  return (row?.channels ?? []).map((channel) => ({
+    code: channel.code,
+    label: channel.name,
+  }));
+}
+
+export const fetchVaBanks = (outletId: string): Promise<VaBank[]> =>
+  API_MOCK
+    ? local("bank Virtual Account", (engine) => engine.vaBanks())
+    : fetchChannels(outletId, "va");
+export const fetchEwallets = (outletId: string): Promise<Ewallet[]> =>
+  API_MOCK
+    ? local("dompet digital", (engine) => engine.ewallets())
+    : fetchChannels(outletId, "ewallet");
 
 // ---- Payment requests (1268 W2) ----------------------------------------------
 // Every request that takes money is stored with its key and its exact body
@@ -1034,17 +1104,34 @@ export async function startPayment(
   input: StartPaymentInput,
 ): Promise<PaymentSession> {
   if (API_MOCK) return runPosKasirMock((engine) => engine.startPayment(input));
-  if (input.method !== "qris") throw contractPending("pembayaran gateway/EDC");
+  const { method } = input;
+  if (method !== "qris" && method !== "va" && method !== "ewallet")
+    throw contractPending("pembayaran gateway/EDC");
+  // 1269 C3a: a VA or e-wallet names the Duitku channel the cashier picked.
+  const channelCode =
+    method === "va"
+      ? input.bankCode
+      : method === "ewallet"
+        ? input.walletCode
+        : undefined;
+  if (method !== "qris" && !channelCode)
+    throw new ApiError(
+      400,
+      "VALIDATION_ERROR",
+      method === "va" ? "Pilih bank Virtual Account." : "Pilih e-wallet.",
+    );
   const order = await pay(outletId, input.orderId, actorId, {
-    kind: "qris",
-    signature: "qris",
+    kind: method,
+    signature: channelCode ? `${method}:${channelCode}` : method,
     prepare: async () => {
       const before = await fetchPosOrder(outletId, input.orderId);
+      // The code is always for the whole remaining bill (server's amount).
       if (input.amountIdr !== sessionFromOrder(before).bill.remainingIdr)
-        throw contractPending("QRIS sebagian");
+        throw contractPending(`${METHOD_LABELS[method] ?? method} sebagian`);
       return (idempotencyKey) =>
         tenderBody({
-          method: "qris",
+          method,
+          ...(channelCode ? { channelCode } : {}),
           expectedStatus: before.status,
           expectedVersion: before.version,
           idempotencyKey,
@@ -1072,12 +1159,56 @@ export async function cancelAttempt(
   ref: AttemptRef & { method: PaymentMethodCode },
 ): Promise<PaymentSession> {
   if (API_MOCK) return runPosKasirMock((engine) => engine.cancelAttempt(ref));
-  if (ref.method !== "qris") throw contractPending("batal pembayaran");
+  // 1269 C3a: a VA or e-wallet code is held and hidden like a QRIS.
+  if (ref.method !== "qris" && ref.method !== "va" && ref.method !== "ewallet")
+    throw contractPending("batal pembayaran");
   await callEndpoint(cancelPosQris, {
     params: { outletId, orderId: ref.orderId },
     body: { idempotencyKey: `qris-cancel:${globalThis.crypto.randomUUID()}` },
   });
   return fetchPaymentSession(outletId, ref.orderId);
+}
+
+/**
+ * 1269 C3b: a manager releases a code the provider never proved dead, from 30
+ * minutes after it lapsed (Q93). Their PIN approves a void of exactly the held
+ * amount on this bill; money paid on the code afterwards is parked, never
+ * applied. Each try is a new PIN, approval and key (an unspent approval
+ * lapses); a try after a lost answer finds no code to release.
+ */
+export async function releaseOnlineCode(
+  outletId: string,
+  input: {
+    orderId: string;
+    amountIdr: number;
+    reason: string;
+    approverUserId: string;
+    pin: string;
+    key: string;
+  },
+): Promise<PaymentSession> {
+  if (API_MOCK) throw contractPending("rilis kode pembayaran");
+  const { orderId, amountIdr, reason, approverUserId, pin, key } = input;
+  const { data: override } = await callEndpoint(createPosOverride, {
+    body: {
+      outletId,
+      action: "void",
+      valueIdr: amountIdr,
+      reason,
+      objectType: "order",
+      objectId: orderId,
+      approval: { method: "supervisor_pin", approverUserId, pin },
+    },
+  });
+  await callEndpoint(releasePosQris, {
+    params: { outletId, orderId },
+    body: {
+      approvedBy: approverUserId,
+      overrideId: override.id,
+      idempotencyKey: key,
+    },
+  });
+  return fetchPaymentSession(outletId, orderId);
 }
 
 /** A supervisor's PIN for one EDC slip of exactly this amount (resolve only). */

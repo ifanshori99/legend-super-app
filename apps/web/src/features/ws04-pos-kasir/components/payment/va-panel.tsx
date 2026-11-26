@@ -11,11 +11,9 @@ import {
   LoadingPanel,
   ProblemPanel,
   StartPanel,
-  WaitingPanel,
-  remainingMsOf,
   useGatewayAttempt,
-  useNow,
 } from "./gateway-parts";
+import { OnlineCodeHold } from "./online-code-parts";
 import type { PaymentPanelProps } from "./panel-types";
 import { PosPanel, StateBlock } from "../shared";
 
@@ -36,9 +34,10 @@ function formatDeadline(iso: string, timeZone: string): string {
   return `${day} · ${time}`;
 }
 
-// Virtual Account for the cashier (bead legend-mjmm, P2): pick the bank, then
-// show the number and the deadline. The bill stays unpaid until the provider
-// verifies the transfer, never from a transfer slip.
+// Virtual Account for the cashier (bead legend-mjmm, P2; Duitku 1269 C3b): pick
+// the bank, then show the number and the deadline. The bill stays unpaid until
+// the provider verifies the transfer, never from a transfer slip, and takes no
+// other payment while the code lives (one live code a bill).
 export function VaPanel(props: PaymentPanelProps) {
   const { orderId, amountIdr, onChangeMethod } = props;
   const t = useT();
@@ -50,10 +49,6 @@ export function VaPanel(props: PaymentPanelProps) {
   const banks = useVaBanks();
   const start = useStartPayment();
   const [bankCode, setBankCode] = useState<string | null>(null);
-  const now = useNow(attempt?.status === "waiting");
-  // One deadline for both the expiry and the printed "batas pembayaran".
-  const deadline = attempt?.va?.deadline ?? attempt?.expiresAt;
-  const remainingMs = remainingMsOf(deadline, now);
 
   const title = t("posKasirGateway.va.panelTitle");
   if (isLoading) return <LoadingPanel title={title} />;
@@ -131,9 +126,9 @@ export function VaPanel(props: PaymentPanelProps) {
   }
 
   if (attempt.status === "failed") return <FailedPanel {...props} />;
-  if (attempt.status !== "waiting" && attempt.status !== "expired") return null;
 
-  if (attempt.status === "expired" || remainingMs === 0)
+  // Duitku proved the code dead (02): read the bill once more, then move on.
+  if (attempt.status === "expired")
     return (
       <LiveRegion>
         <ExpiredPanel
@@ -148,36 +143,36 @@ export function VaPanel(props: PaymentPanelProps) {
         />
       </LiveRegion>
     );
+  if (attempt.status !== "waiting" && attempt.status !== "cancelling")
+    return null;
 
   return (
-    <LiveRegion>
-      <WaitingPanel
-        orderId={orderId}
-        attempt={attempt}
-        title={title}
-        statusLabel={t("posKasirGateway.va.statusWaiting")}
-        heading={t("posKasirGateway.va.readyHeading")}
-        description={`${attempt.va?.bank ?? ""} · ${t("posKasirGateway.va.readyBody")}`}
-        noticeTitle={t("posKasirGateway.va.noticeTitle")}
-        noticeBody={t("posKasirGateway.va.noticeBody")}
-      >
-        {attempt.va && deadline !== undefined && (
-          <div className="w-full max-w-3xl rounded-container bg-muted p-5 text-center">
-            <p className="text-base text-muted-foreground">
-              {t("posKasirGateway.va.numberLabel")}
-            </p>
-            <p className="tabular text-3xl font-semibold tracking-[0.05em]">
-              {attempt.va.number}
-            </p>
-            <div className="mt-3 flex items-baseline justify-between gap-3 text-(length:--density-text)">
-              <span>{t("posKasirGateway.va.deadline")}</span>
-              <strong className="tabular">
-                {formatDeadline(deadline, timeZone)}
-              </strong>
-            </div>
+    <OnlineCodeHold
+      orderId={orderId}
+      attempt={attempt}
+      title={title}
+      statusLabel={t("posKasirGateway.va.statusWaiting")}
+      heading={t("posKasirGateway.va.readyHeading")}
+      description={`${attempt.va?.bank ?? ""} · ${t("posKasirGateway.va.readyBody")}`}
+      noticeTitle={t("posKasirGateway.va.noticeTitle")}
+      noticeBody={t("posKasirGateway.va.noticeBody")}
+    >
+      {attempt.va && (
+        <div className="w-full max-w-3xl rounded-container bg-muted p-5 text-center">
+          <p className="text-base text-muted-foreground">
+            {t("posKasirGateway.va.numberLabel")}
+          </p>
+          <p className="tabular text-3xl font-semibold tracking-[0.05em] break-all">
+            {attempt.va.number}
+          </p>
+          <div className="mt-3 flex flex-wrap items-baseline justify-between gap-3 text-(length:--density-text)">
+            <span>{t("posKasirGateway.va.deadline")}</span>
+            <strong className="tabular">
+              {formatDeadline(attempt.va.deadline, timeZone)}
+            </strong>
           </div>
-        )}
-      </WaitingPanel>
-    </LiveRegion>
+        </div>
+      )}
+    </OnlineCodeHold>
   );
 }

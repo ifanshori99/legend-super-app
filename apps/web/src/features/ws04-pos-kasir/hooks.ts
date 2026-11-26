@@ -35,6 +35,7 @@ import {
   quotePointsValue,
   recordEdcStandalone,
   redeemPointsValue,
+  releaseOnlineCode,
   removeVoucherCode,
   replayPayment,
   resolvePayment,
@@ -221,6 +222,14 @@ export function useCancelAttempt() {
   const outletId = useOutletId();
   return useSessionMutation<AttemptRef & { method: PaymentMethodCode }>((ref) =>
     cancelAttempt(outletId, ref),
+  );
+}
+
+/** 1269 C3b: a manager releases a VA / e-wallet code the provider never closed. */
+export function useReleaseOnlineCode() {
+  const outletId = useOutletId();
+  return useSessionMutation<Parameters<typeof releaseOnlineCode>[1]>((input) =>
+    releaseOnlineCode(outletId, input),
   );
 }
 

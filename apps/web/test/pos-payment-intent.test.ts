@@ -47,11 +47,14 @@ import {
   completePaidOrder,
   confirmCash,
   fetchEdcTerminals,
+  fetchEwallets,
   fetchPaymentMethods,
   fetchPaymentSession,
+  fetchVaBanks,
   printReceipt,
   recordEdcStandalone,
   redeemPointsValue,
+  releaseOnlineCode,
   replayPayment,
   resolvePayment,
   startPayment,
@@ -1292,6 +1295,176 @@ describe("bug 4: QRIS", () => {
   });
 });
 
+describe("1269 C3b: VA and e-wallet through Duitku", () => {
+  const VA_CODE = {
+    method: "va",
+    channelCode: "BC",
+    channelName: "BCA",
+    virtualAccountNumber: "8808123456789012",
+  };
+  const PAGE = "https://sandbox.duitku.com/topup/v2/pay?ref=DS0001";
+  const startCode = (method: "va" | "ewallet", code = "BC") =>
+    startPayment(OUTLET, CASHIER, {
+      orderId: ORDER,
+      method,
+      amountIdr: 100_000,
+      ...(method === "va" ? { bankCode: code } : { walletCode: code }),
+    });
+
+  it("a VA names the picked channel, never an amount, and shows the number while the code lives", async () => {
+    server.onTender = () => {
+      const answer = pay(
+        tender({ method: "va", status: "authorized" }),
+        "awaiting_payment",
+      );
+      server.qris = hold({ qrPayload: null, instructions: VA_CODE });
+      return answer;
+    };
+    const session = await startCode("va");
+    const body = money()[0]?.body ?? {};
+    expect(body).toMatchObject({ method: "va", channelCode: "BC" });
+    expect(JSON.stringify(body)).not.toContain("amount");
+    expect(state()).toBe("none");
+    expect(session.activeAttempt).toMatchObject({
+      method: "va",
+      status: "waiting",
+      qrShown: true,
+      cancellable: true,
+      va: {
+        bank: "BCA",
+        number: "8808123456789012",
+        deadline: "2026-11-26T03:05:00.000Z",
+      },
+    });
+  });
+
+  it("an e-wallet shows the Duitku payment page", async () => {
+    server.order = orderOf({
+      tenders: [tender({ method: "ewallet", status: "authorized" })],
+    });
+    server.qris = hold({
+      qrPayload: null,
+      instructions: {
+        method: "ewallet",
+        channelCode: "OV",
+        channelName: "OVO",
+        paymentUrl: PAGE,
+      },
+    });
+    const session = await fetchPaymentSession(OUTLET, ORDER);
+    expect(session.activeAttempt).toMatchObject({
+      method: "ewallet",
+      ewallet: { code: "OV", label: "OVO", paymentUrl: PAGE },
+    });
+  });
+
+  it("a hidden or cancelling code shows nothing, keeps its method and the bill locked", async () => {
+    server.order = orderOf({
+      tenders: [tender({ method: "va", status: "authorized" })],
+    });
+    server.qris = hold({ qrPayload: null, instructions: null });
+    const hidden = await fetchPaymentSession(OUTLET, ORDER);
+    expect(hidden.activeAttempt).toMatchObject({
+      method: "va",
+      status: "waiting",
+      qrShown: false,
+    });
+    expect(hidden.activeAttempt?.va).toBeUndefined();
+    const cancelled = await cancelAttempt(OUTLET, {
+      orderId: ORDER,
+      attemptId: TENDER,
+      method: "va",
+    });
+    expect(posts().map((c) => c.path)).toContainEqual(
+      expect.stringMatching(/\/qris\/cancel$/),
+    );
+    expect(cancelled.activeAttempt).toMatchObject({
+      method: "va",
+      status: "cancelling",
+    });
+    expect(cancelled.bill.paid).toBe(false);
+  });
+
+  it("expired only on Duitku's word, under its own method", async () => {
+    server.order = orderOf({
+      tenders: [tender({ method: "ewallet", status: "voided" })],
+    });
+    server.qris = hold({ state: "closed", closeReason: "provider_expired" });
+    const session = await fetchPaymentSession(OUTLET, ORDER);
+    expect(session.activeAttempt).toMatchObject({
+      method: "ewallet",
+      status: "expired",
+    });
+  });
+
+  it("no channel: nothing is stored or sent", async () => {
+    await expect(
+      startPayment(OUTLET, CASHIER, {
+        orderId: ORDER,
+        method: "va",
+        amountIdr: 100_000,
+      }),
+    ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    expect(money()).toHaveLength(0);
+    expect(state()).toBe("none");
+  });
+
+  it("a second live code is refused by the server and keeps nothing", async () => {
+    server.onTender = refuse(409, "QRIS_HOLD_ACTIVE");
+    await expect(startCode("ewallet", "OV")).rejects.toMatchObject({
+      code: "QRIS_HOLD_ACTIVE",
+    });
+    expect(state()).toBe("none");
+  });
+
+  it("a manager releases the code with a void approval of the held amount", async () => {
+    const OVR = "01JCQ8Z5N0M3X4Y5Z6A7B8C9H1";
+    const MANAGER = "0a1b2c3d-0000-4000-8000-0000000000f9";
+    server.order = orderOf({
+      tenders: [tender({ method: "va", status: "authorized" })],
+    });
+    server.qris = hold({ state: "cancelling", qrPayload: null });
+    const respond = net.respond;
+    net.respond = (call) => {
+      if (call.path === "/api/pos-overrides")
+        return { data: { id: OVR, status: "approved" } };
+      if (call.path.endsWith("/qris/release")) {
+        server.order = orderOf({
+          tenders: [tender({ method: "va", status: "voided" })],
+        });
+        server.qris = hold({ state: "closed", closeReason: "force_released" });
+        return { data: server.qris };
+      }
+      return respond(call);
+    };
+    const session = await releaseOnlineCode(OUTLET, {
+      orderId: ORDER,
+      amountIdr: 100_000,
+      reason: "Duitku tidak menjawab",
+      approverUserId: MANAGER,
+      pin: "123456",
+      key: "release:0a1b2c3d-0000-4000-8000-000000000001",
+    });
+    const [override, release] = posts();
+    expect(override?.body).toMatchObject({
+      outletId: OUTLET,
+      action: "void",
+      valueIdr: 100_000,
+      objectType: "order",
+      objectId: ORDER,
+      approval: { method: "supervisor_pin", approverUserId: MANAGER },
+    });
+    expect(release?.path).toMatch(/\/qris\/release$/);
+    expect(release?.body).toEqual({
+      approvedBy: MANAGER,
+      overrideId: OVR,
+      idempotencyKey: "release:0a1b2c3d-0000-4000-8000-000000000001",
+    });
+    expect(session.activeAttempt).toBeNull();
+    expect(session.bill.paid).toBe(false);
+  });
+});
+
 describe("EDC standalone", () => {
   it("X1: records the slip without a supervisor approval and keeps the request until it is answered", async () => {
     server.onTender = lost;
@@ -1408,7 +1581,7 @@ describe("payment options", () => {
     options([
       row("cash"),
       row("qris", "gateway_down"),
-      row("va"),
+      { ...row("va"), channels: [{ code: "BC", name: "BCA" }] },
       row("ewallet", "not_supported"),
       row("card", "not_supported"),
       row("edc_card"),
@@ -1418,7 +1591,7 @@ describe("payment options", () => {
     expect(Object.fromEntries(methods.map((m) => [m.code, m.enabled]))).toEqual(
       {
         qris: false,
-        va: false,
+        va: true,
         ewallet: false,
         card: false,
         cash: true,
@@ -1428,9 +1601,12 @@ describe("payment options", () => {
     expect(methods.find((m) => m.code === "qris")?.unavailableReason).toBe(
       "gateway_down",
     );
-    expect(methods.find((m) => m.code === "va")?.unavailableReason).toBe(
+    expect(methods.find((m) => m.code === "card")?.unavailableReason).toBe(
       "not_supported",
     );
+    // 1269 C3b: the VA banks are the Duitku channels the server lists.
+    expect(await fetchVaBanks(OUTLET)).toEqual([{ code: "BC", label: "BCA" }]);
+    expect(await fetchEwallets(OUTLET)).toEqual([]);
   });
 
   it("never offers to send an amount to a machine", async () => {

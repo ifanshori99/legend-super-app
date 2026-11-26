@@ -121,14 +121,14 @@ export const resolveApproversQuery = (
 export const vaBanksQuery = (outletId: string) =>
   queryOptions({
     queryKey: posKasirKeys.vaBanks(outletId),
-    queryFn: () => fetchVaBanks(),
+    queryFn: () => fetchVaBanks(outletId),
     retry: false,
   });
 
 export const ewalletsQuery = (outletId: string) =>
   queryOptions({
     queryKey: posKasirKeys.ewallets(outletId),
-    queryFn: () => fetchEwallets(),
+    queryFn: () => fetchEwallets(outletId),
     retry: false,
   });
 
