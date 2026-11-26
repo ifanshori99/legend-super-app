@@ -84,3 +84,13 @@ Sisa:
 - P3 test: disetujui tanpa tanda = recorded sekali, ulang tetap sekali; 404 outlet lain untuk `method: "edc"`.
 - 6 file test (resolve, edc, collect-pos, pos-edc-tender, edc-agent-amount, edc-reconciliation) 213/213 lulus; typecheck api lulus; prettier/eslint bersih.
 - Berikut: satu reviewer sonnet atas diff fix, lalu web.
+
+### P3 + web, WIP (27 Nov, ui-engineer)
+
+Sudah (belum dijalankan semua):
+- P3: test baru `order-issue-charge-pos-resolve-f1mmf.test.ts` (slip sama nominal tagihan, sale unknown nominal lain -> 409 + alert outbox). Sedang dijalankan untuk bukti gagal-dulu; fix (catch juga mismatch dari `resolveEdcReconciliation`) menyusul.
+- Web: `charge-endpoints.ts` memakai kontrak `@starter/shared/pos` (GET, start EDC, resolve); `charge-api.ts` tanpa CONTRACT_PENDING, tambah `startChargeEdc`, `resolveChargeAttempt`.
+- `charge-key-store.ts`: `lockedAttempt` (a), pembebasan QRIS saat id kode server berganti dan kode lama berakhir (c), `firstSend` untuk (b), kunci start EDC per sale (`rememberSaleKey`/`saleStartKey`).
+
+Sisa:
+- `charge-logic.ts` (b) `collectKeyAfter(status, firstSend)`; GET pra-kirim dengan AbortController (e); hooks EDC start + resolve; komponen (pemilih terkunci, tombol EDC + terminal, dialog supervisor); mock; test node gagal-dulu b/c/e; text-contract; typecheck; screenshot 390/1280.

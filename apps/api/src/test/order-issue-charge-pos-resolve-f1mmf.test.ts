@@ -627,6 +627,40 @@ describe("legend-f1mmf (d) a supervisor settles a charge attempt without an answ
     });
   });
 
+  it("a slip of the charge's amount on an unknown sale of another amount is 409 and alerts the outlet", async () => {
+    const opened = await openCharge();
+    const key = randomUUID();
+    const id = await ledgerSale({
+      reference: opened.charge.id,
+      amountIdr: AMOUNT + 1_000,
+      status: "unknown",
+      idempotencyKey: key,
+    });
+    const res = await resolve(opened.charge.id, {
+      method: "edc",
+      idempotencyKey: key,
+      edc: "paid",
+      slip: slip(AMOUNT),
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect((await saleOf(id)).status).toBe("unknown");
+    expect((await chargeOf(opened.issueId)).status).toBe("open");
+    const { rows: alerts } = await owner.query<{
+      payload: Record<string, unknown>;
+    }>(
+      `SELECT payload FROM notification_outbox
+       WHERE tenant_id = $1 AND event_type = 'edc_transaction.reconciliation_mismatch'
+         AND payload->>'edcTransactionId' = $2`,
+      [w.tenant.tenantId, id],
+    );
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]!.payload).toMatchObject({
+      kind: "amount",
+      amountIdr: String(AMOUNT + 1_000),
+      chargedAmountIdr: String(AMOUNT),
+    });
+  });
+
   it("an approved sale of another amount is 409; the charge stays open and unpaid", async () => {
     const opened = await openCharge();
     const key = randomUUID();
