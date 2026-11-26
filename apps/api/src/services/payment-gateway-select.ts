@@ -263,6 +263,10 @@ export async function outletGatewayHealth(
     // Nothing routed online: read the PRD default so a tenant that switched
     // every online method off still reports a coherent gateway.
     const fallback = routings[0]?.provider ?? "unconfigured";
+    // No platform default gateway and no rule: the methods are simply off
+    // (legend-osqou.40). That is not an outage, so no incident (`unconfigured`).
+    if (fallback === "manual")
+      return { status: "down", reason: "unconfigured", provider: "none" };
     providers.push(fallback);
   }
   const readings = await Promise.all(

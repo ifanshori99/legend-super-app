@@ -223,6 +223,20 @@ async function failoverMarks(intentId: string) {
   return rows[0]!.n;
 }
 
+/** The provider said the code is dead (so the guard lets a new one in) ... */
+const markFinal = (intentId: string) =>
+  owner.query(
+    "UPDATE payment_intents SET status = 'expired', provider_final_at = now() WHERE tenant_id = $1 AND id = $2",
+    [fx.tenant.tenantId, intentId],
+  );
+/** ... then it turns out the code can still be paid (the race both-paid tests
+ * need: two collectible codes of one link). */
+const revive = (intentId: string) =>
+  owner.query(
+    "UPDATE payment_intents SET status = 'pending', provider_final_at = NULL WHERE tenant_id = $1 AND id = $2",
+    [fx.tenant.tenantId, intentId],
+  );
+
 async function releaseCount(intentId: string) {
   const { rows } = await owner.query<{ n: number }>(
     "SELECT count(*)::int AS n FROM payment_va_releases WHERE tenant_id = $1 AND payment_intent_id = $2",
@@ -325,7 +339,9 @@ describe("e-wallet and card on a link", () => {
   it("QRIS then e-wallet, both paid: the strict settlement refuses the second (the callback parks it, below)", async () => {
     const { token, linkId } = await openBill();
     const qris = await pay(token, "qris", null);
+    await markFinal(qris.id);
     const wallet = await pay(token, "ewallet", "OV");
+    await revive(qris.id);
     const settle = async (id: string, method: "qris" | "ewallet") => {
       const row = await owner.query<{ provider_ref: string }>(
         "SELECT provider_ref FROM payment_intents WHERE tenant_id = $1 AND id = $2",
@@ -473,10 +489,12 @@ describe("real Duitku adapter and callback", () => {
     async (_name, order) => {
       const { token, linkId } = await openBill();
       const qrisId = (await pay(token, "qris", null)).id;
+      await markFinal(qrisId);
       const ids = {
         qris: qrisId,
         ewallet: (await pay(token, "ewallet", "OV")).id,
       };
+      await revive(qrisId);
       // A repeat of a delivery, a minute later, changes nothing.
       const retry = new Date(Date.now() + 61_000);
       for (const method of order) await paidCallback(ids[method]);
@@ -740,8 +758,11 @@ describe("a refused method voids no live code (finding 7)", () => {
   );
 });
 
-describe("a link with no order takes one live non-QRIS code (legend-osqou.41)", () => {
+describe("a link with no order takes one live code (legend-osqou.41)", () => {
   it.each([
+    ["qris", null, "va", "BC"],
+    ["qris", null, "ewallet", "OV"],
+    ["qris", null, "qris", null],
     ["va", "BC", "qris", null],
     ["va", "BC", "va", "I1"],
     ["va", "BC", "ewallet", "OV"],
@@ -763,21 +784,62 @@ describe("a link with no order takes one live non-QRIS code (legend-osqou.41)", 
     },
   );
 
-  it("QRIS then another method still replaces the QRIS; a second non-QRIS is refused", async () => {
+  it("a live VA answers 409 while the gateway list cannot be read (never 503)", async () => {
     const { token } = await openBill();
-    await pay(token, "qris", null);
-    await pay(token, "ewallet", "OV");
-    await expect(pay(token, "card", null)).rejects.toMatchObject({
-      status: 409,
-    });
-    expect(gw.created).toHaveLength(2);
+    const live = await pay(token, "va", "BC");
+    gw.failMethods = true;
+    // The public route passes the guest swap, which reads the gateway first for
+    // a link with an order; a link with no order must not.
+    const refused = await agent(fx.app)
+      .post(`/api/payments/links/${token}/intents`)
+      .send({
+        method: "qris",
+        channelCode: null,
+        idempotencyKey: randomUUID(),
+      });
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(refused.body.error.code).toBe("ORDER_CODE_ACTIVE");
+    await expectStillLive(live.id);
   });
 
-  it("QRIS then QRIS still replaces the first", async () => {
+  it("a VA past its time that the provider has not finalised still blocks", async () => {
     const { token } = await openBill();
-    await pay(token, "qris", null);
-    await pay(token, "qris", null);
+    const va = await pay(token, "va", "BC");
+    await owner.query(
+      "UPDATE payment_intents SET expires_at = now() - interval '1 hour' WHERE tenant_id = $1 AND id = $2",
+      [fx.tenant.tenantId, va.id],
+    );
+    await expect(pay(token, "qris", null)).rejects.toMatchObject({
+      status: 409,
+    });
+    expect(gw.created).toHaveLength(1);
+    await markFinal(va.id);
+    await expect(pay(token, "qris", null)).resolves.toMatchObject({
+      method: "qris",
+    });
+  });
+
+  it("two VAs in parallel with different keys: one stored, one 409, the loser kept as an orphan", async () => {
+    const { token, linkId } = await openBill();
+    const results = await Promise.allSettled([
+      pay(token, "va", "BC"),
+      pay(token, "va", "I1"),
+    ]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    const lost = results.find((r) => r.status === "rejected") as
+      PromiseRejectedResult | undefined;
+    expect(lost?.reason).toMatchObject({
+      status: 409,
+      code: "ORDER_CODE_ACTIVE",
+    });
+    // Both codes exist at the provider: the loser stays as a known orphan.
     expect(gw.created).toHaveLength(2);
+    const { rows } = await owner.query<{ status: string }>(
+      "SELECT status FROM payment_intents WHERE tenant_id = $1 AND payment_link_id = $2 ORDER BY created_at",
+      [fx.tenant.tenantId, linkId],
+    );
+    expect(rows).toHaveLength(2);
+    expect(rows.filter((row) => row.status === "pending")).toHaveLength(1);
   });
 });
 

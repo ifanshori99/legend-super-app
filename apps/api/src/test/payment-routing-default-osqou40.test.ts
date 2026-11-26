@@ -17,6 +17,11 @@ import {
   setPaymentGateway,
   unconfiguredPaymentGateway,
 } from "../services/payment-gateway";
+import {
+  resetGatewayHealthCache,
+  syncGatewayHealth,
+} from "../services/payment-failover.service";
+import { outletGatewayHealth } from "../services/payment-gateway-select";
 import { resolveRoutingRule } from "../services/payment-routing.service";
 import { resetPlatformGatewayCache } from "../services/platform-payment-gateway.service";
 
@@ -124,5 +129,31 @@ describe("default routing without a stored rule (legend-osqou.40)", () => {
       provider: "doit",
       enabled: true,
     });
+  });
+});
+
+describe("no default gateway is no incident (legend-osqou.40)", () => {
+  it("reads unconfigured and opens no incident", async () => {
+    await owner.query(
+      "DELETE FROM payment_routing_rules WHERE tenant_id = $1",
+      [tenantId],
+    );
+    await setGateways({
+      duitku: { enabled: true, isDefault: false },
+      doit: { enabled: true, isDefault: false },
+    });
+    resetGatewayHealthCache();
+    const marks = () =>
+      owner.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM audit_logs
+          WHERE tenant_id = $1 AND outlet_id = $2 AND event->>'action' LIKE 'payment.gateway_%'`,
+        [tenantId, outletId],
+      );
+    const before = (await marks()).rows[0]!.n;
+    const health = await outletGatewayHealth(context, outletId);
+    expect(health).toMatchObject({ status: "down", reason: "unconfigured" });
+    const result = await syncGatewayHealth(context, outletId, health);
+    expect(result).toEqual({ transition: "none", openIncident: null });
+    expect((await marks()).rows[0]!.n).toBe(before);
   });
 });

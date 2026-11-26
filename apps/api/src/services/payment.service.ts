@@ -56,7 +56,6 @@ import {
   isNull,
   lt,
   lte,
-  ne,
   not,
   or,
   sql,
@@ -1006,22 +1005,21 @@ async function assertLinkOrderCanIssueTx(
   const orderId = await linkOrderIdTx(tx, context, paymentLinkId);
   if (orderId === null) {
     // legend-osqou.41: a link with no order (a reservation DP) takes one live
-    // VA, e-wallet or card code at a time: those cannot be cancelled with the
-    // gateway the way a QRIS can, so a second one could be paid twice. A QRIS
-    // is still replaced (superseded) as before.
-    const [liveOther] = await tx
+    // code at a time, QRIS included (CTO 27 Nov, strictest rule): no provider
+    // can cancel a code at the gateway (QRIS has no cancel either), so a code
+    // replaced locally could still be paid and the guest would pay twice.
+    const [liveCode] = await tx
       .select({ id: paymentIntents.id })
       .from(paymentIntents)
       .where(
         and(
           eq(paymentIntents.tenantId, context.tenant.tenantId),
           eq(paymentIntents.paymentLinkId, paymentLinkId),
-          ne(paymentIntents.method, "qris"),
           liveCodeWhere(),
         ),
       )
       .limit(1);
-    if (liveOther)
+    if (liveCode)
       throw new HttpError(
         409,
         "ORDER_CODE_ACTIVE",
@@ -1280,6 +1278,14 @@ async function createIntentCore(
       error instanceof HttpError &&
       (error.code === "ORDER_CODE_ACTIVE" || error.code === "SPLIT_CODE_ACTIVE")
     ))
+      throw error;
+    // A link with no order has no code the guest may void: the refusal stands
+    // and the gateway is not read (a failed read must not turn 409 into 503).
+    if (
+      (await withTenant(db, context, (tx) =>
+        linkOrderIdTx(tx, context, plan.link.id),
+      )) === null
+    )
       throw error;
     // 1269 C2a: a method that cannot be issued voids nothing.
     const issuable = await methodIssuable(
