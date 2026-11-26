@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* global window, document -- used only inside page.evaluate callbacks */
 // UI check for the POS open orders list and the order detail (brief 1268 W5,
 // bead legend-9yw78.9). Modeled on scripts/ui-check-pos-u1.mjs.
 //
