@@ -538,6 +538,36 @@ describe("Review O1 fixes", () => {
     ]);
   });
 
+  it("O3: refuses the close while the tablet reports unsent offline sales", async () => {
+    const till = await newTill(app);
+    const supervisorId = await outletSupervisor(app, "Offline Queue Close");
+    const close = (offlineQueuePending: number) =>
+      closeShiftExactly({
+        scope,
+        cashierId: till.cashier.userId,
+        deviceId: till.deviceId,
+        shiftId: till.shiftId,
+        supervisorId,
+        drawerIdr: 500_000,
+        offlineQueuePending,
+      });
+    await expect(close(2)).rejects.toMatchObject({
+      code: "OFFLINE_QUEUE_PENDING",
+      status: 409,
+    });
+    const { rows } = await owner.query<{ status: string }>(
+      "SELECT status FROM pos_shifts WHERE id = $1",
+      [till.shiftId],
+    );
+    expect(rows[0]?.status).toBe("open");
+    await close(0);
+    const after = await owner.query<{ status: string }>(
+      "SELECT status FROM pos_shifts WHERE id = $1",
+      [till.shiftId],
+    );
+    expect(after.rows[0]?.status).toBe("closed");
+  });
+
   it("P3 3: refuses a shift that was really closed", async () => {
     const till = await newTill(app);
     await closeShiftExactly({

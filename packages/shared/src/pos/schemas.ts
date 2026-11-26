@@ -1274,6 +1274,13 @@ export const closePosShiftInputSchema = clientInputSchema({
   approvedBy: userIdSchema,
   approvalRequestId: closeApprovalIdSchema,
   idempotencyKey: idempotencyKeySchema,
+  /**
+   * O3 (legend-wasr7.7, CTO O2 (a)): how many offline sales the tablet still
+   * queues. Above zero the close is refused (OFFLINE_QUEUE_PENDING): their
+   * cash is in the drawer but not yet in the shift's figures. Absent from an
+   * older client; the tablet's own guard refuses first.
+   */
+  offlineQueuePending: z.number().int().nonnegative().max(1_000_000).optional(),
 });
 
 /**

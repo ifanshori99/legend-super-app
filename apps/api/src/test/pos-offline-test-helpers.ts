@@ -53,6 +53,8 @@ export async function closeShiftExactly(input: {
   drawerIdr: number;
   /** |counted - expected|: the approved override carries the variance. */
   varianceIdr?: number;
+  /** O3: the offline sales the tablet reports as still queued. */
+  offlineQueuePending?: number;
 }): Promise<void> {
   const overrideValueIdr = Math.abs(input.varianceIdr ?? 0);
   const outletId = outletIdSchema.parse(seededOutletA);
@@ -124,6 +126,9 @@ export async function closeShiftExactly(input: {
     approvedBy: userIdSchema.parse(input.supervisorId),
     approvalRequestId,
     idempotencyKey: randomUUID(),
+    ...(input.offlineQueuePending !== undefined
+      ? { offlineQueuePending: input.offlineQueuePending }
+      : {}),
     ...(overrideValueIdr > 0
       ? { varianceNote: "Tunai penjualan offline di laci" }
       : {}),

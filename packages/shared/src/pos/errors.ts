@@ -75,6 +75,8 @@ export const posErrorHttpStatus = {
   QRIS_HOLD_ACTIVE: 409,
   /** legend-yhia9 D-09: an edge without gateway credentials cannot issue QRIS. */
   QRIS_NEEDS_CLOUD: 409,
+  /** O3 (legend-wasr7.7): the tablet still holds offline sales it has not synced. */
+  OFFLINE_QUEUE_PENDING: 409,
   /** 1271 F1: the outlet edge sent a heartbeat recently; failover needs an override. */
   FAILOVER_EDGE_HEALTHY: 409,
   /** 1271 F1: the outlet sells through the cloud (failover window open). */
@@ -147,6 +149,8 @@ const defaultMessages: Record<PosErrorCode, string> = {
     "Pembayaran QR sedang dikonfirmasi penyedia. Tunggu konfirmasi sebelum menerima pembayaran lain.",
   QRIS_NEEDS_CLOUD:
     "QRIS belum bisa dibuat dari server lokal outlet. Pakai kasir online atau metode lain.",
+  OFFLINE_QUEUE_PENDING:
+    "Masih ada penjualan offline yang belum terkirim. Sambungkan tablet ke internet dan tunggu sampai terkirim sebelum tutup shift.",
   FAILOVER_EDGE_HEALTHY:
     "Server lokal outlet masih aktif. Pindah ke mode cloud hanya dengan alasan khusus.",
   FAILOVER_ACTIVE:
