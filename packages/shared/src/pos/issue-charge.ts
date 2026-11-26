@@ -6,10 +6,12 @@
 import {
   z,
   dataResponseSchema,
+  idempotencyKeySchema,
   isoDateTimeSchema,
   uuidSchema,
 } from "../core/index.ts";
 import { defineEndpoint } from "../api/endpoint.ts";
+import { edcTransactionSchema } from "../edc/index.ts";
 import { guestPaymentSchema } from "../qr-order/guest.ts";
 import { orderIssueChargeStatusSchema } from "../qr-order/schemas.ts";
 import { posEdcAttemptSchema } from "./schemas.ts";
@@ -61,4 +63,20 @@ export const getPosIssueCharge = defineEndpoint({
   path: "/api/order-issue-charges/:chargeId",
   params: chargeParams,
   response: dataResponseSchema(posIssueChargeDetailSchema),
+});
+
+/**
+ * Starts a card sale for the charge on the outlet's terminal (edge only, 503
+ * EDC_AGENT_NOT_READY elsewhere). The amount is the charge's and the reference
+ * the charge id, never the client's. The same key replays the same sale.
+ */
+export const startPosIssueChargeEdc = defineEndpoint({
+  method: "POST",
+  path: "/api/order-issue-charges/:chargeId/edc",
+  params: chargeParams,
+  body: z.strictObject({
+    terminalId: uuidSchema,
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(edcTransactionSchema),
 });

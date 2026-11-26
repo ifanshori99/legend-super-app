@@ -700,12 +700,14 @@ describe("legend-gt98h collect a swap charge at the till with EDC or QRIS", () =
   it("another charge of the same tenant is untouched by a QRIS or EDC collect", async () => {
     const target = await openCharge();
     const bystander = await openCharge();
+    // legend-f1mmf: the code first; an approved sale waiting to be recorded
+    // refuses a new QRIS code (one money path at a time).
+    expectAccepted(await collect(target.charge.id, qrisBody()));
     const sale = await ledgerSale({
       reference: target.charge.id,
       amountIdr: AMOUNT,
       status: "approved",
     });
-    expectAccepted(await collect(target.charge.id, qrisBody()));
     expect((await collect(target.charge.id, edcBody(sale))).status).toBe(200);
 
     const row = await chargeOf(bystander.issueId);
@@ -760,7 +762,8 @@ describe("legend-gt98h collect a swap charge at the till with EDC or QRIS", () =
     expect(await chargePaidEvents(opened.issueId)).toHaveLength(0);
 
     // The rightful cashier still collects it (feature exists, scope is the only gate).
-    expectAccepted(await collect(opened.charge.id, qrisBody()));
-    expect((await chargeOf(opened.issueId)).payment_intent_id).not.toBeNull();
+    // legend-f1mmf: the approved sale is the only way left (no QRIS on top).
+    expectAccepted(await collect(opened.charge.id, edcBody(sale)));
+    expect((await chargeOf(opened.issueId)).status).toBe("paid");
   });
 });

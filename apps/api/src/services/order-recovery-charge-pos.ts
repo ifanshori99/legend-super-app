@@ -55,6 +55,7 @@ import {
   lockChargeChain,
 } from "./order-recovery-charge.ts";
 import {
+  assertNoEdcSaleOutstanding,
   collectChargeAtPosEdc,
   collectChargeAtPosQris,
 } from "./order-recovery-charge-pos-nontunai.ts";
@@ -166,6 +167,7 @@ async function collectChargeAtPosCash(
         "CONFLICT",
         "QRIS sudah dibayar; tunggu konfirmasi.",
       );
+    await assertNoEdcSaleOutstanding(tx, tenantId, charge);
     if (input.receivedIdr < charge.amountIdr)
       throw new CoreError(
         "VALIDATION_ERROR",

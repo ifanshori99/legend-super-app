@@ -24,7 +24,7 @@
 //   refuses the EDC with 409 (a human refunds one of the two).
 
 import { createHash } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { AccessError } from "@starter/shared/access";
 import {
   assertOutletInScope,
@@ -75,7 +75,7 @@ type EdcInput = Extract<CollectChargeAtPosInput, { method: "edc_card" }>;
 type Locked = NonNullable<Awaited<ReturnType<typeof lockChargeChain>>>;
 
 /** Access, the charge chain locked, the outlet in scope. 404 / 403 otherwise. */
-async function lockChargeForCashier(
+export async function lockChargeForCashier(
   tx: Tx,
   context: ScopedTenantContext,
   caller: CollectChargeAtPosCaller,
@@ -102,7 +102,7 @@ async function lockChargeForCashier(
   return locked;
 }
 
-async function assertCollectable(
+export async function assertCollectable(
   tx: Tx,
   tenantId: TenantId,
   locked: Locked,
@@ -132,7 +132,7 @@ async function assertCollectable(
  * and would wait on this transaction for ever; `createIntent` itself refuses
  * a link with nothing left to pay.
  */
-async function assertNoPaidIntentOnLink(
+export async function assertNoPaidIntentOnLink(
   tx: Tx,
   context: ScopedTenantContext,
   paymentLinkId: string | null,
@@ -167,6 +167,47 @@ async function assertNoPaidIntentOnLink(
       409,
       "CONFLICT",
       "QRIS sudah dibayar; tunggu konfirmasi.",
+    );
+}
+
+/**
+ * legend-f1mmf: one money path at a time. An EDC sale of the charge (its
+ * reference is the charge id) that is unresolved (`pending`, `unknown`),
+ * approved but not recorded yet, or waiting for reconciliation refuses a QRIS
+ * code, cash and another sale: the bank may hold the money already.
+ */
+export async function assertNoEdcSaleOutstanding(
+  tx: Tx,
+  tenantId: TenantId,
+  charge: { id: string; outletId: string },
+): Promise<void> {
+  // The EDC agent's write-ahead lock for this reference (edge/edc/agent.ts):
+  // a sale starting now waits for this transaction, and this one sees a sale
+  // already written. Taken after the charge chain; the agent locks no charge.
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtext(${tenantId}), hashtext(${`${charge.outletId}:${charge.id}`}))`,
+  );
+  const [sale] = await tx
+    .select({ id: edcTransactions.id })
+    .from(edcTransactions)
+    .where(
+      and(
+        eq(edcTransactions.tenantId, tenantId),
+        eq(edcTransactions.outletId, charge.outletId),
+        eq(edcTransactions.type, "sale"),
+        eq(edcTransactions.reference, charge.id),
+        or(
+          inArray(edcTransactions.status, ["pending", "unknown", "approved"]),
+          eq(edcTransactions.needsReconciliation, true),
+        ),
+      ),
+    )
+    .limit(1);
+  if (sale)
+    throw new HttpError(
+      409,
+      "CONFLICT",
+      "Transaksi EDC untuk tagihan ini belum selesai atau sudah disetujui; cek status EDC dulu.",
     );
 }
 
@@ -211,6 +252,7 @@ export async function collectChargeAtPosQris(
       mode: "in",
       at: now,
     });
+    await assertNoEdcSaleOutstanding(tx, tenantId, locked.charge);
     return locked.charge;
   };
   // Step 1 (like the guest's `ensureChargeLink`): the bill is opened and

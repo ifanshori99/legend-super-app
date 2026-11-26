@@ -14,6 +14,7 @@
 import { Router, type RequestHandler } from "express";
 import type { PermissionCode } from "@starter/shared/access";
 import { userIdSchema, uuidSchema, z } from "@starter/shared/core";
+import { startPosIssueChargeEdc as startChargeEdc } from "@starter/shared/pos";
 import { collectChargeAtPosInputSchema } from "@starter/shared/qr-order";
 import {
   actorOf,
@@ -39,6 +40,7 @@ import {
 } from "../middleware/permissions.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
 import { collectChargeAtPos } from "../services/order-recovery-charge-pos.ts";
+import { startPosIssueChargeEdc } from "../services/order-recovery-charge-pos-edc.ts";
 import { readPosIssueCharge } from "../services/order-recovery-charge-pos-read.ts";
 import {
   approveChargeManualRefund,
@@ -267,6 +269,38 @@ orderRecoveryChargeRouter.get(
           actingOutletId: req.actingStaff?.outletId ?? null,
         },
         chargeId,
+        new Date(),
+      ),
+    });
+  },
+);
+
+// The cashier starts the card sale of the charge on the outlet's terminal
+// (legend-f1mmf): edge only (503 elsewhere), the charge's amount, the charge id
+// as reference. Another outlet's charge is a 404 from the service.
+orderRecoveryChargeRouter.post(
+  "/order-issue-charges/:chargeId/edc",
+  requireAuthAllowSharedDevice,
+  requireTrustedOrigin,
+  requireTenantContext,
+  resolveActingStaff,
+  requireActingStaffOnSharedDevice,
+  requireMenuPermission("pos.payment.accept"),
+  chargeOnCloud,
+  jsonBody,
+  async (req, res) => {
+    const { chargeId } = params.parse(req.params);
+    const input = startChargeEdc.body.parse(req.body);
+    res.set("Cache-Control", "no-store").json({
+      data: await startPosIssueChargeEdc(
+        getScopedTenantContext(req),
+        {
+          userId: userIdSchema.parse(actorOf(req)),
+          deviceId: await currentDeviceIdOf(req),
+          actingOutletId: req.actingStaff?.outletId ?? null,
+        },
+        chargeId,
+        input,
         new Date(),
       ),
     });
