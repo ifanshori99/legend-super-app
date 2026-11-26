@@ -21,6 +21,7 @@ import type { EdcMode, EdcTerminal, PaymentBill } from "../../types";
 import { Notice, PosPanel, StatusPill } from "../shared";
 import { EdcLayout, useEdcErrorText } from "./edc-side";
 import { edcApprovalKey } from "./payment-helpers";
+import { INTENT_STORAGE_UNAVAILABLE } from "../../payment-intent-store";
 
 const PIN_LENGTH = 6;
 /** Same minimum the record endpoint enforces (mock engine). */
@@ -49,18 +50,28 @@ export function EdcStandalone({
   const override = useRequestEdcApproval();
   const record = useRecordEdcStandalone();
   const [bankRef, setBankRef] = useState("");
+  // Typed from the paper slip, never taken from the bill: a slip of another
+  // amount is not the bill's payment. Locked once the note is written.
+  const [slipAmount, setSlipAmount] = useState("");
   const [approvalCode, setApprovalCode] = useState("");
   const [approverId, setApproverId] = useState<string>();
   const [pin, setPin] = useState("");
   const [pinError, setPinError] = useState<string>();
   const approvalRef = useRef<{ key: string; overrideId: string } | null>(null);
 
-  const amountIdr = bill.remainingIdr;
+  const amountIdr = Number(slipAmount);
+  const slipLocked =
+    record.isError &&
+    !(
+      record.error instanceof ApiError &&
+      record.error.code === INTENT_STORAGE_UNAVAILABLE
+    );
   // Radix Select can report "" (no matching item yet): treat it as no choice.
   const approver = approverId || undefined;
   const pending = override.isPending || record.isPending;
   const canSubmit =
     terminal !== undefined &&
+    amountIdr > 0 &&
     approver !== undefined &&
     bankRef.trim().length >= BANK_REF_MIN_LENGTH &&
     pin.length === PIN_LENGTH &&
@@ -135,11 +146,15 @@ export function EdcStandalone({
       bill={bill}
       headPill={{ tone: "warning", label: t("posKasirEdc.pill.standalone") }}
       sideLabel={t("posKasirEdc.side.proof")}
-      sideAmountIdr={amountIdr}
-      sidePill={{
-        tone: "neutral",
-        label: t("posKasirEdc.side.matchesRemaining"),
-      }}
+      sideAmountIdr={amountIdr > 0 ? amountIdr : bill.remainingIdr}
+      sidePill={
+        amountIdr === bill.remainingIdr
+          ? {
+              tone: "neutral",
+              label: t("posKasirEdc.side.matchesRemaining"),
+            }
+          : undefined
+      }
       sideTerminal={
         terminal && {
           title: terminal.label,
@@ -187,6 +202,29 @@ export function EdcStandalone({
             </Notice>
             <div className="grid gap-4 md:grid-cols-2">
               <FormField
+                label={t("posKasirPayment.unresolved.slipAmount")}
+                hint={
+                  amountIdr > 0
+                    ? formatRupiah(amountIdr)
+                    : t("posKasirPayment.unresolved.slipAmountHint")
+                }
+                required
+              >
+                <Input
+                  name="slipAmount"
+                  value={slipAmount}
+                  onChange={(event) =>
+                    setSlipAmount(
+                      event.target.value.replace(/\D/g, "").slice(0, 12),
+                    )
+                  }
+                  inputMode="numeric"
+                  autoComplete="off"
+                  className="tabular"
+                  readOnly={slipLocked}
+                />
+              </FormField>
+              <FormField
                 label={t("posKasirEdc.standalone.bankRef")}
                 hint={t("posKasirEdc.standalone.bankRefHint")}
                 required
@@ -195,6 +233,7 @@ export function EdcStandalone({
                   name="bankRef"
                   value={bankRef}
                   onChange={(event) => setBankRef(event.target.value)}
+                  readOnly={slipLocked}
                   inputMode="numeric"
                   autoComplete="off"
                   spellCheck={false}
