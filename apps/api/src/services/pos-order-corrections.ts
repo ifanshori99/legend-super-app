@@ -83,6 +83,10 @@ import {
   cashOutExceedsDrawer,
   lockCashierShiftForCash,
 } from "./pos-cash-guard.ts";
+import {
+  assertPosOrderWriteOnCloud,
+  markEdgeSaleRefundTx,
+} from "./pos-edge-outlet.ts";
 import { posPromoRefundPort, posReceiptPort } from "./pos-order-ports.ts";
 import {
   appendOrderEvent,
@@ -169,9 +173,13 @@ function refundDto(row: RefundRow): PosRefund {
  * (`correct`'s `beforeOrderLock`), read by `assertNotEdgeIngested`.
  */
 const edgeRefundTxs = new WeakSet<object>();
-const markEdgeRefundTx = async (tx: Tx): Promise<void> => {
-  edgeRefundTxs.add(tx);
-};
+const markEdgeRefundTx =
+  (context: ScopedTenantContext, outletId: OutletId, orderId: string) =>
+  async (tx: Tx): Promise<void> => {
+    edgeRefundTxs.add(tx);
+    // The 1271 F3 order gate in `correct` lets an ingested edge sale through.
+    await markEdgeSaleRefundTx(tx, context.tenant.tenantId, outletId, orderId);
+  };
 
 /**
  * Money guard: an order the cloud ingested from an edge node (state
@@ -270,6 +278,15 @@ async function correct<T>(
           context,
           input.outletId,
           input.orderId,
+        );
+        // 1271 F3: the window share-locked in this transaction, so a return
+        // started meanwhile waits and no correction lands after its closing event.
+        await assertPosOrderWriteOnCloud(
+          tx,
+          context.tenant.tenantId,
+          input.outletId,
+          locked.pos.failoverWindowId,
+          "core",
         );
         assertCorrectionTargetsFinalOrder({ status: locked.order.status });
         await assertNotEdgeIngested(tx, context, locked.order.id);
@@ -1725,7 +1742,7 @@ export async function refundPosOrder(
     },
     requestedAt,
     // 1269 E6: an ingested edge sale is refunded here, by back office.
-    markEdgeRefundTx,
+    markEdgeRefundTx(context, outletId, orderId),
   );
 }
 
@@ -2000,6 +2017,6 @@ export async function settlePosRefundPayout(
       return payoutDto(updated);
     },
     requestedAt,
-    markEdgeRefundTx,
+    markEdgeRefundTx(context, outletId, orderId),
   );
 }

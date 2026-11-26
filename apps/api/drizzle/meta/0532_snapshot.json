@@ -1,5 +1,5 @@
 {
-  "id": "4ddcb732-7572-4797-a5ff-479c07a55788",
+  "id": "1b3df5b7-a255-45e8-8fcd-f60d08e49765",
   "prevId": "c78f4d8d-9978-4097-a624-b4c6bb6e24ec",
   "version": "7",
   "dialect": "postgresql",
@@ -49320,6 +49320,201 @@
       },
       "isRLSEnabled": false
     },
+    "public.outlet_failover_switchover_counts": {
+      "name": "outlet_failover_switchover_counts",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outlet_id": {
+          "name": "outlet_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "window_id": {
+          "name": "window_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "device_id": {
+          "name": "device_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "shift_id": {
+          "name": "shift_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "cashier_id": {
+          "name": "cashier_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "counted_at": {
+          "name": "counted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "counts": {
+          "name": "counts",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "total_idr": {
+          "name": "total_idr",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "outlet_failover_switchover_counts_tenant_id_tenants_id_fk": {
+          "name": "outlet_failover_switchover_counts_tenant_id_tenants_id_fk",
+          "tableFrom": "outlet_failover_switchover_counts",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "outlet_failover_switchover_counts_outlet_id_outlets_id_fk": {
+          "name": "outlet_failover_switchover_counts_outlet_id_outlets_id_fk",
+          "tableFrom": "outlet_failover_switchover_counts",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "outlet_failover_switchover_counts_cashier_id_user_id_fk": {
+          "name": "outlet_failover_switchover_counts_cashier_id_user_id_fk",
+          "tableFrom": "outlet_failover_switchover_counts",
+          "tableTo": "user",
+          "columnsFrom": [
+            "cashier_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "outlet_failover_switchover_counts_window_fk": {
+          "name": "outlet_failover_switchover_counts_window_fk",
+          "tableFrom": "outlet_failover_switchover_counts",
+          "tableTo": "outlet_failover_windows",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id",
+            "window_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "outlet_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "outlet_failover_switchover_counts_shift_fk": {
+          "name": "outlet_failover_switchover_counts_shift_fk",
+          "tableFrom": "outlet_failover_switchover_counts",
+          "tableTo": "pos_shifts",
+          "columnsFrom": [
+            "tenant_id",
+            "shift_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "outlet_failover_switchover_counts_outlet_fk": {
+          "name": "outlet_failover_switchover_counts_outlet_fk",
+          "tableFrom": "outlet_failover_switchover_counts",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "outlet_failover_switchover_counts_device_key": {
+          "name": "outlet_failover_switchover_counts_device_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "window_id",
+            "device_id"
+          ]
+        },
+        "outlet_failover_switchover_counts_shift_key": {
+          "name": "outlet_failover_switchover_counts_shift_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "shift_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "outlet_failover_switchover_counts_total_check": {
+          "name": "outlet_failover_switchover_counts_total_check",
+          "value": "\"outlet_failover_switchover_counts\".\"total_idr\" >= 0"
+        },
+        "outlet_failover_switchover_counts_counts_check": {
+          "name": "outlet_failover_switchover_counts_counts_check",
+          "value": "jsonb_typeof(\"outlet_failover_switchover_counts\".\"counts\") = 'array' AND jsonb_array_length(\"outlet_failover_switchover_counts\".\"counts\") >= 1"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.edge_receipt_skips": {
       "name": "edge_receipt_skips",
       "schema": "",
@@ -56573,309 +56768,6 @@
         "pos_orders_version_check": {
           "name": "pos_orders_version_check",
           "value": "\"pos_orders\".\"version\" >= 0"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.pos_refund_payouts": {
-      "name": "pos_refund_payouts",
-      "schema": "",
-      "columns": {
-        "tenant_id": {
-          "name": "tenant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "pos_refund_id": {
-          "name": "pos_refund_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "outlet_id": {
-          "name": "outlet_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "order_id": {
-          "name": "order_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "varchar(10)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'requested'"
-        },
-        "cash_idr": {
-          "name": "cash_idr",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "edc_idr": {
-          "name": "edc_idr",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "cash_channel": {
-          "name": "cash_channel",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "cash_reference": {
-          "name": "cash_reference",
-          "type": "varchar(100)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "cash_settled_by": {
-          "name": "cash_settled_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "cash_settled_at": {
-          "name": "cash_settled_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "edc_rrn": {
-          "name": "edc_rrn",
-          "type": "varchar(24)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "edc_approval_code": {
-          "name": "edc_approval_code",
-          "type": "varchar(12)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "edc_settled_by": {
-          "name": "edc_settled_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "edc_settled_at": {
-          "name": "edc_settled_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "event_payload": {
-          "name": "event_payload",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "requested_by": {
-          "name": "requested_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "settled_at": {
-          "name": "settled_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "pos_refund_payouts_order_idx": {
-          "name": "pos_refund_payouts_order_idx",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "order_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "pos_refund_payouts_status_idx": {
-          "name": "pos_refund_payouts_status_idx",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "status",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "pos_refund_payouts_edc_rrn_key": {
-          "name": "pos_refund_payouts_edc_rrn_key",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "edc_rrn",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"pos_refund_payouts\".\"edc_rrn\" IS NOT NULL",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "pos_refund_payouts_cash_reference_key": {
-          "name": "pos_refund_payouts_cash_reference_key",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "cash_channel",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "cash_reference",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"pos_refund_payouts\".\"cash_reference\" IS NOT NULL",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "pos_refund_payouts_tenant_id_tenants_id_fk": {
-          "name": "pos_refund_payouts_tenant_id_tenants_id_fk",
-          "tableFrom": "pos_refund_payouts",
-          "tableTo": "tenants",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "pos_refund_payouts_outlet_id_outlets_id_fk": {
-          "name": "pos_refund_payouts_outlet_id_outlets_id_fk",
-          "tableFrom": "pos_refund_payouts",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "pos_refund_payouts_refund_fk": {
-          "name": "pos_refund_payouts_refund_fk",
-          "tableFrom": "pos_refund_payouts",
-          "tableTo": "pos_order_refunds",
-          "columnsFrom": [
-            "tenant_id",
-            "pos_refund_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "pos_refund_payouts_tenant_id_pos_refund_id_pk": {
-          "name": "pos_refund_payouts_tenant_id_pos_refund_id_pk",
-          "columns": [
-            "tenant_id",
-            "pos_refund_id"
-          ]
-        }
-      },
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "pos_refund_payouts_status_check": {
-          "name": "pos_refund_payouts_status_check",
-          "value": "\"pos_refund_payouts\".\"status\" IN ('requested', 'succeeded')"
-        },
-        "pos_refund_payouts_amount_check": {
-          "name": "pos_refund_payouts_amount_check",
-          "value": "\"pos_refund_payouts\".\"cash_idr\" >= 0 AND \"pos_refund_payouts\".\"edc_idr\" >= 0 AND \"pos_refund_payouts\".\"cash_idr\" + \"pos_refund_payouts\".\"edc_idr\" > 0"
-        },
-        "pos_refund_payouts_cash_channel_check": {
-          "name": "pos_refund_payouts_cash_channel_check",
-          "value": "\"pos_refund_payouts\".\"cash_channel\" IS NULL OR \"pos_refund_payouts\".\"cash_channel\" IN ('bank_transfer', 'petty_cash')"
-        },
-        "pos_refund_payouts_cash_part_check": {
-          "name": "pos_refund_payouts_cash_part_check",
-          "value": "(\"pos_refund_payouts\".\"cash_reference\" IS NOT NULL) = (\"pos_refund_payouts\".\"cash_channel\" IS NOT NULL)\n        AND (\"pos_refund_payouts\".\"cash_reference\" IS NOT NULL) = (\"pos_refund_payouts\".\"cash_settled_at\" IS NOT NULL)\n        AND (\"pos_refund_payouts\".\"cash_reference\" IS NOT NULL) = (\"pos_refund_payouts\".\"cash_settled_by\" IS NOT NULL)\n        AND (\"pos_refund_payouts\".\"cash_reference\" IS NULL OR \"pos_refund_payouts\".\"cash_idr\" > 0)"
-        },
-        "pos_refund_payouts_edc_part_check": {
-          "name": "pos_refund_payouts_edc_part_check",
-          "value": "(\"pos_refund_payouts\".\"edc_rrn\" IS NOT NULL) = (\"pos_refund_payouts\".\"edc_approval_code\" IS NOT NULL)\n        AND (\"pos_refund_payouts\".\"edc_rrn\" IS NOT NULL) = (\"pos_refund_payouts\".\"edc_settled_at\" IS NOT NULL)\n        AND (\"pos_refund_payouts\".\"edc_rrn\" IS NOT NULL) = (\"pos_refund_payouts\".\"edc_settled_by\" IS NOT NULL)\n        AND (\"pos_refund_payouts\".\"edc_rrn\" IS NULL OR \"pos_refund_payouts\".\"edc_idr\" > 0)"
-        },
-        "pos_refund_payouts_succeeded_check": {
-          "name": "pos_refund_payouts_succeeded_check",
-          "value": "(\"pos_refund_payouts\".\"status\" = 'succeeded') = (\"pos_refund_payouts\".\"settled_at\" IS NOT NULL)\n        AND (\"pos_refund_payouts\".\"status\" = 'succeeded') = (\n          (\"pos_refund_payouts\".\"cash_idr\" = 0 OR \"pos_refund_payouts\".\"cash_reference\" IS NOT NULL)\n          AND (\"pos_refund_payouts\".\"edc_idr\" = 0 OR \"pos_refund_payouts\".\"edc_rrn\" IS NOT NULL))"
         }
       },
       "isRLSEnabled": false

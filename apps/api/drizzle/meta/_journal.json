@@ -3631,8 +3631,15 @@
     {
       "idx": 532,
       "version": "7",
-      "when": 1795658438176,
-      "tag": "0532_pos_refund_payouts",
+      "when": 1795658254544,
+      "tag": "0532_edge_failover_switchover",
+      "breakpoints": true
+    },
+    {
+      "idx": 533,
+      "version": "7",
+      "when": 1795659149552,
+      "tag": "0533_pos_refund_payouts",
       "breakpoints": true
     }
   ]

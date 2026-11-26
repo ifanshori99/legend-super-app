@@ -2,6 +2,12 @@
 // tickets) on an outlet its edge serves
 // (services/pos-edge-outlet.ts). Mount after the permission guard, so a caller
 // without the permission still gets 403.
+//
+// 1271 F3: the `Core` variants mark the core POS paths the cloud serves while
+// the outlet's failover window is `active` (CTO allowlist: cashier/captain
+// order, payment, shift and drawer, receipt, KDS/expo, cashier sign-in). Every
+// other write uses the plain variant and stays refused during a window. The
+// `Finish` variant marks the core paths that only finish a window row.
 import type { NextFunction, Request, Response } from "express";
 import { outletIdSchema } from "@starter/shared/core";
 import { orderIdSchema } from "@starter/shared/pos";
@@ -12,6 +18,8 @@ import {
   assertPosRefundNotOnEdge,
   assertPosWriteNotOnEdge,
   assertTargetOutletNotOnEdge,
+  type PosWriteGateOptions,
+  type PosWriteTarget,
 } from "../services/pos-edge-outlet.ts";
 import { getScopedTenantContext } from "./permissions.ts";
 import { getTenantContext } from "./tenant.ts";
@@ -29,22 +37,24 @@ type Middleware = (
 export async function assertPosWriteOnCloud(
   req: Request,
   outletId: unknown,
+  options: PosWriteGateOptions = {},
 ): Promise<void> {
   const parsed = outletIdSchema.safeParse(outletId);
   // A malformed or missing outlet id is left to the route's own checks.
   if (!parsed.success) return;
   const tenantId = getTenantContext(req).tenantId;
   await withTenant(db, memberTenantContext(tenantId), (tx) =>
-    assertPosWriteNotOnEdge(tx, tenantId, parsed.data),
+    assertPosWriteNotOnEdge(tx, tenantId, parsed.data, options),
   );
 }
 
 /** The outlet comes from a value an earlier middleware resolved. */
 export function requirePosWriteOnCloudFor(
   outletOf: (req: Request) => unknown,
+  options: PosWriteGateOptions = {},
 ): Middleware {
   return async (req, _res, next) => {
-    await assertPosWriteOnCloud(req, outletOf(req));
+    await assertPosWriteOnCloud(req, outletOf(req), options);
     next();
   };
 }
@@ -52,6 +62,62 @@ export function requirePosWriteOnCloudFor(
 /** The outlet comes from the `:outletId` path parameter. */
 export const requirePosWriteOnCloud: Middleware = requirePosWriteOnCloudFor(
   (req) => req.params.outletId,
+);
+
+/** Path parameters naming the row a core write acts on, first match wins. */
+const TARGET_PARAMS: ReadonlyArray<[string, PosWriteTarget["kind"]]> = [
+  ["orderId", "order"],
+  ["shiftId", "shift"],
+  ["receiptId", "receipt"],
+  ["ticketId", "kitchen_ticket"],
+];
+
+function targetOf(
+  req: Request,
+  extra?: PosWriteTarget["kind"],
+): PosWriteTarget | undefined {
+  for (const [param, kind] of TARGET_PARAMS) {
+    const id = req.params[param];
+    if (typeof id === "string") return { kind, id };
+  }
+  const id = extra === undefined ? undefined : req.params.itemId;
+  return typeof id === "string" && extra ? { kind: extra, id } : undefined;
+}
+
+function coreGate(
+  extra?: PosWriteTarget["kind"],
+  failover: "core" | "finish" = "core",
+): Middleware {
+  return async (req, _res, next) => {
+    await assertPosWriteOnCloud(req, req.params.outletId, {
+      failover,
+      target: targetOf(req, extra),
+    });
+    next();
+  };
+}
+
+/**
+ * Same as requirePosWriteOnCloud, for a core POS path open during an active
+ * failover window; a row named in the path (order, shift, receipt, kitchen
+ * ticket) must belong to that window.
+ */
+export const requireCorePosWriteOnCloud: Middleware = coreGate();
+
+/**
+ * A core path that only finishes a row of the window (shift count, close,
+ * force-close, drawer decision; order complete, void, QRIS/VA cancel or
+ * release, payment-intent resolve): still open while EDGE_FAILOVER_ENABLED
+ * is off, so the outlet can be handed back to its edge.
+ */
+export const requireFinishPosWriteOnCloud: Middleware = coreGate(
+  undefined,
+  "finish",
+);
+
+/** The KDS `/ticket-items/:itemId` variant (the item names its order). */
+export const requireCoreKitchenItemWriteOnCloud: Middleware = coreGate(
+  "kitchen_ticket_item",
 );
 
 /**

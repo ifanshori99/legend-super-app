@@ -1,5 +1,5 @@
 -- 1269 E6 (legend-osqou.27): payouts of back-office refunds of edge sales.
--- Temporary number 0532 (0531 is the WFC sale hold); the merge train may
+-- Temporary number 0533 (0532 is the F3 failover switchover); the merge train may
 -- renumber. New table only: no existing row changes. Foreign keys are inline
 -- in CREATE TABLE (contracts.md legend-m007 pattern 1, as 0530).
 CREATE TABLE "pos_refund_payouts" (

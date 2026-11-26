@@ -141,6 +141,7 @@ import { operationsEquipmentRouter } from "./operations-equipment.routes";
 import { edgeRouter } from "./edge.routes.ts";
 import { edgePrintRouter } from "./edge-print.routes.ts";
 import { edgeNodesRouter } from "./edge-nodes.routes.ts";
+import { edgeFailoverRouter } from "./edge-failover.routes.ts";
 import { edgeReconciliationRouter } from "./edge-reconciliation.routes.ts";
 import { expoRouter } from "./expo.routes.ts";
 import { pickupRouter } from "./pickup.routes.ts";
@@ -150,6 +151,7 @@ import { orderIssuesRouter } from "./order-issues.routes.ts";
 import { orderRecoveryChargeRouter } from "./order-recovery-charge.routes.ts";
 import { customerDisplayRouter } from "./customer-display.routes.ts";
 import { posOrderRouter } from "./pos-order.routes.ts";
+import { posEdcRouter } from "./pos-edc.routes.ts";
 import { posParkedOrderRouter } from "./pos-parked-order.routes.ts";
 import { posReceiptRouter, publicReceiptRouter } from "./pos-receipt.routes.ts";
 import { posReceiptWriteoffRouter } from "./pos-receipt-writeoff.routes.ts";
@@ -286,6 +288,7 @@ apiRouter.use("/floor", floorRouter);
 // router whose requireAuth would refuse a display without a session.
 apiRouter.use("/outlets/:outletId/pos", customerDisplayRouter);
 apiRouter.use("/outlets/:outletId/pos", posOrderRouter);
+apiRouter.use("/outlets/:outletId/pos", posEdcRouter); // 1269 E7 ECR
 apiRouter.use("/outlets/:outletId/pos", posParkedOrderRouter);
 // WS-04 receipts, kuitansi and invoices (legend-93a): same prefix, own routes;
 // the order router passes unmatched paths through.
@@ -520,6 +523,8 @@ apiRouter.use("/edge", edgeRouter);
 // Before the registry's session guards so edge Bearer credentials can POST.
 apiRouter.use("/edge-nodes", edgeReconciliationRouter);
 apiRouter.use("/edge-nodes", edgeNodesRouter);
+// Edge -> cloud failover windows (1271 F3): cloud only.
+apiRouter.use("/edge-failover", edgeFailoverRouter);
 // Staff PIN hash down-sync for edge nodes (legend-obh5): edge credential
 // only, deny-all until server.ts installs the registry verifier.
 apiRouter.use("/edge-sync/staff-pin-records", staffPinSyncRouter);

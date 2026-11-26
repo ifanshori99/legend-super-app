@@ -26,6 +26,7 @@ import {
 } from "../core/index.ts";
 import { posOverrideIdSchema } from "../access/override.ts";
 import { defineEndpoint } from "../api/endpoint.ts";
+import { edcMethodSchema, edcTransactionSchema } from "../edc/index.ts";
 import { tableSessionIdSchema } from "../qr-order/schemas.ts";
 import {
   cashMovementIdSchema,
@@ -370,6 +371,60 @@ export const getPosPaymentOptions = defineEndpoint({
   path: "/api/outlets/:outletId/pos/payment-options",
   params: outletParams,
   response: dataResponseSchema(posPaymentOptionsSchema),
+});
+
+/**
+ * 1269 E7: an ECR card or QR sale on the outlet's own terminal, run by the EDC
+ * agent of the edge node that serves the outlet. No amount in the body: the
+ * terminal is asked for what the bill still owes (ORD-03), re-checked under the
+ * bill lock before the terminal sees it. Repeating `idempotencyKey` returns the
+ * same transaction (and asks the terminal when unresolved), never a second
+ * sale. 503 EDC_AGENT_NOT_READY off the edge or while the agent is down; 503
+ * EDC_PROVIDER_UNKNOWN when the terminal's bank has no adapter. An approved
+ * sale is booked with `addPosTender` (`edcTransactionId`).
+ */
+export const startPosEdcSale = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pos/orders/:orderId/edc",
+  params: orderParams,
+  body: clientInputSchema({
+    terminalId: uuidSchema,
+    method: edcMethodSchema,
+    idempotencyKey: idempotencyKeySchema,
+    ...expectedVersion,
+  }),
+  response: dataResponseSchema(edcTransactionSchema),
+});
+
+const edcTransactionParams = z.strictObject({
+  outletId: outletIdSchema,
+  transactionId: uuidSchema,
+});
+
+/** 1269 E7: one EDC transaction of this outlet, as the ledger holds it. */
+export const getPosEdcTransaction = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/pos/edc/:transactionId",
+  params: edcTransactionParams,
+  response: dataResponseSchema(edcTransactionSchema),
+});
+
+/** 1269 E7: asks the terminal for the result of an unresolved sale (EDC-03). */
+export const inquirePosEdcTransaction = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pos/edc/:transactionId/inquire",
+  params: edcTransactionParams,
+  body: clientInputSchema({}),
+  response: dataResponseSchema(edcTransactionSchema),
+});
+
+/** 1269 E7: cancels a sale the terminal has not finished. */
+export const cancelPosEdcTransaction = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pos/edc/:transactionId/cancel",
+  params: edcTransactionParams,
+  body: clientInputSchema({}),
+  response: dataResponseSchema(edcTransactionSchema),
 });
 
 /**

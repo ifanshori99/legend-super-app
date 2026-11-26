@@ -28,6 +28,7 @@ import { HttpError } from "../lib/http-error";
 import { AuditUnavailableError } from "../services/audit-writer";
 import { toLoggableError } from "../lib/safe-error";
 import { captureServerError } from "../lib/sentry";
+import { FailoverOpenWorkError } from "../services/edge-failover-errors";
 
 export const notFound: RequestHandler = () => {
   throw new HttpError(404, "NOT_FOUND", "Route not found.");
@@ -121,6 +122,19 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
       error.message,
       undefined,
       error.context,
+    );
+
+  // 1271 F3: what still blocks a failover return or cancel, one detail per
+  // id (`orderIds`, `unpaidOrderIds`, `openShiftIds`, `qrisHoldOrderIds`,
+  // `parkedOrderIds`).
+  if (error instanceof FailoverOpenWorkError)
+    return send(
+      error.status,
+      error.code,
+      error.message,
+      Object.entries(error.openWork).flatMap(([field, ids]) =>
+        (ids as string[]).map((id) => ({ field, message: id })),
+      ),
     );
 
   if (isQrisHoldTriggerError(error)) {
