@@ -56,6 +56,7 @@ import {
   isNull,
   lt,
   lte,
+  ne,
   not,
   or,
   sql,
@@ -1003,7 +1004,31 @@ async function assertLinkOrderCanIssueTx(
   billSplitId: string | null,
 ): Promise<void> {
   const orderId = await linkOrderIdTx(tx, context, paymentLinkId);
-  if (orderId === null) return;
+  if (orderId === null) {
+    // legend-osqou.41: a link with no order (a reservation DP) takes one live
+    // VA, e-wallet or card code at a time: those cannot be cancelled with the
+    // gateway the way a QRIS can, so a second one could be paid twice. A QRIS
+    // is still replaced (superseded) as before.
+    const [liveOther] = await tx
+      .select({ id: paymentIntents.id })
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, context.tenant.tenantId),
+          eq(paymentIntents.paymentLinkId, paymentLinkId),
+          ne(paymentIntents.method, "qris"),
+          liveCodeWhere(),
+        ),
+      )
+      .limit(1);
+    if (liveOther)
+      throw new HttpError(
+        409,
+        "ORDER_CODE_ACTIVE",
+        "Kode pembayaran sebelumnya masih berlaku; selesaikan atau tunggu sampai berakhir.",
+      );
+    return;
+  }
   if (billSplitId === null) {
     await assertNoActiveQrisHold(tx, context, orderId);
   } else if (
@@ -1172,6 +1197,35 @@ async function gatewayDownRefusal(
   );
 }
 
+/**
+ * legend-osqou.41: a guest path (QR checkout) that refused a swap because the
+ * gateway is down records the same incident and failover mark the link path
+ * does. Bookkeeping only: it never changes the answer and never throws.
+ */
+export async function recordGatewayDownForLink(
+  context: ScopedTenantContext,
+  paymentLinkId: string,
+  now: Date,
+): Promise<void> {
+  try {
+    const link = await withTenant(db, context, async (tx) => {
+      const [row] = await tx
+        .select()
+        .from(paymentLinks)
+        .where(
+          and(
+            eq(paymentLinks.tenantId, context.tenant.tenantId),
+            eq(paymentLinks.id, paymentLinkId),
+          ),
+        );
+      return row ?? null;
+    });
+    if (link) await gatewayDownRefusal(context, link, now);
+  } catch (error) {
+    logger.warn({ err: error, paymentLinkId }, "gateway down record failed");
+  }
+}
+
 async function createIntentCore(
   context: ScopedTenantContext,
   token: string,
@@ -1238,8 +1292,12 @@ async function createIntentCore(
         amountIdr,
       },
     );
-    if (issuable === "gateway_down")
-      throw await gatewayDownRefusal(context, plan.link, now);
+    // The incident is still recorded; the answer stays the original refusal
+    // (a live code the guest can still pay), never "pay at the cashier".
+    if (issuable === "gateway_down") {
+      await gatewayDownRefusal(context, plan.link, now);
+      throw error;
+    }
     if (issuable === "not_offered") throw error;
     const { voided } = await options.voidLiveCodesForChange({
       paymentLinkId: plan.link.id,
@@ -1287,7 +1345,17 @@ async function createIntentCore(
       "VALIDATION_ERROR",
       "The payment expiry must be in the future.",
     );
-  const requestedExpiry = new Date(Math.min(methodExpiry, callerExpiry));
+  // legend-osqou.41: a VA / bank transfer code lives no longer than the link
+  // (never under 10 minutes, so a late tap still gets a usable code). An
+  // e-wallet or card is never shortened.
+  const linkCap =
+    (parsed.method === "va" || parsed.method === "bank_transfer") &&
+    plan.link.expiresAt !== null
+      ? Math.max(plan.link.expiresAt.getTime(), now.getTime() + 10 * 60_000)
+      : Number.POSITIVE_INFINITY;
+  const requestedExpiry = new Date(
+    Math.min(methodExpiry, callerExpiry, linkCap),
+  );
   // Same key, same id, same DOIT request: see intentIdFor.
   const intentId = intentIdFor(context.tenant.tenantId, parsed.idempotencyKey);
   const created: GatewayIntent = await selected.port.createIntent({

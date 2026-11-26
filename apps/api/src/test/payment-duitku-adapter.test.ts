@@ -290,9 +290,11 @@ describe("duitku adapter: createIntent", () => {
     });
   });
 
-  it("rounds expiryPeriod up to whole minutes, minimum 1", async () => {
+  it("rounds expiryPeriod down to whole minutes, minimum 1 (legend-osqou.41)", async () => {
     for (const [offsetMs, minutes] of [
-      [90_000, 2],
+      [119_000, 1],
+      [90_000, 1],
+      [180_000, 3],
       [60_000, 1],
       [1_000, 1],
       [-5_000, 1],
