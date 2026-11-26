@@ -82,6 +82,19 @@ const whatsappTemplateRequestSchema = z.strictObject({
   templateName: z.string().min(1).max(512),
   variables: z.record(z.string().min(1).max(64), z.string().max(1000)),
 });
+const CERTAIN_SEND_FAILURES = new Set(["invalid_template", "no_sender"]);
+/** A provider error raised before any request was made. Matched by shape so
+ * this service does not import a provider module. */
+function isCertainSendFailure(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const { code, retryable } = error as { code?: unknown; retryable?: unknown };
+  return (
+    retryable === false &&
+    typeof code === "string" &&
+    CERTAIN_SEND_FAILURES.has(code)
+  );
+}
+
 /** Provider must send an approved WhatsApp template, never arbitrary text. */
 export type WhatsAppTemplateProvider = {
   send(
@@ -342,6 +355,13 @@ export async function deliverNotificationAttempt(
       providerRef = parsed.reference;
     }
   } catch (error) {
+    // The provider refused before any request left (bad template name, no
+    // sender mapped): certainly not sent, a retry cannot help. End dead and
+    // free the quota slot (legend-wasr7.14).
+    if (isCertainSendFailure(error)) {
+      rejected = true;
+      undeliverable = true;
+    }
     /* Adapter failures are persisted as machine codes only. The log carries
      * the channel and the provider's HTTP status (or the error class), never
      * the message body, the recipient address or a key. */
