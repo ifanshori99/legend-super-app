@@ -188,6 +188,8 @@ export * from "./petty-purchases";
 export * from "./metrics";
 // WS-11 sales targets (legend-ne81z).
 export * from "./sales-targets";
+// WS-11 saved reports, schedules and exports (F12, legend-ay6e6).
+export * from "./report-delivery";
 // AI-01 menu recommendation rules.
 export * from "./menu-recommendation";
 // legend-k2l
