@@ -183,7 +183,7 @@ posShiftRouter.get("/shifts/:shiftId", readShift, async (req, res) => {
 // P1: the closing report as ESC/POS bytes for the tablet's own printer.
 posShiftRouter.get("/shifts/:shiftId/print", readShift, async (req, res) => {
   const { outletId, shiftId } = getPosShiftPrint.params.parse(req.params);
-  const { paperWidth } = getPosShiftPrint.query.parse(req.query);
+  const { paperWidth, reprint } = getPosShiftPrint.query.parse(req.query);
   res.setHeader("Cache-Control", "private, no-store");
   res.json({
     data: await shifts.getPosShiftPrint(
@@ -192,6 +192,7 @@ posShiftRouter.get("/shifts/:shiftId/print", readShift, async (req, res) => {
       outletId,
       shiftId,
       paperWidth,
+      reprint === true,
     ),
   });
 });

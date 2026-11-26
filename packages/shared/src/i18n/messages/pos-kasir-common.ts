@@ -45,7 +45,8 @@ export const posKasirCommonMessages = {
     label: "Printer tablet",
     open: "Ubah printer",
     title: "Printer tablet ini",
-    description: "Hanya berlaku di tablet ini. Struk dikirim ke printer ini.",
+    description:
+      "Hanya berlaku di tablet ini. Struk, tiket dapur, dan laporan shift dikirim ke printer ini.",
     methodLabel: "Cara cetak",
     paperLabel: "Lebar kertas",
     method: {
@@ -83,6 +84,19 @@ export const posKasirCommonMessages = {
         title: "Struk {receiptNo} gagal dikirim ke printer",
         body: "RawBT atau dialog cetak tidak terbuka. Pastikan aplikasi RawBT terpasang atau pilih Browser, lalu cetak ulang.",
       },
+    },
+    // P3 (legend-wasr7.4): a kitchen ticket or a shift report from this tablet.
+    cloud: {
+      ticket: "Cetak tiket",
+      ticketAgain: "Cetak ulang tiket",
+      shift: "Cetak laporan shift",
+      shiftAgain: "Cetak ulang laporan shift",
+      sent: "Dikirim ke printer. Bila kertas tidak keluar, periksa printer lalu cetak ulang.",
+      sentAgain: "Dikirim ulang ke printer. Kertasnya bertanda CETAK ULANG.",
+      none: "Tablet ini diatur tanpa printer. Ubah printer lalu cetak.",
+      failed:
+        "RawBT atau dialog cetak tidak terbuka. Pastikan aplikasi RawBT terpasang atau pilih Browser, lalu cetak ulang.",
+      loadFailed: "Cetakan belum bisa disiapkan. Coba lagi.",
     },
     testPrint: "Cetak tes",
     testSent: "Halaman tes dikirim ke printer. Periksa kertasnya.",

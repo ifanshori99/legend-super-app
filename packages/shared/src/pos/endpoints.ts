@@ -30,6 +30,7 @@ import { edcMethodSchema, edcTransactionSchema } from "../edc/index.ts";
 import {
   printPaperWidthSchema,
   printPaperWidthQuerySchema,
+  printReprintQuerySchema,
   printPayloadSchema,
 } from "./print-payload.ts";
 import { tableSessionIdSchema } from "../qr-order/schemas.ts";
@@ -694,7 +695,10 @@ export const getPosShiftPrint = defineEndpoint({
   method: "GET",
   path: "/api/outlets/:outletId/pos/shifts/:shiftId/print",
   params: shiftParams,
-  query: clientInputSchema({ paperWidth: printPaperWidthQuerySchema }),
+  query: clientInputSchema({
+    paperWidth: printPaperWidthQuerySchema,
+    reprint: printReprintQuerySchema.optional(),
+  }),
   response: dataResponseSchema(printPayloadSchema),
 });
 

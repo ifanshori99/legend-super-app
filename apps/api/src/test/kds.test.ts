@@ -2419,4 +2419,41 @@ describe("P1 cloud station ticket bytes (legend-wasr7.2)", () => {
     expect((await printOf(uuidToUlid(randomUUID()))).status).toBe(404);
     expect((await printOf(ticketId, cook, "40")).status).toBe(422);
   });
+
+  it("the cloud remembers the first print: every later GET is CETAK ULANG even without reprint (P3)", async () => {
+    const placed = await placeOrder([{ menuItemId: ids.kopi }]);
+    const ticketId = await ticketOn(placed.orderId, ids.barA);
+    const text = (res: { body: { data: { escposBase64: string } } }) =>
+      Buffer.from(res.body.data.escposBase64, "base64").toString("latin1");
+    const first = await printOf(ticketId, cook, "32");
+    expect(first.body.data.reprint).toBe(false);
+    expect(text(first)).not.toContain("CETAK ULANG");
+    // Two more asks that never say "reprint": both are marked, and so is the
+    // same ask from another member (a reload or a second tablet remembers).
+    for (const who of [cook, cook, barista]) {
+      const again = await printOf(ticketId, who, "32&reprint=false");
+      expect(again.status, JSON.stringify(again.body)).toBe(200);
+      expect(again.body.data.reprint).toBe(true);
+      expect(text(again)).toContain("CETAK ULANG");
+      expect(text(again)).toContain("Kopi");
+    }
+    const [count] = (
+      await owner.query(
+        "SELECT print_count FROM tablet_print_marks WHERE kind = 'kds_ticket' AND ref_id = $1",
+        [ticketId],
+      )
+    ).rows;
+    expect(count.print_count).toBe(4);
+    // The page may still force the banner; a bad flag is refused.
+    const other = await ticketOn(
+      (await placeOrder([{ menuItemId: ids.kopi }])).orderId,
+      ids.barA,
+    );
+    expect(
+      (await printOf(other, cook, "32&reprint=true")).body.data.reprint,
+    ).toBe(true);
+    expect((await printOf(other, cook, "32&reprint=maybe")).status).toBe(422);
+    // A refused print (unknown ticket) leaves no mark.
+    expect((await printOf(uuidToUlid(randomUUID()))).status).toBe(404);
+  });
 });

@@ -596,6 +596,43 @@ describe("P1 cloud shift report bytes (legend-wasr7.2)", () => {
     expect(bad.status).toBe(422);
   });
 
+  it("the cloud remembers the first report print: every later GET is CETAK ULANG (P3)", async () => {
+    const fixture = await openShift();
+    const supervisor = await member(roleIds.supervisor, "Supervisor Ulang");
+    expect((await closeShift(fixture)).status).toBe(200);
+    const text = (res: { body: { data: { escposBase64: string } } }) =>
+      Buffer.from(res.body.data.escposBase64, "base64").toString("latin1");
+
+    // The blind cashier is refused and that refusal is not a print.
+    const blind = await get(
+      fixture.cashier.client,
+      printPath(fixture.shiftId, "paperWidth=32&reprint=true"),
+    );
+    expect(blind.status).toBe(403);
+
+    const first = await get(supervisor.client, printPath(fixture.shiftId));
+    expect(first.body.data.reprint).toBe(false);
+    expect(text(first)).not.toContain("CETAK ULANG");
+
+    for (const query of ["paperWidth=32", "paperWidth=32&reprint=false"]) {
+      const again = await get(
+        supervisor.client,
+        printPath(fixture.shiftId, query),
+      );
+      expect(again.status, JSON.stringify(again.body)).toBe(200);
+      expect(again.body.data.reprint).toBe(true);
+      expect(text(again)).toContain("CETAK ULANG");
+      expect(text(again)).toContain("LAPORAN TUTUP SHIFT");
+    }
+    const [mark] = (
+      await owner.query(
+        "SELECT print_count FROM tablet_print_marks WHERE kind = 'shift_report' AND ref_id = $1",
+        [fixture.shiftId],
+      )
+    ).rows;
+    expect(mark.print_count).toBe(3);
+  });
+
   it("refuses a supervisor who is also the cashier of that shift (blind count)", async () => {
     const dual = await member(roleIds.dual, "Supervisor Kasir Bytes");
     const fixture = await openShift(dual);

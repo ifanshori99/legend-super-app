@@ -254,7 +254,7 @@ kdsRouter.get("/pacing", processTicket, async (req, res) => {
 // P1: the station ticket as ESC/POS bytes for the tablet's own printer.
 kdsRouter.get("/tickets/:ticketId/print", processTicket, async (req, res) => {
   const { outletId, ticketId } = getKitchenTicketPrint.params.parse(req.params);
-  const { paperWidth } = getKitchenTicketPrint.query.parse(req.query);
+  const { paperWidth, reprint } = getKitchenTicketPrint.query.parse(req.query);
   res.setHeader("Cache-Control", "private, no-store");
   res.json({
     data: await kds.getKitchenTicketPrint(
@@ -264,6 +264,7 @@ kdsRouter.get("/tickets/:ticketId/print", processTicket, async (req, res) => {
       ticketId,
       paperWidth,
       new Date(),
+      reprint === true,
     ),
   });
 });

@@ -44,6 +44,7 @@ import type { KdsRealtimeStatus } from "../kds-realtime.ts";
 import {
   useBoard,
   useKdsActions,
+  ticketPrintLoader,
   useKdsHeartbeat,
   useScannerStatus,
   useStationLabels,
@@ -51,6 +52,7 @@ import {
   useStations,
 } from "../hooks.ts";
 import { isOpenTicket, ticketScanCode } from "../scan-code.ts";
+import { CloudPrintButton } from "../../ws04-pos-kasir/print/cloud-print-button.tsx";
 import { ScannerPanel } from "./scanner-panel.tsx";
 import {
   formatElapsedSeconds,
@@ -644,6 +646,14 @@ function StationBoard({
                           >
                             {t("kds.start")}
                           </Button>
+                        )}
+                        {ticket.status !== "cancelled" && (
+                          <CloudPrintButton
+                            kind="ticket"
+                            size="sm"
+                            printKey={`kds-ticket:${ticket.id}`}
+                            load={ticketPrintLoader(outletId, ticket.id)}
+                          />
                         )}
                         <div className="flex flex-wrap gap-2">
                           {canTransitionKitchenTicket(

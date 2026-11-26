@@ -12,6 +12,7 @@ import {
   getPosApprovalPolicy,
   getPosOrder,
   getPosShift,
+  getPosShiftPrint,
   issuePosReceipt,
   listPosCashMovements,
   listPosShiftCounts,
@@ -25,6 +26,7 @@ import {
   getPosOverride,
 } from "@starter/shared/access/override";
 import { ApiError } from "@/lib/api/errors";
+import { testPrintPayload } from "./print/test-page";
 import {
   devicePinOverride,
   devicePinPosOverride,
@@ -127,6 +129,11 @@ registerMock(listPosShifts, ({ query, scenario }) => {
   const rows = shift ? [shiftWire(shift, blind)] : [];
   return wire(paginateFixture(rows, query, (row) => row.id, scenario));
 });
+
+// P3: mock mode prints the same short test page the printer settings use.
+registerMock(getPosShiftPrint, ({ query }) => ({
+  data: testPrintPayload(query.paperWidth),
+}));
 
 registerMock(getPosShift, ({ params }) => {
   const result = callPosKasirEngine((engine) => {

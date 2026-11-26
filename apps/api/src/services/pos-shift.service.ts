@@ -128,8 +128,10 @@ import {
 import { revokeActingStaffForDevice } from "./pos-acting-staff-revoke.ts";
 import { POS_OVERRIDE_SOURCE_MODULE } from "./staff-override.service.ts";
 import { isEdgeProcess, posWriteFailoverWindowId } from "./pos-edge-outlet.ts";
+import { markReprint } from "../edge/print/escpos.ts";
 import { renderShiftReport } from "../edge/print/templates.ts";
 import { toPrintPayload } from "./pos-receipt-edge-print.ts";
+import { recordTabletPrint } from "./tablet-print-mark.service.ts";
 import {
   buildShiftReportData,
   enqueueClosedShiftReport,
@@ -460,6 +462,8 @@ export async function getPosShiftPrint(
   outletId: OutletId,
   shiftId: string,
   paperWidth: PrintPaperWidth,
+  /** The tablet prints this report again: the bytes carry the banner. */
+  reprint = false,
 ): Promise<PrintPayload> {
   return withTenant(db, context, async (tx) => {
     await loadOutlet(tx, context, outletId);
@@ -479,10 +483,19 @@ export async function getPosShiftPrint(
       );
     const report = await buildShiftReportData(tx, row);
     if (!report) throw new CoreError("NOT_FOUND", "Shift tidak ditemukan.");
+    // Only after every refusal above: a refused ask is not a print.
+    const { printedBefore } = await recordTabletPrint(tx, context, {
+      kind: "shift_report",
+      refId: row.id,
+      outletId,
+      userId: caller.userId,
+    });
+    const marked = reprint || printedBefore;
+    const bytes = renderShiftReport(report, paperWidth);
     return toPrintPayload(
-      renderShiftReport(report, paperWidth),
+      marked ? markReprint(bytes) : bytes,
       paperWidth,
-      false,
+      marked,
     );
   });
 }

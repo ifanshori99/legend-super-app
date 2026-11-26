@@ -112,6 +112,7 @@ import {
   stationScopeCondition,
 } from "./station-access.ts";
 import { stationTicketPayload } from "./kds-print.service.ts";
+import { recordTabletPrint } from "./tablet-print-mark.service.ts";
 
 export type { KdsActor };
 
@@ -1463,6 +1464,8 @@ export async function getKitchenTicketPrint(
   ticketId: string,
   paperWidth: PrintPaperWidth,
   now: Date,
+  /** The tablet prints this ticket again: the bytes carry the banner. */
+  reprint = false,
 ): Promise<PrintPayload> {
   const outletId = outletIdSchema.parse(outletRef);
   return withTenant(db, context, async (tx) => {
@@ -1487,7 +1490,20 @@ export async function getKitchenTicketPrint(
           eq(stations.id, ticket.stationId),
         ),
       );
-    return stationTicketPayload(detail, station?.name ?? "Dapur", paperWidth);
+    // The cloud remembers the first print: a reload or a second tablet still
+    // gets the banner, so the kitchen never cooks the same ticket twice.
+    const { printedBefore } = await recordTabletPrint(tx, context, {
+      kind: "kds_ticket",
+      refId: ticket.id,
+      outletId,
+      userId: actor.userId,
+    });
+    return stationTicketPayload(
+      detail,
+      station?.name ?? "Dapur",
+      paperWidth,
+      reprint || printedBefore,
+    );
   });
 }
 

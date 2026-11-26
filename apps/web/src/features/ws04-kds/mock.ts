@@ -4,6 +4,7 @@ import {
   kitchenFixtureSchema,
   orderHeaders,
   getKitchenBoard,
+  getKitchenTicketPrint,
   getKitchenStationSummary,
   getStationCapacityRules,
   listKitchenStationLabels,
@@ -28,6 +29,7 @@ import type {
   StationBoard,
 } from "@starter/shared/kitchen";
 import { ApiError } from "../../lib/api/errors.ts";
+import { testPrintPayload } from "../ws04-pos-kasir/print/test-page.ts";
 import { getKdsScannerStatus } from "./contract-gap.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
@@ -152,6 +154,10 @@ const labelRows = stationLabelSchema.array().parse(stationLabels);
 const capacityRows = stationCapacityRuleSchema
   .array()
   .parse(stationCapacityRules);
+// P3: mock mode prints the same short test page the printer settings use.
+registerMock(getKitchenTicketPrint, ({ query }) => ({
+  data: testPrintPayload(query.paperWidth),
+}));
 registerMock(listKitchenStationLabels, ({ scenario }) => ({
   data: scenario === "empty" ? [] : labelRows,
 }));
