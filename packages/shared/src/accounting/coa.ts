@@ -245,6 +245,10 @@ export const POSTING_ACCOUNT_ROLES = {
   /** Bank fee of a payroll transfer, borne by the company (Q15, bead legend-658). */
   bank_charges: "expense",
   depreciation_expense: "expense",
+  /** EBITDA leaves these four roles out (legend-qlirp, CTO decision 1272-d2). */
+  amortization_expense: "expense",
+  interest_expense: "expense",
+  income_tax_expense: "expense",
   service_expense: "expense",
   /** Cash taken out of a drawer with a free-text reason (kas keluar, legend-89pn). */
   cash_out_expense: "expense",
@@ -621,6 +625,13 @@ const standardRows: Row[] = [
     "6100",
     ["cash_out_expense"],
   ],
+  [
+    "6113",
+    "Beban Amortisasi",
+    "operating_expense",
+    "6100",
+    ["amortization_expense"],
+  ],
   ["7100", "Pendapatan Lain-lain", "other_income", null],
   ["7101", "Pembulatan Kas", "other_income", "7100", ["rounding"]],
   [
@@ -651,6 +662,14 @@ const standardRows: Row[] = [
     "other_expense",
     "8100",
     ["asset_revaluation_loss"],
+  ],
+  ["8103", "Beban Bunga", "other_expense", "8100", ["interest_expense"]],
+  [
+    "8104",
+    "Beban Pajak Penghasilan",
+    "other_expense",
+    "8100",
+    ["income_tax_expense"],
   ],
 ];
 
