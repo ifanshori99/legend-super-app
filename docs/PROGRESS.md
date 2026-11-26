@@ -1,5 +1,15 @@
 # PROGRESS — Legend Super App
 
+## CTO 26 Nov sore (failover cloud, W4 masuk)
+
+- `int/rc2` a633a20bd (push) = 0e6d570b3 + W4 1268 captain (re-review LULUS, typecheck api+web, 46 test lulus). Worktree W4 dihapus.
+- Founder no. 29: edge mati -> jual di cloud (jendela failover). Standby mini PC (F11b/c/e, b3k) mundur P3. no. 30: CTO putuskan sisanya (mockup WFC setuju, AI harga sesudah rilis, captain pay_first ditolak).
+- Failover: kartu F0-F7 ~51 jam `docs/briefs/1271-edge-failover-cards.md` (bead legend-sxj96). F1 tunggu E3 gabung (migrasi sesudah 0528). Mockup F6a jalan (Claude, bukan Codex).
+- E3 a1e67703b perbaikan review (gerbang tiket/poin/meja, movement_unlisted bug uang) -> re-review `a50c1e4b09e27215d` jalan.
+- W3 2e2ac5473 review uang GAGAL (retry tutup shift) -> perbaikan jalan; keputusan CTO di docs/qa/1268-w3-review.md.
+- WFC W1b jalan (lanjut dari batas giliran).
+- Berikut: gabung E3 -> F1 (Opus) -> F2/F3/F5 paralel; W3 gabung -> W5/W6; W1b review K -> W2 WFC.
+
 ## CTO 26 Nov (kuota pulih, lanjut)
 
 - `int/rc2` 0e6d570b3 (lokal = remote, worktree `../legend-rc1`): s.d. F1 (0526), W2 1268, settlement .42/.43/.44, WFC W1 (0527). Suite penuh belum. Jangan gabung selagi tes jalan.
