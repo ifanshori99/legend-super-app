@@ -317,6 +317,13 @@ export type BlindCountReceipt = {
   shiftId: string;
   status: "awaiting_supervisor";
   submittedAt: string;
+  /** Real wire only: the stored count the close names (blind: no system figure). */
+  count?: {
+    countId: string;
+    sequence: number;
+    countedIdr: number;
+    noteRequired: boolean;
+  };
 };
 
 export type RegisteredTerminal = {
@@ -381,6 +388,18 @@ export type RequestOverrideInput = {
 };
 
 export type OverrideResult = { overrideId: string; approvedByName: string };
+
+/** Close from the cashier's device: the count, then a supervisor's PIN (1268 W3). */
+export type CloseShiftWithApprovalInput = {
+  shiftId: string;
+  countId: string;
+  /** The count had a variance the cashier cannot see: a written note is due. */
+  noteRequired: boolean;
+  approverUserId: string;
+  pin: string;
+  /** The supervisor's note: the override reason and, when due, the variance note. */
+  reason: string;
+};
 
 export type ApproveShiftCloseInput = {
   shiftId: string;

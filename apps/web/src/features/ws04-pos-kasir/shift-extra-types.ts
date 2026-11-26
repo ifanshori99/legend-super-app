@@ -92,6 +92,9 @@ export type OwnCountSummary = {
   countedIdr: number;
   submittedAt: string;
   limitReached: boolean;
+  /** Real wire only: the stored count the close names, and whether a note is due. */
+  countId?: string;
+  noteRequired?: boolean;
 };
 
 /** A second supervisor (the witness) the mock offers for a force close. */

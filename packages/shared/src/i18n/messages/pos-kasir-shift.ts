@@ -102,6 +102,28 @@ export const posKasirShiftMessages = {
     back: "Kembali ke shift",
     status: "Lihat status persetujuan",
     refreshing: "Memeriksa status…",
+    closeAction: "Supervisor menutup shift",
+    recount: "Hitung ulang",
+  },
+  close: {
+    dialogTitle: "Supervisor menutup shift",
+    dialogSummary:
+      "Supervisor memilih namanya, menulis catatan, lalu memasukkan PIN di perangkat ini. Saldo sistem dan selisih tidak ditampilkan di layar kasir.",
+    noteLabel: "Catatan selisih (wajib bila ada selisih)",
+    overrideFailed:
+      "Persetujuan belum terkirim. Periksa koneksi, lalu masukkan PIN lagi.",
+    retry: "Coba lagi",
+    pinRejected:
+      "PIN atau persetujuan supervisor ditolak. Periksa pilihan supervisor dan PIN, lalu coba lagi.",
+    retryHint:
+      "Persetujuan sudah diterima. Tekan coba lagi tanpa memasukkan PIN ulang.",
+    staleTitle: "Hitungan kas sudah tidak berlaku",
+    staleBody:
+      "Ada perubahan kas atau hitungan yang lebih baru. Hitung ulang uang di laci, lalu minta supervisor menyetujui lagi.",
+    staleAction: "Hitung ulang",
+    holdTitle: "Masih ada QRIS menunggu pembayaran",
+    holdBody:
+      "Shift tidak bisa ditutup selama ada QRIS yang belum lunas atau dibatalkan. Selesaikan QRIS itu lebih dulu.",
   },
   limit: {
     title: "Batas hitungan tercapai",

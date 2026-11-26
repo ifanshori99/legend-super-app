@@ -49,7 +49,7 @@ export function DenominationCounter({
   denominations,
   quantities,
   onQuantityChange,
-  otherIdr,
+  otherIdr = 0,
   onOtherChange,
   className,
 }: {
@@ -59,8 +59,9 @@ export function DenominationCounter({
   quantities: Readonly<Record<number, number>>;
   onQuantityChange: (denominationIdr: number, quantity: number) => void;
   /** Lump sum of small notes and coins, whole rupiah. */
-  otherIdr: number;
-  onOtherChange: (amountIdr: number) => void;
+  otherIdr?: number;
+  /** Omitted when every denomination is listed (the real count has no lump sum). */
+  onOtherChange?: (amountIdr: number) => void;
   className?: string;
 }) {
   const t = useT();
@@ -83,12 +84,14 @@ export function DenominationCounter({
           />
         );
       })}
-      <Cell
-        label={t("posKasirCommon.denomination.other")}
-        value={formatRupiah(otherIdr)}
-        onChange={(text) => onOtherChange(parseDigits(text))}
-        footer={t("posKasirCommon.denomination.otherHint")}
-      />
+      {onOtherChange && (
+        <Cell
+          label={t("posKasirCommon.denomination.other")}
+          value={formatRupiah(otherIdr)}
+          onChange={(text) => onOtherChange(parseDigits(text))}
+          footer={t("posKasirCommon.denomination.otherHint")}
+        />
+      )}
     </div>
   );
 }

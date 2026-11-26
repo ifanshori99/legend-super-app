@@ -4,7 +4,15 @@ import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { Money } from "@/components/ui/money";
 import { useOutletClock } from "@/lib/tenant-context";
-import { useActiveShift, useOwnCountSummary } from "../../shift-hooks";
+import { ApiError } from "@/lib/api/errors";
+import { ApprovalDialog } from "../../../ws04-pos-correction/components/approval-dialog";
+import { isCloseSettled, isCloseStale, isQrisHoldBlock } from "../../shift-api";
+import {
+  useActiveShift,
+  useCloseShiftWithApproval,
+  useOwnCountSummary,
+  useStartRecount,
+} from "../../shift-hooks";
 import { SHIFT_CASHIER_COUNT_LIMIT } from "../../shift-extra-types";
 import type { ActiveShift } from "../../types";
 import {
@@ -116,11 +124,40 @@ export function ShiftWaiting({ shift }: { shift: WaitingShift }) {
   const { timeZone } = useOutletClock();
   const active = useActiveShift();
   const summary = useOwnCountSummary(shift.id);
+  const close = useCloseShiftWithApproval();
+  const startRecount = useStartRecount();
+  const [closing, setClosing] = useState(false);
   const [showStatus, setShowStatus] = useState(() => openStatusOnMount);
   useEffect(() => {
     openStatusOnMount = false;
   }, []);
   const last = summary.data ?? null;
+  // The supervisor close needs the stored count (real wire); the recount is the
+  // cashier's own, up to the server's limit.
+  const closeCount = last?.countId
+    ? { countId: last.countId, noteRequired: last.noteRequired ?? false }
+    : null;
+  const stale = isCloseStale(close.error);
+  const holdBlocked = isQrisHoldBlock(close.error);
+  const dialogError =
+    close.isError && !stale && !holdBlocked
+      ? close.error instanceof ApiError &&
+        close.error.status >= 400 &&
+        close.error.status < 500
+        ? t("posKasirShift.close.pinRejected")
+        : t("posKasirShift.close.overrideFailed")
+      : null;
+  // The approval was accepted but its answer is unknown: no dialog, no new PIN,
+  // only "Coba lagi" with the stored body. Closed by a lost answer: read again.
+  const dialogOpen =
+    closing &&
+    !close.canRetry &&
+    !close.isSuccess &&
+    !isCloseSettled(close.error);
+  const recount = () => {
+    close.reset();
+    startRecount(shift.id);
+  };
 
   if (last?.limitReached && !showStatus)
     return (
@@ -207,8 +244,38 @@ export function ShiftWaiting({ shift }: { shift: WaitingShift }) {
               >
                 {t("posKasirShift.submitted.back")}
               </Button>
+              {closeCount && last.sequence < SHIFT_CASHIER_COUNT_LIMIT && (
+                <Button type="button" variant="outline" onClick={recount}>
+                  {t("posKasirShift.submitted.recount")}
+                </Button>
+              )}
+              {closeCount && close.canRetry && (
+                <Button
+                  type="button"
+                  loading={close.isPending}
+                  onClick={() => {
+                    setClosing(false);
+                    close.retry();
+                  }}
+                >
+                  {t("posKasirShift.close.retry")}
+                </Button>
+              )}
+              {closeCount && !close.canRetry && (
+                <Button
+                  type="button"
+                  loading={close.isPending}
+                  onClick={() => {
+                    close.reset();
+                    setClosing(true);
+                  }}
+                >
+                  {t("posKasirShift.submitted.closeAction")}
+                </Button>
+              )}
               <Button
                 type="button"
+                variant={closeCount ? "outline" : "default"}
                 loading={active.isFetching}
                 onClick={() => {
                   void active.refetch();
@@ -236,9 +303,58 @@ export function ShiftWaiting({ shift }: { shift: WaitingShift }) {
             <p className="text-base text-muted-foreground">
               {t("posKasirShift.submitted.note")}
             </p>
+            {stale && (
+              <Notice tone="danger" title={t("posKasirShift.close.staleTitle")}>
+                <p>{t("posKasirShift.close.staleBody")}</p>
+                <Button type="button" className="mt-3" onClick={recount}>
+                  {t("posKasirShift.close.staleAction")}
+                </Button>
+              </Notice>
+            )}
+            {close.canRetry && !close.isPending && (
+              <Notice
+                tone="warning"
+                title={t("posKasirShift.close.retryHint")}
+              />
+            )}
+            {holdBlocked && (
+              <Notice tone="warning" title={t("posKasirShift.close.holdTitle")}>
+                {t("posKasirShift.close.holdBody")}
+              </Notice>
+            )}
           </div>
         </PosPanel>
       </PosTwoPane>
+      {closeCount && (
+        <ApprovalDialog
+          open={dialogOpen}
+          onOpenChange={setClosing}
+          action="cash_shift_close"
+          title={t("posKasirShift.close.dialogTitle")}
+          summary={t("posKasirShift.close.dialogSummary")}
+          reasonLabel={t("posKasirShift.close.noteLabel")}
+          pending={close.isPending}
+          error={dialogError}
+          onSubmit={({ approverUserId, pin, reason }) =>
+            close.mutate(
+              {
+                shiftId: shift.id,
+                countId: closeCount.countId,
+                noteRequired: closeCount.noteRequired,
+                approverUserId,
+                pin,
+                reason,
+              },
+              {
+                onSettled: (_data, error) => {
+                  if (!error || isCloseStale(error) || isQrisHoldBlock(error))
+                    setClosing(false);
+                },
+              },
+            )
+          }
+        />
+      )}
     </div>
   );
 }
