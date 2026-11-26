@@ -189,3 +189,82 @@ export const setWfcProductSchema = clientInputSchema({
   expectedUpdatedAt: isoDateTimeSchema,
 });
 export type SetWfcProductInput = z.input<typeof setWfcProductSchema>;
+
+// ---- Settings proposals (card W1b) -----------------------------------------
+
+/** The numbers of a settings version as proposed and approved (camelCase). */
+const wfcSettingsNumbers = {
+  effectiveFrom: businessDateSchema,
+  totalSeats: z.number().int().min(1).max(WFC_MAX_QUOTA_SEATS),
+  wfcSeats: z.number().int().min(1).max(WFC_MAX_QUOTA_SEATS),
+  openHoursPerMonth: z.number().int().min(1).max(744),
+  fixedCostIdr: positiveIdr,
+  targetRevenueIdr: positiveIdr,
+  targetProfitIdr: nonnegativeIdr,
+  targetOccupancyBp: z.number().int().min(1).max(10_000),
+  spendPerPersonIdr: positiveIdr,
+  cogsBp: z.number().int().min(1).max(9_999),
+  avgStayMinutes: z.number().int().min(1).max(WFC_MAX_RESERVATION_MINUTES),
+  noShowMinutes: z.number().int().min(1).max(240),
+};
+
+/**
+ * Proposes a new settings version; a second person approves it in the
+ * approval inbox. Every number is required, nothing has a default.
+ */
+export const proposeWfcSettingsSchema = clientInputSchema({
+  outletId: uuidSchema,
+  ...wfcSettingsNumbers,
+  reason: z.string().trim().min(3).max(500),
+}).refine((value) => value.wfcSeats <= value.totalSeats, {
+  message: "Kursi WFC tidak boleh melebihi kursi total.",
+  path: ["wfcSeats"],
+});
+export type ProposeWfcSettingsInput = z.input<typeof proposeWfcSettingsSchema>;
+
+/** The approval payload: the version id is the request's object id. */
+export const wfcSettingsPayloadSchema = z.object({
+  outletId: uuidSchema,
+  version: z.number().int().min(1),
+  ...wfcSettingsNumbers,
+});
+export type WfcSettingsPayload = z.infer<typeof wfcSettingsPayloadSchema>;
+
+export const wfcSettingsProposalSchema = z.strictObject({
+  chainId: uuidSchema,
+  /** The id the version gets once approved. */
+  settingsId: uuidSchema,
+  status: z.enum(["pending", "approved", "rejected", "expired", "cancelled"]),
+  /** True once the approved version is written. */
+  applied: z.boolean(),
+  requestedBy: z.string(),
+  payload: wfcSettingsPayloadSchema,
+  /** Hourly floors these numbers give (Rp per seat-hour). */
+  floors: z.strictObject({
+    peakIdr: nonnegativeIdr,
+    offPeakIdr: nonnegativeIdr,
+  }),
+  createdAt: isoDateTimeSchema,
+});
+export type WfcSettingsProposal = z.infer<typeof wfcSettingsProposalSchema>;
+
+export const listWfcSettingsQuerySchema = clientInputSchema({
+  outletId: uuidSchema,
+});
+export type ListWfcSettingsInput = z.input<typeof listWfcSettingsQuerySchema>;
+
+/** Writes the version of an approved proposal (idempotent). */
+export const applyWfcSettingsSchema = clientInputSchema({
+  chainId: uuidSchema,
+});
+export type ApplyWfcSettingsInput = z.input<typeof applyWfcSettingsSchema>;
+
+/** Switches a WFC product on (price floor checked) or off. */
+export const setWfcProductActiveSchema = clientInputSchema({
+  productId: uuidSchema,
+  isActive: z.boolean(),
+  expectedUpdatedAt: isoDateTimeSchema,
+});
+export type SetWfcProductActiveInput = z.input<
+  typeof setWfcProductActiveSchema
+>;

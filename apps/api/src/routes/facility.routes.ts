@@ -54,6 +54,7 @@ import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { facilityIncidentsRouter } from "./facility-incidents.routes.ts";
+import { wfcAdminRouter } from "./wfc-admin.routes.ts";
 import * as config from "../services/facility-config.service.ts";
 import * as incidents from "../services/facility-incidents.service.ts";
 import * as products from "../services/facility-products.service.ts";
@@ -113,6 +114,8 @@ export const facilityRouter = Router();
 facilityRouter.use(requireAuth, requireTrustedOrigin, requireTenantContext);
 // Incident raise/respond + plan list (bead legend-1cj0).
 facilityRouter.use(facilityIncidentsRouter);
+// Paid WFC admin: seats, quota, product, settings (brief 1270 W1/W1b).
+facilityRouter.use("/wfc", wfcAdminRouter);
 
 // ------------------------------------------------------------ availability
 
