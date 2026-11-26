@@ -62,7 +62,10 @@ import {
   type PosReceiptPort,
 } from "../services/pos-order-ports.ts";
 import { openPosShift } from "../services/pos-shift.service.ts";
+import { whatsAppDigest } from "../lib/identity-digest.ts";
+import { issueMemberQrToken } from "../lib/member-qr-token.ts";
 import { registerTestDevice } from "./device-seed.ts";
+import { seedMember } from "./member-loyalty-helpers.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
 import {
   createIsolatedTenant,
@@ -833,5 +836,96 @@ describe("pos-936 voucher: removing releases that voucher only", () => {
       discountIdr: 10_000,
       totalIdr: 44_000,
     });
+  });
+});
+
+describe("1272 V1 P3 1: a member voucher reaches the engine with the attached member", () => {
+  const putCustomer = (
+    world: World,
+    orderId: string,
+    body: Record<string, unknown>,
+  ) =>
+    world.client
+      .put(`/api/pos/orders/${orderId}/customer`)
+      .set(world.headers)
+      .set(originHeader)
+      .send(body);
+
+  /** A value voucher issued to one member (customer_profile_id set). */
+  async function seedMemberVoucher(
+    world: World,
+    profileId: string,
+    valueIdr: number,
+  ): Promise<string> {
+    const code = `M${randomUUID().replaceAll("-", "").slice(0, 11).toUpperCase()}`;
+    await asOwnerTenant(world.tenant.tenantId, (db) =>
+      db.query(
+        `INSERT INTO vouchers (id, tenant_id, promotion_id, customer_profile_id, code_hash, source,
+                               value_idr, valid_from, valid_until)
+         VALUES ($1, $2, NULL, $3, $4, 'manual', $5, now() - interval '1 hour', NULL)`,
+        [randomUUID(), world.tenant.tenantId, profileId, sha256(code), valueIdr],
+      ),
+    );
+    return code;
+  }
+
+  const qrOf = (world: World, profileId: string) =>
+    issueMemberQrToken(
+      { tenantId: world.tenant.tenantId, customerProfileId: profileId },
+      new Date(),
+    ).token;
+
+  it("accepts the member voucher when its member is attached by QR", async () => {
+    const member = await seedMember(worldA.tenant.tenantId);
+    const code = await seedMemberVoucher(worldA, member.id, 10_000);
+    const order = await openOrder(worldA);
+    const attach = await putCustomer(worldA, order.id, {
+      memberToken: qrOf(worldA, member.id),
+    });
+    expect(attach.status, JSON.stringify(attach.body)).toBe(200);
+
+    const applied = await pos(worldA).voucher(order.id, code);
+    expect(applied.status, JSON.stringify(applied.body)).toBeLessThan(300);
+    expect(await voucherState(worldA, code)).toEqual({
+      status: "redeemed",
+      redeemedOrderId: ulidToUuid(order.id),
+    });
+    expect(await readOrder(worldA, order.id)).toMatchObject({
+      discountIdr: 10_000,
+    });
+  });
+
+  it("refuses the member voucher when the member is only typed in by phone", async () => {
+    const number = `+62812${String(Math.floor(Math.random() * 1e8)).padStart(8, "0")}`;
+    const member = await seedMember(worldA.tenant.tenantId, {
+      whatsappHash: await whatsAppDigest(number),
+    });
+    const code = await seedMemberVoucher(worldA, member.id, 10_000);
+    const order = await openOrder(worldA);
+    const attach = await putCustomer(worldA, order.id, {
+      whatsappNumber: number,
+    });
+    expect(attach.status, JSON.stringify(attach.body)).toBe(200);
+
+    const applied = await pos(worldA).voucher(order.id, code);
+    expect(applied.status).toBeGreaterThanOrEqual(400);
+    expect((await voucherState(worldA, code)).status).toBe("issued");
+    expect(await discountRows(worldA, order.id)).toBe(0);
+  });
+
+  it("refuses the member voucher when another member is attached by QR", async () => {
+    const owner1 = await seedMember(worldA.tenant.tenantId);
+    const other = await seedMember(worldA.tenant.tenantId);
+    const code = await seedMemberVoucher(worldA, owner1.id, 10_000);
+    const order = await openOrder(worldA);
+    const attach = await putCustomer(worldA, order.id, {
+      memberToken: qrOf(worldA, other.id),
+    });
+    expect(attach.status, JSON.stringify(attach.body)).toBe(200);
+
+    const applied = await pos(worldA).voucher(order.id, code);
+    expect(applied.status).toBeGreaterThanOrEqual(400);
+    expect((await voucherState(worldA, code)).status).toBe("issued");
+    expect(await discountRows(worldA, order.id)).toBe(0);
   });
 });

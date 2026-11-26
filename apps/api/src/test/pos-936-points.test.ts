@@ -1130,6 +1130,95 @@ describe("POS-936-PTS a captured points tender locks the member and cannot be re
     expect(await pointsTenders(order)).toEqual(pointsBefore);
   });
 
+  it("1272-P3-2 an older points tender without a ledger row never lets the refund pay out cash for the points part", async () => {
+    const order = await newOrder();
+    // Rp5.000 cash, Rp50.000 an older points tender (no point_ledger row).
+    await seedCashTender(order, 5_000);
+    await asTenant(world.tenant.tenantId, (client) =>
+      client.query(
+        `INSERT INTO pos_order_tenders
+           (tenant_id, outlet_id, order_id, method, provider, amount_idr,
+            received_idr, change_idr, points_used, payment_intent_id, reference, status,
+            requested_at, resolved_at)
+         VALUES ($1, $2, $3, 'points', 'manual', 50000, NULL, NULL, 500, NULL, NULL, 'captured', now(), now())`,
+        [world.tenant.tenantId, order.outletId, ulidToUuid(order.id)],
+      ),
+    );
+    const statusNow = (await orderDetail(order)).body.data.status as string;
+    const completed = await world.cashier.client
+      .post(
+        `/api/outlets/${encodeURIComponent(order.outletId)}/pos/orders/${order.id}/complete`,
+      )
+      .set(world.headers)
+      .set(originHeader)
+      .set(DEVICE_TOKEN_HEADER, deviceToken())
+      .send({ idempotencyKey: randomUUID(), expectedStatus: statusNow });
+    expect(completed.status, JSON.stringify(completed.body)).toBe(200);
+
+    const refundOf = async (amountIdr: number) => {
+      const { override } = await createPosOverride(
+        establishTenantContext({
+          tenantId: tenantIdSchema.parse(world.tenant.tenantId),
+          brandId: null,
+          source: "session",
+        }),
+        world.cashier.userId,
+        {
+          outletId: order.outletId,
+          action: "refund",
+          valueIdr: amountIdr,
+          reason: "Pelanggan salah pesan",
+          objectType: "order",
+          objectId: order.id,
+          approval: {
+            method: "supervisor_pin",
+            approverUserId: userIdSchema.parse(world.supervisor.userId),
+            pin: PIN,
+          },
+        } as Parameters<typeof createPosOverride>[2],
+        { idempotencyKey: randomUUID() },
+      );
+      return world.cashier.client
+        .post(
+          `/api/outlets/${encodeURIComponent(order.outletId)}/pos/orders/${order.id}/corrections/refund`,
+        )
+        .set(world.headers)
+        .set(originHeader)
+        .set(DEVICE_TOKEN_HEADER, deviceToken())
+        .send({
+          idempotencyKey: randomUUID(),
+          amountIdr,
+          reason: "customer_cancelled",
+          reasonNote: "Pelanggan salah pesan",
+          approvedBy: world.supervisor.userId,
+          overrideId: override.id,
+        });
+    };
+
+    // Above the non-points part (Rp5.000): refused, nothing is paid out.
+    const tooMuch = await refundOf(10_000);
+    expect(tooMuch.status, JSON.stringify(tooMuch.body)).toBe(422);
+    expect(errorCodeOf(tooMuch.body)).toBe("REFUND_EXCEEDS_PAID");
+
+    // Full refund of the non-points part: allowed, and it all goes back to
+    // the non-points tender, never as cash for the points.
+    const full = await refundOf(5_000);
+    expect(full.status, JSON.stringify(full.body)).toBe(201);
+    const lines = full.body.data.lines as {
+      method: string;
+      amountIdr: number;
+    }[];
+    expect(
+      lines
+        .filter((line) => line.method !== "points")
+        .reduce((sum, line) => sum + line.amountIdr, 0),
+    ).toBe(5_000);
+    expect(lines.filter((line) => line.method === "points")).toEqual([]);
+    expect((await pointsTenders(order)).map((row) => row.status)).toEqual([
+      "captured",
+    ]);
+  });
+
   it("POS-936-PTS-61 once points are redeemed the bill's member cannot be detached or swapped (409 ORDER_HAS_POINTS_TENDER)", async () => {
     const member = await memberWith(1_000);
     const order = await newOrder({ member });

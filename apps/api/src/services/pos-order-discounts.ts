@@ -35,6 +35,7 @@ import {
   requiresDiscountApproval,
   type PosOrderDetail,
 } from "@starter/shared/pos";
+import { customerProfiles } from "../db/schema/crm-member.ts";
 import { posOrderDiscounts } from "../db/schema/pos-order.ts";
 import { posOrderPromoPort } from "./pos-order-ports.ts";
 import { lineSubtotalIdr, posPriceChannel } from "./pos-order-pricing.ts";
@@ -66,6 +67,47 @@ import type { Tx } from "./menu-internals.ts";
 import { assertNoActiveQrisHold } from "./pos-qris-hold.ts";
 
 type ApplyInput = z.output<typeof applyEndpoint.body>;
+
+/**
+ * 1272 V1 P3 1: the member the engine may serve. Only a member proved by the
+ * member QR or the app session counts; a number the cashier typed stays null
+ * (anyone could type a stranger's number to use that member's voucher).
+ */
+async function attachedPromoCustomer(
+  tx: Tx,
+  order: Locked["order"],
+): Promise<{
+  customerProfileId: string;
+  tierId: string | null;
+  isMember: boolean;
+} | null> {
+  if (
+    order.customerProfileId === null ||
+    (order.customerAttachedVia !== "member_qr" &&
+      order.customerAttachedVia !== "pwa_session")
+  )
+    return null;
+  const [profile] = await tx
+    .select({
+      id: customerProfiles.id,
+      tierId: customerProfiles.tierId,
+      membershipStatus: customerProfiles.membershipStatus,
+    })
+    .from(customerProfiles)
+    .where(
+      and(
+        eq(customerProfiles.tenantId, order.tenantId),
+        eq(customerProfiles.id, order.customerProfileId),
+      ),
+    )
+    .limit(1);
+  if (!profile || profile.membershipStatus !== "active") return null;
+  return {
+    customerProfileId: profile.id,
+    tierId: profile.tierId,
+    isMember: true,
+  };
+}
 
 async function assertBeforeSettlement(
   tx: Tx,
@@ -231,7 +273,7 @@ export async function applyPosDiscount(
             unitPriceIdr: idr(item.unitPriceIdr + item.modifiersTotalIdr),
             lineTotalIdr: idr(lineSubtotalIdr(item)),
           })),
-          customer: null,
+          customer: await attachedPromoCustomer(tx, order),
           voucherCode: promoCode,
           at: now,
         };
