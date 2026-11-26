@@ -11,6 +11,7 @@ import {
   outletIdSchema,
   uuidSchema,
 } from "../core/index.ts";
+import { edgeNodeFailoverStatusSchema } from "./failover.ts";
 
 export const EDGE_NODE_ALERT_KINDS = [
   "device_registry_hard_stale",
@@ -48,6 +49,11 @@ export const edgeNodeStatusSchema = z.strictObject({
   lastHeartbeatAt: isoDateTimeSchema.nullable(),
   /** Open alerts only. */
   alerts: z.array(edgeNodeStatusAlertSchema).max(3),
+  /**
+   * 1271 F1: the outlet's open failover window (`active`/`returning`), null
+   * when none. Optional until the status service fills it (F4).
+   */
+  failover: edgeNodeFailoverStatusSchema.nullable().optional(),
 });
 export type EdgeNodeStatus = z.infer<typeof edgeNodeStatusSchema>;
 

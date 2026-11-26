@@ -3608,9 +3608,16 @@
       "breakpoints": true
     },
     {
+      "idx": 529,
+      "version": "7",
+      "when": 1795654577406,
+      "tag": "0529_edge_failover",
+      "breakpoints": true
+    },
+    {
       "idx": 530,
       "version": "7",
-      "when": 1795655222211,
+      "when": 1795656371729,
       "tag": "0530_edge_edc_ingests",
       "breakpoints": true
     }

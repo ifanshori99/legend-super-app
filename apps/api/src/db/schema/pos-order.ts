@@ -57,6 +57,7 @@ import {
 } from "../columns";
 import { outlets, tenants } from "./platform-org";
 import { syncTxidColumn } from "./sync-txid";
+import { outletFailoverWindows } from "./edge-failover";
 import { posShifts } from "./pos-shift";
 import { orderItems, orders } from "./qr-order";
 
@@ -107,6 +108,11 @@ export const posOrders = pgTable(
     voidApprovalRequestId: uuid("void_approval_request_id"),
     /** legend-0gy1: the `pos_overrides` row that approved the void (ULID). */
     voidOverrideId: ulidInUuid("void_override_id"),
+    /**
+     * 1271 F1: the failover window this order was sold in (cloud only, set at
+     * creation, never changed). Null for every normal and edge order.
+     */
+    failoverWindowId: uuid("failover_window_id"),
     /** Optimistic concurrency (legend-63l6): bumped by every write. */
     version: integer("version").notNull().default(0),
     createdAt,
@@ -137,6 +143,18 @@ export const posOrders = pgTable(
       table.createdAt,
     ),
     index("pos_orders_shift_idx").on(table.tenantId, table.shiftId),
+    foreignKey({
+      name: "pos_orders_failover_window_fk",
+      columns: [table.tenantId, table.outletId, table.failoverWindowId],
+      foreignColumns: [
+        outletFailoverWindows.tenantId,
+        outletFailoverWindows.outletId,
+        outletFailoverWindows.id,
+      ],
+    }),
+    index("pos_orders_failover_window_idx")
+      .on(table.tenantId, table.failoverWindowId)
+      .where(sql`${table.failoverWindowId} IS NOT NULL`),
     check(
       "pos_orders_channel_check",
       sql`${table.channel} IN ('pos', 'captain', 'gofood', 'grabfood', 'shopeefood', 'reservation', 'kiosk')`,

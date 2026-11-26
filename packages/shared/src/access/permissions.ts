@@ -128,6 +128,9 @@ const entries = [
   // Writes off one lost receipt number so Tutup Hari can proceed (legend-0hzqw,
   // owner only: it removes a gap from the audit trail of numbered receipts).
   ["pos.receipt.writeoff", ["approve"]],
+  // 1271 F1: open, cancel and end an edge -> cloud failover window of an
+  // outlet (the cloud then sells on the F-series while the edge is down).
+  ["pos.failover.manage", ["approve"]],
   ["wifi.voucher.issue", []],
 
   // Kitchen (§3.11, F9, F40)

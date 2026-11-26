@@ -62,6 +62,7 @@ import {
   eq,
   inArray,
   isNull,
+  ne,
   notExists,
   notInArray,
   or,
@@ -80,6 +81,7 @@ import {
   assertReceiptMatchesSequence,
   CLOUD_RECEIPT_PREFIX,
   formatReceiptNumber,
+  isFailoverReceiptPrefix,
   RECEIPT_MAX_ORDINAL,
   posReceiptSchema,
   PosError,
@@ -89,6 +91,7 @@ import {
   voidReasonSchema,
   type PosReceipt,
   type ReceiptSequence,
+  type ReceiptSeries,
 } from "@starter/shared/pos";
 import type {
   DeviceReceiptSequenceBinding,
@@ -113,6 +116,7 @@ import { receiptNumberWriteoffs } from "../db/schema/pos-receipt-writeoff.ts";
 import type { PosReceiptPort } from "./pos-order-ports.ts";
 import { reportReceiptsArrivedAfterWriteoff } from "./pos-receipt-writeoff-arrival.ts";
 import type { Tx } from "./permission-resolver.ts";
+import { activeFailoverWindow } from "./edge-failover-window.ts";
 
 type ReceiptRow = typeof posReceipts.$inferSelect;
 type SequenceRow = typeof receiptSequences.$inferSelect;
@@ -158,12 +162,27 @@ async function lockOutletSequences(
   );
 }
 
-/** The device's current (not retired) sequence; legend-zsdd. */
+/**
+ * 1271 F2: which runs of a key a lookup sees. `regular` = every run but the
+ * failover one (the device's `device` run, or the outlet's `C` run, series
+ * `cloud`); `failover` = the device's `F<n>` run. A device has at most one
+ * current run of each (receipt_sequences_device_current_key), so a `regular`
+ * lookup never meets the F-run and the edge paths never touch it.
+ */
+type SequenceKind = "regular" | "failover";
+
+const seriesOf = (kind: SequenceKind) =>
+  kind === "failover"
+    ? eq(receiptSequences.series, "failover")
+    : ne(receiptSequences.series, "failover");
+
+/** The key's current (not retired) sequence of `kind`; legend-zsdd. */
 async function findSequenceRow(
   tx: Tx,
   tenantId: TenantId,
   outletId: OutletId,
   deviceId: string,
+  kind: SequenceKind = "regular",
 ): Promise<SequenceRow | undefined> {
   const [row] = await tx
     .select()
@@ -174,6 +193,7 @@ async function findSequenceRow(
         eq(receiptSequences.outletId, outletId),
         eq(receiptSequences.deviceId, deviceId),
         isNull(receiptSequences.retiredAt),
+        seriesOf(kind),
       ),
     );
   return row;
@@ -230,6 +250,20 @@ function nextFreePrefixAbove(
   }
 }
 
+/** 1271 F2: highest failover prefix (`F9999`, FAILOVER_RECEIPT_PREFIX_PATTERN). */
+const FAILOVER_PREFIX_MAX = 9999;
+
+/**
+ * 1271 F2: first of `F1`, `F2`, ... not used by any row of the outlet, retired
+ * runs included. Past `F9999` there is none (the prefix check allows four
+ * digits): the sale is refused rather than reusing a prefix.
+ */
+function nextFreeFailoverPrefix(used: ReadonlyMap<string, string>): string {
+  for (let n = 1; n <= FAILOVER_PREFIX_MAX; n += 1)
+    if (!used.has(`F${n}`)) return `F${n}`;
+  throw new Error("No free failover receipt prefix left in this outlet");
+}
+
 /** New sequence at 0; `binding` set = the counter lives on that edge (legend-zsdd). */
 async function insertSequence(
   tx: Tx,
@@ -238,6 +272,8 @@ async function insertSequence(
     outletId: OutletId;
     deviceId: string;
     prefix: string;
+    /** 1271 F1/F2: set by every caller (the series is fixed for the row's life). */
+    series: ReceiptSeries;
     binding?: DeviceReceiptSequenceBinding;
   },
 ): Promise<SequenceRow> {
@@ -248,6 +284,7 @@ async function insertSequence(
       outletId: input.outletId,
       deviceId: input.deviceId,
       prefix: input.prefix,
+      series: input.series,
       lastNumber: 0,
       edgeNodeId: input.binding?.edgeNodeId ?? null,
       edgeInstanceId: input.binding?.edgeInstanceId ?? null,
@@ -364,6 +401,7 @@ async function ensureSequence(
       outletId,
       deviceId,
       prefix: CLOUD_RECEIPT_PREFIX,
+      series: "cloud",
     });
   const used = await prefixesOfOutlet(tx, tenantId, outletId);
   return insertSequence(tx, {
@@ -371,6 +409,49 @@ async function ensureSequence(
     outletId,
     deviceId,
     prefix: nextFreePrefix(used),
+    series: "device",
+  });
+}
+
+/**
+ * 1271 F2 (D3): the device's failover run, numbered by the cloud alone while
+ * the outlet's window is `active`. Created on the device's first failover sale
+ * with the next free `F<n>` of the outlet (under the outlet lock, so two
+ * terminals never pick the same one), never edge-bound, and kept for the next
+ * outage: it is never retired by a window closing, so its numbers stay one
+ * gapless run per device.
+ */
+async function ensureFailoverSequence(
+  tx: Tx,
+  tenantId: TenantId,
+  outletId: OutletId,
+  deviceId: string,
+): Promise<SequenceRow> {
+  const existing = await findSequenceRow(
+    tx,
+    tenantId,
+    outletId,
+    deviceId,
+    "failover",
+  );
+  if (existing) return existing;
+  await lockOutletSequences(tx, tenantId, outletId);
+  // Another sale of the device may have created it while this one waited.
+  const created = await findSequenceRow(
+    tx,
+    tenantId,
+    outletId,
+    deviceId,
+    "failover",
+  );
+  if (created) return created;
+  const used = await prefixesOfOutlet(tx, tenantId, outletId);
+  return insertSequence(tx, {
+    tenantId,
+    outletId,
+    deviceId,
+    prefix: nextFreeFailoverPrefix(used),
+    series: "failover",
   });
 }
 
@@ -543,13 +624,23 @@ export async function allocateReceipt(
   // on the edge. A cloud number on the same device run would collide with
   // the edge's (two allocators, one counter each). Sales without a device
   // (sequence C) are the cloud's own and stay allowed.
+  // 1271 F2 (D4): while the outlet's failover window is `active` the cloud
+  // numbers the device's own F-run instead (cloud-only, the edge never holds
+  // it); `returning` already belongs to the edge again.
+  let failover = false;
   if (
     input.deviceId !== null &&
     !isEdgeProcess() &&
     (await outletHasActiveEdge(tx, tenantId, outletId))
-  )
-    throw new PosError("RECEIPT_DEVICE_ON_EDGE");
-  const sequence = await ensureSequence(tx, tenantId, outletId, deviceKey);
+  ) {
+    const window = await activeFailoverWindow(tx, tenantId, outletId);
+    if (window?.status !== "active")
+      throw new PosError("RECEIPT_DEVICE_ON_EDGE");
+    failover = true;
+  }
+  const sequence = failover
+    ? await ensureFailoverSequence(tx, tenantId, outletId, deviceKey)
+    : await ensureSequence(tx, tenantId, outletId, deviceKey);
   // The row lock taken here serialises every device sale on this sequence.
   // legend-zsdd (review K R1-A): a retired run never numbers, and in the cloud
   // a claim may bind the row between the read above and this UPDATE.
@@ -694,6 +785,7 @@ export async function provisionReceiptSequence(
         outletId,
         deviceId: input.deviceId,
         prefix,
+        series: "device",
       }),
     );
   if (existing.prefix === prefix) return toReceiptSequence(existing);
@@ -770,6 +862,7 @@ export async function provisionNextDeviceReceiptSequence(
       outletId,
       deviceId: input.deviceId,
       prefix: nextFreePrefix(used),
+      series: "device",
     }),
   );
 }
@@ -794,8 +887,10 @@ export async function backfillDeviceReceiptSequences(
         eq(receiptSequences.tenantId, devices.tenantId),
         eq(receiptSequences.outletId, devices.outletId),
         eq(receiptSequences.deviceId, devices.id),
-        // legend-zsdd: only a current row counts.
+        // legend-zsdd: only a current row counts. 1271 F2: an F-run is not a
+        // device run; a device holding only one still gets its P-run.
         isNull(receiptSequences.retiredAt),
+        seriesOf("regular"),
       ),
     )
     .where(
@@ -1063,6 +1158,8 @@ export async function claimDeviceReceiptSequencesForEdge(
         eq(receiptSequences.outletId, outletId),
         isNull(receiptSequences.retiredAt),
         sql`${receiptSequences.deviceId} <> ${receiptSequences.outletId}`,
+        // 1271 F2: the F-run is cloud-only; an edge never claims it.
+        seriesOf("regular"),
         eq(devices.status, "active"),
         isNull(devices.revokedAt),
         inArray(devices.type, [...RECEIPT_DEVICE_TYPES]),
@@ -1135,6 +1232,7 @@ export async function claimDeviceReceiptSequencesForEdge(
               outletId,
               deviceId: sequence.deviceId,
               prefix,
+              series: "device",
               binding,
             });
             used.set(prefix, sequence.deviceId);
@@ -1208,6 +1306,7 @@ export async function claimDeviceReceiptSequencesForEdge(
         outletId,
         deviceId: sequence.deviceId,
         prefix,
+        series: "device",
         binding,
       });
       used.set(prefix, sequence.deviceId);
@@ -1246,6 +1345,7 @@ export async function claimDeviceReceiptSequencesForEdge(
       outletId,
       deviceId: sequence.deviceId,
       prefix,
+      series: "device",
       binding,
     });
     used.set(prefix, sequence.deviceId);
@@ -1352,6 +1452,8 @@ export async function listDeviceReceiptSequences(
         eq(receiptSequences.outletId, outletId as OutletId),
         sql`${receiptSequences.deviceId} <> ${receiptSequences.outletId}`,
         isNull(receiptSequences.retiredAt),
+        // 1271 F2: never edge-bound (check), filtered too: the pull lists none.
+        seriesOf("regular"),
         eq(receiptSequences.edgeNodeId, binding.edgeNodeId),
         eq(receiptSequences.edgeInstanceId, binding.edgeInstanceId),
       ),
@@ -1406,9 +1508,12 @@ export async function applyCloudDeviceReceiptSequence(
   const tenantId = context.tenant.tenantId;
   const outletId = sequence.outletId as OutletId;
   if (!sameBinding(sequence, own)) return "refused";
+  // 1271 F2: an `F<n>` prefix is the cloud's failover run, never an edge's
+  // (the pull schema refuses it too).
   if (
     sequence.deviceId === outletId ||
-    sequence.prefix === CLOUD_RECEIPT_PREFIX
+    sequence.prefix === CLOUD_RECEIPT_PREFIX ||
+    isFailoverReceiptPrefix(sequence.prefix)
   )
     return "refused";
   await lockOutletSequences(tx, tenantId, outletId);
@@ -1556,6 +1661,8 @@ export async function retireUnlistedDeviceReceiptSequences(
         eq(receiptSequences.outletId, outlet),
         sql`${receiptSequences.deviceId} <> ${receiptSequences.outletId}`,
         isNull(receiptSequences.retiredAt),
+        // 1271 F2: an F-run is never listed to an edge, so never "unlisted".
+        seriesOf("regular"),
         or(
           isNull(receiptSequences.edgeNodeId),
           and(
@@ -1674,6 +1781,8 @@ export async function mergeDeviceReceiptRun(
   // out is refused, so two devices can never pick the same one offline.
   // legend-zsdd (legend-ol6v): any run of the device, retired ones included,
   // so a late run of a replaced sequence still merges.
+  // 1271 F2: never the F-run: the cloud alone numbers it, an edge or device
+  // run cannot merge into it (RECEIPT_PREFIX_MISMATCH).
   // legend-refx7: the rows are locked FOR UPDATE here, before any other read,
   // the same lock the write-off takes first (pos-receipt-writeoff.service.ts).
   // A write-off in flight finishes first, so the write-off read after the
@@ -1687,6 +1796,7 @@ export async function mergeDeviceReceiptRun(
         eq(receiptSequences.tenantId, tenantId),
         eq(receiptSequences.outletId, outletId),
         eq(receiptSequences.deviceId, deviceId),
+        seriesOf("regular"),
       ),
     )
     .orderBy(asc(receiptSequences.id))

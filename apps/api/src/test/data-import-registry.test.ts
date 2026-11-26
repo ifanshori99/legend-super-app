@@ -256,6 +256,8 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "creates the app.reseal_frozen_sealed SECURITY DEFINER function, the legend_sealed_reseal group role and the frozen-column guard exception; the migration itself rewrites no existing row, and the only row effect is the compare-and-set re-seal UPDATE of the sealed column inside the function body when the reseal job calls it (legend-4vfmn, legend-49onu); no amount or journal touched, imports nothing",
   "0525_edge_catalog_v4.sql":
     "trigger function bodies only: stamp sync_txid on the v4 catalog tables and write a row of edge_catalog_tombstones when one of their rows is deleted at runtime (legend-osqou.22); the migration itself rewrites no existing row and imports nothing",
+  "0529_edge_failover.sql":
+    "marks the existing cloud-owned receipt runs (device key = outlet id, prefix C) as series 'cloud' (receipt_sequences FORCE lifted for the transaction and restored) and appends pos.failover.manage to the stored owner, outlet_manager and supervisor template role rows of existing tenants (1271 F1); each tenant is named (app.tenant_id) before its roles rows are touched; idempotent, never touches another template or a custom role, no receipt number, amount or journal changes, imports nothing",
   "0523_period_close_override_grants.sql":
     "appends accounting.period.close_override to the stored owner and finance template role rows of existing tenants (card 1263, founder no. 19); idempotent, no duplicates, never touches another template or a custom role; each tenant is named (app.tenant_id) before its roles rows are touched, FORCE RLS stays on; no table added, no amount or journal touched, imports nothing",
   "0505_payout_gl_resolve_grants.sql":

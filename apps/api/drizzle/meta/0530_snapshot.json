@@ -1,6 +1,6 @@
 {
-  "id": "c7ab126f-83b0-490d-b589-2f3525cea067",
-  "prevId": "0e27152c-e6b3-4e27-bb18-a0f1f6123e66",
+  "id": "dff17504-d5a6-4c38-a245-6f0036b019ca",
+  "prevId": "1b39f671-033b-4eb9-b9f5-6ec1fa582e8f",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -49029,6 +49029,297 @@
       },
       "isRLSEnabled": false
     },
+    "public.outlet_failover_windows": {
+      "name": "outlet_failover_windows",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outlet_id": {
+          "name": "outlet_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "edge_node_id": {
+          "name": "edge_node_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(10)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'active'"
+        },
+        "reason": {
+          "name": "reason",
+          "type": "varchar(500)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "override": {
+          "name": "override",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "idempotency_key": {
+          "name": "idempotency_key",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "activated_by": {
+          "name": "activated_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "activated_at": {
+          "name": "activated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "edge_heartbeat_at": {
+          "name": "edge_heartbeat_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "business_date_from": {
+          "name": "business_date_from",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "business_date_to": {
+          "name": "business_date_to",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "return_started_at": {
+          "name": "return_started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "return_started_by": {
+          "name": "return_started_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "closing_event_id": {
+          "name": "closing_event_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "closed_at": {
+          "name": "closed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cancelled_at": {
+          "name": "cancelled_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cancelled_by": {
+          "name": "cancelled_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "outlet_failover_windows_open_key": {
+          "name": "outlet_failover_windows_open_key",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "outlet_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"outlet_failover_windows\".\"status\" IN ('active', 'returning')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "outlet_failover_windows_tenant_id_tenants_id_fk": {
+          "name": "outlet_failover_windows_tenant_id_tenants_id_fk",
+          "tableFrom": "outlet_failover_windows",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "outlet_failover_windows_outlet_id_outlets_id_fk": {
+          "name": "outlet_failover_windows_outlet_id_outlets_id_fk",
+          "tableFrom": "outlet_failover_windows",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "outlet_failover_windows_outlet_fk": {
+          "name": "outlet_failover_windows_outlet_fk",
+          "tableFrom": "outlet_failover_windows",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "outlet_failover_windows_edge_node_fk": {
+          "name": "outlet_failover_windows_edge_node_fk",
+          "tableFrom": "outlet_failover_windows",
+          "tableTo": "edge_nodes",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id",
+            "edge_node_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "outlet_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "outlet_failover_windows_tenant_id_id_key": {
+          "name": "outlet_failover_windows_tenant_id_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        },
+        "outlet_failover_windows_tenant_outlet_id_key": {
+          "name": "outlet_failover_windows_tenant_outlet_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "outlet_id",
+            "id"
+          ]
+        },
+        "outlet_failover_windows_idempotency_key": {
+          "name": "outlet_failover_windows_idempotency_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "outlet_id",
+            "idempotency_key"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "outlet_failover_windows_status_check": {
+          "name": "outlet_failover_windows_status_check",
+          "value": "\"outlet_failover_windows\".\"status\" IN ('active', 'returning', 'closed', 'cancelled')"
+        },
+        "outlet_failover_windows_reason_check": {
+          "name": "outlet_failover_windows_reason_check",
+          "value": "char_length(btrim(\"outlet_failover_windows\".\"reason\")) >= 3"
+        },
+        "outlet_failover_windows_return_check": {
+          "name": "outlet_failover_windows_return_check",
+          "value": "(\"outlet_failover_windows\".\"return_started_at\" IS NOT NULL) = (\"outlet_failover_windows\".\"status\" IN ('returning', 'closed'))"
+        },
+        "outlet_failover_windows_return_by_check": {
+          "name": "outlet_failover_windows_return_by_check",
+          "value": "(\"outlet_failover_windows\".\"return_started_by\" IS NOT NULL) = (\"outlet_failover_windows\".\"status\" IN ('returning', 'closed'))"
+        },
+        "outlet_failover_windows_cancelled_by_check": {
+          "name": "outlet_failover_windows_cancelled_by_check",
+          "value": "(\"outlet_failover_windows\".\"cancelled_by\" IS NOT NULL) = (\"outlet_failover_windows\".\"status\" = 'cancelled')"
+        },
+        "outlet_failover_windows_closed_check": {
+          "name": "outlet_failover_windows_closed_check",
+          "value": "(\"outlet_failover_windows\".\"closed_at\" IS NOT NULL) = (\"outlet_failover_windows\".\"status\" = 'closed')"
+        },
+        "outlet_failover_windows_cancelled_check": {
+          "name": "outlet_failover_windows_cancelled_check",
+          "value": "(\"outlet_failover_windows\".\"cancelled_at\" IS NOT NULL) = (\"outlet_failover_windows\".\"status\" = 'cancelled')"
+        },
+        "outlet_failover_windows_closing_event_check": {
+          "name": "outlet_failover_windows_closing_event_check",
+          "value": "\"outlet_failover_windows\".\"closing_event_id\" IS NULL OR \"outlet_failover_windows\".\"status\" <> 'active'"
+        },
+        "outlet_failover_windows_business_dates_check": {
+          "name": "outlet_failover_windows_business_dates_check",
+          "value": "(\"outlet_failover_windows\".\"business_date_to\" IS NULL) = (\"outlet_failover_windows\".\"status\" = 'active')\n        AND (\"outlet_failover_windows\".\"business_date_to\" IS NULL OR \"outlet_failover_windows\".\"business_date_to\" >= \"outlet_failover_windows\".\"business_date_from\")"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.edge_receipt_skips": {
       "name": "edge_receipt_skips",
       "schema": "",
@@ -56054,6 +56345,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "failover_window_id": {
+          "name": "failover_window_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "version": {
           "name": "version",
           "type": "integer",
@@ -56158,6 +56455,28 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "pos_orders_failover_window_idx": {
+          "name": "pos_orders_failover_window_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "failover_window_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"pos_orders\".\"failover_window_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -56212,6 +56531,23 @@
           ],
           "columnsTo": [
             "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "pos_orders_failover_window_fk": {
+          "name": "pos_orders_failover_window_fk",
+          "tableFrom": "pos_orders",
+          "tableTo": "outlet_failover_windows",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id",
+            "failover_window_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "outlet_id",
             "id"
           ],
           "onDelete": "no action",
@@ -59108,6 +59444,13 @@
           "primaryKey": false,
           "notNull": true
         },
+        "series": {
+          "name": "series",
+          "type": "varchar(10)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'device'"
+        },
         "last_number": {
           "name": "last_number",
           "type": "integer",
@@ -59188,6 +59531,12 @@
               "isExpression": false,
               "asc": true,
               "nulls": "last"
+            },
+            {
+              "expression": "series",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
             }
           ],
           "isUnique": true,
@@ -59265,6 +59614,18 @@
         "receipt_sequences_prefix_check": {
           "name": "receipt_sequences_prefix_check",
           "value": "\"receipt_sequences\".\"prefix\" ~ '^[A-Z0-9]([A-Z0-9-]{0,10}[A-Z0-9])?$'"
+        },
+        "receipt_sequences_series_check": {
+          "name": "receipt_sequences_series_check",
+          "value": "\"receipt_sequences\".\"series\" IN ('device', 'cloud', 'failover')"
+        },
+        "receipt_sequences_failover_prefix_check": {
+          "name": "receipt_sequences_failover_prefix_check",
+          "value": "(\"receipt_sequences\".\"series\" = 'failover') = (\"receipt_sequences\".\"prefix\" ~ '^F[0-9]{1,4}$')"
+        },
+        "receipt_sequences_failover_cloud_check": {
+          "name": "receipt_sequences_failover_cloud_check",
+          "value": "\"receipt_sequences\".\"series\" <> 'failover' OR \"receipt_sequences\".\"edge_node_id\" IS NULL"
         },
         "receipt_sequences_last_number_check": {
           "name": "receipt_sequences_last_number_check",
@@ -67905,6 +68266,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "failover_window_id": {
+          "name": "failover_window_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "version": {
           "name": "version",
           "type": "integer",
@@ -67928,6 +68295,28 @@
         }
       },
       "indexes": {
+        "pos_shifts_failover_window_idx": {
+          "name": "pos_shifts_failover_window_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "failover_window_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"pos_shifts\".\"failover_window_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "pos_shifts_open_device_key": {
           "name": "pos_shifts_open_device_key",
           "columns": [
@@ -68101,6 +68490,23 @@
             "closed_by"
           ],
           "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "pos_shifts_failover_window_fk": {
+          "name": "pos_shifts_failover_window_fk",
+          "tableFrom": "pos_shifts",
+          "tableTo": "outlet_failover_windows",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id",
+            "failover_window_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "outlet_id",
             "id"
           ],
           "onDelete": "no action",
