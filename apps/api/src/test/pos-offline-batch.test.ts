@@ -54,7 +54,10 @@ import { signDeviceToken } from "../lib/device-token.ts";
 import { setDeviceOutletResolver } from "../services/device-pin.service.ts";
 import { submitPosOfflineBatch } from "../services/pos-offline-batch.service.ts";
 import { issuePosOfflineKit } from "../services/pos-offline-kit.service.ts";
-import { refundPosOrder } from "../services/pos-order-corrections.ts";
+import {
+  refundPosOrder,
+  voidPosOrderCorrection,
+} from "../services/pos-order-corrections.ts";
 import {
   receiptGapsForDevice,
   receiptGapsForOutlet,
@@ -1069,5 +1072,132 @@ describe("Review O2 fixes", () => {
     expect(byRole.cash_on_hand).toBe(menu.priceIdr);
     expect(byRole.offline_cash_clearing).toBe(menu.priceIdr);
     expect(byRole.sales_revenue).toBe(-menu.priceIdr);
+  });
+});
+
+describe("legend-ss7n5: void of a shift_closed offline sale", () => {
+  it("refuses the cloud void (409, nothing written), refund still goes through", async () => {
+    const till = await newTill(app);
+    const kit = await kitFor(till);
+    const menu = menuOf(kit);
+    await closeShiftExactly({
+      scope,
+      cashierId: till.cashier.userId,
+      deviceId: till.deviceId,
+      shiftId: till.shiftId,
+      supervisorId: await outletSupervisor(app, "Offline Void Close"),
+      drawerIdr: 500_000 + menu.priceIdr,
+      varianceIdr: menu.priceIdr,
+    });
+    const event = sale(kit, menu, kit.receiptRun.lastNumber + 1);
+    expect((await submit(till, [event])).results[0]).toMatchObject({
+      status: "ingested",
+      flags: ["shift_closed"],
+    });
+
+    const supervisor = agent(app);
+    await signUp(supervisor, "Offline Void Supervisor");
+    const session = await supervisor.get("/api/auth/get-session");
+    const approverId = session.body.user.id as string;
+    const { rows: roles } = await owner.query<{ id: string }>(
+      "SELECT id FROM roles WHERE tenant_id = $1 AND template_key = 'supervisor'",
+      [seededTenantId],
+    );
+    await owner.query(
+      `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+       VALUES ($1, $2, $3, 'outlet', $4, now() - interval '1 minute', $2)`,
+      [seededTenantId, approverId, roles[0]!.id, seededOutletA],
+    );
+    const caller = {
+      userId: userIdSchema.parse(till.cashier.userId),
+      deviceId: null,
+      expectedVersion: null,
+    };
+    const amountIdr = menu.priceIdr;
+    const reason = "Koreksi penjualan offline shift tutup";
+    const approve = async (
+      action: "void" | "refund",
+      objectId = event.eventId,
+    ) => {
+      const overrideId = createUlid();
+      await asOwner((client) =>
+        client.query(
+          `INSERT INTO pos_overrides (id, tenant_id, outlet_id, action, method, status,
+             requested_by, approved_by, reason, value_idr, object_type, object_id,
+             request_fingerprint, created_at, resolved_at)
+           VALUES ($1, $2, $3, $10, 'supervisor_pin', 'approved', $4, $5, $6,
+             $7, 'order', $8, $9, now(), now())`,
+          [
+            ulidToUuid(overrideId),
+            seededTenantId,
+            seededOutletA,
+            till.cashier.userId,
+            approverId,
+            reason,
+            amountIdr,
+            objectId,
+            pinOverrideFixtureFingerprint({
+              requestedBy: till.cashier.userId,
+              outletId: seededOutletA,
+              action,
+              valueIdr: amountIdr,
+              reason,
+              objectType: "order",
+              objectId,
+              approverUserId: approverId,
+            }),
+            action,
+          ],
+        ),
+      );
+      return posOverrideIdSchema.parse(overrideId);
+    };
+
+    await expect(
+      voidPosOrderCorrection(scope, caller, outletId, event.eventId, {
+        idempotencyKey: randomUUID(),
+        reason: "other",
+        reasonNote: reason,
+        overrideId: await approve("void"),
+        approvedBy: userIdSchema.parse(approverId),
+      }),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringContaining("Koreksi lewat refund back office"),
+    });
+    // Nothing was written: no void row, no void event (so no reversal to 1205).
+    expect(
+      await countOf(
+        "SELECT count(*) AS n FROM pos_order_voids WHERE tenant_id = $1 AND order_id = $2",
+        [seededTenantId, ulidToUuid(event.eventId)],
+      ),
+    ).toBe(0);
+    expect(
+      await countOf(
+        `SELECT count(*) AS n FROM domain_event_outbox
+          WHERE tenant_id = $1 AND event->>'name' LIKE '%void%'
+            AND event::text LIKE $2`,
+        [seededTenantId, `%${event.eventId}%`],
+      ),
+    ).toBe(0);
+
+    // The refund (cash back office path, here a manual EDC slip sale of the
+    // same closed shift) is untouched by the rule.
+    const card = sale(kit, menu, kit.receiptRun.lastNumber + 2, {
+      method: "edc_card",
+    });
+    expect((await submit(till, [card])).results[0]).toMatchObject({
+      status: "ingested",
+      flags: ["shift_closed"],
+    });
+    const refund = await refundPosOrder(scope, caller, outletId, card.eventId, {
+      idempotencyKey: randomUUID(),
+      amountIdr: idr(amountIdr),
+      reason: "quality_complaint",
+      reasonNote: reason,
+      overrideId: await approve("refund", card.eventId),
+      approvedBy: userIdSchema.parse(approverId),
+    });
+    expect(Number(refund.amountIdr)).toBe(amountIdr);
   });
 });
