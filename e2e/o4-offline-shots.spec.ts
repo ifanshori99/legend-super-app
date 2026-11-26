@@ -241,6 +241,15 @@ async function taxes(publisherId: string): Promise<void> {
   });
 }
 
+/** Better Auth's sign-up rate window (3 per 10 seconds per IP), plus margin. */
+const SIGN_UP_WINDOW_MS = 11_000;
+
+// The next spec signs up its own staff: leave it a fresh sign-up window.
+test.afterAll(async () => {
+  if (process.env.O4_SHOTS)
+    await new Promise((done) => setTimeout(done, SIGN_UP_WINDOW_MS));
+});
+
 type Member = { api: APIRequestContext; userId: string };
 
 /** A Better Auth account holding one role; `api` carries its cookie. */
@@ -249,14 +258,19 @@ async function member(
   roleId: string,
   name: string,
 ): Promise<Member> {
-  const signedUp = await api.post(`${API_URL}/api/auth/sign-up/email`, {
-    headers: { Origin: WEB_URL },
-    data: {
-      name,
-      email: `o4-${randomUUID()}@example.com`,
-      password: PASSWORD,
-    },
-  });
+  const email = `o4-${randomUUID()}@example.com`;
+  const signUp = () =>
+    api.post(`${API_URL}/api/auth/sign-up/email`, {
+      headers: { Origin: WEB_URL },
+      data: { name, email, password: PASSWORD },
+    });
+  let signedUp = await signUp();
+  // Better Auth allows 3 sign-ups per 10 seconds per IP, and the specs before
+  // this one sign up too: wait out the window once instead of failing.
+  if (signedUp.status() === 429) {
+    await new Promise((done) => setTimeout(done, SIGN_UP_WINDOW_MS));
+    signedUp = await signUp();
+  }
   expect(signedUp.status(), await signedUp.text()).toBe(200);
   const session = await api.get(`${API_URL}/api/auth/get-session`);
   const userId = (await session.json()).user.id as string;
