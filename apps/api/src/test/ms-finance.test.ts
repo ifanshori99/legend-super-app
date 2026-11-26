@@ -639,3 +639,71 @@ describe("finance percents per legal entity", () => {
     });
   });
 });
+
+describe("a second tenant never mixes with the first (review D2)", () => {
+  it("each tenant's figures, splits and notes come from its own ledger", async () => {
+    const first = {
+      tenantId,
+      entityA,
+      entityB,
+    };
+    const before = await evaluate(
+      ["ebitda", "cash_balance", "bank_balance"],
+      JUNE,
+    );
+    const other = await createIsolatedTenant(
+      `msf2-${randomUUID().slice(0, 6)}`,
+    );
+    try {
+      tenantId = other.tenantId;
+      const entity: Entity = {
+        id: other.legalEntityId,
+        outlet: other.outletId,
+        accounts: {},
+      };
+      // Only depreciation is mapped: the three other excluded roles stay in.
+      await chart(entity, BASE_ACCOUNTS);
+      await owner.query(
+        `INSERT INTO fiscal_periods (tenant_id, legal_entity_id, period)
+         VALUES ($1, $2, '2025-06')`,
+        [tenantId, entity.id],
+      );
+      await post(entity, "2025-06-01", "bank", "equity", 77_000_000, false);
+      await post(entity, "2025-06-10", "cash", "revenue", 9_000_000, true);
+
+      const second = await evaluate(
+        ["ebitda", "cash_balance", "bank_balance"],
+        JUNE,
+        ["legal_entity"],
+      );
+      expect(amounts(second, "ebitda").get(entity.id)).toBe(9_000_000);
+      expect(amounts(second, "ebitda").get(entity.id)).toBe(
+        await journalEbitda(JUNE, entity.id),
+      );
+      expect(amounts(second, "cash_balance").get(entity.id)).toBe(9_000_000);
+      expect(amounts(second, "bank_balance").get(entity.id)).toBe(77_000_000);
+      // Nothing of the first tenant's entities appears in this tenant's split.
+      for (const series of second.series)
+        for (const dimension of series.dimensions)
+          expect([first.entityA.id, first.entityB.id]).not.toContain(
+            dimension.value,
+          );
+      expect(second.availability[0]).toEqual({
+        metricCode: "ebitda",
+        status: "available",
+        note: "Belum memisahkan beban amortisasi, beban bunga, beban pajak penghasilan; angkanya masih ikut dihitung.",
+      });
+    } finally {
+      tenantId = first.tenantId;
+    }
+    // The first tenant did not move.
+    const after = await evaluate(
+      ["ebitda", "cash_balance", "bank_balance"],
+      JUNE,
+    );
+    expect(after.series).toEqual(before.series);
+    expect(amounts(after, "ebitda").get("")).toBe(878_000);
+    expect(amounts(after, "cash_balance").get("")).toBe(1_178_000);
+    expect(amounts(after, "bank_balance").get("")).toBe(4_650_000);
+  });
+});

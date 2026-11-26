@@ -24,15 +24,8 @@ import type { MetricValue } from "@starter/shared/metrics";
 // ---- Server side not built yet (legend-x73li, sizing X7-2) ---------------------
 //
 // A real build must not show what the server cannot do yet. Mock mode keeps
-// both, because the fixtures answer them (clickable mockup).
-
-/**
- * The export button. POST /api/reports/exports has no route yet (legend-ay6e6),
- * so a real build hides it instead of offering a download that answers 404.
- */
-export function reportExportOffered(options: { mock: boolean }): boolean {
-  return options.mock;
-}
+// it, because the fixtures answer it (clickable mockup). The export API exists
+// now (legend-ay6e6), so the export button is always offered.
 
 /**
  * Families held back from release 1 as told to the founder (keputusan 21 Nov
@@ -450,6 +443,23 @@ export function isResultSourceMissing(result: ReportResult): boolean {
         entry.status === "unavailable" && entry.reason === "source_not_built",
     )
   );
+}
+
+/**
+ * Caveats the server attaches to available metrics (e.g. an EBITDA role an
+ * entity has not mapped). Listed once each, in the order of the metrics, so the
+ * viewer never shows a figure without the note that qualifies it.
+ */
+export function resultNotes(result: ReportResult): string[] {
+  const notes: string[] = [];
+  for (const entry of result.availability)
+    if (
+      entry.status === "available" &&
+      entry.note &&
+      !notes.includes(entry.note)
+    )
+      notes.push(entry.note);
+  return notes;
 }
 
 export type ResultFinality = "final" | "estimate" | "none";

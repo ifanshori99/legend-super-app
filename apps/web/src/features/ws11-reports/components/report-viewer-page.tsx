@@ -49,10 +49,10 @@ import {
   isChartable,
   isResultEmpty,
   isResultSourceMissing,
-  reportExportOffered,
   reportHasData,
   resolvePeriod,
   resolveSplit,
+  resultNotes,
   resultFinality,
   selectionIsPersonal,
   type ReportQuerySelection,
@@ -181,6 +181,19 @@ function SummaryStrip({ result }: { result: ReportResult }) {
   );
 }
 
+/** Server caveats of the figures above (availability.note), shown as sent. */
+function ResultNotes({ result }: { result: ReportResult }) {
+  const notes = resultNotes(result);
+  if (notes.length === 0) return null;
+  return (
+    <ul className="grid gap-1 text-sm leading-5 text-muted-foreground">
+      {notes.map((note) => (
+        <li key={note}>{note}</li>
+      ))}
+    </ul>
+  );
+}
+
 export function ReportViewerPage({ reportCode }: { reportCode: string }) {
   const t = useT();
   const definitionQuery = useReportDefinition(reportCode);
@@ -250,7 +263,6 @@ export function ReportViewerPage({ reportCode }: { reportCode: string }) {
           : REPORT_EXPORT_PERMISSION,
       ])
     : false;
-  const exportOffered = reportExportOffered({ mock: API_MOCK });
   const refreshing = run.isFetching || totals.isFetching;
   const refresh = () => {
     void run.refetch();
@@ -303,18 +315,16 @@ export function ReportViewerPage({ reportCode }: { reportCode: string }) {
               <RotateCw aria-hidden="true" />
               {t("reportViewer.refresh")}
             </Button>
-            {exportOffered && (
-              <Button
-                type="button"
-                size="sm"
-                disabled={!canExport || !selection || empty}
-                title={canExport ? undefined : t("reportViewer.exportDenied")}
-                onClick={() => setExportOpen(true)}
-              >
-                <Download aria-hidden="true" />
-                {t("reportViewer.export.open")}
-              </Button>
-            )}
+            <Button
+              type="button"
+              size="sm"
+              disabled={!canExport || !selection || empty}
+              title={canExport ? undefined : t("reportViewer.exportDenied")}
+              onClick={() => setExportOpen(true)}
+            >
+              <Download aria-hidden="true" />
+              {t("reportViewer.export.open")}
+            </Button>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -394,6 +404,7 @@ export function ReportViewerPage({ reportCode }: { reportCode: string }) {
       ) : (
         <>
           {summary && <SummaryStrip result={summary} />}
+          {result && !empty && <ResultNotes result={result} />}
           {result && !empty && isChartable(result) && (
             <ReportChart result={result} />
           )}
@@ -416,7 +427,7 @@ export function ReportViewerPage({ reportCode }: { reportCode: string }) {
         </>
       )}
 
-      {selection && exportOffered && (
+      {selection && (
         <ExportDialog
           // A new selection starts a new export attempt.
           key={`${selection.period.startDate}|${selection.period.endDate}|${selection.groupBy ?? ""}`}

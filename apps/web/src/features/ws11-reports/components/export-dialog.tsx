@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { ApiError } from "@/lib/api/errors";
+import { publicApiUrl } from "@/lib/env";
 import { Button } from "@/components/ui/button";
 import { StatusPill, type StatusKind } from "@/components/ui/badge";
 import {
@@ -142,7 +143,7 @@ function ExportJobSummary({ job }: { job: ReportExport }) {
       {job.file && (
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
           <a
-            href={job.file.downloadPath}
+            href={publicApiUrl(job.file.downloadPath)}
             download
             className="inline-flex items-center gap-1.5 font-semibold text-primary underline-offset-4 hover:underline"
           >
@@ -200,7 +201,7 @@ function RecentExports({ reportCode }: { reportCode: string }) {
               </span>
               {job.file && (
                 <a
-                  href={job.file.downloadPath}
+                  href={publicApiUrl(job.file.downloadPath)}
                   download
                   className="font-semibold text-primary underline-offset-4 hover:underline"
                 >
