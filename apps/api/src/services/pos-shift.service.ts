@@ -1015,6 +1015,16 @@ export async function listPosShiftCounts(
 
 type OverrideRow = typeof posOverrides.$inferSelect;
 
+/**
+ * What a close books of its approval: the verified `cash_shift_close`
+ * override, or (1271 F4) the failover close's own approval derived from the
+ * window (services/pos-shift-failover-close.ts).
+ */
+export type CloseApproval = Pick<
+  OverrideRow,
+  "id" | "approvedBy" | "approvalRequestId" | "resolvedAt" | "createdAt"
+>;
+
 const approvalRefused = () =>
   new CoreError("FORBIDDEN", "Persetujuan supervisor tidak sah.");
 
@@ -1486,7 +1496,7 @@ export async function closePosShift(
  * approval id and approver are the verified override's, never the raw client
  * values.
  */
-async function writeClose(
+export async function writeClose(
   tx: Tx,
   context: ScopedTenantContext,
   caller: ShiftCaller,
@@ -1498,11 +1508,14 @@ async function writeClose(
     closed: PosShiftWithFigures;
     /** Held refund and void cash of the shift (heldCorrectionCashIdrOf). */
     heldCorrectionIdr: number;
-    override: OverrideRow;
+    override: CloseApproval;
     idempotencyKey: string;
     fingerprint: string;
     now: Date;
-    auditAction: "pos_shift.closed" | "pos_shift.force_closed";
+    auditAction:
+      | "pos_shift.closed"
+      | "pos_shift.force_closed"
+      | "pos_shift.failover_closed";
   },
 ): Promise<PosShift> {
   const { outletId, shift, aggregates, count, closed, override, now } = input;
@@ -1643,7 +1656,7 @@ async function edgeCloseDetail(
   tx: Tx,
   row: ShiftRow,
   count: ShiftCountRow,
-  override: OverrideRow,
+  override: CloseApproval,
   approvedAt: Date,
 ) {
   const movements = await movementsOf(tx, row);

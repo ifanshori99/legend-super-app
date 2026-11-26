@@ -1,6 +1,7 @@
 // Back-office "Status edge" list (beads legend-ph62j, legend-eo3lc;
 // docs/design/edge-status-cloud.md section 3). Active edge nodes the caller
-// may see, with link state and open alerts. Read-only; pattern of
+// may see, with link state, open alerts and the outlet's open failover window
+// (1271 F4). Read-only; pattern of
 // listEdgeSyncConflicts.
 //
 // Never selects credential, instance, cursor, registration or revoke columns:
@@ -13,6 +14,7 @@ import {
   toIsoDateTime,
   type ScopedTenantContext,
 } from "@starter/shared/core";
+import type { EdgeNodeFailoverStatus } from "@starter/shared/edge";
 import type {
   EdgeNodeStatus,
   EdgeNodeStatusAlert,
@@ -20,6 +22,7 @@ import type {
   EdgeNodeStatusQuery,
 } from "@starter/shared/edge/node-status";
 import { db } from "../db/index.ts";
+import { outletFailoverWindows } from "../db/schema/edge-failover.ts";
 import { edgeNodeAlerts } from "../db/schema/edge-node-alert.ts";
 import { edgeNodes } from "../db/schema/edge-node.ts";
 import { outlets } from "../db/schema/platform-org.ts";
@@ -114,6 +117,34 @@ export async function listEdgeNodeStatus(
       }
     }
 
+    // 1271 F4: the outlet's open failover window (at most one per outlet).
+    const failoverByOutlet = new Map<string, EdgeNodeFailoverStatus>();
+    if (page.length > 0) {
+      const windows = await tx
+        .select({
+          outletId: outletFailoverWindows.outletId,
+          windowId: outletFailoverWindows.id,
+          status: outletFailoverWindows.status,
+          activatedAt: outletFailoverWindows.activatedAt,
+        })
+        .from(outletFailoverWindows)
+        .where(
+          and(
+            eq(outletFailoverWindows.tenantId, tenantId),
+            inArray(outletFailoverWindows.status, ["active", "returning"]),
+            inArray(outletFailoverWindows.outletId, [
+              ...new Set(page.map((row) => row.outletId)),
+            ]),
+          ),
+        );
+      for (const window of windows)
+        failoverByOutlet.set(window.outletId, {
+          windowId: window.windowId,
+          status: window.status,
+          activatedAt: toIsoDateTime(window.activatedAt),
+        });
+    }
+
     const data: EdgeNodeStatus[] = page.map((row) => ({
       id: row.id,
       label: row.label,
@@ -127,6 +158,7 @@ export async function listEdgeNodeStatus(
         ? toIsoDateTime(row.lastHeartbeatAt)
         : null,
       alerts: alertsByNode.get(row.id) ?? [],
+      failover: failoverByOutlet.get(row.outletId) ?? null,
     }));
     return {
       data,

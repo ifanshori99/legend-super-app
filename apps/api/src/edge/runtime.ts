@@ -101,6 +101,10 @@ import {
   registerNodeAlarmEdgeApplier,
 } from "./node-alarm.ts";
 import { registerStaffPinAlertEdgeApplier } from "./staff-pin-alert-applier.ts";
+import {
+  registerFailoverEdgeApplier,
+  registerFailoverRefusalCloudApplier,
+} from "./failover-applier.ts";
 import { resendMateriallessStaffPinSets } from "./staff-pin-resend.ts";
 import {
   WIFI_RECONCILE_INTERVAL_MS,
@@ -330,6 +334,9 @@ export const EDGE_REQUIRED_TABLES = [
   // legend-hwn02: the edge QR display reads the day keys; a missing table must
   // refuse boot (assertEdgeSchemaReady) instead of failing each request.
   "edge_attendance_qr_keys",
+  // 1271 F4: the window copy blocks edge POS writes during a failover; a
+  // missing table must refuse boot, never let the edge sell beside the cloud.
+  "outlet_failover_windows",
 ] as const;
 
 /** Missed-wakeup fallback: how often an idle link re-checks its queue. */
@@ -966,6 +973,8 @@ export async function startEdgeRuntime(
   registerQrOrderEdgeApplier();
   registerWifiQuotaEdgeApplier();
   registerMasterDataEdgeApplier();
+  // 1271 F4: failover window copy and the return's forced shift close.
+  registerFailoverEdgeApplier();
   // legend-3k41y: no-op placeholder of a catalog row the cloud withheld.
   registerEdgeLinkPlaceholderApplier();
   // Section D (legend-khu5): first boot provisions the node from its bundle.
@@ -1705,6 +1714,8 @@ export async function registerEdgeLink(
   // legend-62jtd: staff_pin.device_throttled raised on an edge reaches the
   // outlet's supervisors in the cloud.
   registerStaffPinAlertEdgeApplier();
+  // 1271 F4: an edge that refused a failover return alerts the managers.
+  registerFailoverRefusalCloudApplier();
   // Last: anything still unregistered is parked as unclassified, not a stall.
   registerEdgeDeferredFallback();
   const version = env.EDGE_NODE_VERSION;

@@ -216,3 +216,47 @@ export const edgeNodeFailoverStatusSchema = z.strictObject({
 export type EdgeNodeFailoverStatus = z.infer<
   typeof edgeNodeFailoverStatusSchema
 >;
+
+// ---- Edge -> cloud refusal (F4) --------------------------------------------
+
+/** Aggregate of the edge's refusal notice (aggregate id = the notice id). */
+export const FAILOVER_EDGE_REFUSAL_AGGREGATE = "pos_failover_edge_refusal";
+
+/**
+ * Why the edge refused the window-closing event (D2: never guesses).
+ * `shift_activity`: the interrupted edge shift has a sale, cash row, count or
+ * opening after the switchover count. `no_approver`: no manager of the
+ * window is known on the edge (or each one is the shift's cashier).
+ */
+export const FAILOVER_EDGE_REFUSAL_REASONS = [
+  "shift_activity",
+  "no_approver",
+] as const;
+
+export const failoverEdgeRefusedPayloadSchema = z.strictObject({
+  windowId: failoverWindowIdSchema,
+  /** The cloud's closing event the edge refused. */
+  closingEventId: uuidSchema,
+  shifts: z
+    .array(
+      z.strictObject({
+        deviceId: uuidSchema,
+        shiftId: posShiftIdSchema,
+        reason: z.enum(FAILOVER_EDGE_REFUSAL_REASONS),
+      }),
+    )
+    .min(1)
+    .max(100),
+});
+export type FailoverEdgeRefusedPayload = z.infer<
+  typeof failoverEdgeRefusedPayloadSchema
+>;
+
+/**
+ * The edge kept the window open (its POS stays blocked) and the listed
+ * shifts open; the cloud alerts the outlet's managers.
+ */
+export const failoverEdgeRefusedEvent = defineDomainEvent({
+  name: "pos_failover_edge_refusal.recorded",
+  payload: failoverEdgeRefusedPayloadSchema,
+});
