@@ -24,7 +24,7 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 await mkdir(OUT, { recursive: true });
 const server = spawn("pnpm", ["--filter", "@starter/web", "dev"], {
   cwd: ROOT,
-  stdio: "ignore",
+  stdio: ["ignore", "pipe", "pipe"],
   env: {
     ...process.env,
     PORT: String(PORT),
@@ -36,6 +36,12 @@ const server = spawn("pnpm", ["--filter", "@starter/web", "dev"], {
     LOG_LEVEL: "warn",
   },
 });
+const serverLog = [];
+for (const stream of [server.stdout, server.stderr])
+  stream.on("data", (chunk) => {
+    serverLog.push(String(chunk));
+    if (serverLog.length > 40) serverLog.shift();
+  });
 const stop = () => {
   try {
     server.kill("SIGTERM");
@@ -72,6 +78,9 @@ try {
     const page = await ctx.newPage();
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
+    page.on("console", (m) => {
+      if (m.type() === "error") errors.push(m.text().slice(0, 300));
+    });
     const shot = async (name, full = true) => {
       await page.waitForTimeout(400);
       await page.screenshot({
@@ -127,6 +136,7 @@ try {
         })
         .catch(() => {});
       console.error("FAIL", vp.w, String(error).split("\n")[0], errors);
+      console.error(serverLog.join("").slice(-3000));
     }
     await ctx.close();
   }

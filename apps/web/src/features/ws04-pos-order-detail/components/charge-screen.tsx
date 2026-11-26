@@ -209,9 +209,6 @@ function ChargeBody({ chargeId }: { chargeId: string }) {
   const query = useIssueCharge(chargeId);
   const charge = query.data;
   const attempts = useChargeAttempts(chargeId, charge);
-  const terminalsQuery = useChargeTerminals(
-    picked === "edc_card" || attempts.lock !== null,
-  );
   const [checking, setChecking] = useState(false);
   const [notRecorded, setNotRecorded] = useState(false);
   const [picked, setPicked] = useState<ChargeMethod>("cash");
@@ -220,6 +217,9 @@ function ChargeBody({ chargeId }: { chargeId: string }) {
   const [resolving, setResolving] = useState(false);
   const [resolved, setResolved] = useState<PosIssueChargeAttemptOutcome | null>(
     null,
+  );
+  const terminalsQuery = useChargeTerminals(
+    picked === "edc_card" || attempts.lock !== null,
   );
 
   if (query.isLoading) return <LoadingShape />;

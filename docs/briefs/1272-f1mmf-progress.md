@@ -95,6 +95,7 @@ Sudah:
 - Rincian memakai `amountIdr` server (tidak lagi menjumlah di UI).
 - Test node 6 baru (gagal dulu pada b64ba29c3), 132/132 lulus; text-contract lulus; typecheck web + api lulus; prettier/eslint bersih.
 
+- Screenshot 390/1280: `docs/review/img/f1mmf-{siap-bayar,menunggu-edc,unknown,resolve-supervisor,lunas}-{390,1280}.png` (`heavy --browser node scripts/shot-f1mmf.mjs`, mock `?demo=selisih-edc-putus`). Mesin untuk tagihan lewat `fetchChargeTerminals` (mock punya id uuid; fixture kasir `edc-01` ditolak kontrak start).
+
 Sisa:
-- Screenshot 390/1280 (siap bayar, menunggu EDC, unknown, resolve supervisor, lunas) ke `docs/review/img/f1mmf-*.png`.
 - Review K (architect) untuk web + P3, second-opinion area.
