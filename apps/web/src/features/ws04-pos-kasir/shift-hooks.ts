@@ -9,11 +9,14 @@ import { useIntentKey, useOutletId, useReady } from "./hooks";
 import {
   approveShiftClose,
   closeDay,
+  discardOwnCount,
+  isCloseSettled,
   openShift,
   recordCashMovement,
   requestOverride,
   submitBlindCount,
 } from "./shift-api";
+import { createCloseFlow } from "./shift-close-flow";
 import {
   decideHeldCashMovement,
   forceCloseShift,
@@ -42,7 +45,9 @@ import type {
 import type {
   ApproveShiftCloseInput,
   CloseDayInput,
+  CloseShiftWithApprovalInput,
   OpenShiftInput,
+  OverrideAction,
   RecordCashMovementInput,
   RequestOverrideInput,
   SubmitBlindCountInput,
@@ -105,8 +110,17 @@ export function useRecordCashMovement() {
 export function useSubmitBlindCount() {
   const outletId = useOutletId();
   const queryClient = useQueryClient();
+  const intent = useIntentKey("shift-count");
   return useMutation({
-    mutationFn: (input: SubmitBlindCountInput) => submitBlindCount(input),
+    mutationFn: async (input: SubmitBlindCountInput) => {
+      const receipt = await submitBlindCount(
+        outletId,
+        input,
+        intent.keyFor(input),
+      );
+      intent.clear();
+      return receipt;
+    },
     onSuccess: (_receipt, input) => {
       void queryClient.invalidateQueries({
         queryKey: posKasirKeys.ownCount(outletId, input.shiftId),
@@ -116,6 +130,58 @@ export function useSubmitBlindCount() {
       });
     },
   });
+}
+
+/** The cashier starts a new count; the one on this device stops counting. */
+export function useStartRecount() {
+  const outletId = useOutletId();
+  const queryClient = useQueryClient();
+  return (shiftId: string) => {
+    discardOwnCount(outletId, shiftId);
+    void queryClient.invalidateQueries({
+      queryKey: posKasirKeys.ownCount(outletId, shiftId),
+    });
+    void queryClient.invalidateQueries({
+      queryKey: posKasirKeys.shift(outletId),
+    });
+  };
+}
+
+/**
+ * The supervisor closes the shift on the cashier's device: PIN override of the
+ * count, then the close (`./shift-close-flow.ts`). Once the PIN was accepted a
+ * retry (`retry`) sends the stored body again with no new PIN, so a lost answer
+ * closes once. A stale count or a definite refusal drops the approval; "already
+ * closed" reads the shift again.
+ */
+export function useCloseShiftWithApproval() {
+  const outletId = useOutletId();
+  const queryClient = useQueryClient();
+  const flow = useMemo(() => createCloseFlow(outletId), [outletId]);
+  const refresh = (shiftId: string) => {
+    void queryClient.invalidateQueries({
+      queryKey: posKasirKeys.ownCount(outletId, shiftId),
+    });
+    return queryClient.invalidateQueries({
+      queryKey: posKasirKeys.shift(outletId),
+    });
+  };
+  const mutation = useMutation({
+    mutationFn: (input: CloseShiftWithApprovalInput) => flow.run(input),
+    onError: (error, input) => {
+      if (isCloseSettled(error)) void refresh(input.shiftId);
+    },
+    onSuccess: (_result, input) => refresh(input.shiftId),
+  });
+  const pending = flow.pending();
+  return {
+    ...mutation,
+    /** The approval was given but the answer is unknown: only "retry" is left. */
+    canRetry: mutation.isError && pending !== null,
+    retry: () => {
+      if (pending) mutation.mutate(pending);
+    },
+  };
 }
 
 /** The cashier's latest count (number and counted figure; never a system figure). */
@@ -134,8 +200,8 @@ export function useRegisteredTerminals() {
 
 // ---- Supervisor ------------------------------------------------------------
 
-export function useSupervisorOptions() {
-  return useQuery(supervisorsQuery(useOutletId()));
+export function useSupervisorOptions(action?: OverrideAction) {
+  return useQuery(supervisorsQuery(useOutletId(), action));
 }
 
 /** After the cashier sent the count: counted, system figure and variance. */

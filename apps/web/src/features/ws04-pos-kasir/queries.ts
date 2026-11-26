@@ -26,6 +26,7 @@ import {
   fetchOwnCountSummary,
   fetchWitnesses,
 } from "./shift-extra-api";
+import type { OverrideAction } from "./types";
 
 // Every key carries the outlet: a cashier who switches outlet must never see
 // another outlet's session, shift or recap from the cache.
@@ -160,10 +161,10 @@ export const registeredTerminalsQuery = (outletId: string) =>
     retry: false,
   });
 
-export const supervisorsQuery = (outletId: string) =>
+export const supervisorsQuery = (outletId: string, action?: OverrideAction) =>
   queryOptions({
-    queryKey: posKasirKeys.supervisors(outletId),
-    queryFn: () => fetchSupervisors(),
+    queryKey: [...posKasirKeys.supervisors(outletId), action ?? "any"],
+    queryFn: () => fetchSupervisors(outletId, action),
     retry: false,
   });
 
@@ -184,7 +185,7 @@ export const heldCashOutsQuery = (outletId: string, shiftId: string) =>
 export const ownCountSummaryQuery = (outletId: string, shiftId: string) =>
   queryOptions({
     queryKey: posKasirKeys.ownCount(outletId, shiftId),
-    queryFn: () => fetchOwnCountSummary(shiftId),
+    queryFn: () => fetchOwnCountSummary(outletId, shiftId),
     retry: false,
   });
 

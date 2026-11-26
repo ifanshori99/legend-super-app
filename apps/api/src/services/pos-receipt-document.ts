@@ -8,7 +8,7 @@
 // does not change an issued receipt); a snapshot without a usable address
 // refuses to print (POS-07).
 
-import { and, eq, gt, inArray, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, or, sql } from "drizzle-orm";
 import { CoreError, idr, type ScopedTenantContext } from "@starter/shared/core";
 import {
   invoiceDocumentSchema,
@@ -18,7 +18,12 @@ import {
   type ReceiptDocument,
 } from "@starter/shared/pos";
 import { serviceChargeRules, taxRules, user } from "../db/schema/index.ts";
-import { posOrderRefunds, posOrders } from "../db/schema/pos-order.ts";
+import {
+  posOrderRefunds,
+  posOrderTenders,
+  posOrders,
+} from "../db/schema/pos-order.ts";
+import { posShifts } from "../db/schema/pos-shift.ts";
 import { posReceipts, type posInvoices } from "../db/schema/pos-receipt.ts";
 import { orders } from "../db/schema/qr-order.ts";
 import type { Tx } from "./permission-resolver.ts";
@@ -57,6 +62,9 @@ function printableAddress(address: string): string {
   return trimmed.slice(0, MAX_ADDRESS);
 }
 
+/** First day the receipt names the cashier who took the money (1268 W3). */
+const PAYER_CASHIER_FROM = "2026-11-26T00:00:00.000Z";
+
 /** Receipt or kuitansi built from the order of `receipt`. */
 export async function buildReceiptDocument(
   tx: Tx,
@@ -81,17 +89,47 @@ export async function buildReceiptDocument(
   const address = printableAddress(outlet.outletAddress);
 
   const [pos] = await tx
-    .select({ cashierId: posOrders.cashierId })
+    .select({ cashierId: posOrders.cashierId, shiftId: posOrders.shiftId })
     .from(posOrders)
     .where(
       and(eq(posOrders.tenantId, tenantId), eq(posOrders.orderId, order.id)),
     );
+  // 1268 W3: the cashier is who took the money. A captain order a waiter
+  // submitted carries no shift; its captured tender names the receiving
+  // cashier's shift, which wins. Only for receipts issued from the release
+  // day on, and only for such orders: a receipt issued before (or an order
+  // with its own shift) prints the same name on every reprint.
+  const [takenOn] =
+    pos &&
+    pos.shiftId === null &&
+    Date.parse(receipt.issuedAt) >= Date.parse(PAYER_CASHIER_FROM)
+      ? await tx
+          .select({ cashierId: posShifts.cashierId })
+          .from(posOrderTenders)
+          .innerJoin(
+            posShifts,
+            and(
+              eq(posShifts.tenantId, posOrderTenders.tenantId),
+              eq(posShifts.id, posOrderTenders.shiftId),
+            ),
+          )
+          .where(
+            and(
+              eq(posOrderTenders.tenantId, tenantId),
+              eq(posOrderTenders.orderId, order.id),
+              eq(posOrderTenders.status, "captured"),
+            ),
+          )
+          .orderBy(desc(posOrderTenders.resolvedAt))
+          .limit(1)
+      : [];
+  const cashierId = takenOn?.cashierId ?? pos?.cashierId ?? null;
   let cashierName: string | null = null;
-  if (pos?.cashierId) {
+  if (cashierId) {
     const [cashier] = await tx
       .select({ name: user.name })
       .from(user)
-      .where(eq(user.id, pos.cashierId));
+      .where(eq(user.id, cashierId));
     cashierName = cashier?.name.trim().slice(0, 150) || null;
   }
 

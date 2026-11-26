@@ -131,8 +131,8 @@ export function useReceiptDocument(receiptId: string | null) {
   });
 }
 
-export function useApproverOptions() {
-  return useSupervisorOptions();
+export function useApproverOptions(action?: OverrideAction) {
+  return useSupervisorOptions(action);
 }
 
 // ---- Approval --------------------------------------------------------------

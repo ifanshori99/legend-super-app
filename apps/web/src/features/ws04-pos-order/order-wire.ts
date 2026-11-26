@@ -39,7 +39,7 @@ type WireLine = {
 };
 
 export type OrderTarget = {
-  channel: "pos" | OjolPlatform;
+  channel: "pos" | "captain" | OjolPlatform;
   serviceType: "dine_in" | "takeaway" | "delivery";
   tableSessionId: string | null;
   externalRef: string | null;
@@ -60,7 +60,10 @@ export function toWireLine(line: CartLine): WireLine {
 
 /** Where the order goes: the table session, never the table's label. */
 export function orderTarget(
-  input: Pick<SubmitOrderInput, "channel" | "tableSessionId" | "ojol">,
+  input: Pick<
+    SubmitOrderInput,
+    "channel" | "tableSessionId" | "ojol" | "captain"
+  >,
 ): OrderTarget {
   if (input.channel === "ojol_manual" && input.ojol)
     return {
@@ -77,7 +80,7 @@ export function orderTarget(
       externalRef: null,
     };
   return {
-    channel: "pos",
+    channel: input.captain ? "captain" : "pos",
     serviceType: "dine_in",
     tableSessionId: input.tableSessionId,
     externalRef: null,
@@ -162,6 +165,7 @@ export function mapCatalog(wire: PosCatalog): Catalog {
 export function mapOrder(order: PosOrderDetail): PosOrderView {
   return {
     orderId: order.id,
+    status: order.status,
     number: order.number,
     channel: channelOfOrder(order),
     tableLabel: null,
@@ -294,6 +298,8 @@ export function mapFloor(board: FloorBoard): CaptainTable[] {
     qrSessionActive: row.session !== null,
     sessionId: row.session?.id ?? null,
     hasOpenCall: row.openServiceRequestCount > 0,
+    hold: row.reservationHold,
+    paymentMode: row.session?.paymentMode ?? null,
   }));
 }
 

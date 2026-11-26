@@ -359,3 +359,40 @@ export function requireOutletPermission(
     next();
   };
 }
+
+const fallbackUsed = new WeakSet<Request>();
+
+/**
+ * Like `requireOutletPermission`, but `fallback` also lets the request in when
+ * the caller lacks `primary` (same outlet). `usedFallbackPermission(req)` says
+ * which one passed, so the service can narrow what a fallback caller may do
+ * (the POS captain order: `order.create` only reaches `captain` orders).
+ */
+export function requireOutletPermissionOrFallback(
+  primary: PermissionCode,
+  fallback: PermissionCode,
+  outletIdOf: (req: Request) => string,
+): RequestHandler {
+  return async (req, res, next) => {
+    const snapshot = await loadRequestAccess(req);
+    const outletId = outletIdSchema.parse(outletIdOf(req));
+    const scope = { type: "outlet", id: outletId } as const;
+    const first = snapshot.contextFor(primary, scope);
+    const context = first ?? snapshot.contextFor(fallback, scope);
+    if (!context)
+      throw new AccessError(
+        "PERMISSION_DENIED",
+        "Your account cannot perform this action in this outlet.",
+      );
+    if (first) fallbackUsed.delete(req);
+    else fallbackUsed.add(req);
+    contexts.set(req, context);
+    res.setHeader("Cache-Control", "private, no-store");
+    next();
+  };
+}
+
+/** True when the request passed on the fallback permission only. */
+export function usedFallbackPermission(req: Request): boolean {
+  return fallbackUsed.has(req);
+}

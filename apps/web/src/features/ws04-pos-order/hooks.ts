@@ -27,10 +27,17 @@ import { useCloudConnection } from "@/features/ws02-edge/hooks";
 import { useActiveStaff } from "@/features/ws01-device-pin/storage";
 import {
   acknowledgeCall,
+  closePendingFire,
+  continueDraftOrder,
+  closePendingOpen,
   closePendingOrder,
   closePendingPark,
   closePendingResume,
+  openTable,
   otherCashierPending,
+  pendingCaptainSends,
+  pendingFires,
+  pendingOpenPax,
   pendingParkText,
   pendingOrderText,
   pendingResumes,
@@ -38,10 +45,13 @@ import {
   fireLines,
   fireTableLines,
   parkDraft,
+  resendCaptainOrder,
+  resendFire,
   resolveCall,
   resumeDraft,
   submitOrder,
 } from "./api";
+import { captainDraftKey, removeSentLines } from "./captain-wire";
 import { cashierDraftKey, readDraft, writeDraft } from "./draft-store";
 import { parseOrderSnapshot, replayAll } from "./order-flow";
 import {
@@ -55,7 +65,7 @@ import {
 } from "./queries";
 import {
   CONTRACT_PENDING,
-  type AddToTableInput,
+  type CaptainSendInput,
   type CaptainTable,
   type Catalog,
   type FireLinesInput,
@@ -68,7 +78,7 @@ import {
   type PosOrderView,
   type ServiceCall,
   type SubmitOrderInput,
-  type TableOrderView,
+  type TableOrdersView,
 } from "./types";
 
 export { useDraftCart } from "./draft-store";
@@ -115,36 +125,6 @@ export function useCashierDraftKey(): string {
 function useReady(): boolean {
   const outletId = useOutletId();
   return API_MOCK || outletId !== "";
-}
-
-/**
- * One idempotency key per intent. The same input keeps the same key until the
- * call succeeds (`clear`), so a retry after a timeout or a double tap is
- * recognised by the server; a changed input is a new intent and a new key.
- * The key lives in this module, per draft key, not in the component: the cart
- * screen can unmount and mount again (navigation, reload of the route) while
- * the call is in flight, and a retry from the new screen must still reuse it.
- * The fingerprint carries the outlet, so another outlet never shares a key.
- */
-const intentKeys = new Map<string, { fingerprint: string; key: string }>();
-
-function intentKeyFor(
-  prefix: string,
-  draftKey: string,
-  outletId: string,
-  input: unknown,
-): string {
-  const slot = `${prefix}:${draftKey}`;
-  const fingerprint = JSON.stringify([outletId, input]);
-  const current = intentKeys.get(slot);
-  if (current?.fingerprint === fingerprint) return current.key;
-  const key = `${prefix}:${globalThis.crypto.randomUUID()}`;
-  intentKeys.set(slot, { fingerprint, key });
-  return key;
-}
-
-function clearIntentKey(prefix: string, draftKey: string): void {
-  intentKeys.delete(`${prefix}:${draftKey}`);
 }
 
 // ---- Cashier ---------------------------------------------------------------
@@ -396,7 +376,10 @@ export function useCaptainTables(): UseQueryResult<CaptainTable[]> {
   return useQuery({ ...captainTablesQuery(outletId), enabled: ready });
 }
 
-export function useTableOrder(tableId: string): UseQueryResult<TableOrderView> {
+/** The table and its orders: one order per send, never merged. */
+export function useTableOrder(
+  tableId: string,
+): UseQueryResult<TableOrdersView> {
   const outletId = useOutletId();
   const ready = useReady();
   return useQuery({
@@ -405,28 +388,88 @@ export function useTableOrder(tableId: string): UseQueryResult<TableOrderView> {
   });
 }
 
-/** `draftKey` is the table's cart (`captain:${tableId}`), emptied on success. */
+/** Captain actor: mock mode has no signed-in captain, the real one must. */
+function useCaptainActorId(): string {
+  const actorId = useActorId();
+  return actorId || (API_MOCK ? "mock" : "");
+}
+
+/**
+ * The captain's cart key for the table's open session (outlet + captain +
+ * session); null while the table has no session or no captain is known, so
+ * nothing can be put in a cart that has nowhere to go.
+ */
+export function useCaptainCartKey(tableId: string): string | null {
+  const outletId = useOutletId();
+  const actorId = useCaptainActorId();
+  const table = useTableOrder(tableId).data?.table;
+  const sessionId = table?.sessionId ?? null;
+  // Pay first is the cashier's table: no cart for the captain.
+  if (
+    sessionId === null ||
+    actorId === "" ||
+    table?.paymentMode === "pay_first"
+  )
+    return null;
+  return captainDraftKey(outletId, actorId, sessionId);
+}
+
+/** Carts whose order is being sent right now (this tab). */
+const sending = new Set<string>();
+
+/**
+ * True while the captain's order of this cart is on its way or its answer is
+ * not known: the cart cannot change under a send, and the same bytes go again.
+ */
+export function useCaptainCartLocked(draftKey: string | null): boolean {
+  const outletId = useOutletId();
+  const actorId = useCaptainActorId();
+  const inFlight = useSyncExternalStore(
+    subscribePending,
+    () => draftKey !== null && sending.has(draftKey),
+    () => false,
+  );
+  const unclear = useSyncExternalStore(
+    subscribePending,
+    () =>
+      draftKey !== null &&
+      pendingOrderText(outletId, actorId, draftKey) !== null,
+    () => false,
+  );
+  return inFlight || unclear;
+}
+
+/** The unclear send of a captain cart (restore and close), see `usePendingOrder`. */
+export function usePendingCaptainOrder(draftKey: string | null) {
+  return usePendingOrder(draftKey ?? "captain:none");
+}
+
+/** `draftKey` is the table session's cart (`useCaptainCartKey`). */
 export function useAddToTable({
   draftKey,
 }: {
   draftKey: string;
-}): UseMutationResult<TableOrderView, Error, AddToTableInput> {
+}): UseMutationResult<PosOrderView, Error, CaptainSendInput> {
   const queryClient = useQueryClient();
   const outletId = useOutletId();
-  return useMutation<TableOrderView, Error, AddToTableInput>({
-    mutationFn: (input) =>
-      addToTable(outletId, {
-        ...input,
-        idempotencyKey: intentKeyFor("table-order", draftKey, outletId, input),
-      }),
-    onSuccess: (view, input) => {
-      clearIntentKey("table-order", draftKey);
-      writeDraft(draftKey, []);
-      queryClient.setQueryData(
-        posOrderKeys.tableOrder(outletId, input.tableId),
-        view,
-      );
-      // An empty table became occupied.
+  const actorId = useCaptainActorId();
+  return useMutation<PosOrderView, Error, CaptainSendInput>({
+    mutationFn: async (input) => {
+      sending.add(draftKey);
+      notifyPending();
+      try {
+        return await addToTable(outletId, actorId, draftKey, input);
+      } finally {
+        sending.delete(draftKey);
+        notifyPending();
+      }
+    },
+    onSuccess: (_order, input) => {
+      // Only what was sent leaves the cart.
+      writeDraft(draftKey, removeSentLines(readDraft(draftKey), input.lines));
+      void queryClient.invalidateQueries({
+        queryKey: posOrderKeys.tableOrder(outletId, input.tableId),
+      });
       void queryClient.invalidateQueries({
         queryKey: posOrderKeys.tables(outletId),
       });
@@ -434,21 +477,184 @@ export function useAddToTable({
   });
 }
 
+/** Seat a walk-in party at an empty table (keyed). */
+export function useOpenTable(
+  tableId: string,
+): UseMutationResult<void, Error, { pax: number }> {
+  const queryClient = useQueryClient();
+  const outletId = useOutletId();
+  const actorId = useCaptainActorId();
+  return useMutation<void, Error, { pax: number }>({
+    mutationFn: ({ pax }) => openTable(outletId, actorId, tableId, pax),
+    onSettled: () => {
+      notifyPending();
+      void queryClient.invalidateQueries({
+        queryKey: posOrderKeys.tableOrder(outletId, tableId),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: posOrderKeys.tables(outletId),
+      });
+    },
+  });
+}
+
+/** The guest count of a seat whose answer is not known, and how to close it. */
+export function usePendingOpen(tableId: string): {
+  pax: number | null;
+  close: () => void;
+} {
+  const outletId = useOutletId();
+  const actorId = useCaptainActorId();
+  const pax = useSyncExternalStore(
+    subscribePending,
+    () => pendingOpenPax(outletId, actorId, tableId),
+    () => null,
+  );
+  const close = useCallback(() => {
+    closePendingOpen(outletId, actorId, tableId);
+    notifyPending();
+  }, [outletId, actorId, tableId]);
+  return { pax, close };
+}
+
+/** Submit an order of the table that was created but not submitted. */
+export function useContinueDraft(
+  tableId: string,
+): UseMutationResult<
+  void,
+  Error,
+  { orderId: string; tableSessionId: string | null }
+> {
+  const queryClient = useQueryClient();
+  const outletId = useOutletId();
+  const actorId = useCaptainActorId();
+  return useMutation<
+    void,
+    Error,
+    { orderId: string; tableSessionId: string | null }
+  >({
+    mutationFn: ({ orderId, tableSessionId }) =>
+      continueDraftOrder(outletId, actorId, orderId, tableSessionId),
+    onSettled: () => {
+      notifyPending();
+      void queryClient.invalidateQueries({
+        queryKey: posOrderKeys.tableOrder(outletId, tableId),
+      });
+    },
+  });
+}
+
 export function useFireTableLines(): UseMutationResult<
-  TableOrderView,
+  void,
   Error,
   FireTableLinesInput
 > {
   const queryClient = useQueryClient();
   const outletId = useOutletId();
-  return useMutation<TableOrderView, Error, FireTableLinesInput>({
-    mutationFn: (input) => fireTableLines(outletId, input),
-    onSuccess: (view, input) =>
-      queryClient.setQueryData(
-        posOrderKeys.tableOrder(outletId, input.tableId),
-        view,
-      ),
+  const actorId = useCaptainActorId();
+  return useMutation<void, Error, FireTableLinesInput>({
+    mutationFn: (input) => fireTableLines(outletId, actorId, input),
+    onSettled: (_data, _error, input) => {
+      notifyPending();
+      void queryClient.invalidateQueries({
+        queryKey: posOrderKeys.tableOrder(outletId, input.tableId),
+      });
+    },
   });
+}
+
+/** Fires whose answer is not known: resend (same items) or close after checking. */
+export function usePendingFires(): {
+  pending: { orderId: string; itemIds: string[] }[];
+  close: (orderId: string) => void;
+} {
+  const outletId = useOutletId();
+  const actorId = useCaptainActorId();
+  const text = useSyncExternalStore(
+    subscribePending,
+    () => JSON.stringify(pendingFires(outletId, actorId)),
+    () => "[]",
+  );
+  const pending = useMemo(
+    () => JSON.parse(text) as { orderId: string; itemIds: string[] }[],
+    [text],
+  );
+  const close = useCallback(
+    (orderId: string) => {
+      closePendingFire(outletId, actorId, orderId);
+      notifyPending();
+    },
+    [outletId, actorId],
+  );
+  return { pending, close };
+}
+
+const NO_SENDS = '{"orders":[],"seats":[]}';
+
+/**
+ * Every captain send whose answer is not known (orders, seats, fires) for this
+ * outlet and captain, whether or not its table still has a session: resend
+ * from what was stored, or close after checking.
+ */
+export function useUnclearSends() {
+  const queryClient = useQueryClient();
+  const outletId = useOutletId();
+  const actorId = useCaptainActorId();
+  const text = useSyncExternalStore(
+    subscribePending,
+    () => JSON.stringify(pendingCaptainSends(outletId, actorId)),
+    () => NO_SENDS,
+  );
+  const sends = useMemo(
+    () => JSON.parse(text) as ReturnType<typeof pendingCaptainSends>,
+    [text],
+  );
+  const fires = usePendingFires();
+  const resend = useMutation<
+    void,
+    Error,
+    | { kind: "order"; draftKey: string }
+    | { kind: "seat"; tableId: string; pax: number }
+    | { kind: "fire"; orderId: string }
+  >({
+    mutationFn: (target) =>
+      target.kind === "order"
+        ? resendCaptainOrder(outletId, actorId, target.draftKey).then(
+            () => undefined,
+          )
+        : target.kind === "seat"
+          ? openTable(outletId, actorId, target.tableId, target.pax).then(
+              () => undefined,
+            )
+          : resendFire(outletId, actorId, target.orderId),
+    onSettled: () => {
+      notifyPending();
+      void queryClient.invalidateQueries({ queryKey: ["pos-order", outletId] });
+    },
+  });
+  const closeOrder = useCallback(
+    (draftKey: string) => {
+      closePendingOrder(outletId, actorId, draftKey);
+      notifyPending();
+    },
+    [outletId, actorId],
+  );
+  const closeSeat = useCallback(
+    (tableId: string) => {
+      closePendingOpen(outletId, actorId, tableId);
+      notifyPending();
+    },
+    [outletId, actorId],
+  );
+  return {
+    orders: sends.orders,
+    seats: sends.seats,
+    fires: fires.pending,
+    resend,
+    closeOrder,
+    closeSeat,
+    closeFire: fires.close,
+  };
 }
 
 // ---- Waiter calls ----------------------------------------------------------

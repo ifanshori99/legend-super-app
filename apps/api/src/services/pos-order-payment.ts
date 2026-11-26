@@ -435,6 +435,24 @@ export async function addPosTender(
         createdAt: now,
         updatedAt: now,
       };
+      // 1268 W3: a captain order a waiter submitted carries no shift. Its
+      // non-cash tender books on the receiving cashier's open shift (checked
+      // before any QR or terminal call) so the shift report counts it. Cash
+      // takes its own drawer lock below; other orders keep the order's shift.
+      const nonCashShiftId =
+        input.method !== "cash" &&
+        pos.channel === "captain" &&
+        pos.shiftId === null
+          ? (
+              await lockCashierShiftForCash(tx, context, {
+                outletId,
+                cashierId: caller.userId,
+                deviceId: caller.deviceId,
+                mode: "in",
+                at: now,
+              })
+            ).id
+          : null;
       let inserted: typeof posOrderTenders.$inferSelect | undefined;
       switch (input.method) {
         case "cash": {
@@ -546,6 +564,7 @@ export async function addPosTender(
             .values({
               ...base,
               id: tenderId,
+              shiftId: nonCashShiftId,
               provider: issued.provider,
               paymentLinkId: opened.linkId,
               paymentLinkTokenSealed: sealSecret(
@@ -620,6 +639,7 @@ export async function addPosTender(
               ...("tenderId" in settled && settled.tenderId
                 ? { id: settled.tenderId }
                 : {}),
+              shiftId: nonCashShiftId,
               provider: input.method === "points" ? "manual" : "edc",
               reference: settled.reference ?? base.reference,
               edcTransactionId:

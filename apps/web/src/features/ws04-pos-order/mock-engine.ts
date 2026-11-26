@@ -465,6 +465,19 @@ export function createPosOrderEngine(options: EngineOptions = {}) {
 
     // ---- Captain ----------------------------------------------------------
 
+    /** Seats a walk-in party at an empty table (mock of the staff seat). */
+    openTable(tableId: string, pax: number): CaptainTable {
+      const s = ensure();
+      const tableRow = findTable(tableId);
+      if (tableRow.status !== "empty")
+        throw new ApiError(409, "CONFLICT", "Meja masih dipakai tamu lain.");
+      s.counters.session += 1;
+      tableRow.status = "occupied";
+      tableRow.guestCount = Math.max(1, pax);
+      tableRow.sessionId = `session-${pad(s.counters.session, 4)}`;
+      return tableRow;
+    },
+
     /** Adds to the table's running order, or opens one for an empty table. */
     addToTable(input: AddToTableRequest): TableOrderView {
       const s = ensure();

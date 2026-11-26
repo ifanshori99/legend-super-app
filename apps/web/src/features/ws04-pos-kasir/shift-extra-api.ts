@@ -13,6 +13,7 @@ import { callEndpoint } from "@/lib/api/endpoint";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { contractPending } from "./api";
 import { runPosKasirMock, type PosKasirEngine } from "./mock-engine";
+import { readStoredCount } from "./shift-count-store";
 import { bookVarianceIdr, countLimitReached } from "./shift-extra-logic";
 import type {
   DecideHeldCashInput,
@@ -111,13 +112,30 @@ export async function decideHeldCashMovement(
   return data;
 }
 
-/** The cashier's latest count. Server side the cashier receipt is the only blind source. */
-export const fetchOwnCountSummary = (
+/**
+ * The cashier's latest count. The server answers a cashier nothing about
+ * counts (those rows carry expected and variance), so on the real wire this
+ * is the receipt of the submit, kept on this device.
+ */
+export async function fetchOwnCountSummary(
+  outletId: string,
   shiftId: string,
-): Promise<OwnCountSummary | null> =>
-  local("ringkasan hitungan kasir", (engine) =>
-    engine.ownCountSummary(shiftId),
-  );
+): Promise<OwnCountSummary | null> {
+  if (API_MOCK)
+    return runPosKasirMock((engine) => engine.ownCountSummary(shiftId));
+  const stored = readStoredCount(outletId, shiftId);
+  if (!stored) return null;
+  return {
+    shiftId,
+    sequence: stored.sequence,
+    countedIdr: stored.countedIdr,
+    submittedAt: stored.submittedAt,
+    // The recount limit is the server's: a fourth count is answered 409.
+    limitReached: false,
+    countId: stored.countId,
+    noteRequired: stored.noteRequired,
+  };
+}
 
 export const fetchWitnesses = (): Promise<SupervisorOption[]> =>
   local("daftar penyetuju tutup paksa", (engine) => engine.witnesses());
