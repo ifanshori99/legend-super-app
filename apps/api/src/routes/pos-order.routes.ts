@@ -41,6 +41,7 @@ import {
   listPosOrderEvents,
   listPosOrders,
   refundPosOrder,
+  settlePosRefundPayout,
   releasePosQris,
   releasePosVa,
   removePosDiscount,
@@ -58,7 +59,11 @@ import {
 } from "../middleware/acting-staff.ts";
 import { requireAuthAllowSharedDevice } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
-import { requirePosWriteOnCloud } from "../middleware/pos-on-cloud.ts";
+import {
+  requirePosRefundOnCloud,
+  requirePosWriteOnCloud,
+} from "../middleware/pos-on-cloud.ts";
+import { sessionMfaVerifiedAt } from "../lib/mfa.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
   getAccessSnapshot,
@@ -638,7 +643,8 @@ posOrderRouter.post(
 posOrderRouter.post(
   "/orders/:orderId/corrections/refund",
   refund,
-  requirePosWriteOnCloud,
+  // 1269 E6: back office refunds an edge sale the cloud ingested.
+  requirePosRefundOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId } = refundPosOrder.params.parse(req.params);
@@ -650,6 +656,31 @@ posOrderRouter.post(
         outletId,
         orderId,
         body,
+      ),
+    });
+  },
+);
+
+// 1269 E6 (D1, D2): Finance records how a back-office refund of an edge sale
+// was paid. Only such refunds have a payout, so the edge gate does not apply.
+posOrderRouter.post(
+  "/orders/:orderId/corrections/refunds/:refundId/payout",
+  reconcile,
+  jsonBody,
+  async (req, res) => {
+    const { outletId, orderId, refundId } = settlePosRefundPayout.params.parse(
+      req.params,
+    );
+    const body = settlePosRefundPayout.body.parse(req.body);
+    res.json({
+      data: await corrections.settlePosRefundPayout(
+        getScopedTenantContext(req),
+        await caller(req),
+        outletId,
+        orderId,
+        refundId,
+        body,
+        { mfaVerified: (await sessionMfaVerifiedAt(req)) !== null },
       ),
     });
   },

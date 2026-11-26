@@ -225,6 +225,10 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
       ["tax_payable_pbjt", "debit", "pbjtIdr"],
       ["sales_discount", "credit", "discountIdr"],
       ["cash_on_hand", "credit", "refundCashIdr"],
+      // 1269 E6 (D1): a back-office refund of an edge sale pays its cash part
+      // outside the drawer, by bank transfer or from petty cash.
+      ["bank", "credit", "refundBankIdr"],
+      ["petty_cash", "credit", "refundPettyCashIdr"],
       // Owed to the guest until the gateway pays it out (payment.refunded).
       ["customer_deposit", "credit", "refundGatewayIdr"],
       // legend-2jyr: the gateway part no payment refund pays out later (no
@@ -273,6 +277,8 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
       ["tax_payable_other", "debit", "otherTaxIdr"],
       ["sales_discount", "credit", "discountIdr"],
       ["cash_on_hand", "credit", "refundCashIdr"],
+      ["bank", "credit", "refundBankIdr"],
+      ["petty_cash", "credit", "refundPettyCashIdr"],
       ["customer_deposit", "credit", "refundGatewayIdr"],
       ["gateway_clearing", "credit", "refundGatewayClearingIdr"],
       ["edc_clearing", "credit", "refundEdcIdr"],

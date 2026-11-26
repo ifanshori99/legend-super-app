@@ -4,10 +4,12 @@
 // without the permission still gets 403.
 import type { NextFunction, Request, Response } from "express";
 import { outletIdSchema } from "@starter/shared/core";
+import { orderIdSchema } from "@starter/shared/pos";
 import { db } from "../db/index.ts";
 import { memberTenantContext } from "../db/member-scope.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
+  assertPosRefundNotOnEdge,
   assertPosWriteNotOnEdge,
   assertTargetOutletNotOnEdge,
 } from "../services/pos-edge-outlet.ts";
@@ -51,6 +53,29 @@ export function requirePosWriteOnCloudFor(
 export const requirePosWriteOnCloud: Middleware = requirePosWriteOnCloudFor(
   (req) => req.params.outletId,
 );
+
+/**
+ * 1269 E6: `:outletId` and `:orderId` from the path. The refund of an edge
+ * sale the cloud ingested passes (back office refunds it); everything else
+ * on an outlet its edge serves is 409, as `requirePosWriteOnCloud`.
+ */
+export const requirePosRefundOnCloud: Middleware = async (req, _res, next) => {
+  const outlet = outletIdSchema.safeParse(req.params.outletId);
+  // A malformed outlet id is left to the route's own checks.
+  if (outlet.success) {
+    const order = orderIdSchema.safeParse(req.params.orderId);
+    const tenantId = getTenantContext(req).tenantId;
+    await withTenant(db, memberTenantContext(tenantId), (tx) =>
+      assertPosRefundNotOnEdge(
+        tx,
+        tenantId,
+        outlet.data,
+        order.success ? order.data : null,
+      ),
+    );
+  }
+  next();
+};
 
 /**
  * The outlet of a target the path names by id (E3b: order item, issue,

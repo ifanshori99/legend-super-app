@@ -13,8 +13,8 @@
 //   exactly this amount.
 // - An order ingested from the edge (`edge_order_ingests` state `ingested` or
 //   `voided`) refuses a manual refund with 409 EDGE_ORDER_CORRECTION_BLOCKED,
-//   before every other check: the refund is made at the edge till only (F2,
-//   same as `assertNotEdgeIngested` in pos-order-corrections).
+//   before every other check. 1269 E6: such a sale is refunded by back office
+//   through the POS refund (pos-order-corrections), one refund path per sale.
 // - A void (cloud `pos_order_voids`, an edge ingest in state `voided`, or a
 //   parked edge `order.voided` of the final sale) also refuses a manual refund
 //   (legend-1042). The edge-ingest check above already covers `voided`; the
@@ -165,7 +165,7 @@ export async function manualRefundAmountIdr(
     throw new HttpError(
       409,
       "EDGE_ORDER_CORRECTION_BLOCKED",
-      "Pesanan ini dibayar di kasir edge dan sudah diterima server pusat, jadi refund manual per item tidak bisa dilakukan dari pusat. Refund penjualan kasir offline belum didukung di rilis 1; hubungi finance.",
+      "Pesanan ini dibayar di kasir edge, jadi refund manual per item tidak bisa dilakukan. Gunakan refund pesanan dari back office.",
     );
 
   // Money the guest paid for the order, per tender. A tender backed by a

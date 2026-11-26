@@ -102,6 +102,7 @@ export * from "./edge-catalog-sale-overrides";
 export * from "./edge-cloud-command";
 // WS-04 POS order service (legend-kk7).
 export * from "./pos-order";
+export * from "./pos-refund-payout";
 export * from "./pos-parked-order";
 // QRIS hold (legend-yhia9): freezes a bill while its QR is collectible.
 export * from "./pos-qris-hold";

@@ -305,6 +305,8 @@ const orderRefundedSchema = z.object({
   refundGatewayIdr: idr,
   refundEdcIdr: idr,
   refundPointsIdr: idr,
+  /** 1269 E6: cash paid outside the drawer (back-office refund of an edge sale). */
+  cashPaidFrom: z.enum(["bank", "petty_cash"]).optional(),
   /** Tender lines (method + amount), absent on events stored without them. */
   lines: z.array(z.object({ method: z.string(), amountIdr: idr })).default([]),
   refundedAt: time,
@@ -2383,6 +2385,8 @@ async function chargeRefundedFactOf(
       refundGatewayClearingIdr: p.amountIdr - deposit,
       refundEdcIdr: 0,
       refundPointsIdr: 0,
+      refundBankIdr: 0,
+      refundPettyCashIdr: 0,
     },
     sourceId: p.refundId,
     outletId: stored.outletId,
@@ -2507,6 +2511,8 @@ async function chargeCashReturnFactOf(
       refundGatewayClearingIdr: 0,
       refundEdcIdr: 0,
       refundPointsIdr: 0,
+      refundBankIdr: 0,
+      refundPettyCashIdr: 0,
     },
     sourceId: p.refundId,
     outletId: stored.outletId,
@@ -2661,6 +2667,8 @@ async function chargeManualRefundFactOf(
       refundGatewayClearingIdr: 0,
       refundEdcIdr: cash ? 0 : p.amountIdr,
       refundPointsIdr: 0,
+      refundBankIdr: 0,
+      refundPettyCashIdr: 0,
     },
     sourceId: p.refundId,
     outletId: stored.outletId,
@@ -2952,6 +2960,8 @@ export async function autoJournalFactOf(
             eq(accountMappings.legalEntityId, saleAccounts.legalEntityId),
             inArray(accountMappings.role, [
               "cash_on_hand",
+              "bank",
+              "petty_cash",
               "customer_deposit",
               "edc_clearing",
               "loyalty_liability",
@@ -2976,7 +2986,12 @@ export async function autoJournalFactOf(
             ? { ppnIdr: tax.ppnIdr, otherTaxIdr: tax.otherTaxIdr }
             : {}),
           discountIdr: components.discountIdr,
-          refundCashIdr: p.refundCashIdr,
+          // 1269 E6 (D1): a back-office refund of an edge sale paid its cash
+          // outside the drawer; it credits the bank or petty cash instead.
+          refundCashIdr: p.cashPaidFrom ? 0 : p.refundCashIdr,
+          refundBankIdr: p.cashPaidFrom === "bank" ? p.refundCashIdr : 0,
+          refundPettyCashIdr:
+            p.cashPaidFrom === "petty_cash" ? p.refundCashIdr : 0,
           refundGatewayIdr: gatewaySplit.depositIdr,
           refundGatewayClearingIdr: gatewaySplit.clearingIdr,
           refundEdcIdr: p.refundEdcIdr,

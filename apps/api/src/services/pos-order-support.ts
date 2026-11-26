@@ -85,6 +85,7 @@ import {
   posOrderTenders,
 } from "../db/schema/pos-order.ts";
 import { edcTransactions } from "../db/schema/edc.ts"; // legend-ig2sl
+import { edgeOrderIngests } from "../db/schema/edge-order-ingest.ts";
 import { paymentEdcTerminals } from "../db/schema/payment-admin.ts";
 import { orderIssues } from "../db/schema/kds-issues.ts"; // legend-kxoyf
 import { paymentVaReleases } from "../db/schema/payment-va-release.ts";
@@ -461,6 +462,32 @@ export async function hasOpenEdcRequest(
                     eq(posOrderTenders.tenantId, tenantId),
                     eq(posOrderTenders.edcTransactionId, edcTransactions.id),
                     notInArray(posOrderTenders.status, ["voided", "failed"]),
+                  ),
+                ),
+            ),
+            // 1269 E6 (E4 review P3 c): an approved charge the edge mirrored
+            // belongs to an edge sale; once the cloud ingested that sale
+            // (paid at the edge, its tender carries no cloud EDC link) the
+            // request is closed. Pending/unknown/flagged charges stay open.
+            notExists(
+              tx
+                .select({ one: sql`1` })
+                .from(edgeOrderIngests)
+                .innerJoin(
+                  orders,
+                  and(
+                    eq(orders.tenantId, edgeOrderIngests.tenantId),
+                    eq(orders.id, edgeOrderIngests.orderId),
+                  ),
+                )
+                .where(
+                  and(
+                    sql`lower(${edcTransactions.idempotencyKey}) = 'edge:' || ${edcTransactions.id}::text`,
+                    eq(edgeOrderIngests.tenantId, tenantId),
+                    eq(edgeOrderIngests.outletId, order.outletId),
+                    eq(edgeOrderIngests.state, "ingested"),
+                    eq(orders.outletId, order.outletId),
+                    eq(orders.number, order.number),
                   ),
                 ),
             ),

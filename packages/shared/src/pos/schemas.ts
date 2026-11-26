@@ -988,6 +988,51 @@ export const posRefundSchema = z
         message: "A refund records the approval it consumed (POS-02)",
       });
   });
+
+/**
+ * 1269 E6: how Finance paid the cash part of a back-office refund of an edge
+ * sale. The edge owns the drawer, so the money leaves outside it: a bank
+ * transfer or petty cash (journal: bank / petty_cash, never the drawer).
+ */
+export const posRefundCashChannelSchema = z.enum(["bank_transfer", "petty_cash"]);
+export type PosRefundCashChannel = z.infer<typeof posRefundCashChannelSchema>;
+
+/** A payment reference (transfer or petty cash slip), never an account number. */
+export const posRefundPayoutReferenceSchema = z
+  .string()
+  .trim()
+  .min(3)
+  .max(100)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9 ./_-]*$/, "Referensi pembayaran tidak valid");
+
+/** The refund slip RRN of the outlet terminal; dashes and spaces are dropped. */
+export const posRefundRrnSchema = z
+  .string()
+  .trim()
+  .transform((value) => value.replace(/[\s-]/g, "").toUpperCase())
+  .pipe(z.string().regex(/^[A-Z0-9]{6,24}$/, "RRN refund tidak valid"));
+
+/**
+ * 1269 E6 (D1, D2): the payout of a back-office refund of an edge sale. Each
+ * part (cash, card) is `requested` until its reference is recorded; the
+ * refund counts as money (`succeeded`, journal) only when every part is paid.
+ */
+export const posRefundPayoutSchema = z.strictObject({
+  refundId: posRefundIdSchema,
+  ...scope,
+  orderId: orderIdSchema,
+  status: z.enum(["requested", "succeeded"]),
+  cashIdr: nonnegativeIdr,
+  edcIdr: nonnegativeIdr,
+  cashChannel: posRefundCashChannelSchema.nullable(),
+  cashReference: z.string().nullable(),
+  cashSettledAt: isoDateTimeSchema.nullable(),
+  edcRrn: z.string().nullable(),
+  edcApprovalCode: z.string().nullable(),
+  edcSettledAt: isoDateTimeSchema.nullable(),
+  settledAt: isoDateTimeSchema.nullable(),
+});
+export type PosRefundPayout = z.infer<typeof posRefundPayoutSchema>;
 export type PosRefund = z.infer<typeof posRefundSchema>;
 
 // ---- Order events (§6.C order_events) -------------------------------------

@@ -361,6 +361,12 @@ export const orderRefundedPayloadSchema = z
     refundGatewayIdr: nonnegativeIdr,
     refundEdcIdr: nonnegativeIdr,
     refundPointsIdr: nonnegativeIdr,
+    /**
+     * 1269 E6 (D1): a back-office refund of an edge sale pays its cash part
+     * outside the drawer, from the bank or petty cash; absent means the
+     * drawer (`cash_on_hand`).
+     */
+    cashPaidFrom: z.enum(["bank", "petty_cash"]).optional(),
     lines: z.array(tenderLineSchema),
     /** Original gateway DP methods, separate from POS tenders. */
     depositLines: z
@@ -426,6 +432,12 @@ export const orderRefundedPayloadSchema = z
           path: [key],
           message: `${key} must equal the ${bucket} refund lines`,
         });
+    if (payload.cashPaidFrom !== undefined && Number(payload.refundCashIdr) <= 0)
+      ctx.addIssue({
+        code: "custom",
+        path: ["cashPaidFrom"],
+        message: "cashPaidFrom names where a cash refund part came from",
+      });
   });
 export type OrderRefundedPayload = z.infer<typeof orderRefundedPayloadSchema>;
 

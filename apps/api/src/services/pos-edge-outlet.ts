@@ -18,6 +18,7 @@ import { PosError } from "@starter/shared/pos";
 import { db } from "../db/index.ts";
 import { memberTenantContext } from "../db/member-scope.ts";
 import { edgeNodes } from "../db/schema/edge-node.ts";
+import { edgeOrderIngests } from "../db/schema/edge-order-ingest.ts";
 import { tableSessions } from "../db/schema/floor.ts";
 import { withTenant } from "../db/tenant.ts";
 import { getEdgeRuntimeState } from "../edge/runtime.ts";
@@ -77,6 +78,37 @@ export async function assertPosWriteNotOnEdge(
 ): Promise<void> {
   if (await posWritesOnEdge(tx, tenantId, outletId))
     throw new PosError("POS_WRITE_ON_EDGE");
+}
+
+/**
+ * 1269 E6: the refund of a sale this outlet's edge sold and the cloud ingested
+ * (`edge_order_ingests` state `ingested`) is back office's, on the cloud: the
+ * edge never refunds after payment and holds no refund history. Every other
+ * POS write of an outlet its edge serves stays refused (void included, D3).
+ */
+export async function assertPosRefundNotOnEdge(
+  tx: Tx,
+  tenantId: TenantId,
+  outletId: OutletId,
+  orderId: string | null,
+): Promise<void> {
+  if (!(await posWritesOnEdge(tx, tenantId, outletId))) return;
+  if (orderId !== null) {
+    const [ingested] = await tx
+      .select({ orderId: edgeOrderIngests.orderId })
+      .from(edgeOrderIngests)
+      .where(
+        and(
+          eq(edgeOrderIngests.tenantId, tenantId),
+          eq(edgeOrderIngests.outletId, outletId),
+          eq(edgeOrderIngests.orderId, orderId),
+          eq(edgeOrderIngests.state, "ingested"),
+        ),
+      )
+      .limit(1);
+    if (ingested) return;
+  }
+  throw new PosError("POS_WRITE_ON_EDGE");
 }
 
 /**

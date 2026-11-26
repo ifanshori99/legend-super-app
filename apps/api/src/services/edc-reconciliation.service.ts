@@ -60,6 +60,7 @@ import {
 } from "@starter/shared/payment/admin";
 import { db } from "../db/index.ts";
 import { edcTransactions } from "../db/schema/edc.ts";
+import { edgeEdcIngests } from "../db/schema/edge-edc-ingest.ts";
 import { paymentEdcTerminals } from "../db/schema/payment-admin.ts";
 import { outlets } from "../db/schema/platform-org.ts";
 import { posOrderTenders, posOrders } from "../db/schema/pos-order.ts";
@@ -224,6 +225,24 @@ export async function resolveEdcReconciliation(
     .limit(1)
     .for("update");
   if (!row) throw notFound();
+  // 1269 E6 (E4 review P3 b): a charge the outlet's edge runs is mirrored
+  // here; its status and amount follow the edge only. The cloud matches its
+  // bank settlement, nothing else, so it is never resolved here.
+  const [edgeRow] = await tx
+    .select({ id: edgeEdcIngests.transactionId })
+    .from(edgeEdcIngests)
+    .where(
+      and(
+        eq(edgeEdcIngests.tenantId, tenantId),
+        eq(edgeEdcIngests.transactionId, row.id),
+      ),
+    )
+    .limit(1);
+  if (edgeRow)
+    throw new CoreError(
+      "CONFLICT",
+      "Transaksi EDC ini dicatat kasir edge; selesaikan di kasir edge. Pusat hanya mencocokkan settlement bank.",
+    );
   // Flagged sale, or an unflagged `unknown` sale (a terminal without
   // inquiry/cancel never raises the flag; legend-ftsq0).
   if (

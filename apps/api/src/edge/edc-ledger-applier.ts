@@ -448,6 +448,31 @@ export async function ingestEdgeEdcEvent(
           sequence: Math.max(prior?.sequence ?? 0, event.sequence, 1),
           stateHash: null,
         });
+        // 1269 E6 (E4 review P3 a): a row this applier mirrored while it was
+        // still open would stay pending forever, since no later event of it
+        // is applied. It is closed as failed with the reason `edge_refused`
+        // (never approved: no booking follows) and the alert below sends it
+        // to a human. Only our own mirror (its `edge:` key), only while open.
+        if (prior?.state === "ingested") {
+          const at = new Date();
+          await sp
+            .update(edcTransactions)
+            .set({
+              status: "failed",
+              completedAt: at,
+              message: "edge_refused",
+              updatedAt: at,
+            })
+            .where(
+              and(
+                eq(edcTransactions.tenantId, tenantId),
+                eq(edcTransactions.id, event.aggregateId),
+                eq(edcTransactions.outletId, event.outletId as OutletId),
+                sql`lower(${edcTransactions.idempotencyKey}) = 'edge:' || ${edcTransactions.id}::text`,
+                inArray(edcTransactions.status, [...OPEN]),
+              ),
+            );
+        }
         await alertSupervisors(sp, meta.context, {
           outletId: event.outletId as OutletId,
           id: edgeAlertId("edge_edc_ingest", tenantId, event.aggregateId),

@@ -14,7 +14,8 @@
 // is not voided afterwards and a voided sale is not refunded (one correction
 // path per sale keeps the day's totals unambiguous, POS-05).
 
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
+import { AccessError } from "@starter/shared/access";
 import {
   allocateIdr,
   CoreError,
@@ -31,9 +32,12 @@ import {
   posVoidSchema,
   refundAllocation,
   refundPosOrder as refundEndpoint,
+  posRefundPayoutSchema,
+  settlePosRefundPayout as settlePayoutEndpoint,
   tenderBucket,
   voidPosOrderCorrection as voidCorrectionEndpoint,
   type PosRefund,
+  type PosRefundPayout,
   type PosTender,
   type PosVoid,
 } from "@starter/shared/pos";
@@ -43,6 +47,7 @@ import { edcTransactions } from "../db/schema/edc.ts";
 import { edgeOrderIngests } from "../db/schema/edge-order-ingest.ts";
 import { orderIssueCharges, orderIssues } from "../db/schema/kds-issues.ts";
 import { posDepositRefunds } from "../db/schema/pos-deposit-refund.ts";
+import { posRefundPayouts } from "../db/schema/pos-refund-payout.ts";
 import {
   posOrderRefunds,
   posOrderVoids,
@@ -89,6 +94,7 @@ import {
   liveDiscountsOf,
   loadOutlet,
   lockPosOrder,
+  notFound,
   posIdempotent,
   tenderDto,
   tendersOf,
@@ -103,10 +109,14 @@ import {
   depositRefundFactTime,
   requestPosRefundDepositPart,
 } from "./pos-deposit-refund.ts";
-import { assertShiftOutflowBound } from "./pos-shift-support.ts";
+import {
+  assertShiftOutflowBound,
+  uniqueViolationOf,
+} from "./pos-shift-support.ts";
 
 type VoidCorrectionInput = z.output<typeof voidCorrectionEndpoint.body>;
 type RefundInput = z.output<typeof refundEndpoint.body>;
+type SettlePayoutInput = z.input<typeof settlePayoutEndpoint.body>;
 
 const rupiah = (value: number): string =>
   `Rp${new Intl.NumberFormat("id-ID").format(value)}`;
@@ -152,10 +162,23 @@ function refundDto(row: RefundRow): PosRefund {
 }
 
 /**
+ * 1269 E6: the transactions of a back-office refund or payout. In them an
+ * `ingested` edge sale is corrected by back office (the cloud is its only
+ * refund ledger: the edge never refunds after payment); every other
+ * correction of it stays refused. Marked before the order lock
+ * (`correct`'s `beforeOrderLock`), read by `assertNotEdgeIngested`.
+ */
+const edgeRefundTxs = new WeakSet<object>();
+const markEdgeRefundTx = async (tx: Tx): Promise<void> => {
+  edgeRefundTxs.add(tx);
+};
+
+/**
  * Money guard: an order the cloud ingested from an edge node (state
- * `ingested` or `voided`) may already have been, or be about to be, paid out
- * offline by the edge, so a cloud void or refund on it could pay twice. Refused
- * until the founder decides the rule. One query, shared by void and refund.
+ * `ingested` or `voided`) was paid at the edge till. D3 (1269 E6): no void
+ * after payment from back office; a voided sale is never refunded. Only the
+ * back-office refund (and its payout) of an `ingested` sale passes. One
+ * query, shared by void and refund.
  */
 async function assertNotEdgeIngested(
   tx: Tx,
@@ -163,7 +186,7 @@ async function assertNotEdgeIngested(
   orderId: string,
 ): Promise<void> {
   const [row] = await tx
-    .select({ orderId: edgeOrderIngests.orderId })
+    .select({ state: edgeOrderIngests.state })
     .from(edgeOrderIngests)
     .where(
       and(
@@ -173,13 +196,43 @@ async function assertNotEdgeIngested(
       ),
     )
     .limit(1);
-  if (row)
-    throw new HttpError(
-      409,
-      "EDGE_ORDER_CORRECTION_BLOCKED",
-      "Pesanan ini dibayar di kasir edge dan sudah diterima server pusat, jadi tidak bisa di-void atau di-refund dari pusat. Refund penjualan kasir offline belum didukung di rilis 1; hubungi finance.",
-    );
+  if (!row) return;
+  if (row.state === "ingested" && edgeRefundTxs.has(tx)) return;
+  throw new HttpError(
+    409,
+    "EDGE_ORDER_CORRECTION_BLOCKED",
+    row.state === "voided"
+      ? "Penjualan kasir edge ini sudah di-void, jadi tidak bisa di-void atau di-refund lagi dari pusat."
+      : "Penjualan kasir edge yang sudah dibayar tidak bisa di-void dari pusat. Untuk mengembalikan uang tamu, gunakan refund dari back office.",
+  );
 }
+
+/** 1269 E6: an edge sale the cloud ingested (state `ingested`): back office refunds it. */
+async function isBackOfficeEdgeSale(
+  tx: Tx,
+  context: ScopedTenantContext,
+  orderId: string,
+): Promise<boolean> {
+  const [row] = await tx
+    .select({ orderId: edgeOrderIngests.orderId })
+    .from(edgeOrderIngests)
+    .where(
+      and(
+        eq(edgeOrderIngests.tenantId, context.tenant.tenantId),
+        eq(edgeOrderIngests.orderId, orderId),
+        eq(edgeOrderIngests.state, "ingested"),
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
+}
+
+const edgeRefundMethodRefused = () =>
+  new HttpError(
+    409,
+    "EDGE_REFUND_METHOD_UNSUPPORTED",
+    "Refund penjualan kasir edge dari back office hanya untuk bagian tunai dan kartu EDC. Bagian pembayaran lain belum bisa direfund dari pusat; hubungi finance.",
+  );
 
 /** Corrections lock the final order (FOR UPDATE does not fire the triggers). */
 async function correct<T>(
@@ -997,6 +1050,16 @@ export async function refundPosOrder(
       const { voids, refunds } = await correctionsOf(tx, context, order.id);
       if (voids.length > 0)
         throw new CoreError("CONFLICT", "Transaksi ini sudah di-void.");
+      // 1269 E6 (D1, D2): an edge sale the cloud ingested is refunded by back
+      // office. The edge owns its drawer, so no shift is touched: the cash
+      // part is paid by Finance outside the drawer and the card part at the
+      // outlet terminal, each `requested` until its reference is recorded
+      // (settlePosRefundPayout). The row below holds the room on the bill
+      // meanwhile, so a second refund can never take the same money.
+      const backOffice = await isBackOfficeEdgeSale(tx, context, order.id);
+      // No DP is taken at the edge; any other payout path is not built.
+      if (backOffice && Number(order.depositAppliedIdr) > 0)
+        throw edgeRefundMethodRefused();
       // legend-980: never next to a live manual refund of the same order.
       await assertNoLiveManualRefund(tx, context, order.id);
       await assertNoOrd09Refund(tx, context.tenant.tenantId, order.id);
@@ -1443,6 +1506,16 @@ export async function refundPosOrder(
       const lines: PosRefundLineRow[] = goodsReturnOnly
         ? []
         : refundLinesByTender(tenders, refunds, payout);
+      // 1269 E6: back office pays only cash (Finance, outside the drawer) and
+      // card (outlet terminal); a gateway or points part has no payout here.
+      if (
+        backOffice &&
+        lines.some((line) => {
+          const name = tenderBucket(line.method as never);
+          return name !== "cash" && name !== "edc";
+        })
+      )
+        throw edgeRefundMethodRefused();
       await assertBusinessDayOpen(tx, context, {
         outletId,
         businessDates: [
@@ -1453,7 +1526,7 @@ export async function refundPosOrder(
         .filter((line) => tenderBucket(line.method as never) === "cash")
         .reduce((sum, line) => sum + line.amountIdr, 0);
       const shift =
-        refundCashIdr > 0
+        refundCashIdr > 0 && !backOffice
           ? await lockCashierShiftForCash(tx, context, {
               outletId,
               cashierId: caller.userId,
@@ -1554,9 +1627,29 @@ export async function refundPosOrder(
         ].map(([method, amountIdr]) => ({ method, amountIdr })),
         refundedAt: now.toISOString(),
       };
+      // 1269 E6: a back-office refund of an edge sale moves no money yet. Its
+      // payout waits for the references; `order.refunded` (journal, loyalty,
+      // revenue) is emitted when every part is paid (settlePosRefundPayout).
+      const backOfficePayout = backOffice && totalReturnIdr > 0;
+      if (backOfficePayout) {
+        const cashIdr = bucket("cash");
+        const edcIdr = bucket("edc");
+        if (cashIdr + edcIdr !== totalReturnIdr)
+          throw new Error("Back-office refund parts must equal the refund");
+        await tx.insert(posRefundPayouts).values({
+          tenantId: context.tenant.tenantId,
+          posRefundId: row.id,
+          outletId: order.outletId,
+          orderId: order.id,
+          cashIdr: idr(cashIdr),
+          edcIdr: idr(edcIdr),
+          eventPayload: payload,
+          requestedBy: caller.userId,
+        });
+      }
       // No money moved on a Rp0 return: order.refunded (journals, loyalty,
       // revenue) is not emitted; the row and its audit are the record.
-      if (totalReturnIdr > 0) {
+      if (totalReturnIdr > 0 && !backOfficePayout) {
         await appendPosEvent(tx, context, "order.refunded", {
           order,
           payload,
@@ -1597,6 +1690,7 @@ export async function refundPosOrder(
                 }
               : {}),
             ...(depositOwedIdr > 0 ? { depositOwedIdr } : {}),
+            ...(backOfficePayout ? { backOfficePayout: "requested" } : {}),
             reason: row.reason,
             approvedBy: row.approvedBy,
             approvalRequestId: row.approvalRequestId,
@@ -1630,5 +1724,282 @@ export async function refundPosOrder(
       return refundDto(row);
     },
     requestedAt,
+    // 1269 E6: an ingested edge sale is refunded here, by back office.
+    markEdgeRefundTx,
+  );
+}
+
+type PayoutRow = typeof posRefundPayouts.$inferSelect;
+
+function payoutDto(row: PayoutRow): PosRefundPayout {
+  const iso = (value: Date | null) => (value ? value.toISOString() : null);
+  return posRefundPayoutSchema.parse({
+    refundId: row.posRefundId,
+    tenantId: row.tenantId,
+    outletId: row.outletId,
+    orderId: row.orderId,
+    status: row.status,
+    cashIdr: row.cashIdr,
+    edcIdr: row.edcIdr,
+    cashChannel: row.cashChannel,
+    cashReference: row.cashReference,
+    cashSettledAt: iso(row.cashSettledAt),
+    edcRrn: row.edcRrn,
+    edcApprovalCode: row.edcApprovalCode,
+    edcSettledAt: iso(row.edcSettledAt),
+    settledAt: iso(row.settledAt),
+  });
+}
+
+const payoutConflict = (code: string, message: string) =>
+  new HttpError(409, code, message);
+
+/**
+ * POST .../corrections/refunds/:refundId/payout — 1269 E6 (D1, D2): Finance
+ * records how a back-office refund of an edge sale was paid. The cash part
+ * names the bank transfer or petty cash slip, the card part the refund RRN and
+ * approval code printed by the outlet terminal. A recorded part never changes
+ * (a repeat with the same values changes nothing); one refund RRN and one
+ * payment reference pay one refund. When every part is paid the refund counts
+ * as money: one `order.refunded`, its journal crediting the bank or petty cash
+ * (never the drawer) and the card clearing. The route holds
+ * `payment.reconcile`; money already left by hand, so a second factor always.
+ */
+export async function settlePosRefundPayout(
+  context: ScopedTenantContext,
+  caller: PosCaller,
+  outletId: OutletId,
+  orderId: string,
+  refundId: string,
+  rawInput: SettlePayoutInput,
+  options: { readonly mfaVerified: boolean },
+  requestedAt = new Date(),
+): Promise<PosRefundPayout> {
+  if (!options.mfaVerified) throw new AccessError("MFA_REQUIRED");
+  const { idempotencyKey, ...body } = settlePayoutEndpoint.body.parse(rawInput);
+  const tenantId = context.tenant.tenantId;
+  const where = (tx: Tx) =>
+    tx
+      .select()
+      .from(posRefundPayouts)
+      .where(
+        and(
+          eq(posRefundPayouts.tenantId, tenantId),
+          eq(posRefundPayouts.posRefundId, refundId),
+          eq(posRefundPayouts.orderId, orderId),
+          eq(posRefundPayouts.outletId, outletId),
+        ),
+      );
+  // A refund of another outlet, order or tenant answers 404 before any write.
+  const known = await withTenant(db, context, async (tx) => {
+    const [row] = await where(tx);
+    return row !== undefined;
+  });
+  if (!known) throw notFound("Refund tidak ditemukan.");
+  return correct(
+    context,
+    caller,
+    {
+      outletId,
+      orderId,
+      key: idempotencyKey,
+      operation: "order.refund_payout",
+      request: { refundId, ...body },
+    },
+    async (tx, { order }, now) => {
+      const [row] = await where(tx).for("update");
+      if (!row) throw notFound("Refund tidak ditemukan.");
+      const next: Partial<PayoutRow> = {};
+      if (body.cash) {
+        if (Number(row.cashIdr) === 0)
+          throw new HttpError(
+            422,
+            "REFUND_PAYOUT_PART_ABSENT",
+            "Refund ini tidak punya bagian tunai.",
+          );
+        if (row.cashReference !== null) {
+          if (
+            row.cashChannel !== body.cash.channel ||
+            row.cashReference !== body.cash.reference
+          )
+            throw payoutConflict(
+              "REFUND_PAYOUT_SETTLED",
+              "Bagian tunai refund ini sudah dicatat dengan referensi lain.",
+            );
+        } else {
+          const [used] = await tx
+            .select({ id: posRefundPayouts.posRefundId })
+            .from(posRefundPayouts)
+            .where(
+              and(
+                eq(posRefundPayouts.tenantId, tenantId),
+                eq(posRefundPayouts.cashChannel, body.cash.channel),
+                eq(posRefundPayouts.cashReference, body.cash.reference),
+              ),
+            )
+            .limit(1);
+          if (used)
+            throw payoutConflict(
+              "REFUND_PAYOUT_REFERENCE_USED",
+              "Referensi pembayaran ini sudah dipakai untuk refund lain.",
+            );
+          Object.assign(next, {
+            cashChannel: body.cash.channel,
+            cashReference: body.cash.reference,
+            cashSettledBy: caller.userId,
+            cashSettledAt: now,
+          });
+        }
+      }
+      if (body.edc) {
+        if (Number(row.edcIdr) === 0)
+          throw new HttpError(
+            422,
+            "REFUND_PAYOUT_PART_ABSENT",
+            "Refund ini tidak punya bagian kartu EDC.",
+          );
+        if (row.edcRrn !== null) {
+          if (
+            row.edcRrn !== body.edc.rrn ||
+            row.edcApprovalCode !== body.edc.approvalCode
+          )
+            throw payoutConflict(
+              "REFUND_PAYOUT_SETTLED",
+              "Bagian kartu refund ini sudah dicatat dengan RRN lain.",
+            );
+        } else {
+          // One slip, one refund: another refund's RRN or any terminal slip
+          // of the tenant (a sale's RRN typed by mistake) is refused.
+          const [usedByRefund] = await tx
+            .select({ id: posRefundPayouts.posRefundId })
+            .from(posRefundPayouts)
+            .where(
+              and(
+                eq(posRefundPayouts.tenantId, tenantId),
+                eq(posRefundPayouts.edcRrn, body.edc.rrn),
+              ),
+            )
+            .limit(1);
+          const [usedBySlip] = await tx
+            .select({ id: edcTransactions.id })
+            .from(edcTransactions)
+            .where(
+              and(
+                eq(edcTransactions.tenantId, tenantId),
+                sql`upper(replace(replace(${edcTransactions.rrn}, '-', ''), ' ', '')) = ${body.edc.rrn}`,
+              ),
+            )
+            .limit(1);
+          if (usedByRefund || usedBySlip)
+            throw payoutConflict(
+              "REFUND_PAYOUT_RRN_USED",
+              "RRN ini sudah dipakai. Satu struk refund EDC hanya untuk satu refund.",
+            );
+          Object.assign(next, {
+            edcRrn: body.edc.rrn,
+            edcApprovalCode: body.edc.approvalCode,
+            edcSettledBy: caller.userId,
+            edcSettledAt: now,
+          });
+        }
+      }
+      if (Object.keys(next).length === 0) return payoutDto(row);
+      const merged = { ...row, ...next };
+      const paid =
+        (Number(merged.cashIdr) === 0 || merged.cashReference !== null) &&
+        (Number(merged.edcIdr) === 0 || merged.edcRrn !== null);
+      if (paid) Object.assign(next, { status: "succeeded", settledAt: now });
+      let updated: PayoutRow | undefined;
+      try {
+        [updated] = await tx
+          .update(posRefundPayouts)
+          .set(next)
+          .where(
+            and(
+              eq(posRefundPayouts.tenantId, tenantId),
+              eq(posRefundPayouts.posRefundId, row.posRefundId),
+              eq(posRefundPayouts.status, "requested"),
+            ),
+          )
+          .returning();
+      } catch (error) {
+        const constraint = uniqueViolationOf(error);
+        if (constraint === "pos_refund_payouts_edc_rrn_key")
+          throw payoutConflict(
+            "REFUND_PAYOUT_RRN_USED",
+            "RRN ini sudah dipakai. Satu struk refund EDC hanya untuk satu refund.",
+          );
+        if (constraint === "pos_refund_payouts_cash_reference_key")
+          throw payoutConflict(
+            "REFUND_PAYOUT_REFERENCE_USED",
+            "Referensi pembayaran ini sudah dipakai untuk refund lain.",
+          );
+        throw error;
+      }
+      if (!updated) throw new Error("Refund payout update returned no row");
+      if (paid) {
+        // The refund now counts as money: the event as the refund computed
+        // it, at the time the last part was paid, naming where the cash left.
+        const payload = {
+          ...updated.eventPayload,
+          refundedAt: now.toISOString(),
+          ...(Number(updated.cashIdr) > 0
+            ? {
+                cashPaidFrom:
+                  updated.cashChannel === "bank_transfer"
+                    ? "bank"
+                    : "petty_cash",
+              }
+            : {}),
+        };
+        await appendPosEvent(tx, context, "order.refunded", {
+          order,
+          payload,
+          caller,
+          now,
+        });
+        await appendOrderEvent(tx, context, {
+          order,
+          type: "order.refunded",
+          payload,
+          caller,
+          now,
+        });
+      }
+      await auditPos(
+        tx,
+        context,
+        {
+          action: "pos_order.refund_payout_recorded",
+          order,
+          caller,
+          objectType: "pos_order_refund",
+          objectId: row.posRefundId,
+          before: { id: row.posRefundId, status: row.status },
+          after: {
+            id: row.posRefundId,
+            status: updated.status,
+            ...(next.cashReference
+              ? {
+                  cashIdr: Number(updated.cashIdr),
+                  cashChannel: updated.cashChannel,
+                  cashReference: updated.cashReference,
+                }
+              : {}),
+            ...(next.edcRrn
+              ? {
+                  edcIdr: Number(updated.edcIdr),
+                  edcRrn: updated.edcRrn,
+                  edcApprovalCode: updated.edcApprovalCode,
+                }
+              : {}),
+          },
+        },
+        now,
+      );
+      return payoutDto(updated);
+    },
+    requestedAt,
+    markEdgeRefundTx,
   );
 }

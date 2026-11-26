@@ -238,7 +238,7 @@ export const posCorrectionMessages = {
     submitErrorBody:
       "Tidak ada perubahan pada pesanan. Periksa isian lalu coba lagi.",
     edgeBlockedBody:
-      "Pesanan ini dibayar di kasir edge dan sudah diterima server pusat, jadi tidak bisa di-void atau di-refund dari pusat. Refund penjualan kasir offline belum didukung di rilis 1; hubungi finance.",
+      "Pesanan ini dibayar di kasir edge, jadi tidak bisa di-void dari pusat. Untuk mengembalikan uang tamu, gunakan refund dari back office.",
     voidedTitle: "Pesanan sudah di-void",
     voidedBody: "Tidak ada koreksi lain yang bisa dibuat untuk pesanan ini.",
   },

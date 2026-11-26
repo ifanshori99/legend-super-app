@@ -71,7 +71,12 @@ import {
   posQrisReconciliationStatusSchema,
   posReceiptIdSchema,
   posReceiptIssueResultSchema,
+  posRefundCashChannelSchema,
+  posRefundIdSchema,
   posRefundItemSchema,
+  posRefundPayoutReferenceSchema,
+  posRefundPayoutSchema,
+  posRefundRrnSchema,
   posRefundSchema,
   posShiftCountReceiptSchema,
   posShiftCountSchema,
@@ -573,6 +578,45 @@ export const refundPosOrder = defineEndpoint({
     { message: "Each refunded item may appear once", path: ["items"] },
   ),
   response: dataResponseSchema(posRefundSchema),
+});
+
+/**
+ * 1269 E6 (D1, D2): Finance records how a back-office refund of an edge sale
+ * was paid: the cash part's bank transfer or petty cash reference, the card
+ * part's refund RRN and approval code from the outlet terminal. Needs
+ * `payment.reconcile` and a second factor. A part already recorded never
+ * changes; one refund RRN and one payment reference pay one refund.
+ */
+export const settlePosRefundPayout = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pos/orders/:orderId/corrections/refunds/:refundId/payout",
+  params: z.strictObject({
+    outletId: outletIdSchema,
+    orderId: orderIdSchema,
+    refundId: posRefundIdSchema,
+  }),
+  body: clientInputSchema({
+    cash: z
+      .strictObject({
+        channel: posRefundCashChannelSchema,
+        reference: posRefundPayoutReferenceSchema,
+      })
+      .optional(),
+    edc: z
+      .strictObject({
+        rrn: posRefundRrnSchema,
+        approvalCode: z
+          .string()
+          .trim()
+          .regex(/^[A-Za-z0-9]{2,12}$/, "Kode approval refund tidak valid"),
+      })
+      .optional(),
+    idempotencyKey: idempotencyKeySchema,
+  }).refine((value) => value.cash !== undefined || value.edc !== undefined, {
+    message: "Isi referensi tunai atau refund kartu",
+    path: ["cash"],
+  }),
+  response: dataResponseSchema(posRefundPayoutSchema),
 });
 
 /** Remove a discount line (before settlement only). */
