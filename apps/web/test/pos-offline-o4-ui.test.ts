@@ -41,6 +41,9 @@ vi.mock("@/components/ui/dialog", () => {
 
 // The router is not mounted in server rendering: Link is a plain anchor.
 vi.mock("@tanstack/react-router", () => ({
+  useRouteContext: () => ({
+    access: { permissions: ["shift.cash.approve_close"] },
+  }),
   Link: ({ children }: { children?: ReactNode }) =>
     createElement("a", null, children),
 }));

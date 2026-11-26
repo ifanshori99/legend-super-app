@@ -19,7 +19,14 @@ import { renderToString } from "react-dom/server";
 import { ApiError } from "@/lib/api/errors";
 import { visibleText } from "./pos-payment-936-helpers";
 
+const access = vi.hoisted(() => ({
+  permissions: ["shift.cash.approve_close"] as string[],
+}));
+
 vi.mock("@tanstack/react-router", () => ({
+  useRouteContext: () => ({
+    access: { permissions: access.permissions },
+  }),
   Link: ({
     to,
     params,
@@ -77,6 +84,19 @@ describe("P1 the force close is reachable", () => {
       href: `/pos/supervisor/shift/${SHIFT}`,
       label: "Tutup paksa oleh supervisor",
     });
+  });
+
+  test("an account without the approve permission reads why, not a link", () => {
+    access.permissions = ["pos.sale.create"];
+    try {
+      const html = renderToString(
+        createElement(OfflineUnverifiedNotice, { shiftId: SHIFT }),
+      );
+      expect(links(html)).toEqual([]);
+      expect(visibleText(html)).toMatch(/hanya supervisor/i);
+    } finally {
+      access.permissions = ["shift.cash.approve_close"];
+    }
   });
 
   test("the server's offline queue refusal is recognised and links there too", () => {

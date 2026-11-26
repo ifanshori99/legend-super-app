@@ -18,10 +18,12 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useOutletClock } from "@/lib/tenant-context";
 import {
   Notice,
   StatusPill,
 } from "@/features/ws04-pos-kasir/components/shared";
+import { formatShiftTime } from "../components/shift/shift-format";
 import type { OfflineQueue } from "./queue";
 import { cashOf, offlineReceiptNumber } from "./sale-view";
 
@@ -39,11 +41,6 @@ async function readRows(
   ]);
   return { waiting, parked };
 }
-
-const TIME = new Intl.DateTimeFormat("id-ID", {
-  hour: "2-digit",
-  minute: "2-digit",
-});
 
 export function OfflineQueueSheet({
   open,
@@ -208,18 +205,21 @@ export function OfflineQueueBody({
         ))}
       </ul>
 
-      <div className="grid gap-2" aria-live="polite">
-        {!online && (
-          <p className="text-sm text-muted-foreground">
-            {t("posKasirOffline.queue.offlineNote")}
-          </p>
-        )}
-        {syncFailed && (
-          <Notice
-            tone="warning"
-            title={t("posKasirOffline.queue.syncFailed")}
-          />
-        )}
+      <div className="grid gap-2">
+        {/* Only the status messages are announced, not the button or the note. */}
+        <div aria-live="polite" className="grid gap-2 empty:hidden">
+          {!online && (
+            <p className="text-sm text-muted-foreground">
+              {t("posKasirOffline.queue.offlineNote")}
+            </p>
+          )}
+          {syncFailed && (
+            <Notice
+              tone="warning"
+              title={t("posKasirOffline.queue.syncFailed")}
+            />
+          )}
+        </div>
         <Button
           type="button"
           size="lg"
@@ -275,6 +275,7 @@ function SaleRow({
   parked?: boolean;
   t: ReturnType<typeof useT>;
 }) {
+  const { timeZone } = useOutletClock();
   const items = event.lines
     .map((line) =>
       line.quantity > 1 ? `${line.name} ×${line.quantity}` : line.name,
@@ -297,7 +298,7 @@ function SaleRow({
         <span className="font-bold tabular">
           {offlineReceiptNumber(kit, event.sequenceNumber)}
           <span className="ml-2 font-normal text-muted-foreground">
-            {TIME.format(new Date(event.paidAt))}
+            {formatShiftTime(event.paidAt, timeZone)}
           </span>
         </span>
         <Money amount={event.totalIdr} className="font-bold" />

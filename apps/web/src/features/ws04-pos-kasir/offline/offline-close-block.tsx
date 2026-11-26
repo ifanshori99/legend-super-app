@@ -4,12 +4,14 @@
 // figure is the tablet's own (Keputusan CTO O4 no. 4). A broken tablet is
 // not a dead end: a supervisor force-closes from the shift approval screen.
 import { useEffect, useState } from "react";
-import { Link } from "@tanstack/react-router";
+import { Link, useRouteContext } from "@tanstack/react-router";
 import { formatRupiah } from "@starter/shared/i18n";
 import type { PosOfflineKit } from "@starter/shared/pos";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { Notice } from "@/features/ws04-pos-kasir/components/shared";
+import type { AreaAccess } from "@/lib/areas/access";
+import { holdsAny } from "@/lib/areas/guard";
 import { OfflineQueueSheet } from "./offline-queue-sheet";
 import type { OfflineQueue } from "./queue";
 import { cashOf } from "./sale-view";
@@ -68,9 +70,30 @@ export function OfflineCloseBlock({
   );
 }
 
-/** Review K P1: the way to the force close screen of this shift. */
+/** The force close screen needs the same permission as the API route. */
+function useCanForceClose(): boolean {
+  const context = useRouteContext({ strict: false }) as {
+    access?: AreaAccess;
+  };
+  return context.access
+    ? holdsAny(context.access, ["shift.cash.approve_close"])
+    : false;
+}
+
+/**
+ * Review K P1: the way to the force close screen of this shift. Only an
+ * account with the permission gets the link; the others read why not, instead
+ * of landing on a page that answers "not found".
+ */
 export function ForceCloseLink({ shiftId }: { shiftId: string }) {
   const t = useT();
+  const allowed = useCanForceClose();
+  if (!allowed)
+    return (
+      <p className="text-sm">
+        {t("posKasirOffline.close.forceCloseNoPermission")}
+      </p>
+    );
   return (
     <Button asChild variant="outline" className="justify-self-start font-bold">
       <Link to="/pos/supervisor/shift/$shiftId" params={{ shiftId }}>

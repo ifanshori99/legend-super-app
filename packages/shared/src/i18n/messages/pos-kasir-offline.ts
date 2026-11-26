@@ -121,6 +121,8 @@ export const posKasirOfflineMessages = {
     cash: "Tunai offline belum terkirim: {amount}",
     openQueue: "Lihat antrean",
     forceClose: "Tutup paksa oleh supervisor",
+    forceCloseNoPermission:
+      "Akun ini tidak bisa tutup paksa. Hanya supervisor yang boleh; minta supervisor membuka layar persetujuan shift ini.",
     unverifiedTitle: "Shift ini memakai bekal offline",
     unverifiedBody:
       "Tutup shift dari tablet kasir pemegang bekal, atau minta supervisor menutup paksa. Finance mendapat pemberitahuan.",

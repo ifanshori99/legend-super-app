@@ -194,6 +194,14 @@ export function isGuestPath(pathname: string): boolean {
   );
 }
 
+/**
+ * The cashier screen states its own offline condition (O4 banner), so the
+ * device banner of the shell is not shown there as a second, separate banner.
+ */
+export function isCashierPath(pathname: string): boolean {
+  return pathname === "/pos/kasir" || pathname.startsWith("/pos/kasir/");
+}
+
 /** Operations screens offer the way to the full status screen (Alur F). */
 export function isOperationsPath(pathname: string): boolean {
   return ["/pos", "/operasional", "/fasilitas"].some(

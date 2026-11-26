@@ -677,7 +677,11 @@ export function CashierMainScreen() {
           }}
           onOpenQueue={() => setQueueOpen(true)}
         />
-        <CatalogPane onPick={pick} offlineCatalog={offlineCatalog} />
+        <CatalogPane
+          onPick={pick}
+          offlineCatalog={offlineCatalog}
+          hasKit={offlineKit !== null}
+        />
       </div>
 
       <CartPane

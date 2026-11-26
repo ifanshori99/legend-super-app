@@ -3,6 +3,14 @@ import { cn } from "cn";
 import { ShieldCheck } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { ErrorState } from "@/components/ui/feedback-state";
 import { FormField } from "@/components/ui/form-field";
 import { fieldClass, Input } from "@/components/ui/input";
@@ -416,7 +424,6 @@ function WitnessStage({
         <div className="flex justify-end">
           <Button
             type="submit"
-            variant="outline"
             loading={pending}
             disabled={witnesses.isPending || approverUserId === ""}
           >
@@ -442,16 +449,30 @@ function ReadyStage({
   const close = useForceCloseShift();
   const count = view.count;
   const variance = count?.varianceIdr ?? 0;
+  const varianceKey =
+    variance < 0
+      ? "posKasirSupervisor.force.short"
+      : variance > 0
+        ? "posKasirSupervisor.force.over"
+        : "posKasirSupervisor.force.even";
   const [note, setNote] = useState("");
   const [noteError, setNoteError] = useState<string>();
+  const [confirming, setConfirming] = useState(false);
 
-  function closeNow() {
+  // First step: check the reason and ask for the confirmation.
+  function askConfirm() {
     if (close.isPending) return;
     // The supervisor writes why (O4: e.g. the tablet is lost); the API needs 10.
     if (!forceCloseNoteValid(note)) {
       setNoteError(t("posKasirSupervisor.force.noteTooShort"));
       return;
     }
+    setConfirming(true);
+  }
+
+  function closeNow() {
+    if (close.isPending) return;
+    setConfirming(false);
     close.mutate({ shiftId: view.shiftId, note });
   }
 
@@ -476,15 +497,7 @@ function ReadyStage({
               <Money amount={count.expectedIdr} className="font-bold" />
             )}
           </SideRow>
-          <SideRow
-            label={t(
-              variance < 0
-                ? "posKasirSupervisor.force.short"
-                : variance > 0
-                  ? "posKasirSupervisor.force.over"
-                  : "posKasirSupervisor.force.even",
-            )}
-          >
+          <SideRow label={t(varianceKey)}>
             <Money amount={Math.abs(variance)} className="font-bold" />
           </SideRow>
         </>
@@ -495,7 +508,7 @@ function ReadyStage({
           <Button type="button" variant="outline" onClick={onBack}>
             {t("posKasirSupervisor.back")}
           </Button>
-          <Button type="button" loading={close.isPending} onClick={closeNow}>
+          <Button type="button" loading={close.isPending} onClick={askConfirm}>
             {close.isPending
               ? t("posKasirSupervisor.force.closing")
               : t("posKasirSupervisor.force.closeForce")}
@@ -503,14 +516,6 @@ function ReadyStage({
         </>
       }
     >
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Fact label={t("posKasirSupervisor.force.counter")}>
-          {count?.countedByName}
-        </Fact>
-        <Fact label={t("posKasirSupervisor.force.approver")}>
-          {view.witnessName}
-        </Fact>
-      </div>
       <FormField
         label={t("posKasirSupervisor.force.reasonLabel")}
         id={noteId}
@@ -527,6 +532,14 @@ function ReadyStage({
           rows={3}
         />
       </FormField>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Fact label={t("posKasirSupervisor.force.counter")}>
+          {count?.countedByName}
+        </Fact>
+        <Fact label={t("posKasirSupervisor.force.approver")}>
+          {view.witnessName}
+        </Fact>
+      </div>
       {close.isError && (
         <ActionError
           title={t("posKasirSupervisor.force.closeFailed")}
@@ -537,6 +550,39 @@ function ReadyStage({
       <Notice tone="warning" title={t("posKasirSupervisor.force.lockTitle")}>
         {t("posKasirSupervisor.force.lockBody")}
       </Notice>
+      <Dialog open={confirming} onOpenChange={setConfirming}>
+        <DialogContent role="alertdialog" className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t("posKasirSupervisor.force.confirmTitle")}</DialogTitle>
+            <DialogDescription>
+              {t("posKasirSupervisor.force.confirmBody", {
+                shiftNo: view.shiftNo,
+              })}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-2">
+            <SideRow label={t(varianceKey)}>
+              <Money amount={Math.abs(variance)} className="font-bold" />
+            </SideRow>
+            <SideRow label={t("posKasirSupervisor.force.confirmReason")}>
+              <span className="font-normal break-words">{note.trim()}</span>
+            </SideRow>
+          </div>
+          <DialogFooter className="grid grid-cols-2 gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="lg"
+              onClick={() => setConfirming(false)}
+            >
+              {t("posKasirSupervisor.force.confirmCancel")}
+            </Button>
+            <Button type="button" size="lg" onClick={closeNow}>
+              {t("posKasirSupervisor.force.closeForce")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Shell>
   );
 }

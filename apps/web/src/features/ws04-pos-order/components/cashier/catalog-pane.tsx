@@ -63,6 +63,7 @@ function normalize(value: string): string {
 export function CatalogPane({
   onPick,
   offlineCatalog,
+  hasKit = true,
 }: {
   onPick: (item: MenuItem) => void;
   /**
@@ -70,6 +71,11 @@ export function CatalogPane({
    * chosen service type); the screen's offline banner explains it.
    */
   offlineCatalog?: Catalog | null;
+  /**
+   * O4: the old "catalog not updated" notice is shown only when the tablet has
+   * an offline kit; without one the O4 banner says sales are not possible.
+   */
+  hasKit?: boolean;
 }) {
   const t = useT();
   const catalog = usePosCatalog();
@@ -132,6 +138,7 @@ export function CatalogPane({
   }
 
   const offline =
+    hasKit &&
     !offlineCatalog &&
     (connectivity.mode === "edge_only" || data.source === "cached");
   const since = formatClock(data.updatedAt);

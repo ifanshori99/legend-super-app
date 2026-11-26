@@ -24,6 +24,7 @@ import {
 import { FormField } from "@/components/ui/form-field";
 import { Input } from "@/components/ui/input";
 import { Money } from "@/components/ui/money";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Notice } from "@/features/ws04-pos-kasir/components/shared";
 import { OfflineSaleError, priceOfflineSale, type OfflineCart } from "./price";
 import type { OfflineQueue } from "./queue";
@@ -130,8 +131,12 @@ export function PayBody({
   const totalIdr = priced?.totalIdr ?? 0;
   const receivedIdr = digits(received);
   const tender = tenderOf(method, totalIdr, { receivedIdr, reference });
+  // The short-payment error shows after the field is left or a save is tried,
+  // never while the cashier is still typing the amount.
   const short =
-    method === "cash" && receivedIdr !== null && receivedIdr < totalIdr;
+    method === "cash" &&
+    touched &&
+    (receivedIdr === null || receivedIdr < totalIdr);
   const missingReference =
     method === "edc_card" && touched && reference.trim() === "";
   const allowed = new Set(kit.tenders);
@@ -198,15 +203,18 @@ export function PayBody({
             </div>
           </dl>
 
-          <div
-            role="radiogroup"
+          <RadioGroup
+            value={method}
+            onValueChange={(next) => {
+              setMethod(next === "edc_card" ? "edc_card" : "cash");
+              setTouched(false);
+            }}
             aria-label={t("posKasirOffline.pay.methods")}
-            className="grid grid-cols-2 gap-2"
+            className="grid-cols-2"
           >
             {allowed.has("cash") && (
               <MethodButton
-                selected={method === "cash"}
-                onClick={() => setMethod("cash")}
+                value="cash"
                 icon={<Banknote aria-hidden="true" />}
                 title={t("posKasirOffline.pay.cash")}
                 hint={t("posKasirOffline.pay.cashHint")}
@@ -214,14 +222,13 @@ export function PayBody({
             )}
             {allowed.has("edc_card") && (
               <MethodButton
-                selected={method === "edc_card"}
-                onClick={() => setMethod("edc_card")}
+                value="edc_card"
                 icon={<CreditCard aria-hidden="true" />}
                 title={t("posKasirOffline.pay.edc")}
                 hint={t("posKasirOffline.pay.edcHint")}
               />
             )}
-          </div>
+          </RadioGroup>
           <p className="text-sm text-muted-foreground">
             {t("posKasirOffline.pay.onlineOnly")}
           </p>
@@ -239,6 +246,7 @@ export function PayBody({
                   autoComplete="off"
                   value={receivedIdr === null ? "" : formatRupiah(receivedIdr)}
                   onChange={(event) => setReceived(event.target.value)}
+                  onBlur={() => setTouched(true)}
                   className="h-15 text-2xl font-bold tabular"
                 />
               </FormField>
@@ -281,6 +289,7 @@ export function PayBody({
             >
               <Input
                 autoComplete="off"
+                spellCheck={false}
                 maxLength={100}
                 value={reference}
                 onChange={(event) => setReference(event.target.value)}
@@ -325,33 +334,28 @@ function Row({ label, amount }: { label: string; amount: number }) {
 }
 
 function MethodButton({
-  selected,
-  onClick,
+  value,
   icon,
   title,
   hint,
 }: {
-  selected: boolean;
-  onClick: () => void;
+  value: "cash" | "edc_card";
   icon: ReactNode;
   title: string;
   hint: string;
 }) {
   return (
-    <button
-      type="button"
-      role="radio"
-      aria-checked={selected}
-      onClick={onClick}
+    <RadioGroupItem
+      value={value}
       className={cn(
-        "grid min-h-16 grid-cols-[auto_1fr] items-center gap-x-3 rounded-container border-(length:--border-w) border-border bg-card px-4 py-3 text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring [&_svg]:size-6",
-        selected && "border-primary bg-primary-tint ring-2 ring-primary",
+        "grid min-h-16 grid-cols-[auto_1fr] items-center gap-x-3 rounded-container border-(length:--border-w) border-border bg-card px-4 py-3 text-left [&_svg]:size-6",
+        "data-[state=checked]:border-primary data-[state=checked]:bg-primary-tint data-[state=checked]:ring-2 data-[state=checked]:ring-primary",
       )}
     >
       <span className="row-span-2">{icon}</span>
       <span className="text-lg font-bold">{title}</span>
       <span className="text-sm text-muted-foreground">{hint}</span>
-    </button>
+    </RadioGroupItem>
   );
 }
 

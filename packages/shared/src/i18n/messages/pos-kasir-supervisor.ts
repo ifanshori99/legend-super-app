@@ -168,6 +168,11 @@ export const posKasirSupervisorMessages = {
     lockTitle: "Penutupan akan mengunci hasil",
     lockBody:
       "Alasan, hitungan, selisih, dan persetujuan disimpan pada shift ini.",
+    confirmTitle: "Tutup paksa shift ini?",
+    confirmBody:
+      "Shift {shiftNo} ditutup sekarang dan hasilnya terkunci. Periksa selisih dan alasan di bawah.",
+    confirmReason: "Alasan",
+    confirmCancel: "Kembali",
     closeFailed: "Shift belum ditutup",
     doneTitle: "Shift ditutup paksa",
     doneBody:

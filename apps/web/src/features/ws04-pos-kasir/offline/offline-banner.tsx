@@ -70,6 +70,7 @@ export function OfflineBanner({
     <div className="grid gap-2" data-slot="pos-offline-banner">
       <Notice
         tone="warning"
+        role="status"
         title={
           pending > 0
             ? t("posKasirOffline.banner.offlineTitle", { count: pending })
