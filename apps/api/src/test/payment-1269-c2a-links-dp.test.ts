@@ -27,6 +27,7 @@ import {
 } from "@starter/shared/core/server";
 import type { PaymentInstructions } from "@starter/shared/payment";
 import { env } from "../config/env.ts";
+import { pollPendingGatewayIntents } from "../services/payment.service.ts";
 import { resetGatewayHealthCache } from "../services/payment-failover.service.ts";
 import { createDuitkuGateway } from "../services/payment-duitku.ts";
 import { receiveDuitkuCallback } from "../services/payment-duitku-webhook.service.ts";
@@ -89,6 +90,7 @@ class Gateway implements PaymentGatewayPort {
     this.failMethods = false;
     this.down = false;
     this.channelLimits.clear();
+    this.statusAnswer = { status: "pending" };
     this.created.length = 0;
   }
   async health() {
@@ -140,9 +142,13 @@ class Gateway implements PaymentGatewayPort {
       expiresAt: input.expiresAt,
     };
   }
+  /** What the provider answers to a status read (Duitku `02` = expired). */
+  statusAnswer: { status: "pending" | "expired"; rawStatus?: string } = {
+    status: "pending",
+  };
   async getStatus(input: { providerRef: string }) {
     return {
-      status: "pending" as const,
+      ...this.statusAnswer,
       providerRef: input.providerRef,
       amountIdr: null,
     };
@@ -841,6 +847,40 @@ describe("a link with no order takes one live code (legend-osqou.41)", () => {
     expect(rows).toHaveLength(2);
     expect(rows.filter((row) => row.status === "pending")).toHaveLength(1);
   });
+});
+
+describe("a lapsed code is finalised by the poll, then a new one is issued (legend-osqou.41)", () => {
+  it.each([
+    ["qris", null],
+    ["va", "BC"],
+    ["ewallet", "OV"],
+  ] as const)(
+    "%s past its time: 409, the worker poll reads the provider, final, new code 201",
+    async (method, channelCode) => {
+      const { token } = await openBill();
+      const old = await pay(token, method, channelCode);
+      const lapsed = new Date(Date.parse(old.expiresAt) + 120_000);
+      // Still pending at the provider: the poll changes nothing, the guard holds.
+      await pollPendingGatewayIntents(fx.context, lapsed, 100);
+      await expect(pay(token, "qris", null)).rejects.toMatchObject({
+        status: 409,
+        code: "ORDER_CODE_ACTIVE",
+      });
+      // The provider now says the code is dead (Duitku `02`).
+      gw.statusAnswer = { status: "expired", rawStatus: "02" };
+      await owner.query(
+        "UPDATE payment_intents SET gateway_polled_at = NULL WHERE tenant_id = $1 AND id = $2",
+        [fx.tenant.tenantId, old.id],
+      );
+      await pollPendingGatewayIntents(fx.context, lapsed, 100);
+      const row = await intentRow(fx.tenant.tenantId, old.id);
+      expect(row.status).toBe("expired");
+      expect(row.provider_final_at).not.toBeNull();
+      const fresh = await pay(token, "qris", null);
+      expect(fresh).toMatchObject({ method: "qris", status: "pending" });
+      expect(fresh.id).not.toBe(old.id);
+    },
+  );
 });
 
 describe("VA lifetime follows the link (legend-osqou.41)", () => {
