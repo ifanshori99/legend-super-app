@@ -229,6 +229,71 @@ it("PRD §3.15 AUTH-03 serializes WhatsApp monthly cap across concurrent sends",
   expect(results.filter((r) => r === "sent")).toHaveLength(1);
   expect(whatsapp.sent).toHaveLength(1);
 });
+it("legend-wasr7.14 a certain WhatsApp failure (invalid_template, no_sender) ends dead without retry and frees the quota slot", async () => {
+  const resolveWhatsapp = async (
+    ctx: unknown,
+    notification: { userId: string },
+  ) => {
+    const base = await resolve(ctx, notification);
+    return {
+      ...base,
+      policy: notificationPolicySchema.parse({
+        ...base.policy,
+        whatsapp: {
+          enabled: true,
+          allowedCategories: ["order_ready"],
+          monthlyCap: 10,
+          costPerMessageIdr: 1,
+        },
+      }),
+      preference: notificationPreferenceSchema.parse({
+        ...base.preference,
+        categories: {
+          order_ready: { web_push: false, email: false, whatsapp: true },
+        },
+      }),
+      reachability: {
+        hasPushSubscription: false,
+        hasVerifiedEmail: false,
+        whatsappOptIn: true,
+      },
+    };
+  };
+  for (const code of ["invalid_template", "no_sender"]) {
+    const attemptId = await makeAttempt("whatsapp");
+    const failing = {
+      async send() {
+        throw Object.assign(new Error(`Kirimdev send failed: code=${code}`), {
+          name: "KirimdevSendError",
+          code,
+          retryable: false,
+        });
+      },
+    };
+    expect(
+      await deliverNotificationAttempt(db, context, attemptId, {
+        resolve: resolveWhatsapp,
+        push,
+        email,
+        whatsapp: failing,
+      }),
+    ).toBe("failed");
+    const rows = await withTenant(db, context, async (tx) => {
+      const attempt = await tx.execute(
+        sql`SELECT status, next_attempt_at FROM delivery_attempts WHERE tenant_id = ${tenant}::uuid AND id = ${ulidToUuid(attemptId)}::uuid`,
+      );
+      const reservation = await tx.execute(
+        sql`SELECT status FROM whatsapp_reservations WHERE tenant_id = ${tenant}::uuid AND delivery_attempt_id = ${ulidToUuid(attemptId)}::uuid`,
+      );
+      return { attempt: attempt.rows[0], reservation: reservation.rows[0] };
+    });
+    expect(rows.attempt).toMatchObject({
+      status: "dead",
+      next_attempt_at: null,
+    });
+    expect(rows.reservation).toMatchObject({ status: "released" });
+  }
+});
 it("PRD §3.15 waits for free channels before reconsidering last-resort WhatsApp", async () => {
   const attemptId = await makeAttempt("whatsapp");
   await withTenant(db, context, async (tx) => {
