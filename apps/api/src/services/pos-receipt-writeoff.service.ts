@@ -75,6 +75,9 @@ const CLOUD_ONLY =
 
 const ALREADY_WRITTEN_OFF = "Nomor struk ini sudah di-write-off.";
 
+const FAILOVER_RUN =
+  "Nomor struk mode cloud (F) tidak dapat di-write-off. Celahnya tetap dilaporkan; hubungi tim teknis.";
+
 /** Marks one lost number of an outlet run as written off; owner only (route). */
 export async function writeOffReceiptNumber(
   context: ScopedTenantContext,
@@ -105,6 +108,11 @@ export async function writeOffReceiptNumber(
           "NOT_FOUND",
           "Prefiks nomor struk tidak ditemukan.",
         );
+      // 1271 review K F1: the cloud numbers an F (failover) run inside the
+      // sale's transaction, so a missing F number is a fault to investigate:
+      // its gap stays reported, it is never written off.
+      if (sequence.series === "failover")
+        throw new CoreError("CONFLICT", FAILOVER_RUN);
       // legend-drzaf: an edge-bound run is numbered by the edge, so its cloud
       // lastNumber stays 0 (legend-ol6v). Its bound is the high-water the
       // edge reported (never decreases; every number up to it was committed

@@ -49,6 +49,7 @@ import {
   businessDateOf,
   businessDayRange,
   CoreError,
+  type BusinessDayClock,
   createUlid,
   idr,
   toIsoDateTime,
@@ -61,6 +62,7 @@ import {
   endOfDayBlindRecapSchema,
   endOfDayRecapSchema,
   formatReceiptNumber,
+  isFailoverReceiptPrefix,
   PosError,
   POS_TENDER_METHODS,
   posEvents,
@@ -68,10 +70,13 @@ import {
   type EndOfDayRecapView,
 } from "@starter/shared/pos";
 import { db } from "../db/index.ts";
+import { posReceipts, receiptSequences } from "../db/schema/pos-receipt.ts";
 import { edgeNodes } from "../db/schema/edge-node.ts";
 import { edgeOrderIngests } from "../db/schema/edge-order-ingest.ts";
 import { edgePosIngests } from "../db/schema/edge-pos-ingest.ts";
+import { edgeAlertId } from "../edge/late-adjustment.ts";
 import { isHeartbeatFreshForDayClose } from "../edge/link-freshness.ts";
+import { logger } from "../lib/logger.ts";
 import {
   domainEventOutbox,
   outlets,
@@ -94,7 +99,9 @@ import { orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
+import { notifyOutletSupervisors } from "./edge-sync-conflict-alert.ts";
 import { outletTarget } from "./device-pin-support.ts";
+import { activeFailoverWindow } from "./edge-failover-window.ts";
 import { revokeActingStaffForOutlet } from "./pos-acting-staff-revoke.ts";
 import { reportablePosOrders } from "./device-training.ts";
 import { orderRevenueSplit } from "./order-revenue.ts";
@@ -316,6 +323,166 @@ function newDevice(deviceId: string): DeviceAcc {
   };
 }
 
+/**
+ * Which rows a recap reads. `cloud`: every row (live view, cloud Tutup Hari).
+ * `edgeComparable` (1269 E3): what the edge froze, so no late adjustments, no
+ * failover rows (1271 F5, D1: the edge never had them) and no receipt gaps.
+ * `edgeMirror` (1271 F5, D5): the stored recap of an edge close whose date has
+ * failover rows: the comparable rows plus the failover rows; only the F-run
+ * gaps of the date (the edge reported its own). `cloud` counts every other
+ * run's gaps outlet-wide and the F-run gaps of the date.
+ */
+type RecapMode = "cloud" | "edgeComparable" | "edgeMirror";
+
+type OutletReceiptGap = { prefix: string; deviceId: string; missing: number[] };
+
+/**
+ * 1271 F5 (re-review P3): the business date a missing F number belongs to:
+ * the nearest issued receipt above it (the number was taken before that
+ * sale), else the date the run last moved (an end gap: never a date the
+ * receipt below it may already have closed), else the nearest issued receipt
+ * below it. Null when the run has nothing to date it by.
+ */
+export function failoverGapBusinessDate(
+  missing: number,
+  issued: readonly { sequenceNumber: number; businessDate: string }[],
+  movedAt: Date | null,
+  clock: BusinessDayClock,
+): string | null {
+  const sorted = [...issued].sort(
+    (a, b) => a.sequenceNumber - b.sequenceNumber,
+  );
+  const above = sorted.find((row) => row.sequenceNumber > missing);
+  if (above) return String(above.businessDate);
+  if (movedAt) return businessDateOf(movedAt, clock);
+  const below = sorted.filter((row) => row.sequenceNumber < missing).at(-1);
+  return below ? String(below.businessDate) : null;
+}
+
+/**
+ * 1271 F5 (CTO 27 Nov): the missing numbers of F (failover) runs that belong
+ * to `businessDate`. An F number is issued in the sale's own transaction, so a
+ * gap cannot hide a paid sale: it never blocks Tutup Hari and is never written
+ * off, it is counted on its own date only (see failoverGapBusinessDate).
+ */
+async function failoverGapsOnDate(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outlet: typeof outlets.$inferSelect,
+  gaps: readonly OutletReceiptGap[],
+  businessDate: string,
+): Promise<OutletReceiptGap[]> {
+  const runs = gaps.filter((run) => isFailoverReceiptPrefix(run.prefix));
+  if (runs.length === 0) return [];
+  const tenantId = context.tenant.tenantId;
+  const prefixes = runs.map((run) => run.prefix);
+  const issued = await tx
+    .select({
+      prefix: receiptSequences.prefix,
+      sequenceNumber: posReceipts.sequenceNumber,
+      businessDate: orders.businessDate,
+    })
+    .from(posReceipts)
+    .innerJoin(
+      receiptSequences,
+      and(
+        eq(receiptSequences.tenantId, posReceipts.tenantId),
+        eq(receiptSequences.id, posReceipts.sequenceId),
+      ),
+    )
+    .innerJoin(
+      orders,
+      and(
+        eq(orders.tenantId, posReceipts.tenantId),
+        eq(orders.id, posReceipts.orderId),
+      ),
+    )
+    .where(
+      and(
+        eq(posReceipts.tenantId, tenantId),
+        eq(receiptSequences.outletId, outlet.id as OutletId),
+        inArray(receiptSequences.prefix, prefixes),
+      ),
+    );
+  const moved = await tx
+    .select({
+      prefix: receiptSequences.prefix,
+      updatedAt: sql<Date>`max(${receiptSequences.updatedAt})`.mapWith(
+        (value: string | Date) => new Date(value),
+      ),
+    })
+    .from(receiptSequences)
+    .where(
+      and(
+        eq(receiptSequences.tenantId, tenantId),
+        eq(receiptSequences.outletId, outlet.id as OutletId),
+        inArray(receiptSequences.prefix, prefixes),
+      ),
+    )
+    .groupBy(receiptSequences.prefix);
+  const clock = outletBusinessDayClock(outlet);
+  const result: OutletReceiptGap[] = [];
+  for (const run of runs) {
+    const own = issued.filter((row) => row.prefix === run.prefix);
+    const movedAt = moved.find((row) => row.prefix === run.prefix)?.updatedAt;
+    const missing = run.missing.filter(
+      (n) =>
+        failoverGapBusinessDate(n, own, movedAt ?? null, clock) ===
+        businessDate,
+    );
+    if (missing.length > 0) result.push({ ...run, missing });
+  }
+  return result;
+}
+
+/**
+ * 1271 F5 (CTO 27 Nov): owners (and the outlet's supervisors) hear once per
+ * outlet and date that F numbers are missing; the technical team investigates.
+ */
+export async function alertFailoverReceiptGaps(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: { outletId: OutletId; businessDate: string; count: number },
+): Promise<void> {
+  if (input.count <= 0) return;
+  const tenantId = context.tenant.tenantId;
+  const id = edgeAlertId(
+    "failover_receipt_gap",
+    tenantId,
+    input.outletId,
+    input.businessDate,
+  );
+  try {
+    await tx.transaction((sp) =>
+      notifyOutletSupervisors(
+        sp,
+        context,
+        {
+          tenantId,
+          outletId: input.outletId,
+          alsoOwners: true,
+          id,
+          eventName: "pos_day.failover_receipt_gap",
+          aggregateType: "pos_day",
+          aggregateId: id,
+          payload: {
+            businessDate: input.businessDate,
+            count: String(input.count),
+          },
+          title: "Nomor struk mode cloud hilang",
+          body: `Ada ${input.count} nomor struk mode cloud (F) yang hilang pada hari ${input.businessDate}. Tutup Hari tetap berjalan; tim teknis memeriksanya.`,
+        },
+        new Date(),
+      ),
+    );
+  } catch {
+    logger.warn(
+      { outletId: input.outletId },
+      "Failover receipt gap alert failed",
+    );
+  }
+}
+
 /** The recap of one business date, computed live from the rows (status open). */
 async function computeRecap(
   tx: Tx,
@@ -324,17 +491,24 @@ async function computeRecap(
   outletId: OutletId,
   businessDate: string,
   now: Date,
-  options: { edgeComparable?: boolean } = {},
+  mode: RecapMode = "cloud",
 ): Promise<EndOfDayRecap> {
   const tenantId = context.tenant.tenantId;
+  const edgeRows = mode !== "cloud";
   // 1269 E3: late adjustments (legend-k0i8) belong to this open day in the
   // cloud but are not in the recap the edge froze for it.
-  const notLateOrder = options.edgeComparable
+  const notLateOrder = edgeRows
     ? sql`NOT EXISTS (SELECT 1 FROM ${edgeOrderIngests} WHERE ${edgeOrderIngests.tenantId} = ${orders.tenantId} AND ${edgeOrderIngests.orderId} = ${orders.id} AND ${edgeOrderIngests.lateBusinessDate} IS NOT NULL)`
     : undefined;
-  const notLateShift = options.edgeComparable
+  const notLateShift = edgeRows
     ? sql`NOT EXISTS (SELECT 1 FROM ${edgePosIngests} WHERE ${edgePosIngests.tenantId} = ${posShifts.tenantId} AND ${edgePosIngests.kind} = 'shift' AND ${edgePosIngests.aggregateId} = ${posShifts.id} AND ${edgePosIngests.lateBusinessDate} IS NOT NULL)`
     : undefined;
+  // 1271 F5: failover orders (and their voids and refunds) and failover shifts
+  // are cloud-only; the edge recap never holds them.
+  const notFailoverOrder =
+    mode === "edgeComparable" ? isNull(posOrders.failoverWindowId) : undefined;
+  const notFailoverShift =
+    mode === "edgeComparable" ? isNull(posShifts.failoverWindowId) : undefined;
   const range = businessDayRange(
     businessDate as never,
     outletBusinessDayClock(outlet),
@@ -391,6 +565,7 @@ async function computeRecap(
         eq(orders.status, "completed"),
         reportablePosOrders(),
         notLateOrder,
+        notFailoverOrder,
       ),
     );
   const channels = new Map<string, { orderCount: number; totalIdr: number }>();
@@ -457,6 +632,7 @@ async function computeRecap(
         eq(orders.status, "completed"),
         reportablePosOrders(),
         notLateOrder,
+        notFailoverOrder,
       ),
     )
     .groupBy(posOrderTenders.method);
@@ -526,11 +702,12 @@ async function computeRecap(
             lt(posOrderVoids.voidedAt, range.end),
             isNull(edgeOrderIngests.lateVoidBusinessDate),
           ),
-          options.edgeComparable
+          edgeRows
             ? undefined
             : eq(edgeOrderIngests.lateVoidBusinessDate, businessDate),
         ),
         reportablePosOrders(),
+        notFailoverOrder,
       ),
     );
   // legend-vet9d: a DP order is never voided (voidPosOrder refuses it); a void
@@ -620,6 +797,7 @@ async function computeRecap(
         gte(posOrderRefunds.refundedAt, range.start),
         lt(posOrderRefunds.refundedAt, range.end),
         reportablePosOrders(),
+        notFailoverOrder,
       ),
     );
   for (const row of refunds) {
@@ -692,6 +870,7 @@ async function computeRecap(
         gte(posOrderRefunds.refundedAt, range.start),
         lt(posOrderRefunds.refundedAt, range.end),
         reportablePosOrders(),
+        notFailoverOrder,
       ),
     );
   for (const row of depositRows) {
@@ -775,6 +954,7 @@ async function computeRecap(
         eq(posShifts.outletId, outletId),
         eq(posShifts.businessDate, businessDate),
         notLateShift,
+        notFailoverShift,
       ),
     );
   for (const row of shifts) {
@@ -822,6 +1002,7 @@ async function computeRecap(
         eq(cashMovementOutcomes.outcome, "expired"),
         eq(posShifts.businessDate, businessDate),
         notLateShift,
+        notFailoverShift,
       ),
     )
     .groupBy(posShifts.deviceId);
@@ -858,9 +1039,23 @@ async function computeRecap(
   const sum = (pick: (device: DeviceAcc) => number) =>
     deviceRows.reduce((total, device) => total + pick(device), 0);
   // legend-21c8n: the same outlet-wide numbers RECEIPT_SEQUENCE_GAP names.
-  const receiptGaps = options.edgeComparable
-    ? []
-    : await posOutletReceiptGapsPort()(tx, context, { outletId });
+  // Review K F1 + CTO 27 Nov: an F-run gap counts on its own date only.
+  const outletGaps =
+    mode === "edgeComparable"
+      ? []
+      : await posOutletReceiptGapsPort()(tx, context, { outletId });
+  const receiptGaps = [
+    ...(mode === "cloud"
+      ? outletGaps.filter((run) => !isFailoverReceiptPrefix(run.prefix))
+      : []),
+    ...(await failoverGapsOnDate(
+      tx,
+      context,
+      outlet,
+      outletGaps,
+      businessDate,
+    )),
+  ];
   const unsyncedReceiptCount = receiptGaps.reduce(
     (total, run) => total + run.missing.length,
     0,
@@ -892,7 +1087,8 @@ async function computeRecap(
 
 /**
  * 1269 E3: the cloud's figures of one business day of an edge outlet, to compare
- * with the recap its edge froze: without late adjustments and receipt gaps.
+ * with the recap its edge froze: without late adjustments, receipt gaps and
+ * (1271 F5) failover rows.
  */
 export function computeEdgeComparableRecap(
   tx: Tx,
@@ -902,9 +1098,40 @@ export function computeEdgeComparableRecap(
   businessDate: string,
   now: Date,
 ): Promise<EndOfDayRecap> {
-  return computeRecap(tx, context, outlet, outletId, businessDate, now, {
-    edgeComparable: true,
-  });
+  return computeRecap(
+    tx,
+    context,
+    outlet,
+    outletId,
+    businessDate,
+    now,
+    "edgeComparable",
+  );
+}
+
+/**
+ * 1271 F5 (D5): the cloud's recap of an edge-closed day with failover rows:
+ * the edge's rows (as compared) plus the failover rows. Late adjustments stay
+ * out, as in the comparable recap; `unsyncedReceiptCount` counts the F-run
+ * gaps of the date only (the caller adds the edge's own count).
+ */
+export function computeEdgeMirrorRecap(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outlet: typeof outlets.$inferSelect,
+  outletId: OutletId,
+  businessDate: string,
+  now: Date,
+): Promise<EndOfDayRecap> {
+  return computeRecap(
+    tx,
+    context,
+    outlet,
+    outletId,
+    businessDate,
+    now,
+    "edgeMirror",
+  );
 }
 
 // ---- Public API -------------------------------------------------------------
@@ -956,7 +1183,8 @@ export async function getEndOfDayRecap(
  * cloud may close it (Q24); edge data that arrives later is a late adjustment
  * (full flow with the failover bead legend-b3k). Returns true for that stale
  * case so the caller audits it. Same edge-process rule as pos-receipt (static
- * EDGE_MODE counts in the boot window): the edge itself never refuses.
+ * EDGE_MODE counts in the boot window): the edge itself refuses only while its
+ * failover window copy is open (1271 D5, FAILOVER_ACTIVE).
  */
 async function assertDayClosesOnCloud(
   tx: Tx,
@@ -964,7 +1192,13 @@ async function assertDayClosesOnCloud(
   outletId: OutletId,
   now: Date,
 ): Promise<{ staleEdge: boolean }> {
-  if (isEdgeProcess()) return { staleEdge: false };
+  if (isEdgeProcess()) {
+    // 1271 D5: the cloud sells for this outlet until the window is closed and
+    // its closing event applied here; the edge's day would miss those sales.
+    if (await activeFailoverWindow(tx, context.tenant.tenantId, outletId))
+      throw new PosError("FAILOVER_ACTIVE");
+    return { staleEdge: false };
+  }
   const [edge] = await tx
     .select({ lastHeartbeatAt: edgeNodes.lastHeartbeatAt })
     .from(edgeNodes)
@@ -978,8 +1212,16 @@ async function assertDayClosesOnCloud(
     )
     .limit(1);
   if (!edge) return { staleEdge: false };
-  if (isHeartbeatFreshForDayClose(edge.lastHeartbeatAt, now))
+  if (isHeartbeatFreshForDayClose(edge.lastHeartbeatAt, now)) {
+    // 1271 F5 (CTO 27 Nov): a window opened while the edge was live (override)
+    // blocks the close on both sides until the outlet is back on its edge.
+    if (await activeFailoverWindow(tx, context.tenant.tenantId, outletId))
+      throw new PosError(
+        "FAILOVER_ACTIVE",
+        "Selesaikan Kembali ke edge dulu, lalu Tutup Hari di kasir edge.",
+      );
     throw new PosError("DAY_CLOSE_ON_EDGE");
+  }
   return { staleEdge: true };
 }
 
@@ -1141,9 +1383,11 @@ export async function closePosDay(
     // result: they are for reconciliation display only and never block the
     // close. One check only (legend-sgh4l): a per-device loop before it hid
     // the message that names the missing numbers.
-    const outletGaps = await posOutletReceiptGapsPort()(tx, context, {
-      outletId,
-    });
+    // 1271 F5 (CTO 27 Nov): F-run gaps never block; the recap counts the
+    // ones of this date and the owners are alerted after the close.
+    const outletGaps = (
+      await posOutletReceiptGapsPort()(tx, context, { outletId })
+    ).filter((run) => !isFailoverReceiptPrefix(run.prefix));
     if (outletGaps.length > 0) {
       // Name the numbers: the run may be an idle device or the cloud
       // sequence, which no shift report shows. Capped at 20, like the merge.
@@ -1195,6 +1439,14 @@ export async function closePosDay(
       idempotencyKey: body.idempotencyKey,
       requestFingerprint: fingerprint,
     });
+
+    // Any other gap refused the close above, so the count is F of this date.
+    if (!isEdgeProcess())
+      await alertFailoverReceiptGaps(tx, context, {
+        outletId,
+        businessDate: body.businessDate,
+        count: recap.unsyncedReceiptCount,
+      });
 
     // legend-aruta: closing the day ends every acting cashier of the outlet.
     await revokeActingStaffForOutlet(tx, context.tenant, {

@@ -18,11 +18,14 @@
 //  S4 `day.closed` is mirrored into `pos_daily_closes` only when the cloud's own
 //     figures of that day equal the edge's frozen recap. Until then the day
 //     stays open in the cloud (metrics stay estimates). An existing close is
-//     never changed.
+//     never changed. 1271 F5 (D5): failover rows are cloud-only, so they are
+//     left out of the comparison; a date with failover rows stores the cloud's
+//     recap of edge + failover rows, and waits while a window is still open
+//     on it (more failover sales may come).
 //  S5 Nothing is appended to the outbox (apply-scope.ts); journals are posted
 //     here, keyed per shift and per movement, so a replay posts once.
 import { createHash } from "node:crypto";
-import { and, asc, eq, inArray, lt, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, lt, notInArray, sql } from "drizzle-orm";
 import {
   businessDateOf,
   createUlid,
@@ -41,9 +44,11 @@ import {
   type CashMovementApprovedPayload,
   type CashMovementRecordedPayload,
   type CashierShiftClosedPayload,
+  endOfDayRecapSchema,
   type DayClosedPayload,
   type EndOfDayRecap,
 } from "@starter/shared/pos";
+import { outletFailoverWindows } from "../db/schema/edge-failover.ts";
 import { edgeDeferredEvents } from "../db/schema/edge-deferred-event.ts";
 import {
   edgePosIngests,
@@ -63,7 +68,12 @@ import { deliverAutoJournalEvent } from "../services/accounting-auto-journal-con
 import { recordAudit } from "../services/core-audit.ts";
 import type { EdgeTx } from "../services/edge-queue.service.ts";
 import { outletBusinessDayClock } from "../services/outlet-clock.ts";
-import { computeEdgeComparableRecap } from "../services/pos-day.service.ts";
+import { windowTouchesDate } from "../services/edge-failover-window.ts";
+import {
+  alertFailoverReceiptGaps,
+  computeEdgeComparableRecap,
+  computeEdgeMirrorRecap,
+} from "../services/pos-day.service.ts";
 import { uniqueViolationOf } from "../services/pos-shift-support.ts";
 import {
   registerEdgeParkedEventHook,
@@ -836,6 +846,85 @@ function recapFigures(recap: EndOfDayRecap): string {
   ]);
 }
 
+/**
+ * 1271 F5 (D5): the recap to store for an edge close the cloud matched. The
+ * edge's own when the date holds no failover rows; else the cloud's recap of
+ * edge + failover rows (each sale once: the edge never had the failover rows,
+ * the comparison left them out). Waits while an open window touches the date
+ * or a failover shift of it is still open.
+ */
+async function failoverRecap(
+  tx: EdgeTx,
+  meta: EdgeApplyMeta,
+  outlet: typeof outlets.$inferSelect,
+  recap: EndOfDayRecap,
+  comparable: EndOfDayRecap,
+): Promise<EndOfDayRecap> {
+  const context = meta.context;
+  const windows = await tx
+    .select({
+      status: outletFailoverWindows.status,
+      businessDateFrom: outletFailoverWindows.businessDateFrom,
+      businessDateTo: outletFailoverWindows.businessDateTo,
+    })
+    .from(outletFailoverWindows)
+    .where(
+      and(
+        eq(outletFailoverWindows.tenantId, context.tenant.tenantId),
+        eq(outletFailoverWindows.outletId, recap.outletId as OutletId),
+        notInArray(outletFailoverWindows.status, ["cancelled"]),
+      ),
+    );
+  const touching = windows.filter((w) =>
+    windowTouchesDate(w, recap.businessDate),
+  );
+  if (touching.some((w) => w.status === "active" || w.status === "returning"))
+    throw new Waiting("failover_open");
+  let full: EndOfDayRecap;
+  try {
+    full = await computeEdgeMirrorRecap(
+      tx,
+      context,
+      outlet,
+      recap.outletId as OutletId,
+      recap.businessDate,
+      new Date(recap.closedAt ?? recap.generatedAt),
+    );
+  } catch (error) {
+    if (sqlStateOf(error) !== null) throw error;
+    throw new Waiting("recap_unbalanced");
+  }
+  // No failover row moved a figure (also a refund of a failover order dated
+  // here, after its window): the edge's recap is the whole day.
+  if (
+    touching.length === 0 &&
+    full.unsyncedReceiptCount === 0 &&
+    recapFigures(full) === recapFigures(comparable)
+  )
+    return recap;
+  if (!full.devices.every((d) => d.closed))
+    throw new Waiting("failover_shift_open");
+  // F gaps of this date: counted, never blocking; the owners hear once.
+  await alertFailoverReceiptGaps(tx, context, {
+    outletId: recap.outletId as OutletId,
+    businessDate: recap.businessDate,
+    count: full.unsyncedReceiptCount,
+  });
+  return endOfDayRecapSchema.parse({
+    ...full,
+    id: recap.id,
+    status: "closed",
+    generatedAt: recap.generatedAt,
+    closedAt: recap.closedAt,
+    closedBy: recap.closedBy,
+    inventoryDeductionApplied: recap.inventoryDeductionApplied,
+    // The edge's gaps plus the F-run gaps: reported, never written off.
+    unsyncedReceiptCount:
+      recap.unsyncedReceiptCount + full.unsyncedReceiptCount,
+    accountingSync: recap.accountingSync,
+  });
+}
+
 async function writeDay(
   tx: EdgeTx,
   event: EventEnvelope,
@@ -913,19 +1002,24 @@ async function writeDay(
   }
   if (recapFigures(cloud) !== recapFigures(recap))
     throw new Waiting("recap_differs");
+  const stored = await failoverRecap(tx, meta, outlet, recap, cloud);
+  const storedOrderCount = stored.devices.reduce(
+    (sum, d) => sum + d.orderCount,
+    0,
+  );
 
   await tx.insert(posDailyCloses).values({
     id: recap.id,
     tenantId,
     outletId,
     businessDate: payload.businessDate,
-    orderCount,
-    totalSalesIdr: recap.totalSalesIdr,
-    totalRefundsIdr: recap.totalRefundsIdr,
-    totalVoidsIdr: recap.totalVoidsIdr,
-    totalVarianceIdr: recap.totalVarianceIdr,
+    orderCount: storedOrderCount,
+    totalSalesIdr: stored.totalSalesIdr,
+    totalRefundsIdr: stored.totalRefundsIdr,
+    totalVoidsIdr: stored.totalVoidsIdr,
+    totalVarianceIdr: stored.totalVarianceIdr,
     inventoryDeductionApplied: recap.inventoryDeductionApplied,
-    recap: recap as unknown as Record<string, unknown>,
+    recap: stored as unknown as Record<string, unknown>,
     closedBy: payload.closedBy,
     closedAt,
     idempotencyKey: `edge:${event.id}`,
