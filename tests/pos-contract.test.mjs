@@ -1842,8 +1842,10 @@ test("1271 F1: failover window contract", () => {
     businessDateFrom: "2026-11-26",
     businessDateTo: null,
     returnStartedAt: null,
+    returnStartedBy: null,
     closedAt: null,
     cancelledAt: null,
+    cancelledBy: null,
   };
   assert.equal(edge.failoverWindowSchema.safeParse(window).success, true);
   assert.equal(

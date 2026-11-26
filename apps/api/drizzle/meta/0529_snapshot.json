@@ -1,5 +1,5 @@
 {
-  "id": "a096d515-4823-4de0-b978-eabd4892ab64",
+  "id": "1b39f671-033b-4eb9-b9f5-6ec1fa582e8f",
   "prevId": "0e27152c-e6b3-4e27-bb18-a0f1f6123e66",
   "version": "7",
   "dialect": "postgresql",
@@ -49060,45 +49060,6 @@
           "onDelete": "no action",
           "onUpdate": "no action"
         },
-        "outlet_failover_windows_activated_by_user_id_fk": {
-          "name": "outlet_failover_windows_activated_by_user_id_fk",
-          "tableFrom": "outlet_failover_windows",
-          "tableTo": "user",
-          "columnsFrom": [
-            "activated_by"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "outlet_failover_windows_return_started_by_user_id_fk": {
-          "name": "outlet_failover_windows_return_started_by_user_id_fk",
-          "tableFrom": "outlet_failover_windows",
-          "tableTo": "user",
-          "columnsFrom": [
-            "return_started_by"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "outlet_failover_windows_cancelled_by_user_id_fk": {
-          "name": "outlet_failover_windows_cancelled_by_user_id_fk",
-          "tableFrom": "outlet_failover_windows",
-          "tableTo": "user",
-          "columnsFrom": [
-            "cancelled_by"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
         "outlet_failover_windows_outlet_fk": {
           "name": "outlet_failover_windows_outlet_fk",
           "tableFrom": "outlet_failover_windows",
@@ -49174,6 +49135,14 @@
         "outlet_failover_windows_return_check": {
           "name": "outlet_failover_windows_return_check",
           "value": "(\"outlet_failover_windows\".\"return_started_at\" IS NOT NULL) = (\"outlet_failover_windows\".\"status\" IN ('returning', 'closed'))"
+        },
+        "outlet_failover_windows_return_by_check": {
+          "name": "outlet_failover_windows_return_by_check",
+          "value": "(\"outlet_failover_windows\".\"return_started_by\" IS NOT NULL) = (\"outlet_failover_windows\".\"status\" IN ('returning', 'closed'))"
+        },
+        "outlet_failover_windows_cancelled_by_check": {
+          "name": "outlet_failover_windows_cancelled_by_check",
+          "value": "(\"outlet_failover_windows\".\"cancelled_by\" IS NOT NULL) = (\"outlet_failover_windows\".\"status\" = 'cancelled')"
         },
         "outlet_failover_windows_closed_check": {
           "name": "outlet_failover_windows_closed_check",

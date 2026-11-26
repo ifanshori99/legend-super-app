@@ -26,7 +26,6 @@ import type { FailoverWindowStatus } from "@starter/shared/edge";
 import { businessDate, outletIdColumn, tenantIdColumn } from "../columns.ts";
 import { edgeNodes } from "./edge-node.ts";
 import { outlets, tenants } from "./platform-org.ts";
-import { user } from "./user.ts";
 
 export const outletFailoverWindows = pgTable(
   "outlet_failover_windows",
@@ -44,9 +43,9 @@ export const outletFailoverWindows = pgTable(
     /** Opened although the edge heartbeat was fresh (owner notified). */
     override: boolean("override").notNull().default(false),
     idempotencyKey: varchar("idempotency_key", { length: 100 }).notNull(),
-    activatedBy: text("activated_by")
-      .notNull()
-      .references(() => user.id),
+    // No FK to "user" (review P2): the edge copy names managers its people
+    // snapshot may not hold, and a refused copy would let the edge keep selling.
+    activatedBy: text("activated_by").notNull(),
     activatedAt: timestamp("activated_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -57,12 +56,12 @@ export const outletFailoverWindows = pgTable(
     /** Business date when the window left `active`; null while active. */
     businessDateTo: businessDate("business_date_to"),
     returnStartedAt: timestamp("return_started_at", { withTimezone: true }),
-    returnStartedBy: text("return_started_by").references(() => user.id),
+    returnStartedBy: text("return_started_by"),
     /** Deterministic id of the window-closing cloud -> edge event. */
     closingEventId: uuid("closing_event_id"),
     closedAt: timestamp("closed_at", { withTimezone: true }),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
-    cancelledBy: text("cancelled_by").references(() => user.id),
+    cancelledBy: text("cancelled_by"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -111,6 +110,14 @@ export const outletFailoverWindows = pgTable(
     check(
       "outlet_failover_windows_return_check",
       sql`(${table.returnStartedAt} IS NOT NULL) = (${table.status} IN ('returning', 'closed'))`,
+    ),
+    check(
+      "outlet_failover_windows_return_by_check",
+      sql`(${table.returnStartedBy} IS NOT NULL) = (${table.status} IN ('returning', 'closed'))`,
+    ),
+    check(
+      "outlet_failover_windows_cancelled_by_check",
+      sql`(${table.cancelledBy} IS NOT NULL) = (${table.status} = 'cancelled')`,
     ),
     check(
       "outlet_failover_windows_closed_check",

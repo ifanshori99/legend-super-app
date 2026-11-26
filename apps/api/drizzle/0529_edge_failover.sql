@@ -5,7 +5,9 @@
 -- never changed once set); receipt_sequences.series (device | cloud |
 -- failover) with the F-prefix reserved for the cloud-only failover run; the
 -- pos.failover.manage grant on the stored owner, outlet_manager and supervisor
--- template roles. No existing order, shift or receipt number changes; only
+-- template roles. The manager columns have no FK to "user": the edge copy
+-- must apply even when its people snapshot lacks that manager (review P2).
+-- No existing order, shift or receipt number changes; only
 -- the cloud-owned `C` runs are marked series 'cloud'.
 --
 -- The migrator may be a plain table owner (contracts.md "Migrations: foreign
@@ -56,6 +58,8 @@ CREATE TABLE "outlet_failover_windows" (
 	CONSTRAINT "outlet_failover_windows_status_check" CHECK ("outlet_failover_windows"."status" IN ('active', 'returning', 'closed', 'cancelled')),
 	CONSTRAINT "outlet_failover_windows_reason_check" CHECK (char_length(btrim("outlet_failover_windows"."reason")) >= 3),
 	CONSTRAINT "outlet_failover_windows_return_check" CHECK (("outlet_failover_windows"."return_started_at" IS NOT NULL) = ("outlet_failover_windows"."status" IN ('returning', 'closed'))),
+	CONSTRAINT "outlet_failover_windows_return_by_check" CHECK (("outlet_failover_windows"."return_started_by" IS NOT NULL) = ("outlet_failover_windows"."status" IN ('returning', 'closed'))),
+	CONSTRAINT "outlet_failover_windows_cancelled_by_check" CHECK (("outlet_failover_windows"."cancelled_by" IS NOT NULL) = ("outlet_failover_windows"."status" = 'cancelled')),
 	CONSTRAINT "outlet_failover_windows_closed_check" CHECK (("outlet_failover_windows"."closed_at" IS NOT NULL) = ("outlet_failover_windows"."status" = 'closed')),
 	CONSTRAINT "outlet_failover_windows_cancelled_check" CHECK (("outlet_failover_windows"."cancelled_at" IS NOT NULL) = ("outlet_failover_windows"."status" = 'cancelled')),
 	CONSTRAINT "outlet_failover_windows_closing_event_check" CHECK ("outlet_failover_windows"."closing_event_id" IS NULL OR "outlet_failover_windows"."status" <> 'active'),
@@ -63,9 +67,6 @@ CREATE TABLE "outlet_failover_windows" (
         AND ("outlet_failover_windows"."business_date_to" IS NULL OR "outlet_failover_windows"."business_date_to" >= "outlet_failover_windows"."business_date_from")),
 	CONSTRAINT "outlet_failover_windows_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
 	CONSTRAINT "outlet_failover_windows_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action,
-	CONSTRAINT "outlet_failover_windows_activated_by_user_id_fk" FOREIGN KEY ("activated_by") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action,
-	CONSTRAINT "outlet_failover_windows_return_started_by_user_id_fk" FOREIGN KEY ("return_started_by") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action,
-	CONSTRAINT "outlet_failover_windows_cancelled_by_user_id_fk" FOREIGN KEY ("cancelled_by") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action,
 	CONSTRAINT "outlet_failover_windows_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action,
 	CONSTRAINT "outlet_failover_windows_edge_node_fk" FOREIGN KEY ("tenant_id","outlet_id","edge_node_id") REFERENCES "public"."edge_nodes"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action
 );

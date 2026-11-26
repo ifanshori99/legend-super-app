@@ -70,8 +70,11 @@ export const failoverWindowSchema = z.strictObject({
   /** Business date when the window left `active`; null while active. */
   businessDateTo: businessDateSchema.nullable(),
   returnStartedAt: isoDateTimeSchema.nullable(),
+  /** Set with `returnStartedAt` (the edge copy stores it as received). */
+  returnStartedBy: userIdSchema.nullable(),
   closedAt: isoDateTimeSchema.nullable(),
   cancelledAt: isoDateTimeSchema.nullable(),
+  cancelledBy: userIdSchema.nullable(),
 });
 export type FailoverWindow = z.infer<typeof failoverWindowSchema>;
 
