@@ -7,9 +7,16 @@
 // counts (same rule as pos-receipt): in doubt the cloud refuses. An outlet
 // without an active edge node (none, revoked) is unchanged.
 import { and, eq } from "drizzle-orm";
-import type { OutletId, TenantId } from "@starter/shared/core";
+import type {
+  OutletId,
+  ScopedTenantContext,
+  TenantId,
+} from "@starter/shared/core";
 import { PosError } from "@starter/shared/pos";
+import { db } from "../db/index.ts";
 import { edgeNodes } from "../db/schema/edge-node.ts";
+import { tableSessions } from "../db/schema/floor.ts";
+import { withTenant } from "../db/tenant.ts";
 import { getEdgeRuntimeState } from "../edge/runtime.ts";
 import type { Tx } from "./permission-resolver.ts";
 
@@ -55,4 +62,41 @@ export async function assertPosWriteNotOnEdge(
   if (isEdgeWriter()) return;
   if (await outletHasActiveEdge(tx, tenantId, outletId))
     throw new PosError("POS_WRITE_ON_EDGE");
+}
+
+/**
+ * 409 POS_WRITE_ON_EDGE for a table session of an outlet its edge serves. Call
+ * after the permission check with the caller's scoped context: a session the
+ * caller cannot see is left to the route's own 404.
+ */
+export async function assertTableSessionNotOnEdge(
+  context: ScopedTenantContext,
+  sessionId: string,
+): Promise<void> {
+  if (isEdgeWriter()) return;
+  const tenantId = context.tenant.tenantId;
+  await withTenant(db, context, async (tx) => {
+    const [row] = await tx
+      .select({ outletId: tableSessions.outletId })
+      .from(tableSessions)
+      .where(
+        and(
+          eq(tableSessions.tenantId, tenantId),
+          eq(tableSessions.id, sessionId),
+        ),
+      )
+      .limit(1);
+    if (row) await assertPosWriteNotOnEdge(tx, tenantId, row.outletId);
+  });
+}
+
+/** 409 POS_WRITE_ON_EDGE for an outlet its edge serves (after the permission check). */
+export async function assertOutletNotOnEdge(
+  context: ScopedTenantContext,
+  outletId: OutletId,
+): Promise<void> {
+  if (isEdgeWriter()) return;
+  await withTenant(db, context, (tx) =>
+    assertPosWriteNotOnEdge(tx, context.tenant.tenantId, outletId),
+  );
 }

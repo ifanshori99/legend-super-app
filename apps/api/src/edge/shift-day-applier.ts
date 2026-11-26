@@ -326,7 +326,11 @@ async function parkedOf(
   }));
 }
 
-/** Every parked `cash_movement.recorded` naming this shift at the outlet. */
+/**
+ * Every parked `cash_movement.recorded` naming this shift at the outlet.
+ * Review R3: the payload filter has no index; fine for one outlet's parked
+ * rows, add an expression index if edge_deferred_events grows large.
+ */
 async function parkedOfShift(
   tx: EdgeTx,
   context: ScopedTenantContext,
