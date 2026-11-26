@@ -339,7 +339,12 @@ export const posStandaloneEdcSchema = z
       .string()
       .regex(/^[A-Za-z0-9]{1,12}$/, "Kode persetujuan tidak valid.")
       .optional(),
-    overrideId: posOverrideIdSchema,
+    /**
+     * X1 (cloud-only release §3): manual EDC is the normal path, so the slip
+     * reference alone books it (flagged for the H+1 reconciliation). A
+     * supervisor override is still accepted and spent when the till sends one.
+     */
+    overrideId: posOverrideIdSchema.optional(),
   })
   .strict();
 

@@ -36,6 +36,7 @@ import {
 } from "../services/pos-order-ports.ts";
 import { openPosShift } from "../services/pos-shift.service.ts";
 import { createPosOverride } from "../services/staff-override.service.ts";
+import { runEdcReconciliationOverdueJob } from "../worker/edc-reconciliation-overdue.job.ts";
 import { registerTestDevice } from "./device-seed.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
 import {
@@ -721,14 +722,13 @@ describe("POS standalone EDC tender (legend-m4fv, EDC-04)", () => {
     }
   });
 
-  it("EDC-04 a missing override or bank reference never records a standalone payment", async () => {
+  it("EDC-04 a missing bank reference never records a standalone payment", async () => {
     const order = await newOrder();
     const overrideId = await standaloneOverride({
       objectId: order.orderId,
       valueIdr: order.totalIdr,
     });
     for (const standalone of [
-      { terminalId, bankRef: "112233445566" },
       { terminalId, overrideId },
       { terminalId, bankRef: "", overrideId },
     ]) {
@@ -754,6 +754,281 @@ describe("POS standalone EDC tender (legend-m4fv, EDC-04)", () => {
     expect(bill.body.data.totalIdr).toBe(order.totalIdr);
     expect(paid.body.data.remainingIdr).toBe(0);
     expect(await standaloneRows(order.number)).toHaveLength(1);
+  });
+
+  // X1 (cloud-only release §3): manual EDC is the normal path. The slip
+  // reference books it without a supervisor PIN; the ledger row stays flagged
+  // for the H+1 reconciliation, so nothing counts as settled with the bank.
+  it("X1 a manual EDC payment with the slip reference and no supervisor PIN books the remaining bill, flagged for reconciliation", async () => {
+    const order = await newOrder();
+    const paid = await payStandalone(order, {
+      terminalId,
+      bankRef: "X1RRN0000001",
+      approvalCode: "AP0001",
+    });
+    expect(paid.status, JSON.stringify(paid.body)).toBe(201);
+    expect(paid.body.data.remainingIdr).toBe(0);
+    const rows = await standaloneRows(order.number);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      status: "approved",
+      mode: "standalone",
+      needs_reconciliation: true,
+      rrn: "X1RRN0000001",
+      approval_code: "AP0001",
+      amount_idr: String(order.totalIdr),
+    });
+    const tenders = await owner.query<{
+      edc_transaction_id: string;
+      approved_by: string | null;
+      captured_by: string;
+      amount_idr: string;
+      reference: string;
+    }>(
+      `SELECT edc_transaction_id, approved_by, captured_by, amount_idr::text, reference
+       FROM pos_order_tenders WHERE order_id = $1`,
+      [ulidToUuid(order.orderId)],
+    );
+    expect(tenders.rows).toEqual([
+      {
+        edc_transaction_id: rows[0]?.id,
+        approved_by: null,
+        captured_by: cashier.userId,
+        amount_idr: String(order.totalIdr),
+        reference: "X1RRN0000001",
+      },
+    ]);
+  });
+
+  it("X1 the amount comes from the server: a body naming an amount is a 422 and books nothing", async () => {
+    const order = await newOrder();
+    for (const extra of [
+      { amountIdr: 1_000 },
+      { standaloneAmountIdr: 1_000 },
+    ]) {
+      const res = await payStandalone(
+        order,
+        { terminalId, bankRef: "X1RRN0000002" },
+        extra,
+      );
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+    }
+    const nested = await payStandalone(order, {
+      terminalId,
+      bankRef: "X1RRN0000002",
+      amountIdr: 1_000,
+    });
+    expect(nested.status, JSON.stringify(nested.body)).toBe(422);
+    await noTender(order.orderId);
+    expect(await standaloneRows(order.number)).toHaveLength(0);
+  });
+
+  it("X1 without a slip reference nothing is booked, PIN or not", async () => {
+    const order = await newOrder();
+    for (const standalone of [
+      { terminalId },
+      { terminalId, bankRef: "" },
+      { terminalId, approvalCode: "AP0001" },
+    ]) {
+      const res = await payStandalone(order, standalone);
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+    }
+    await noTender(order.orderId);
+    expect(await standaloneRows(order.number)).toHaveLength(0);
+  });
+
+  it("X1 one slip reference pays one bill once, however it is typed and whichever path wrote it", async () => {
+    const first = await newOrder();
+    const paid = await payStandalone(first, {
+      terminalId,
+      bankRef: "X1-RRN-000003",
+    });
+    expect(paid.status, JSON.stringify(paid.body)).toBe(201);
+    for (const bankRef of ["X1-RRN-000003", "x1rrn000003", "X1RRN-000003"]) {
+      const second = await newOrder();
+      const res = await payStandalone(second, { terminalId, bankRef });
+      expect(res.status, JSON.stringify([bankRef, res.body])).toBe(409);
+      await noTender(second.orderId);
+      expect(await standaloneRows(second.number)).toHaveLength(0);
+    }
+    // A terminal (ECR) sale already carrying the RRN blocks a manual entry.
+    const ecrBill = await newOrder();
+    await ledgerRow({
+      reference: `OTHER-${ecrBill.number}`,
+      amountIdr: ecrBill.totalIdr,
+      status: "approved",
+      rrn: "X1RRN000004",
+    });
+    const res = await payStandalone(ecrBill, {
+      terminalId,
+      bankRef: "X1RRN000004",
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    await noTender(ecrBill.orderId);
+    // Two bills sent together with one slip: exactly one is booked.
+    const [a, b] = [await newOrder(), await newOrder()];
+    const both = await Promise.all([
+      payStandalone(a, { terminalId, bankRef: "X1RRN000005" }),
+      payStandalone(b, { terminalId, bankRef: "X1RRN000005" }),
+    ]);
+    expect(both.map((r) => r.status).sort()).toEqual([201, 409]);
+    const slips = await owner.query(
+      `SELECT 1 FROM edc_transactions
+       WHERE tenant_id = $1 AND upper(replace(rrn, '-', '')) = 'X1RRN000005'`,
+      [tenant.tenantId],
+    );
+    expect(slips.rows).toHaveLength(1);
+  });
+
+  // X1: a manual slip still unmatched with the bank more than a day later
+  // warns the shift that took it, once per shift.
+  it("X1 a manual EDC slip unmatched for more than a day alerts its shift once", async () => {
+    const context = establishScopedTenantContext(
+      establishTenantContext({
+        tenantId: tenantIdSchema.parse(tenant.tenantId),
+        brandId: null,
+        source: "session",
+      }),
+      { kind: "tenant" },
+    );
+    const order = await newOrder();
+    const paid = await payStandalone(order, {
+      terminalId,
+      bankRef: "X1RRN0000099",
+    });
+    expect(paid.status, JSON.stringify(paid.body)).toBe(201);
+    const [tender] = (
+      await owner.query<{ shift_id: string | null }>(
+        `SELECT coalesce(t.shift_id, o.shift_id) AS shift_id
+         FROM pos_order_tenders t
+         LEFT JOIN pos_orders o
+           ON o.tenant_id = t.tenant_id AND o.order_id = t.order_id
+         WHERE t.order_id = $1`,
+        [ulidToUuid(order.orderId)],
+      )
+    ).rows;
+    expect(tender?.shift_id).toBeTruthy();
+    const alerts = async () =>
+      (
+        await owner.query<{ payload: Record<string, string> }>(
+          `SELECT payload FROM notification_outbox
+           WHERE tenant_id = $1 AND event_type = 'pos_shift.edc_reconciliation_overdue'`,
+          [tenant.tenantId],
+        )
+      ).rows;
+    // Fresh: within the H+1 window, no warning yet.
+    await runEdcReconciliationOverdueJob(context, new Date(), { force: true });
+    expect(await alerts()).toHaveLength(0);
+    const [row] = await standaloneRows(order.number);
+    await asOwnerTenant(tenant.tenantId, (client) =>
+      client.query(
+        `UPDATE edc_transactions SET created_at = now() - interval '25 hours'
+         WHERE id = $1`,
+        [row?.id],
+      ),
+    );
+    for (let run = 0; run < 2; run += 1)
+      await runEdcReconciliationOverdueJob(context, new Date(), {
+        force: true,
+      });
+    const sent = await alerts();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.payload).toMatchObject({
+      shiftId: tender?.shift_id,
+      outletId: tenant.outletId,
+      count: "1",
+      totalIdr: String(order.totalIdr),
+    });
+  });
+
+  // X1 review P2 2 + P3 3: the sweep groups in SQL and skips groups already
+  // alerted, so a backlog of more than 500 old rows never hides a newer one;
+  // the alert key carries the due day, so a later day of the same shift
+  // alerts again.
+  it("X1 over 500 overdue rows of an alerted day never hide the next due day of the shift", async () => {
+    const context = establishScopedTenantContext(
+      establishTenantContext({
+        tenantId: tenantIdSchema.parse(tenant.tenantId),
+        brandId: null,
+        source: "session",
+      }),
+      { kind: "tenant" },
+    );
+    // A clean slate: earlier tests' flagged rows and alerts are not this one's.
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      await client.query(
+        `UPDATE edc_transactions SET needs_reconciliation = false
+         WHERE tenant_id = $1 AND needs_reconciliation`,
+        [tenant.tenantId],
+      );
+      await client.query(
+        `DELETE FROM notification_outbox
+         WHERE tenant_id = $1 AND event_type = 'pos_shift.edc_reconciliation_overdue'`,
+        [tenant.tenantId],
+      );
+    });
+    const template = await newOrder();
+    const paid = await payStandalone(template, {
+      terminalId,
+      bankRef: "X1RRN0000600",
+    });
+    expect(paid.status, JSON.stringify(paid.body)).toBe(201);
+    const tenderId = paid.body.data.tender.id as string;
+    // 600 hand-keyed slips of the same shift, keyed three days ago.
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      await client.query(
+        `CREATE TEMP TABLE x1_clone ON COMMIT DROP AS
+           SELECT t.* FROM pos_order_tenders t CROSS JOIN generate_series(1, 600)
+           WHERE t.id = $1`,
+        [tenderId],
+      );
+      await client.query(
+        `UPDATE x1_clone SET id = gen_random_uuid(), edc_transaction_id = gen_random_uuid()`,
+      );
+      await client.query(
+        `INSERT INTO edc_transactions
+           (id, tenant_id, outlet_id, terminal_id, bank, reference, idempotency_key,
+            request_fingerprint, amount_idr, method, status, type, mode, trace,
+            needs_reconciliation, completed_at, created_at, updated_at)
+         SELECT edc_transaction_id, tenant_id, outlet_id, $1, 'bca',
+                'X1C-' || left(edc_transaction_id::text, 8) || right(edc_transaction_id::text, 8),
+                'x1-clone:' || edc_transaction_id, 'fp', amount_idr, 'card', 'approved',
+                'sale', 'standalone', upper(left(md5(edc_transaction_id::text), 12)), true,
+                now() - interval '72 hours', now() - interval '72 hours',
+                now() - interval '72 hours'
+         FROM x1_clone`,
+        [terminalId],
+      );
+      await client.query(
+        `INSERT INTO pos_order_tenders SELECT * FROM x1_clone`,
+      );
+      // The template slip itself is the next day's: keyed 30 hours ago.
+      await client.query(
+        `UPDATE edc_transactions SET created_at = now() - interval '30 hours'
+         WHERE id = (SELECT edc_transaction_id FROM pos_order_tenders WHERE id = $1)`,
+        [tenderId],
+      );
+    });
+    const alerts = async () =>
+      (
+        await owner.query<{ payload: Record<string, string> }>(
+          `SELECT payload FROM notification_outbox
+           WHERE tenant_id = $1 AND event_type = 'pos_shift.edc_reconciliation_overdue'
+           ORDER BY payload->>'count' DESC`,
+          [tenant.tenantId],
+        )
+      ).rows;
+    for (let run = 0; run < 2; run += 1)
+      await runEdcReconciliationOverdueJob(context, new Date(), {
+        force: true,
+      });
+    const sent = await alerts();
+    expect(sent.map((alert) => alert.payload.count).sort()).toEqual([
+      "1",
+      "600",
+    ]);
+    expect(new Set(sent.map((alert) => alert.payload.shiftId)).size).toBe(1);
+    expect(new Set(sent.map((alert) => alert.payload.dueDate)).size).toBe(2);
   });
 
   it("the override must name this bill, this action and exactly the remaining amount", async () => {
