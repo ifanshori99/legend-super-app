@@ -163,10 +163,11 @@ async function seedCashier(): Promise<void> {
     data: { name: "Kasir Offline", email: cashier.email, password: PASSWORD },
   });
   expect(signedUp.status(), await signedUp.text()).toBe(200);
-  const session = await api.get("/api/auth/get-session", {
-    headers: { Host: "api.legend.test:4101" },
-  });
-  cashier.userId = (await session.json()).user.id as string;
+  // The session cookie is for `.legend.test`, so this loopback client never
+  // sends it back: the sign-up answer carries the user.
+  cashier.userId = (
+    (await signedUp.json()) as { user: { id: string } }
+  ).user.id;
   await api.dispose();
   await db.query(
     `INSERT INTO role_assignments
@@ -266,7 +267,36 @@ test.afterAll(async () => {
   await db.end();
 });
 
-test("the cashier screen opens on the tenant host", async ({ page }) => {
+const SHOTS = "docs/review/img";
+const VIEWPORTS = [
+  { width: 390, height: 844 },
+  { width: 1280, height: 800 },
+];
+
+const shot = (page: Page, scene: string, fullPage = false) =>
+  page.screenshot({
+    path: `${SHOTS}/o5-${scene}-${page.viewportSize()?.width ?? 0}.png`,
+    fullPage,
+  });
+
+async function offlineSales(): Promise<
+  { state: string; flags: string[]; totalIdr: string }[]
+> {
+  return asTenant(async (client) => {
+    const { rows } = await client.query(
+      `SELECT state, flags, payload->>'totalIdr' AS "totalIdr"
+         FROM pos_offline_sales WHERE tenant_id = $1 ORDER BY sequence_number`,
+      [ids.tenant],
+    );
+    return rows;
+  });
+}
+
+test("the offline till: sell, queue, close refused, ingest once, sign out", async ({
+  page,
+  context,
+}) => {
+  test.setTimeout(240_000);
   await page.addInitScript((token) => {
     window.localStorage.setItem("legend.device.token", token);
   }, deviceToken());
@@ -283,10 +313,107 @@ test("the cashier screen opens on the tenant host", async ({ page }) => {
     { openingFloatIdr: FLOAT_IDR, idempotencyKey: randomUUID() },
   );
   expect(opened.status, JSON.stringify(opened.body)).toBe(201);
+
+  // Online first: the tablet takes its offline kit on its first tick.
   await page.goto("/pos/kasir");
-  await expect(page.getByText("Kopi Susu").first()).toBeVisible({
+  await expect(
+    page.getByRole("button", { name: /Kopi Susu/ }).first(),
+  ).toBeVisible({ timeout: 30_000 });
+  await page.waitForTimeout(8_000);
+
+  // The internet goes away for real: every request of the browser fails.
+  await context.setOffline(true);
+  await expect(page.getByText(/^Offline ·/).first()).toBeVisible({
+    timeout: 40_000,
+  });
+
+  for (const viewport of VIEWPORTS) {
+    await page.setViewportSize(viewport);
+    await page
+      .getByRole("button", { name: /Kopi Susu/ })
+      .first()
+      .click();
+    // Phones: the cart is its own view behind the bottom bar.
+    const bar = page.getByRole("button", { name: /Lihat keranjang/ });
+    if (await bar.isVisible()) await bar.click();
+    await expect(page.getByText("Subtotal · 1 item").first()).toBeVisible();
+    await shot(page, "banner");
+    await page
+      .getByRole("button", { name: /^Bayar/ })
+      .last()
+      .click();
+    const pay = page.getByRole("dialog");
+    await expect(pay.getByText("Bayar · offline")).toBeVisible();
+    await pay.getByRole("button", { name: "Uang pas" }).first().click();
+    await shot(page, "bayar");
+    await pay.getByRole("button", { name: "Simpan penjualan" }).click();
+    await expect(
+      page.getByText("Penjualan disimpan di tablet").first(),
+    ).toBeVisible();
+    await shot(page, "tersimpan");
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: "Pesanan baru" })
+      .click();
+    const back = page.getByRole("button", { name: "Kembali ke menu" });
+    if (await back.isVisible()) await back.click();
+  }
+
+  await page.getByRole("button", { name: "Lihat antrean" }).first().click();
+  await expect(
+    page.getByText("Penjualan offline di tablet ini").first(),
+  ).toBeVisible();
+  await shot(page, "antrean");
+  await page.keyboard.press("Escape");
+  // Nothing reached the cloud while the tablet was offline.
+  expect(await offlineSales()).toEqual([]);
+
+  // Shift close is refused while the queue is not empty (the screen is opened
+  // by the app's own router: the tablet has no internet to load a new page).
+  await page.evaluate(() => {
+    window.history.pushState({}, "", "/pos/shift/tutup");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+  await expect(page.getByText("Shift belum bisa ditutup").first()).toBeVisible({
     timeout: 30_000,
   });
-  console.log(await page.locator("body").innerText());
-  await page.screenshot({ path: test.info().outputPath("online.png") });
+  await shot(page, "tutup", true);
+  await page.getByRole("button", { name: "Sign out" }).first().click();
+  await expect(page.getByText("Belum bisa keluar").first()).toBeVisible();
+  await shot(page, "keluar");
+  await page.getByRole("button", { name: "Tetap di sini" }).click();
+  expect(await offlineSales()).toEqual([]);
+
+  // The internet is back: the queue sends itself, the cloud holds each sale
+  // once, at the price the tablet showed (Rp25.000 + PBJT 10%).
+  await context.setOffline(false);
+  await expect
+    .poll(async () => (await offlineSales()).length, { timeout: 120_000 })
+    .toBe(2);
+  const sold = await offlineSales();
+  for (const sale of sold) {
+    expect(sale.state).toBe("ingested");
+    expect(sale.flags).toEqual([]);
+    expect(sale.totalIdr).toBe("27500");
+  }
+  // A later sync repeats nothing: still two sales, two numbers.
+  await page.waitForTimeout(65_000);
+  expect(await offlineSales()).toHaveLength(2);
+  const numbers = await asTenant(async (client) => {
+    const { rows } = await client.query(
+      `SELECT count(*)::int AS orders FROM orders
+        WHERE tenant_id = $1 AND id IN (SELECT event_id FROM pos_offline_sales WHERE tenant_id = $1)`,
+      [ids.tenant],
+    );
+    return rows[0].orders as number;
+  });
+  expect(numbers).toBe(2);
+
+  // Queue empty: the close and the sign-out are no longer held.
+  await page.goto("/pos/shift/tutup");
+  await expect(page.getByText("Hitung uang di laci").first()).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(page.getByText("Shift belum bisa ditutup")).toHaveCount(0);
+  await shot(page, "tutup-bebas", true);
 });
