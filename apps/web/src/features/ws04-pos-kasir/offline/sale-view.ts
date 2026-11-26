@@ -23,8 +23,14 @@ export async function saveOfflineSale(
   kit: Pick<PosOfflineKit, "receiptRun">,
   cart: OfflineCart,
   tender: OfflineSaleTender,
+  otherCustomerReason?: string | null,
 ): Promise<OfflineSaved> {
-  const event = await queue.recordSale(cart, [tender]);
+  const reason = otherCustomerReason?.trim();
+  const event = await queue.recordSale(
+    cart,
+    [tender],
+    reason ? { otherCustomerReason: reason } : undefined,
+  );
   return {
     event,
     receiptNumber: offlineReceiptNumber(kit, event.sequenceNumber),

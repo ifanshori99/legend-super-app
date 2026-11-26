@@ -46,12 +46,35 @@ const OUTLET = "0a1b2c3d-0000-4000-8000-0000000000a1";
 const shiftId = (n: number) =>
   `0a1b2c3d-0000-4000-8000-0000000000b${n.toString(16)}`;
 
+const U = (n: number) =>
+  `0a1b2c3d-0000-4000-8000-${n.toString(16).padStart(12, "0")}`;
+
+// The cashier-blind view of a shift (what the day close reads): every drawer
+// figure is null together; a closed shift names its count and approval.
 const shiftRow = (n: number, status: "open" | "closed", date: string) => ({
   id: shiftId(n),
-  status,
+  tenantId: U(1),
+  outletId: OUTLET,
+  deviceId: U(2),
+  cashierId: U(3),
   businessDate: date,
+  status,
   openedAt: `${date}T08:00:00.000Z`,
-  openingFloatIdr: "100000",
+  openingFloatIdr: 100_000,
+  cashSalesIdr: null,
+  cashRefundsIdr: null,
+  cashInIdr: null,
+  cashOutIdr: null,
+  cashDropIdr: null,
+  expectedIdr: null,
+  countedIdr: status === "closed" ? 100_000 : null,
+  varianceIdr: null,
+  varianceNote: null,
+  approvedBy: status === "closed" ? U(4) : null,
+  approvalRequestId: status === "closed" ? U(5) : null,
+  approvedAt: status === "closed" ? `${date}T20:00:00.000Z` : null,
+  closedAt: status === "closed" ? `${date}T20:00:00.000Z` : null,
+  countId: status === "closed" ? U(6) : null,
 });
 
 describe("O5 (2): the day close lists the shifts still open since before today", () => {
@@ -208,7 +231,11 @@ describe("O5 (1): another customer is the way out of an unclear order", () => {
   it("the sale view hands the trimmed reason to the queue", async () => {
     const recorded: unknown[] = [];
     const queue = {
-      recordSale: async (_cart: unknown, _tenders: unknown, options: unknown) => {
+      recordSale: async (
+        _cart: unknown,
+        _tenders: unknown,
+        options: unknown,
+      ) => {
         recorded.push(options);
         return {
           sequenceNumber: 7,

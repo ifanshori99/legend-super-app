@@ -46,6 +46,14 @@ export type OfflineReport = (
   event: OfflineSaleEvent,
 ) => Promise<OfflineEventResult>;
 
+export type OfflineRecordOptions = {
+  /**
+   * O5 (1): "pelanggan lain": the cart shares lines with an unclear order and
+   * the cashier says it is another customer. Written reason, 4 to 200 letters.
+   */
+  otherCustomerReason?: string;
+};
+
 export type OfflineSyncReport = {
   settled: number;
   parked: number;
@@ -67,6 +75,7 @@ export type OfflineQueue = {
   recordSale(
     cart: OfflineCart,
     tenders: OfflineSaleTender[],
+    options?: OfflineRecordOptions,
   ): Promise<OfflineSaleEvent>;
   pending(): Promise<OfflineSaleEvent[]>;
   /** Queued + parked: what blocks Tutup shift and sign-out. */
@@ -257,7 +266,7 @@ export function createOfflineQueue(options: {
           (await tx.get("kits", outletId))?.kit.receiptRun.sequenceId ?? null,
       ),
 
-    async recordSale(cart, tenders) {
+    async recordSale(cart, tenders, recordOptions) {
       const paidAt = now();
       const eventId = nextUlid();
       return backend.run("readwrite", async (tx) => {
@@ -288,6 +297,9 @@ export function createOfflineQueue(options: {
           paidAt: paidAt.toISOString(),
           ...priced,
           tenders,
+          ...(recordOptions?.otherCustomerReason !== undefined
+            ? { otherCustomerReason: recordOptions.otherCustomerReason }
+            : {}),
         });
         if (!parsed.success) throw new OfflineSaleError("SALE_INVALID");
         const record: QueueRecord = {

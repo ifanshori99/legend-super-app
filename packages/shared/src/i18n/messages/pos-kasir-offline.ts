@@ -38,6 +38,19 @@ export const posKasirOfflineMessages = {
         "Bekal offline tidak tersedia. Sambungkan tablet ke internet untuk jualan.",
     },
   },
+  otherCustomer: {
+    action: "Ini pelanggan lain",
+    title: "Pelanggan lain?",
+    body: "Menu ini sama dengan pesanan tadi yang belum pasti. Tandai hanya bila ini pelanggan lain, bukan pesanan yang sama. Penjualan tetap disimpan dan dicek Finance.",
+    reason: "Alasan",
+    reasonHint:
+      "Tulis singkat, minimal {min} huruf. Contoh: meja 4, pelanggan lain.",
+    short: "Tulis alasannya, minimal 4 huruf.",
+    cancel: "Kembali",
+    confirm: "Tandai pelanggan lain",
+    marked: "Ditandai pelanggan lain: {reason}",
+    clear: "Batalkan tanda",
+  },
   pay: {
     title: "Bayar · offline",
     summary: "Total {amount} · harga daftar, tanpa promo",

@@ -556,6 +556,9 @@ async function ingestInTransaction(
         shiftId: kit.shiftId,
         totalIdr: String(event.totalIdr),
         ...(conflictOf !== null ? { conflictOf } : {}),
+        ...(event.otherCustomerReason !== undefined
+          ? { otherCustomerReason: event.otherCustomerReason }
+          : {}),
       },
       title: "Penjualan offline perlu dicek",
       body:
@@ -565,7 +568,9 @@ async function ingestInTransaction(
             ? `Struk ${receiptNumber} (${formatRupiah(Number(event.totalIdr))}) dari kasir offline disimpan tanpa pesanan (${reason}). Uangnya sudah diterima; hubungi finance.`
             : closedShift !== null
               ? `Struk ${receiptNumber} (${formatRupiah(Number(event.totalIdr))}) dari kasir offline masuk sesudah ${closedShift} ditutup. Tunainya tidak ada di hitungan laci shift itu; finance mencocokkannya dengan selisih shift (${flags.join(", ")}).`
-              : `Struk ${receiptNumber} (${formatRupiah(Number(event.totalIdr))}) dari kasir offline sudah masuk, tetapi perlu dicek (${flags.join(", ")}).`,
+              : event.otherCustomerReason !== undefined
+                ? `Struk ${receiptNumber} (${formatRupiah(Number(event.totalIdr))}) dari kasir offline berisi menu yang sama dengan pesanan yang belum pasti. Kasir menandai pelanggan lain: "${event.otherCustomerReason}". Finance memastikan bukan pesanan yang sama dua kali (${flags.join(", ")}).`
+                : `Struk ${receiptNumber} (${formatRupiah(Number(event.totalIdr))}) dari kasir offline sudah masuk, tetapi perlu dicek (${flags.join(", ")}).`,
     });
   return {
     result: result(event, reason === null ? "ingested" : "held", {
@@ -804,6 +809,10 @@ async function applySale(
     shift.status === "open" && !input.conflict ? shift.id : null;
   if (shift.status !== "open") flags.push("shift_closed");
   if (input.conflict) flags.push("event_conflict");
+  // O5 (1): the cashier said it is another customer although the same lines
+  // had an unclear order request. The sale stands (it is a sale, paid in cash
+  // or by EDC, in the open drawer); Finance checks it is not one order twice.
+  if (event.otherCustomerReason !== undefined) flags.push("other_customer");
 
   // Business date of the sale's own instant; a closed day posts late.
   const [outlet] = await tx
