@@ -1,18 +1,13 @@
 // Report surfaces whose server side is not built yet (legend-x73li, sizing
-// X7-2): the export button (POST /api/reports/exports has no route, 404) and
-// reports whose metrics have no server source (1267 F1: one shared list). A real
-// build hides the button and lists those reports as "Segera hadir"; mock mode
-// keeps both so the clickable mockup still works.
+// X7-2): reports whose metrics have no server source (1267 F1: one shared
+// list). A real build lists those reports as "Segera hadir"; mock mode keeps
+// them so the clickable mockup still works. The export button is no longer
+// hidden: the export API exists (legend-ay6e6, 1272 D4).
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import * as dashboard from "../packages/shared/src/dashboard/index.ts";
 import * as lib from "../apps/web/src/features/ws11-reports/lib.ts";
-
-test("the export button is offered only in mock mode until the export API exists", () => {
-  assert.equal(lib.reportExportOffered({ mock: false }), false);
-  assert.equal(lib.reportExportOffered({ mock: true }), true);
-});
 
 const HELD_BACK = ["finance", "attendance", "payroll", "performance"];
 
@@ -119,4 +114,55 @@ test("1267 F2: a result whose metrics all lack a source says so instead of blami
     ),
     false,
   );
+});
+
+test("1272 D5: the export button is no longer hidden in a real build, the API exists", () => {
+  assert.equal(lib.reportExportOffered, undefined);
+  const page = readFileSync(
+    "apps/web/src/features/ws11-reports/components/report-viewer-page.tsx",
+    "utf8",
+  );
+  assert.doesNotMatch(page, /reportExportOffered|exportOffered/);
+});
+
+test("1272 D5: server caveats of available metrics are listed once, in order", () => {
+  const note = "Belum memisahkan beban bunga; angkanya masih ikut dihitung.";
+  const result = (availability) => ({ availability });
+  assert.deepEqual(lib.resultNotes(result([])), []);
+  assert.deepEqual(
+    lib.resultNotes(
+      result([
+        { metricCode: "ebitda", status: "available", note },
+        { metricCode: "net_profit", status: "available" },
+        { metricCode: "ebitda_2", status: "available", note },
+        {
+          metricCode: "x",
+          status: "unavailable",
+          reason: "source_not_built",
+          message: "Belum ada.",
+        },
+      ]),
+    ),
+    [note],
+  );
+});
+
+test("1272 D5: a download link goes to the API origin, not the web origin", () => {
+  const dialog = readFileSync(
+    "apps/web/src/features/ws11-reports/components/export-dialog.tsx",
+    "utf8",
+  );
+  assert.equal(dialog.match(/href=\{job\.file\.downloadPath\}/g), null);
+  assert.equal(
+    dialog.match(/href=\{publicApiUrl\(job\.file\.downloadPath\)\}/g)?.length,
+    2,
+  );
+});
+
+test("1272 D5: the viewer shows the server caveats", () => {
+  const page = readFileSync(
+    "apps/web/src/features/ws11-reports/components/report-viewer-page.tsx",
+    "utf8",
+  );
+  assert.match(page, /resultNotes\(/);
 });

@@ -173,8 +173,12 @@ export const reportExportFileSchema = z.strictObject({
     .min(1)
     .max(300)
     .refine(
-      (path) => path.startsWith("/") && !/[?#]/.test(path),
-      "Download paths are app-relative paths without a query or fragment",
+      (path) =>
+        path.startsWith("/api/") &&
+        !path.startsWith("//") &&
+        !path.includes("\\") &&
+        !/[?#]/.test(path),
+      "Download paths are /api/ paths without a query, fragment, or backslash",
     ),
   sizeBytes: z
     .number()
