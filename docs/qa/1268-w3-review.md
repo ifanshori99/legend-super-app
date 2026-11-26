@@ -51,3 +51,25 @@ Reviewer: architect subagent, konteks segar, read-only, 26 Nov 2026. Test tidak 
 - No. 3: hitung buta tetap. Layar kasir tidak menampilkan selisih. Label alasan diganti "Catatan selisih (wajib bila ada selisih)". Supervisor melihat selisih di laporan shift back office.
 - No. 5: nama di struk = kasir yang menerima bayar (standar). Pastikan tidak mengubah struk lama yang sudah terbit.
 - No. 6: catat ke kartu ECR 1269.
+
+## Re-review 26 Nov (9875d4744)
+
+Delta 2e2ac5473..9875d4744, baca statis, test tidak dijalankan. **Hasil: LULUS.**
+
+- No. 1 selesai. `shift-close-flow.ts:269-303` membekukan `{overrideId, key, input}` (PIN dikosongkan) saat PIN diterima; retry
+  mengirim isi beku persis, isi dialog diabaikan. Hanya jawaban hilang/5xx yang mempertahankan; 4xx membuang. 409
+  SHIFT_ALREADY_CLOSED / IDEMPOTENCY_KEY_REUSED memuat ulang shift (`shift-hooks.ts:415-418`). Retry tanpa dialog PIN
+  (`shift-waiting.tsx:164-168, 249-260`). Test: retry isi sama + satu override, gagal sebelum persetujuan minta PIN lagi, stale membuang.
+- No. 2 selesai: `overrideFailed` (belum disetujui, minta PIN lagi) dibedakan dari `retryHint` (sudah disetujui, tekan Coba lagi).
+- No. 3 sesuai keputusan CTO: label "Catatan selisih (wajib bila ada selisih)", layar kasir tetap buta.
+- No. 4 selesai: localStorage per outlet + id shift, dihapus saat tutup berhasil.
+- No. 5 sesuai keputusan CTO: nama kasir penerima hanya bila pesanan tanpa shift sendiri dan struk terbit >= 2026-11-26T00:00Z
+  (`pos-receipt-document.ts:65-79`); struk lama dan pesanan kasir biasa tidak berubah saat dicetak ulang. Ada test untuk keduanya.
+- No. 6: di luar delta, dicatat ke kartu ECR 1269 (keputusan CTO).
+
+Sisa rendah (tidak menahan):
+- a. Status beku hidup di memori komponen (`useMemo`): pindah layar setelah jawaban hilang = minta PIN baru. Shift yang sudah tertutup
+  terlihat dari refetch; tidak ada tutup ganda (shift tutup sekali di server).
+- b. Retry yang ditolak (mis. jendela PIN habis) menutup alur tanpa pesan di luar dialog; kasir menekan tutup lagi lalu PIN baru.
+- c. `PAYER_CASHIER_FROM` tanggal tetap. Aman selama pesanan captain belum jalan di production sebelum rilis ini.
+- d. Entri localStorage tidak dihapus bila shift ditutup paksa di perangkat lain (isinya hanya tanda terima buta).
