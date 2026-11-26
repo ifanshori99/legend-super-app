@@ -24,3 +24,11 @@ Reviewer: architect (Opus, xhigh), 27 Nov. Baca kode saja. Hasil: **GAGAL**, 1 P
 - Sale masuk sesudah shift tutup tetap di-ingest (dinilai tepat). P2 #2: jurnal penjualan sale `shift_closed` mendebit akun penampung "kas offline belum dicocokkan", bukan kas laci. Finance mencocokkan penampung dengan selisih lebih shift. Alert supervisor menyebut shift, nomor L, dan nominal. Test: shift tutup paksa + sale terlambat = kas buku tidak dobel.
 - P1, P2 #1, semua P3 dikerjakan sebelum gabung.
 - Penolakan tutup shift saat antrean tablet belum kosong ditegakkan di tablet (O3) dan di server bila tablet melapor jumlah antrean (O3).
+
+## Re-review 27 Nov (46904b51f): LULUS
+- P1 hitung ulang pembulatan/service/pajak/total dari bekal, beda = `amount_mismatch` + alert (`pos-offline-batch.service.ts:497-544`).
+- P2 #1 held dihitung ada di tiga cek celah (`pos-receipt.service.ts` ~2218, 2306, 2439).
+- P2 #2 jurnal sale shift_closed debit 1205 (`accounting-auto-journal-amounts.ts:2842-2865`); 0536 memetakan entitas lama, gagal peta = jurnal diparkir. Kas buku sekali (test).
+- P3 1-4 beres (0535 unik parsial, `paid_in_future`, 409 eventId dua kit, cetak ulang shift).
+- P3 baru: void cloud atas sale shift_closed membalik ke 1205 padahal uang keluar dari laci buka. Keputusan CTO: void sale offline shift_closed ditolak; koreksi lewat refund back office (pola E6). Bead.
+- P3 baru: 409 menggagalkan batch; O3 menyisihkan event 409 sebagai "perlu dicek".
