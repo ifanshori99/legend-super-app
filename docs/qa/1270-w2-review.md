@@ -40,3 +40,8 @@ Delta WFC: 243bd1d68, 130af9d40, 88e33d8ad, 30c7f1127. Reviewer membaca kode dan
 - **P3:** refund yang terus gagal dicoba ulang setiap tick hanya dengan log. Urutan `updated_at` tidak bergeser, jadi lebih dari 100 klaim macet akan menahan klaim baru. Tambah audit atau metrik dan geser `updated_at`. Boleh menyusul.
 
 Sesudah P2 dibetulkan: CTO cek diff dan test, tanpa review architect ulang. Nomor 0531: regenerasi dengan cara yang sama.
+
+## Cek CTO 27 Nov (d741dd948, gabung rc2 0121a38ce)
+- P2 baru tertutup: kursi disahkan menulis kunci `wfc-late-refund:<intentId>` di transaksi yang sama; sweep (filter `paid_at` grace, urut `updated_at`) dan replay tidak lagi mengajukan refund. Test gagal-dulu ada.
+- P3 tertutup sebagian: refund gagal dicatat audit `wfc.late_refund_failed` dan `updated_at` digeser. Alert/metrik nyata belum (bead tindak lanjut).
+- Migrasi dinomori ulang 0531 (sesudah E4 0530). Gate: typecheck api+web, 10 file test lulus.
