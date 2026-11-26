@@ -126,6 +126,7 @@ import { posKasirVoucherMessages } from "./pos-kasir-voucher.ts";
 import { posKasirPointsMessages } from "./pos-kasir-points.ts";
 import { posKasirTicketMessages } from "./pos-kasir-ticket.ts";
 import { posKasirCodeMessages } from "./pos-kasir-code.ts";
+import { posOfflineMessages } from "./pos-offline.ts";
 import { posKasirShiftMessages } from "./pos-kasir-shift.ts";
 import { posKasirSupervisorMessages } from "./pos-kasir-supervisor.ts";
 import { posKasirDaycloseMessages } from "./pos-kasir-dayclose.ts";
@@ -198,6 +199,7 @@ export const id = {
     resolve: edcReconResolveMessages,
   },
   posKasirCode: posKasirCodeMessages,
+  posOffline: posOfflineMessages,
   posKasirShift: posKasirShiftMessages,
   posKasirSupervisor: posKasirSupervisorMessages,
   posKasirDayclose: posKasirDaycloseMessages,

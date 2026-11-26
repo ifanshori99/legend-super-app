@@ -8,11 +8,13 @@ import { revokePushOnSignOut } from "@/features/ws05-notifications/revoke";
 import { clearPosShell } from "@/features/ws04-pos-kasir/offline/shell";
 import { countPendingOfflineSales } from "@/features/ws04-pos-kasir/offline/queue";
 import { defaultOfflineBackend } from "@/features/ws04-pos-kasir/offline/store";
+import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { clearRetainedAttempt } from "@/lib/retained-attempt-key";
 import { hrisKeys } from "@/features/ws10-hris-employee/queries";
 
 export function SignOutButton() {
+  const t = useT();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState(false);
   // Review O3 P2 3: offline sales still on this tablet block the sign-out.
@@ -62,8 +64,7 @@ export function SignOutButton() {
     <div className="flex flex-wrap items-center gap-2">
       {unsent > 0 && (
         <p role="alert" className="text-sm text-destructive">
-          {unsent} offline sale(s) not sent yet. Connect to the internet and
-          wait before signing out.
+          {t("posOffline.signOutBlocked", { count: unsent })}
         </p>
       )}
       {error && (

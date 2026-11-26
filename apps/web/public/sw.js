@@ -1,18 +1,20 @@
 /* global self, caches */
 /* Push payloads contain public-facing text only; endpoint and keys stay server-side. */
 /*
- * O3 (legend-wasr7.7, review O3 P2 2): app shell of /pos/kasir for the offline
- * POS. Only same-origin GETs are touched: API calls (another origin) and
- * server functions pass through. A /pos page is always fetched from the
- * network; only when that fails does the worker answer with the cached
- * /pos/kasir shell. The shell is fetched by the worker itself without
- * cookies (`credentials: "omit"`), so it never holds a session or another
- * page's data, and a `no-store` or redirected answer is not kept. Built assets
- * are content-hashed: served from the cache once fetched, at most ASSET_LIMIT.
+ * O3 (legend-wasr7.7, review O3 P2 2, re-review P1): offline shell of the POS.
+ * Only same-origin GETs are touched: API calls (another origin) and server
+ * functions pass through. A /pos page is always fetched from the network;
+ * only when that fails does the worker send the tablet to /pos-offline, a
+ * public route outside the `_ops` guard that loads no data. The worker fetches
+ * that shell itself without cookies (`credentials: "omit"`), so the cached
+ * copy never holds a session; a `no-store`, redirected or failed answer is
+ * not kept. The built assets the shell names are fetched with it. Assets are
+ * content-hashed: served from the cache once fetched, at most ASSET_LIMIT.
  * Sign-out deletes the cache (window side, `caches.delete`).
  */
 const POS_SHELL = "legend-pos-shell-v1";
-const SHELL_PATH = "/pos/kasir";
+const SHELL_PATH = "/pos-offline";
+const SHELL_REFRESH_MS = 10 * 60 * 1000;
 const ASSET_LIMIT = 400;
 
 const isPosPath = (path) => path === "/pos" || path.startsWith("/pos/");
@@ -22,18 +24,31 @@ const cacheable = (response) =>
   !response.redirected &&
   !/no-store/i.test(response.headers.get("cache-control") ?? "");
 
-/** The session-free shell, fetched once while online. */
+let shellFetchedAt = 0;
+
+/** The session-free shell and its assets, refreshed while online. */
 async function refreshShell(origin) {
-  const cache = await caches.open(POS_SHELL);
-  if (await cache.match(origin + SHELL_PATH)) return;
+  if (Date.now() - shellFetchedAt < SHELL_REFRESH_MS) return;
+  shellFetchedAt = Date.now();
   try {
     const response = await fetch(origin + SHELL_PATH, {
       credentials: "omit",
       redirect: "manual",
     });
-    if (cacheable(response)) await cache.put(origin + SHELL_PATH, response);
+    if (!cacheable(response)) return;
+    const html = await response.clone().text();
+    const cache = await caches.open(POS_SHELL);
+    const assets = new Set(html.match(/\/assets\/[^"'\s)<>]+/g) ?? []);
+    for (const path of assets)
+      if (!(await cache.match(origin + path))) {
+        const asset = await fetch(origin + path, { credentials: "omit" });
+        if (cacheable(asset)) await cache.put(origin + path, asset);
+      }
+    await cache.put(origin + SHELL_PATH, response);
+    await trimAssets(cache);
   } catch {
-    // Offline or refused: tried again on the next /pos page.
+    // Offline or refused: tried again on a later /pos page.
+    shellFetchedAt = 0;
   }
 }
 
@@ -42,6 +57,18 @@ async function posPage(event, url) {
     const response = await fetch(event.request);
     event.waitUntil(refreshShell(url.origin));
     return response;
+  } catch {
+    const cache = await caches.open(POS_SHELL);
+    return (await cache.match(url.origin + SHELL_PATH))
+      ? Response.redirect(url.origin + SHELL_PATH, 302)
+      : Response.error();
+  }
+}
+
+/** The shell itself: the network while online, else the kept copy. */
+async function shellPage(request, url) {
+  try {
+    return await fetch(request);
   } catch {
     const cache = await caches.open(POS_SHELL);
     return (await cache.match(url.origin + SHELL_PATH)) ?? Response.error();
@@ -90,6 +117,10 @@ self.addEventListener("fetch", (event) => {
   if (url.origin !== self.location.origin) return;
   if (request.mode === "navigate" && isPosPath(url.pathname)) {
     event.respondWith(posPage(event, url));
+    return;
+  }
+  if (request.mode === "navigate" && url.pathname === SHELL_PATH) {
+    event.respondWith(shellPage(request, url));
     return;
   }
   if (url.pathname.startsWith("/assets/")) event.respondWith(asset(request));
