@@ -676,21 +676,13 @@ describe("1271 F3 failover window", () => {
   });
 
   it("review K F3 P3: a cloud cart parked in the window blocks the return until resumed", async () => {
-    // The cart's own contract is not under test: park the row directly.
-    const parkedId = randomUUID();
-    await owner.query(
-      `INSERT INTO pos_parked_orders
-         (id, tenant_id, outlet_id, creator_user_id, idempotency_key, request_hash, snapshot, label)
-       VALUES ($1, $2, $3, $4, $5, $6, '{"items":[]}'::jsonb, 'Meja depan')`,
-      [
-        parkedId,
-        tenant.tenantId,
-        tenant.outletId,
-        cashier.userId,
-        key(),
-        "e".repeat(64),
-      ],
-    );
+    const parked = await pos("/parked-orders", {
+      channel: "pos",
+      serviceType: "takeaway",
+      items: [{ menuItemId: ids.kopi, quantity: 1, modifierIds: [] }],
+    });
+    expect(parked.status, JSON.stringify(parked.body)).toBe(201);
+    const parkedId = parked.body.data.id as string;
     const open = await send(manager, `${windows}/${windowId}/return`, {
       idempotencyKey: key(),
     });
@@ -795,7 +787,9 @@ describe("1271 F3 failover window", () => {
     try {
       const created = await createOrder();
       expect(created.body.error?.code).toBe("POS_WRITE_ON_EDGE");
-      expect(await codeOf(gate({ failover: "core" }))).toBe("POS_WRITE_ON_EDGE");
+      expect(await codeOf(gate({ failover: "core" }))).toBe(
+        "POS_WRITE_ON_EDGE",
+      );
       expect(
         await gate({
           failover: "finish",
@@ -812,8 +806,8 @@ describe("1271 F3 failover window", () => {
       expect(complete.body.error?.code).not.toBe("POS_WRITE_ON_EDGE");
       expect(complete.status).not.toBe(403);
       await owner.query(
-        "UPDATE orders SET status = 'voided' WHERE tenant_id = $1 AND id = $2",
-        [tenant.tenantId, window.orderId],
+        "UPDATE orders SET status = 'voided' WHERE tenant_id = $1 AND id = (SELECT order_id FROM pos_orders WHERE tenant_id = $1 AND failover_window_id = $2)",
+        [tenant.tenantId, window.id],
       );
       await closeShift(window.shiftId, C1_IDR);
       await heartbeat(5);
@@ -857,6 +851,7 @@ describe("1271 F3 failover window", () => {
           {
             userId: userIdSchema.parse(cashier.userId),
             deviceId: ids.device,
+            expectedVersion: null,
           },
           outletIdSchema.parse(tenant.outletId),
           window.orderId,
