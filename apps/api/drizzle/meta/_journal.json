@@ -3641,6 +3641,13 @@
       "when": 1795709250142,
       "tag": "0533_pos_offline_kits",
       "breakpoints": true
+    },
+    {
+      "idx": 534,
+      "version": "7",
+      "when": 1795711963690,
+      "tag": "0534_pos_offline_sales",
+      "breakpoints": true
     }
   ]
 }

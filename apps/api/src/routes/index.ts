@@ -156,6 +156,7 @@ import { posParkedOrderRouter } from "./pos-parked-order.routes.ts";
 import { posReceiptRouter, publicReceiptRouter } from "./pos-receipt.routes.ts";
 import { posReceiptWriteoffRouter } from "./pos-receipt-writeoff.routes.ts";
 import { posShiftRouter } from "./pos-shift.routes.ts";
+import { posOfflineBatchRouter } from "./pos-offline-batch.routes.ts";
 import { staffPinSyncRouter } from "./staff-pin-sync.routes.ts";
 import { deviceRouter } from "./device.routes.ts";
 import { printerRouter } from "./printer.routes.ts";
@@ -308,6 +309,8 @@ apiRouter.use("/outlets/:outletId", expoRouter);
 apiRouter.use("/outlets/:outletId", orderIssuesRouter);
 // WS-04 cashier shift, cash movements and end of day (legend-6c0), same prefix.
 apiRouter.use("/outlets/:outletId/pos", posShiftRouter);
+// O2 offline batch ingest (legend-wasr7.6), same prefix.
+apiRouter.use("/outlets/:outletId/pos", posOfflineBatchRouter);
 // WS-08 delivery channels, orders and commission reconciliation (legend-5bn3).
 apiRouter.use("/outlets/:outletId/delivery-channels", deliveryChannelsRouter);
 apiRouter.use("/outlets/:outletId/delivery-orders", deliveryOrdersRouter);
