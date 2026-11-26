@@ -1,3 +1,4 @@
+import { posStandaloneEdcSchema } from "@starter/shared/pos";
 import type { PaymentBill } from "../../types";
 
 /** Allocations that already count against the bill. */
@@ -34,4 +35,16 @@ export function edcApprovalKey(input: {
 }): string {
   const { orderId, terminalId, amountIdr, approverId, bankRef } = input;
   return [orderId, terminalId, amountIdr, approverId, bankRef.trim()].join(":");
+}
+
+/**
+ * Why a typed slip reference cannot be recorded (the contract's own rule, a
+ * card number included), or undefined. Read before any approval is asked: the
+ * approval reason names the reference and is stored.
+ */
+export function edcSlipRefProblem(bankRef: string): string | undefined {
+  const parsed = posStandaloneEdcSchema.shape.bankRef.safeParse(bankRef.trim());
+  return parsed.success
+    ? undefined
+    : (parsed.error.issues[0]?.message ?? "Nomor referensi bank tidak valid.");
 }

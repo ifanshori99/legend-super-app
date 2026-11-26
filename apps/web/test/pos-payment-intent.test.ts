@@ -62,7 +62,10 @@ import {
   wasRefused,
 } from "@/features/ws04-pos-kasir/payment-intent-store";
 import { isSendingIntent } from "@/features/ws04-pos-kasir/payment-intent-browser";
-import { edcApprovalKey } from "@/features/ws04-pos-kasir/components/payment/payment-helpers";
+import {
+  edcApprovalKey,
+  edcSlipRefProblem,
+} from "@/features/ws04-pos-kasir/components/payment/payment-helpers";
 import { trackSender } from "@/features/ws04-pos-kasir/sender-lock";
 
 type Tender = Record<string, unknown>;
@@ -1061,6 +1064,27 @@ describe("two separate pages (own modules, one localStorage)", () => {
   });
 });
 
+// legend-9yw78.15 review: the reference is read before the supervisor approval
+// is asked, whose reason text names it and is stored with the audit trail.
+describe("a reference that looks like a card number never reaches an approval", () => {
+  it.each([
+    "4111111111111111",
+    "4111-1111-1111-1111",
+    " 4111111111111111 ",
+    "A4111111111111111",
+    "12345",
+  ])("refuses %j", (ref) => {
+    expect(edcSlipRefProblem(ref)).toEqual(expect.any(String));
+  });
+
+  it.each(["736214805192", "7788-99AB1234", " 736214805192 "])(
+    "accepts %j",
+    (ref) => {
+      expect(edcSlipRefProblem(ref)).toBeUndefined();
+    },
+  );
+});
+
 describe("review 6: one PIN approves one slip", () => {
   const input = {
     orderId: ORDER,
@@ -1309,19 +1333,35 @@ describe("EDC standalone", () => {
     expect(JSON.stringify(money())).not.toContain("amount");
   });
 
-  it("refuses an approval for another amount", async () => {
-    await expect(edc({ amountIdr: 90_000 })).rejects.toMatchObject({
-      code: "OVERRIDE_INVALID",
-    });
+  // legend-9yw78.17: the card may be charged before any check of the bill, so a
+  // refusal never comes before the note: the bill stays locked, others closed.
+  const lockedAfter = async (promise: Promise<unknown>, code: string) => {
+    await expect(promise).rejects.toMatchObject({ code });
     expect(money()).toHaveLength(0);
+    expect(state()).toBe("pending");
+    await expect(cash()).rejects.toMatchObject({ code: "PAYMENT_UNRESOLVED" });
+    await expect(qris()).rejects.toMatchObject({ code: "PAYMENT_UNRESOLVED" });
+  };
+
+  it("refuses an approval for another amount, the note and its amount kept", async () => {
+    await lockedAfter(edc({ amountIdr: 90_000 }), "OVERRIDE_INVALID");
+    const kept = readIntent(storage(), scope);
+    expect(kept.status === "pending" && kept.intent.amountIdr).toBe(90_000);
   });
 
-  it("refuses a bank reference that looks like a card number, storing nothing", async () => {
-    await expect(edc({ bankRef: "4111111111111111" })).rejects.toMatchObject({
-      code: "VALIDATION_ERROR",
-    });
-    expect(money()).toHaveLength(0);
-    expect(store.size).toBe(0);
+  it("refuses a bank reference that looks like a card number, never storing it", async () => {
+    await lockedAfter(edc({ bankRef: "4111111111111111" }), "VALIDATION_ERROR");
+    expect([...store.values()].join()).not.toContain("4111111111111111");
+  });
+
+  it("a bill that cannot be read still keeps the note", async () => {
+    const read = net.respond;
+    net.respond = (call) => {
+      if (call.method === "GET" && call.path.endsWith(`/orders/${ORDER}`))
+        throw new ApiError(503, "UNAVAILABLE", "down");
+      return read(call);
+    };
+    await lockedAfter(edc(), "UNAVAILABLE");
   });
 
   it.each(["pending", "unknown", "approved"])(
