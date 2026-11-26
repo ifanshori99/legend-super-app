@@ -14,7 +14,6 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const OUT = join(ROOT, "docs/review/img");
 const PORT = 3372;
 const URL_BASE = `http://localhost:${PORT}`;
-const NOW = new Date("2026-11-12T10:00:00.000+07:00");
 const VIEWPORTS = [
   { w: 390, h: 844 },
   { w: 1280, h: 1300 },
