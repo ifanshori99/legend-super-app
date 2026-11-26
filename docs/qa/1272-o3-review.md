@@ -34,3 +34,8 @@ Prinsip: uang tunai offline tidak boleh hilang dari catatan, dan kafe tidak bole
 - **P1 baru (bukan uang)**: shell `/pos/kasir` tidak pernah ter-cache: fetch tanpa cookie di-redirect guard `_ops` ke `/sign-in` (`lib/areas/route.ts:16`), dan `start.ts:50-59` memasang `no-store`. Reload saat offline = tidak bisa jualan. Fix: route shell publik tanpa data/sesi di luar `_ops`, Cache-Control sendiri; SW cache route itu; test 200 tanpa cookie + HTML tanpa sesi.
 - P3: `pos-shift.service.ts` ~:1420 `some` -> semua pemegang bekal harus pemanggil (selain itu tutup paksa supervisor). P3: teks penolakan logout masuk katalog Indonesia.
 - Re-review berikut: diff shell + test saja.
+
+## Re-review 2 27 Nov (ae9509d84): LULUS
+- Shell `/pos-offline` publik tanpa data/sesi, `private, no-cache`; SW tidak simpan `no-store`/redirect; redirect tetap ke origin sendiri (tidak open-redirect); `caches.delete` saat logout; shell tidak menjual (O4). `every` benar.
+- P3 dibetulkan sebelum gabung: fetch shell `credentials: "omit"`, reset `shellFetchedAt` + cache `v2`, teks "terkirim sesudah layar kasir dibuka lagi".
+- Belum terbukti di browser nyata: IDB + SW benar-benar melayani shell saat offline (masuk O5 drill).
