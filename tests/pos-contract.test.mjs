@@ -13,6 +13,7 @@ import * as menu from "../packages/shared/src/menu/index.ts";
 import * as events from "../packages/shared/src/events/index.ts";
 import * as api from "../packages/shared/src/api/index.ts";
 import * as edge from "../packages/shared/src/edge/index.ts";
+import * as edgeStatus from "../packages/shared/src/edge/node-status.ts";
 import * as access from "../packages/shared/src/access/index.ts";
 
 const fixtures = pos.cafeLegendPosFixtures;
@@ -1903,9 +1904,9 @@ test("1271 F1: failover window contract", () => {
     lastHeartbeatAt: null,
     alerts: [],
   };
-  assert.equal(edge.edgeNodeStatusSchema.safeParse(status).success, true);
+  assert.equal(edgeStatus.edgeNodeStatusSchema.safeParse(status).success, true);
   assert.equal(
-    edge.edgeNodeStatusSchema.safeParse({
+    edgeStatus.edgeNodeStatusSchema.safeParse({
       ...status,
       failover: {
         windowId: window.id,
