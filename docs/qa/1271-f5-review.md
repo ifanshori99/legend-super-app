@@ -18,3 +18,8 @@ Reviewer: architect (Opus), 27 Nov. Hanya baca kode, test tidak dijalankan. Hasi
 ## Keputusan CTO 27 Nov
 1. Gap F tidak memblok Tutup Hari (saran architect). Nomor F terbit di transaksi yang sama dengan penjualan, jadi gap tidak bisa menyembunyikan penjualan berbayar. Write-off F tetap ditolak. Gap F masuk hitungan gap di rekap tanggal itu saja (bukan seluruh outlet), kirim alert owner, buat bead tim teknis.
 2. Jendela override memblok tutup hari di kedua sisi: setuju. Satu sumber kebenaran per hari. Pesan cloud diganti `FAILOVER_ACTIVE`: "Selesaikan Kembali ke edge dulu, lalu Tutup Hari di kasir edge". Alert owner bila jendela masih buka dekat jam tutup: boleh kartu terpisah bila besar.
+
+## Re-review 27 Nov (d12178a41): LULUS
+- Tanggal gap F, alert owner sekali per outlet+tanggal, Tutup Hari edge lolos dengan gap F, pesan `FAILOVER_ACTIVE`: sesuai keputusan CTO.
+- P3 (dikerjakan sebelum gabung): urutan tanggal gap jadi atas -> run terakhir bergerak -> bawah, supaya gap di ujung tidak jatuh ke tanggal tertutup; test tiga cabang dan alert sekali saat redelivery.
+- Alert jendela buka dekat jam tutup: bead legend-sxj96.1.
