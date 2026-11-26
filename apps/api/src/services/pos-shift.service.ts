@@ -1308,7 +1308,8 @@ export async function closePosShift(
   shiftId: string,
   input: ClosePosShiftInput,
 ): Promise<PosShift> {
-  const { idempotencyKey, ...request } = input;
+  // O3: the queue count is a state report, not part of the close request.
+  const { idempotencyKey, offlineQueuePending, ...request } = input;
   const id = parseShiftId(shiftId);
   const fingerprint = shiftFingerprint({
     op: "shift.close",
@@ -1350,6 +1351,10 @@ export async function closePosShift(
       await enqueueClosedShiftReport(tx, context, shift, caller.userId);
       return shiftDto(shift, undefined, { blind: true });
     }
+    // O3 (CTO O2 (a)): offline sales still on the tablet hold cash that is
+    // in the drawer but not yet in these figures; they sync first.
+    if ((offlineQueuePending ?? 0) > 0)
+      throw new PosError("OFFLINE_QUEUE_PENDING");
     // legend-yhia9 D-01: a QR this cashier issued can still be paid, so the
     // shift cannot be handed over until it is paid or the provider closes it.
     const [waiting] = await tx
