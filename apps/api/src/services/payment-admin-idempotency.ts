@@ -25,6 +25,8 @@ const SYSTEM_KEY_PREFIXES = [
   // Re-file after a failed refund (facility-breakfast-money.ts).
   "fb-refile:cancel:",
   "fb-refile:late:",
+  // Late WFC pass payment (wfc-payment-consumer.ts).
+  "wfc-late-refund:",
 ];
 
 /** Run inside the mutation's tenant transaction, after authorization. */
