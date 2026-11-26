@@ -131,6 +131,7 @@ export async function importEdcSettlementCsv(
     throw error;
   }
   const tenantId = context.tenant.tenantId;
+  const outletId = input.outletId;
   const fileHash = sha256(input.csv);
   const alerts: EdcReconciliationMismatch[] = [];
 
@@ -144,7 +145,7 @@ export async function importEdcSettlementCsv(
       .limit(1);
     if (!outlet) throw notFound();
     try {
-      assertOutletInScope(context.outletScope, outlet.id);
+      assertOutletInScope(context.outletScope, outletId);
     } catch {
       throw notFound();
     }
@@ -153,14 +154,14 @@ export async function importEdcSettlementCsv(
       context,
       actorUserId,
       "payment.reconcile",
-      { type: "outlet", id: outlet.id },
+      { type: "outlet", id: outletId },
       now,
     );
     // It clears flags like the person's resolve: a second factor always.
     if (!options.mfaVerified) throw new AccessError("MFA_REQUIRED");
 
     await tx.execute(
-      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`edc-settlement-csv:${tenantId}:${outlet.id}`}, 0))`,
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`edc-settlement-csv:${tenantId}:${outletId}`}, 0))`,
     );
     const [existing] = await tx
       .select()
@@ -168,7 +169,7 @@ export async function importEdcSettlementCsv(
       .where(
         and(
           eq(edcSettlementFiles.tenantId, tenantId),
-          eq(edcSettlementFiles.outletId, outlet.id),
+          eq(edcSettlementFiles.outletId, outletId),
           eq(edcSettlementFiles.fileHash, fileHash),
         ),
       )
@@ -186,7 +187,7 @@ export async function importEdcSettlementCsv(
           .where(
             and(
               eq(paymentEdcTerminals.tenantId, tenantId),
-              eq(paymentEdcTerminals.outletId, outlet.id),
+              eq(paymentEdcTerminals.outletId, outletId),
               eq(paymentEdcTerminals.bankCode, input.bank),
             ),
           )
@@ -202,7 +203,7 @@ export async function importEdcSettlementCsv(
           .where(
             and(
               eq(edcSettlementRows.tenantId, tenantId),
-              eq(edcSettlementRows.outletId, outlet.id),
+              eq(edcSettlementRows.outletId, outletId),
               inArray(edcSettlementRows.rowKey, [...new Set(keys)]),
             ),
           )
@@ -224,7 +225,7 @@ export async function importEdcSettlementCsv(
       .where(
         and(
           eq(edcTransactions.tenantId, tenantId),
-          eq(edcTransactions.outletId, outlet.id),
+          eq(edcTransactions.outletId, outletId),
           eq(edcTransactions.bank, input.bank),
           eq(edcTransactions.type, "sale"),
           inArray(rrnSql, rrns),
@@ -396,7 +397,7 @@ export async function importEdcSettlementCsv(
       .insert(edcSettlementFiles)
       .values({
         tenantId,
-        outletId: outlet.id,
+        outletId: outletId,
         bank: input.bank,
         fileName: input.fileName,
         fileHash,
@@ -415,7 +416,7 @@ export async function importEdcSettlementCsv(
       await tx.insert(edcSettlementRows).values(
         decisions.map((d) => ({
           tenantId,
-          outletId: outlet.id,
+          outletId: outletId,
           fileId: file.id,
           lineNo: d.line.lineNo,
           rowKey: d.key,

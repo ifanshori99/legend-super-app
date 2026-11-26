@@ -221,6 +221,8 @@ function pos(who: Member = cashier) {
       }),
     tender: (orderId: string, body: Record<string, unknown>) =>
       send(`/${orderId}/tenders`, body),
+    complete: (orderId: string, expectedStatus: string) =>
+      send(`/${orderId}/complete`, { expectedStatus }),
     // A 1% manual discount: accepted on an unlocked bill, 409 while locked.
     discount: (orderId: string) =>
       send(`/${orderId}/discounts`, {
@@ -1711,5 +1713,46 @@ describe("X2 EDC settlement CSV import matches terminal + RRN + amount and never
     expect(noMfa.status, JSON.stringify(noMfa.body)).toBe(403);
     expect(noMfa.body.error?.code).toBe("MFA_REQUIRED");
     expect(await row(id)).toMatchObject({ needs_reconciliation: true });
+  });
+
+  it("the Tutup Hari recap compares the day's EDC receipts per terminal with the bank lines matched to them", async () => {
+    const settled = await manualSlip("X2RRN000070");
+    const open = await manualSlip("X2RRN000071");
+    for (const { order } of [settled, open]) {
+      const current = await pos().get(order.orderId);
+      const done = await pos().complete(
+        order.orderId,
+        current.body.data.status as string,
+      );
+      expect(done.status, JSON.stringify(done.body)).toBe(200);
+    }
+    const imported = await importCsv(
+      financeUser,
+      file(line(1, "TID-RECON", "X2RRN000070", String(settled.order.totalIdr))),
+    );
+    expect(imported.body.data).toMatchObject({ matched: 1, cleared: 1 });
+    const { rows } = await owner.query<{ business_date: string }>(
+      `SELECT business_date::text AS business_date FROM orders WHERE id = $1`,
+      [ulidToUuid(settled.order.orderId)],
+    );
+    const recap = await ownerUser.client
+      .get(`/api/outlets/${encodeURIComponent(tenant.outletId)}/pos/day`)
+      .query({ businessDate: rows[0]!.business_date })
+      .set(headers)
+      .set(originHeader);
+    expect(recap.status, JSON.stringify(recap.body)).toBe(200);
+    expect(recap.body.data.edcSettlement).toEqual([
+      {
+        terminalId,
+        terminalCode: "TID-RECON",
+        bank: "bca",
+        receiptIdr: settled.order.totalIdr + open.order.totalIdr,
+        receiptCount: 2,
+        settledIdr: settled.order.totalIdr,
+        settledCount: 1,
+        flaggedCount: 1,
+        mismatchCount: 0,
+      },
+    ]);
   });
 });
