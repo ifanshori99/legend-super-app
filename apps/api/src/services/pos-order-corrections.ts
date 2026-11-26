@@ -1074,9 +1074,16 @@ export async function refundPosOrder(
             "Transaksi ini dibayar dengan poin member; refund transaksi berpoin belum tersedia.",
           );
       }
-      const paid = tenders
-        .filter((tender) => tender.status === "captured")
+      // 1272 V1 P3 2: an older points tender with no ledger row has no
+      // return path either, so it never counts as money the guest paid in:
+      // the refund can never pay out cash for the points part.
+      const nonPointsPaid = tenders
+        .filter(
+          (tender) =>
+            tender.status === "captured" && tender.method !== "points",
+        )
         .reduce((sum, tender) => sum + Number(tender.amountIdr), 0);
+      const paid = nonPointsPaid;
       const posRefunded = refunds.reduce((sum, row) => sum + row.amountIdr, 0);
       const refunded = posRefunded;
       const depositRefunded =
@@ -1102,12 +1109,6 @@ export async function refundPosOrder(
       // (its own refunds, our gateway refunds not inside `refunded`, or an
       // intent flagged refunded with no sure amount, counted whole) comes off
       // too. `given.paidIdr` is the non-points tenders net of it.
-      const nonPointsPaid = tenders
-        .filter(
-          (tender) =>
-            tender.status === "captured" && tender.method !== "points",
-        )
-        .reduce((sum, tender) => sum + Number(tender.amountIdr), 0);
       const providerOutIdr = Math.max(0, nonPointsPaid - given.paidIdr);
       const roomIdr = Math.max(
         0,
@@ -1484,7 +1485,12 @@ export async function refundPosOrder(
         );
       const lines: PosRefundLineRow[] = goodsReturnOnly
         ? []
-        : refundLinesByTender(tenders, refunds, payout);
+        : refundLinesByTender(
+            // 1272 V1 P3 2: the payout never lands on an older points tender.
+            tenders.filter((tender) => tender.method !== "points"),
+            refunds,
+            payout,
+          );
       await assertBusinessDayOpen(tx, context, {
         outletId,
         businessDates: [
