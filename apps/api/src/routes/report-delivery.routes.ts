@@ -13,6 +13,9 @@ import { outletIdsForQuery, userIdSchema } from "@starter/shared/core";
 import {
   builderQueryPermittedFor,
   createReportExportEndpoint,
+  createReportScheduleEndpoint,
+  listReportSchedulesEndpoint,
+  updateReportScheduleEndpoint,
   createSavedReportEndpoint,
   getReportExportEndpoint,
   listReportExportsEndpoint,
@@ -39,6 +42,11 @@ import {
   savedExportQuery,
   type ExportSource,
 } from "../services/report-exports.service";
+import {
+  createReportSchedule,
+  listReportSchedules,
+  updateReportSchedule,
+} from "../services/report-schedules.service";
 import {
   createSavedReport,
   getOwnSavedReport,
@@ -204,4 +212,47 @@ export function registerReportDeliveryRoutes(router: Router): void {
       ),
     });
   });
+
+  // ---- Schedules --------------------------------------------------------------
+
+  router.get(route(listReportSchedulesEndpoint.path), async (req, res) => {
+    const query = listReportSchedulesEndpoint.query.parse(req.query);
+    res.json(
+      await listReportSchedules(getTenantContext(req), callerId(req), query),
+    );
+  });
+
+  router.post(
+    route(createReportScheduleEndpoint.path),
+    jsonBody,
+    async (req, res) => {
+      const input = createReportScheduleEndpoint.body.parse(req.body);
+      res.status(201).json({
+        data: await createReportSchedule(
+          getTenantContext(req),
+          callerId(req),
+          input,
+        ),
+      });
+    },
+  );
+
+  router.patch(
+    route(updateReportScheduleEndpoint.path),
+    jsonBody,
+    async (req, res) => {
+      const { reportScheduleId } = updateReportScheduleEndpoint.params.parse(
+        req.params,
+      );
+      const input = updateReportScheduleEndpoint.body.parse(req.body);
+      res.json({
+        data: await updateReportSchedule(
+          getTenantContext(req),
+          callerId(req),
+          reportScheduleId,
+          input,
+        ),
+      });
+    },
+  );
 }

@@ -277,9 +277,7 @@ async function checkSettings(
     "none",
   );
   for (const userId of settings.recipientUserIds)
-    if (
-      !(await mayReceive(tenant, userId, source, settings.format, query))
-    )
+    if (!(await mayReceive(tenant, userId, source, settings.format, query)))
       throw new HttpError(
         400,
         "REPORT_SCHEDULE_INVALID",
@@ -352,7 +350,13 @@ export async function createReportSchedule(
       })
       .returning();
     if (row === undefined) throw new Error("Schedule insert returned no row");
-    await auditSchedule(tx, context, row, "report_schedule.created", ownerUserId);
+    await auditSchedule(
+      tx,
+      context,
+      row,
+      "report_schedule.created",
+      ownerUserId,
+    );
     return toReportSchedule(row);
   });
 }
@@ -418,7 +422,13 @@ export async function updateReportSchedule(
       .returning();
     if (row === undefined)
       throw new HttpError(404, "NOT_FOUND", "Jadwal laporan tidak ditemukan.");
-    await auditSchedule(tx, context, row, "report_schedule.updated", ownerUserId);
+    await auditSchedule(
+      tx,
+      context,
+      row,
+      "report_schedule.updated",
+      ownerUserId,
+    );
     return toReportSchedule(row);
   });
 }
@@ -588,7 +598,8 @@ async function runOneSchedule(
   });
   if (claimed === null) return null;
   const { schedule, saved, slot } = claimed;
-  if (saved === undefined || saved.status !== "active") return { jobs: 0, skipped: 0 };
+  if (saved === undefined || saved.status !== "active")
+    return { jobs: 0, skipped: 0 };
   const source = savedSource(saved);
   if (source.kind !== "saved") return null;
   // DASH-04: a saved query edited into a person split is never delivered.

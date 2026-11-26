@@ -131,6 +131,8 @@ import {
 import { sweepOverdueServiceRequests } from "./services/service-request.service.ts";
 import { expireDueSupportAccessGrants } from "./services/platform-support.service.ts";
 import { generateScheduledChecklistRuns } from "./services/operations-checklist-scheduler.service.ts";
+import { sweepReportExports } from "./services/report-exports.service.ts";
+import { runDueReportSchedules } from "./services/report-schedules.service.ts";
 import { sweepMissedChecklistRuns } from "./services/operations-escalation.service.ts";
 import { sweepEquipmentServiceReminders } from "./services/operations-equipment-reminder.service.ts";
 import { sweepExpiredPrepLabels } from "./services/operations-food-safety.service.ts";
@@ -891,6 +893,21 @@ const relay = createRelayRuntime({
       await runMetricsDailyJob(context);
     } catch {
       console.error("Metrics daily sweep failed");
+    }
+    // WS-11 F12 (legend-ay6e6), cloud only: due report schedules become
+    // per-recipient export jobs, then queued jobs are generated, approvals
+    // settled and old files expired. Never blocks the relay.
+    if (postsInventoryGl) {
+      try {
+        await runDueReportSchedules(context);
+      } catch {
+        console.error("Report schedule sweep failed");
+      }
+      try {
+        await sweepReportExports(context);
+      } catch {
+        console.error("Report export sweep failed");
+      }
     }
     // PRD §3.18 "Kirim PO" (legend-9yz): send queued PO emails. Logs carry only
     // a masked address; an unconfigured provider fails the delivery closed.
