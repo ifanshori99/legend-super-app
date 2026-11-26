@@ -65,6 +65,10 @@ import {
   fetchOwnCountSummary,
   forceCloseShift,
 } from "@/features/ws04-pos-kasir/shift-extra-api";
+import {
+  createMemoryOfflineBackend,
+  setDefaultOfflineBackend,
+} from "@/features/ws04-pos-kasir/offline/store";
 
 const ZERO = [{ denominationIdr: 100_000, quantity: 0 }];
 
@@ -240,6 +244,8 @@ describe("the supervisor close on the cashier's device", () => {
       approvedBy: SUPERVISOR,
       approvalRequestId: OVERRIDE,
       idempotencyKey: "shift-close:k1",
+      // O3: the tablet reports its offline queue; the server refuses above 0.
+      offlineQueuePending: 0,
     });
     expect(approved).toEqual([OVERRIDE]);
     // Closed: the count on this device is spent.
@@ -457,5 +463,49 @@ describe("force close", () => {
     await expect(
       forceCloseShift({ shiftId: SHIFT, note: "x".repeat(12) } as never),
     ).rejects.toMatchObject({ status: 501 });
+  });
+});
+
+describe("O3: the close waits for the offline queue", () => {
+  afterEach(() => setDefaultOfflineBackend(undefined));
+
+  it("refuses on the tablet while offline sales are queued: no PIN asked, no close sent", async () => {
+    const backend = createMemoryOfflineBackend();
+    await backend.run("readwrite", (tx) =>
+      tx.put("queue", {
+        eventId: "01JCQ8Z5N0M3X4Y5Z6A7B8C9G1",
+        outletId: OUTLET,
+        event: {} as never,
+        queuedAt: "2026-11-26T10:00:00.000Z",
+      }),
+    );
+    setDefaultOfflineBackend(backend);
+    await expect(
+      closeShiftWithApproval(
+        OUTLET,
+        approval,
+        null,
+        "shift-close:q1",
+        () => undefined,
+      ),
+    ).rejects.toMatchObject({ status: 409, code: "OFFLINE_QUEUE_PENDING" });
+    expect(overrideCalls()).toHaveLength(0);
+    expect(closeCalls()).toHaveLength(0);
+  });
+
+  it("a storage that cannot be read refuses the close instead of guessing 0", async () => {
+    setDefaultOfflineBackend({
+      run: () => Promise.reject(new Error("IndexedDB broken")),
+    });
+    await expect(
+      closeShiftWithApproval(
+        OUTLET,
+        approval,
+        null,
+        "shift-close:q2",
+        () => undefined,
+      ),
+    ).rejects.toThrow();
+    expect(closeCalls()).toHaveLength(0);
   });
 });

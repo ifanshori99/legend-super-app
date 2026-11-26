@@ -32,6 +32,7 @@ import {
   outletIdSchema,
   tenantIdSchema,
   ulidToUuid,
+  uuidToUlid,
   userIdSchema,
 } from "@starter/shared/core";
 import {
@@ -52,7 +53,10 @@ import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { signDeviceToken } from "../lib/device-token.ts";
 import { setDeviceOutletResolver } from "../services/device-pin.service.ts";
-import { submitPosOfflineBatch } from "../services/pos-offline-batch.service.ts";
+import {
+  reportPosOfflineConflict,
+  submitPosOfflineBatch,
+} from "../services/pos-offline-batch.service.ts";
 import { issuePosOfflineKit } from "../services/pos-offline-kit.service.ts";
 import {
   refundPosOrder,
@@ -334,6 +338,69 @@ async function expectedCash(shiftId: string): Promise<number> {
       );
     return Number(await liveExpectedCashIdr(tx, shift!));
   });
+}
+
+/**
+ * Posts `events` to the journal in one transaction that is rolled back (the
+ * shared tenant keeps its own accounting state) and returns the net
+ * debit - credit per account role.
+ */
+async function netByRole(
+  events: EventEnvelope[],
+): Promise<Record<string, number>> {
+  const client = await owner.connect();
+  const rollback = new Error("rollback");
+  let byRole: Record<string, number> = {};
+  try {
+    await drizzle(client, { schema }).transaction(async (raw) => {
+      const tx = raw as unknown as AccountingTx;
+      await tx.execute(
+        sql`SELECT set_config('app.tenant_id', ${seededTenantId}, true), set_config('app.outlet_ids', '*', true)`,
+      );
+      await tx.execute(
+        sql`UPDATE tenants SET feature_flags = jsonb_set(feature_flags, '{modules}', (feature_flags->'modules') || '["accounting"]'::jsonb)
+               WHERE id = ${seededTenantId} AND NOT (feature_flags->'modules') ? 'accounting'`,
+      );
+      const entity = (
+        await tx.execute<{ id: string }>(
+          sql`SELECT legal_entity_id AS id FROM outlets WHERE id = ${seededOutletA}`,
+        )
+      ).rows[0]!.id;
+      await provisionStandardChart(tx as never, scope, entity, null);
+      await tx.execute(
+        sql`INSERT INTO fiscal_periods (tenant_id, legal_entity_id, period)
+              VALUES (${seededTenantId}, ${entity}, to_char(now(), 'YYYY-MM'))
+              ON CONFLICT (tenant_id, legal_entity_id, period) DO NOTHING`,
+      );
+      const posted = [];
+      for (const event of events)
+        posted.push(await deliverAutoJournalEvent(scope, event, tx));
+      expect(posted.map((row) => row.status)).toEqual(
+        events.map(() => "posted"),
+      );
+      const ids = posted.map((row) =>
+        row.status === "posted" ? row.journalEntryId : "",
+      );
+      const lines = await tx.execute<{ role: string; net: string }>(
+        sql`SELECT m.role, sum(l.debit_idr - l.credit_idr)::text AS net
+                FROM journal_lines l
+                JOIN account_mappings m
+                  ON m.tenant_id = l.tenant_id AND m.account_id = l.account_id
+               WHERE l.tenant_id = ${seededTenantId}
+                 AND l.entry_id = ANY(${`{${ids.join(",")}}`}::uuid[])
+               GROUP BY m.role`,
+      );
+      byRole = Object.fromEntries(
+        lines.rows.map((row) => [row.role, Number(row.net)]),
+      );
+      throw rollback;
+    });
+  } catch (error) {
+    if (error !== rollback) throw error;
+  } finally {
+    client.release();
+  }
+  return byRole;
 }
 
 let app: ReturnType<typeof createApp>;
@@ -981,7 +1048,8 @@ describe("Review O2 fixes", () => {
       eventId: event.eventId,
     });
     await expect(submit(b, [twin])).rejects.toMatchObject({
-      code: "CONFLICT",
+      code: "OFFLINE_EVENT_CONFLICT",
+      status: 409,
     });
     const next = await kitFor(b);
     expect(next.receiptRun.lastNumber).toBe(other.receiptRun.lastNumber);
@@ -1015,63 +1083,100 @@ describe("Review O2 fixes", () => {
     );
     expect(closed).toHaveLength(1);
 
-    // Accounting set up and both events posted in one transaction that is
-    // rolled back, so the shared tenant keeps its own accounting state.
-    const client = await owner.connect();
-    const rollback = new Error("rollback");
-    let byRole: Record<string, number> = {};
-    try {
-      await drizzle(client, { schema }).transaction(async (raw) => {
-        const tx = raw as unknown as AccountingTx;
-        await tx.execute(
-          sql`SELECT set_config('app.tenant_id', ${seededTenantId}, true), set_config('app.outlet_ids', '*', true)`,
-        );
-        await tx.execute(
-          sql`UPDATE tenants SET feature_flags = jsonb_set(feature_flags, '{modules}', (feature_flags->'modules') || '["accounting"]'::jsonb)
-                 WHERE id = ${seededTenantId} AND NOT (feature_flags->'modules') ? 'accounting'`,
-        );
-        const entity = (
-          await tx.execute<{ id: string }>(
-            sql`SELECT legal_entity_id AS id FROM outlets WHERE id = ${seededOutletA}`,
-          )
-        ).rows[0]!.id;
-        await provisionStandardChart(tx as never, scope, entity, null);
-        await tx.execute(
-          sql`INSERT INTO fiscal_periods (tenant_id, legal_entity_id, period)
-                VALUES (${seededTenantId}, ${entity}, to_char(now(), 'YYYY-MM'))
-                ON CONFLICT (tenant_id, legal_entity_id, period) DO NOTHING`,
-        );
-        const posted = [
-          await deliverAutoJournalEvent(scope, closed[0]!.event, tx),
-          await deliverAutoJournalEvent(scope, paid!, tx),
-        ];
-        expect(posted.map((row) => row.status)).toEqual(["posted", "posted"]);
-        const ids = posted.map((row) =>
-          row.status === "posted" ? row.journalEntryId : "",
-        );
-        const lines = await tx.execute<{ role: string; net: string }>(
-          sql`SELECT m.role, sum(l.debit_idr - l.credit_idr)::text AS net
-                  FROM journal_lines l
-                  JOIN account_mappings m
-                    ON m.tenant_id = l.tenant_id AND m.account_id = l.account_id
-                 WHERE l.tenant_id = ${seededTenantId}
-                   AND l.entry_id = ANY(${`{${ids.join(",")}}`}::uuid[])
-                 GROUP BY m.role`,
-        );
-        byRole = Object.fromEntries(
-          lines.rows.map((row) => [row.role, Number(row.net)]),
-        );
-        throw rollback;
-      });
-    } catch (error) {
-      if (error !== rollback) throw error;
-    } finally {
-      client.release();
-    }
+    const byRole = await netByRole([closed[0]!.event, paid!]);
     // Drawer cash once (the close's overage), the sale in the suspense account.
     expect(byRole.cash_on_hand).toBe(menu.priceIdr);
     expect(byRole.offline_cash_clearing).toBe(menu.priceIdr);
     expect(byRole.sales_revenue).toBe(-menu.priceIdr);
+  });
+});
+
+describe("Review O3 P1: a conflicting sale is reported, never lost", () => {
+  it("middle sale conflicts -> report -> next sale ingests, close passes, 1205 holds its cash; a second report is one row", async () => {
+    const till = await newTill(app);
+    const other = await newTill(app);
+    const kit = await kitFor(till);
+    const menu = menuOf(kit);
+    const otherKit = await kitFor(other);
+    const first = sale(kit, menu, kit.receiptRun.lastNumber + 1);
+    const middle = sale(kit, menu, kit.receiptRun.lastNumber + 2);
+    const last = sale(kit, menu, kit.receiptRun.lastNumber + 3);
+    // Another kit already holds the middle sale's eventId.
+    const twin = sale(
+      otherKit,
+      menuOf(otherKit),
+      otherKit.receiptRun.lastNumber + 1,
+      {
+        eventId: middle.eventId,
+      },
+    );
+    expect((await submit(other, [twin])).results[0]!.status).toBe("ingested");
+
+    await expect(submit(till, [first, middle, last])).rejects.toMatchObject({
+      code: "OFFLINE_EVENT_CONFLICT",
+      status: 409,
+    });
+    const report = () =>
+      reportPosOfflineConflict(scope, callerOf(till), outletId, {
+        event: middle,
+      });
+    const reported = await report();
+    expect(reported).toMatchObject({
+      eventId: middle.eventId,
+      status: "ingested",
+      receiptNumber: expect.stringMatching(
+        new RegExp(`-0*${middle.sequenceNumber}$`),
+      ),
+    });
+    expect(reported.flags).toContain("event_conflict");
+    expect((await report()).status).toBe("duplicate");
+    const { rows } = await owner.query<{ event_id: string }>(
+      `SELECT event_id FROM pos_offline_sales
+        WHERE tenant_id = $1 AND kit_id = $2 AND flags ? 'event_conflict'`,
+      [seededTenantId, kit.kitId],
+    );
+    expect(rows).toHaveLength(1);
+    const conflictOrder = uuidToUlid(rows[0]!.event_id);
+    expect(conflictOrder).not.toBe(middle.eventId);
+
+    // The slot is filled: the rest of the queue goes in.
+    const rest = await submit(
+      till,
+      [first, middle, last].filter((e) => e !== middle),
+    );
+    expect(rest.results.map((row) => row.status)).toEqual([
+      "duplicate",
+      "ingested",
+    ]);
+    // The conflicting sale's cash is not in the drawer's figures.
+    expect(await expectedCash(till.shiftId)).toBe(500_000 + 2 * menu.priceIdr);
+    await closeShiftExactly({
+      scope,
+      cashierId: till.cashier.userId,
+      deviceId: till.deviceId,
+      shiftId: till.shiftId,
+      supervisorId: await outletSupervisor(app, "Offline Conflict Close"),
+      drawerIdr: 500_000 + 2 * menu.priceIdr,
+      offlineQueuePending: 0,
+    });
+    const [paid] = await paidEventsOf(conflictOrder);
+    const byRole = await netByRole([paid!]);
+    expect(byRole.offline_cash_clearing).toBe(menu.priceIdr);
+    expect(byRole.cash_on_hand ?? 0).toBe(0);
+  });
+
+  it("a report of a sale that does not conflict ingests it as a normal sale", async () => {
+    const till = await newTill(app);
+    const kit = await kitFor(till);
+    const event = sale(kit, menuOf(kit), kit.receiptRun.lastNumber + 1);
+    const reported = await reportPosOfflineConflict(
+      scope,
+      callerOf(till),
+      outletId,
+      { event },
+    );
+    expect(reported).toMatchObject({ status: "ingested", flags: [] });
+    expect(await ordersOf(event.eventId)).toBe(1);
   });
 });
 

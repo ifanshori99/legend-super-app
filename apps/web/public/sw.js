@@ -1,57 +1,132 @@
-/* global self */
+/* global self, caches */
 /* Push payloads contain public-facing text only; endpoint and keys stay server-side. */
-function notificationTarget(value) {
-  if (typeof value !== "string" || !/^\/(?!\/)[^\s\\]*$/.test(value))
-    return "/";
+/*
+ * O3 (legend-wasr7.7, review O3 P2 2, re-review P1): offline shell of the POS.
+ * Only same-origin GETs are touched: API calls (another origin) and server
+ * functions pass through. A /pos page is always fetched from the network;
+ * only when that fails does the worker send the tablet to /pos-offline, a
+ * public route outside the `_ops` guard that loads no data. The worker fetches
+ * that shell itself without cookies (`credentials: "omit"`), so the cached
+ * copy never holds a session; a `no-store`, redirected or failed answer is
+ * not kept. The built assets the shell names are fetched with it. Assets are
+ * content-hashed: served from the cache once fetched, at most ASSET_LIMIT.
+ * Sign-out deletes the cache (window side, `caches.delete`).
+ */
+const POS_SHELL = "legend-pos-shell-v2";
+const SHELL_PATH = "/pos-offline";
+const SHELL_REFRESH_MS = 10 * 60 * 1000;
+const ASSET_LIMIT = 400;
+
+const isPosPath = (path) => path === "/pos" || path.startsWith("/pos/");
+const cacheable = (response) =>
+  response.ok &&
+  response.type === "basic" &&
+  !response.redirected &&
+  !/no-store/i.test(response.headers.get("cache-control") ?? "");
+
+let shellFetchedAt = 0;
+
+/** The session-free shell and its assets, refreshed while online. */
+async function refreshShell(origin) {
+  if (Date.now() - shellFetchedAt < SHELL_REFRESH_MS) return;
+  shellFetchedAt = Date.now();
   try {
-    const url = new URL(value, self.location.origin);
-    return url.origin === self.location.origin ? value : "/";
+    const response = await fetch(origin + SHELL_PATH, {
+      credentials: "omit",
+      redirect: "manual",
+    });
+    if (!cacheable(response)) return;
+    const html = await response.clone().text();
+    const cache = await caches.open(POS_SHELL);
+    const assets = new Set(html.match(/\/assets\/[^"'\s)<>]+/g) ?? []);
+    for (const path of assets)
+      if (!(await cache.match(origin + path))) {
+        const asset = await fetch(origin + path, { credentials: "omit" });
+        if (cacheable(asset)) await cache.put(origin + path, asset);
+      }
+    await cache.put(origin + SHELL_PATH, response);
+    await trimAssets(cache);
   } catch {
-    return "/";
+    // Offline or refused: tried again on a later /pos page.
+    shellFetchedAt = 0;
   }
 }
 
-self.addEventListener("push", (event) => {
-  let message;
+async function posPage(event, url) {
   try {
-    message = event.data?.json();
+    const response = await fetch(event.request);
+    event.waitUntil(refreshShell(url.origin));
+    return response;
   } catch {
-    return;
+    const cache = await caches.open(POS_SHELL);
+    return (await cache.match(url.origin + SHELL_PATH))
+      ? Response.redirect(url.origin + SHELL_PATH, 302)
+      : Response.error();
   }
-  if (
-    !message ||
-    typeof message.title !== "string" ||
-    !message.title.trim() ||
-    typeof message.body !== "string" ||
-    typeof message.tag !== "string" ||
-    !message.tag
-  )
-    return;
+}
+
+/** The shell itself: the network (still without cookies), else the kept copy. */
+async function shellPage(url) {
+  try {
+    return await fetch(url.origin + SHELL_PATH, { credentials: "omit" });
+  } catch {
+    const cache = await caches.open(POS_SHELL);
+    return (await cache.match(url.origin + SHELL_PATH)) ?? Response.error();
+  }
+}
+
+async function trimAssets(cache) {
+  const keys = (await cache.keys()).filter((request) =>
+    new URL(request.url).pathname.startsWith("/assets/"),
+  );
+  for (const request of keys.slice(0, Math.max(0, keys.length - ASSET_LIMIT)))
+    await cache.delete(request);
+}
+
+async function asset(request) {
+  const cache = await caches.open(POS_SHELL);
+  const hit = await cache.match(request);
+  if (hit) return hit;
+  const response = await fetch(request);
+  if (cacheable(response)) {
+    await cache.put(request, response.clone());
+    await trimAssets(cache);
+  }
+  return response;
+}
+
+self.addEventListener("install", () => {
+  self.skipWaiting();
+});
+
+self.addEventListener("activate", (event) => {
   event.waitUntil(
-    self.registration.showNotification(message.title, {
-      body: message.body,
-      tag: message.tag,
-      renotify: false,
-      data: { url: notificationTarget(message.data?.url) },
-    }),
+    (async () => {
+      for (const name of await caches.keys())
+        if (name.startsWith("legend-pos-shell-") && name !== POS_SHELL)
+          await caches.delete(name);
+      await self.clients.claim();
+    })(),
   );
 });
 
-self.addEventListener("notificationclick", (event) => {
-  event.notification.close();
-  event.waitUntil(
-    (async () => {
-      const windows = await self.clients.matchAll({
-        type: "window",
-        includeUncontrolled: true,
-      });
-      const target = new URL(
-        notificationTarget(event.notification.data?.url),
-        self.location.origin,
-      ).href;
-      const existing = windows.find((client) => client.url === target);
-      if (existing) return existing.focus();
-      return self.clients.openWindow(target);
-    })(),
-  );
+self.addEventListener("fetch", (event) => {
+  const request = event.request;
+  if (request.method !== "GET") return;
+  const url = new URL(request.url);
+  if (url.origin !== self.location.origin) return;
+  if (request.mode === "navigate" && isPosPath(url.pathname)) {
+    event.respondWith(posPage(event, url));
+    return;
+  }
+  if (request.mode === "navigate" && url.pathname === SHELL_PATH) {
+    event.respondWith(shellPage(url));
+    return;
+  }
+  if (url.pathname.startsWith("/assets/")) event.respondWith(asset(request));
+});
+
+// Sign-out deleted the cache: the next /pos page fetches the shell again.
+self.addEventListener("message", (event) => {
+  if (event.data?.type === "legend-pos-shell-reset") shellFetchedAt = 0;
 });

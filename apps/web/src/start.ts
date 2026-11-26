@@ -47,6 +47,13 @@ const securityHeaders = createMiddleware().server(async ({ request, next }) => {
   // The exception is the anonymous brand site (see public-cache.server.ts).
   // A route that sets its own Cache-Control keeps it (PRD §5 "Peta situs"
   // lists the dynamic, authorized and no-store pages).
+  // O3: the /pos-offline shell may be kept only as the service worker
+  // fetches it, without cookies; a visit with a cookie may embed a session.
+  if (
+    new URL(request.url).pathname === "/pos-offline" &&
+    request.headers.has("cookie")
+  )
+    headers.set("Cache-Control", "private, no-store");
   if (!headers.has("Cache-Control")) {
     const decision = decidePublicCache({
       method: request.method,

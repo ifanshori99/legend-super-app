@@ -13,7 +13,10 @@
 
 import { Router, type Request } from "express";
 import { userIdSchema } from "@starter/shared/core";
-import { submitPosOfflineBatch } from "@starter/shared/pos";
+import {
+  reportPosOfflineConflict,
+  submitPosOfflineBatch,
+} from "@starter/shared/pos";
 import {
   actorOf,
   requireActingStaffOnSharedDevice,
@@ -53,6 +56,30 @@ posOfflineBatchRouter.post(
     const body = submitPosOfflineBatch.body.parse(req.body);
     res.status(200).json({
       data: await offlineBatch.submitPosOfflineBatch(
+        getScopedTenantContext(req),
+        {
+          userId: userIdSchema.parse(actorOf(req)),
+          deviceId: await currentDeviceIdOf(req),
+        },
+        outletId,
+        body,
+      ),
+    });
+  },
+);
+
+// Review O3 P1: the tablet's report of a sale the batch refused with
+// OFFLINE_EVENT_CONFLICT. Same guards as the batch.
+posOfflineBatchRouter.post(
+  "/offline-conflicts",
+  requireOutletPermission("shift.cash.operate", outletOf),
+  requireCorePosWriteOnCloud,
+  jsonBody,
+  async (req, res) => {
+    const { outletId } = reportPosOfflineConflict.params.parse(req.params);
+    const body = reportPosOfflineConflict.body.parse(req.body);
+    res.status(200).json({
+      data: await offlineBatch.reportPosOfflineConflict(
         getScopedTenantContext(req),
         {
           userId: userIdSchema.parse(actorOf(req)),
