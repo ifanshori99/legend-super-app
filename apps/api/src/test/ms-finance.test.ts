@@ -248,7 +248,7 @@ const EXTRA_ROLE_ACCOUNTS: readonly AccountSeed[] = [
 
 /** Same accounts, no role: B books interest and tax but never maps them. */
 const UNMAPPED_EXTRA: readonly AccountSeed[] = EXTRA_ROLE_ACCOUNTS.map(
-  ({ role: _role, ...seed }) => seed,
+  (seed) => ({ ...seed, role: undefined }),
 );
 
 function evaluate(
@@ -424,7 +424,14 @@ beforeAll(async () => {
   await post(entityA, "2025-06-10", "cogs", "cash", 300_000, true);
   await post(entityA, "2025-06-25", "salary", "bank", 200_000, false);
   // The mapped depreciation account is a header: lines post to its child.
-  await post(entityA, "2025-06-30", "depreciationVehicle", "accum", 55_000, false);
+  await post(
+    entityA,
+    "2025-06-30",
+    "depreciationVehicle",
+    "accum",
+    55_000,
+    false,
+  );
   await post(entityA, "2025-06-30", "amortization", "accum", 10_000, false);
   await post(entityA, "2025-06-30", "interest", "bank", 20_000, false);
   await post(entityA, "2025-06-30", "incomeTax", "bank", 30_000, false);
@@ -435,7 +442,14 @@ beforeAll(async () => {
   await post(entityB, "2025-06-30", "incomeTax", "cash", 7_000, false);
   // July stays open.
   await post(entityA, "2025-07-05", "cash", "revenue", 600_000, true);
-  await post(entityA, "2025-07-31", "depreciationVehicle", "accum", 50_000, false);
+  await post(
+    entityA,
+    "2025-07-31",
+    "depreciationVehicle",
+    "accum",
+    50_000,
+    false,
+  );
   await post(entityA, "2025-07-15", "cash", "bank", 250_000, true);
 
   for (const periodId of periods)
@@ -496,8 +510,16 @@ describe("ebitda reconciles with the journal", () => {
     expect(amounts(result, "ebitda").get("")).toBe(await journalEbitda(JUNE));
     // net_profit is untouched by the exclusion: every expense counts.
     expect(amounts(result, "net_profit").get("")).toBe(
-      1_400_000 - 300_000 - 200_000 - 55_000 - 10_000 - 20_000 - 30_000 -
-        40_000 - 15_000 - 7_000,
+      1_400_000 -
+        300_000 -
+        200_000 -
+        55_000 -
+        10_000 -
+        20_000 -
+        30_000 -
+        40_000 -
+        15_000 -
+        7_000,
     );
   });
 
@@ -579,7 +601,11 @@ describe("cash and bank balances reconcile with the journal", () => {
     const result = await evaluate(["cash_balance"], JUNE, ["legal_entity"]);
     const values = amounts(result, "cash_balance");
     expect(values.get(entityA.id)).toBe(
-      await journalBalance(["cash_on_hand", "petty_cash"], JUNE.end, entityA.id),
+      await journalBalance(
+        ["cash_on_hand", "petty_cash"],
+        JUNE.end,
+        entityA.id,
+      ),
     );
     expect(values.get(entityB.id)).toBe(378_000);
   });
@@ -603,7 +629,13 @@ describe("finance percents per legal entity", () => {
         series.points[0]!.value,
       ]),
     );
-    expect(values.get(entityA.id)).toEqual({ unit: "percent", value: "70.0000" });
-    expect(values.get(entityB.id)).toEqual({ unit: "percent", value: "100.0000" });
+    expect(values.get(entityA.id)).toEqual({
+      unit: "percent",
+      value: "70.0000",
+    });
+    expect(values.get(entityB.id)).toEqual({
+      unit: "percent",
+      value: "100.0000",
+    });
   });
 });

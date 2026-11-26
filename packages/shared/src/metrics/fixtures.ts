@@ -404,19 +404,20 @@ const definitionInputs = [
   {
     id: "08a70f21-46b4-4b9c-ae10-a2f66d788102",
     code: "ebitda",
-    version: 1,
+    version: 2,
     name: "EBITDA",
     description:
-      "Laba sebelum bunga, pajak, depresiasi, dan amortisasi; resmi setelah periode ditutup.",
+      "Laba sebelum bunga, pajak, depresiasi, dan amortisasi dari jurnal yang sudah diposting; resmi setelah periode ditutup.",
     ownerModule: "accounting",
     formula: {
       formulaRef: "accounting.ebitda",
-      expression: "net_profit + interest + tax + depreciation + amortization",
-      inputs: ["net_profit"],
+      expression:
+        "sum(journal_lines.credit_idr - journal_lines.debit_idr) where chart_of_accounts.report_group in ('revenue', 'other_income', 'cogs', 'operating_expense', 'other_expense') and the account (incl. child accounts) is not mapped to account_mappings.role in ('depreciation_expense', 'amortization_expense', 'interest_expense', 'income_tax_expense')",
+      inputs: [],
     },
     unit: "idr",
     aggregation: "sum",
-    dimensions: ["outlet"],
+    dimensions: ["outlet", "legal_entity"],
     grain: "month",
     officiality: "closed_period_only",
     sourceReport: {

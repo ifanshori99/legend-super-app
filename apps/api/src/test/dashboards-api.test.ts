@@ -945,34 +945,39 @@ describe("management managerRole query", () => {
 
 describe("tile availability", () => {
   it("marks a built tile available and an unbuilt one unavailable with the Indonesian message", async () => {
-    // Unbuilt: a management tile whose every metric the registry answers
-    // `unavailable` (read from the registry, so families that build a source
-    // do not break this test).
-    const unbuiltTile = DASHBOARD_CATALOG.find(
+    // Unbuilt: an owner or management tile whose every metric the registry
+    // answers `unavailable` and that the caller sees (read from the registry,
+    // so families that build a source do not break this test; F6 built the
+    // management finance tile's cash and bank balances).
+    const candidates = DASHBOARD_CATALOG.filter(
       (tile) =>
-        tile.dashboard === "management" &&
+        (tile.dashboard === "owner" || tile.dashboard === "management") &&
         "metricCodes" in tile &&
         tile.metricCodes.length > 0 &&
         tile.metricCodes.every(
           (code) => metricSourceOf(code)?.kind === "unavailable",
         ),
     );
-    expect(unbuiltTile, "a management tile with no built source").toBeDefined();
-    const result = await values(
-      a.full,
-      unbuiltTile!.managerRole
-        ? `${JUNE}&managerRole=${unbuiltTile!.managerRole}`
-        : JUNE,
-      "management",
-    );
+    expect(
+      candidates.length,
+      "a management tile with no built source",
+    ).toBeGreaterThan(0);
+    let unbuilt: { availability: unknown } | undefined;
+    for (const tile of candidates) {
+      const result = await values(
+        a.full,
+        tile.managerRole ? `${JUNE}&managerRole=${tile.managerRole}` : JUNE,
+        tile.dashboard,
+      );
+      unbuilt = result.tiles.find((item) => item.tileKey === tile.key);
+      if (unbuilt) break;
+    }
     const built = await values(a.full, JUNE);
     expect(
       built.tiles.find((tile) => tile.tileKey === "owner.today_sales")
         ?.availability,
     ).toEqual({ status: "available" });
-    const unbuilt = result.tiles.find(
-      (tile) => tile.tileKey === unbuiltTile!.key,
-    );
+    expect(unbuilt, "an unbuilt tile the caller sees").toBeDefined();
     expect(unbuilt?.availability).toEqual({
       status: "unavailable",
       reason: "source_not_built",
