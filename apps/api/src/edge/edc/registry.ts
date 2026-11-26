@@ -39,7 +39,7 @@ export class EdcProviderRegistry implements EdcProviderLookup {
 
   /** `bank` comes from a database row or a request: never trusted. The edge
    * has one provider per bank, whatever the terminal. */
-  get(bank: string, _target?: EdcProviderTarget): EdcProvider {
+  get(bank: string): EdcProvider {
     const provider = this.#providers.get(bank);
     if (!provider) throw new EdcError("EDC_PROVIDER_UNKNOWN");
     return provider;

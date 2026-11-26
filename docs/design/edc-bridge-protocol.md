@@ -46,7 +46,23 @@ Dasar: `docs/design/edc-auto-cloud.md`. Kontrak kode: `packages/shared/src/edc/b
 
 - `EDC_BRIDGE_PROTOCOL_VERSION = 1`. Menambah nilai enum framing atau alasan baru yang aman diabaikan: tetap v1, cloud dan aplikasi dirilis bersama. Mengubah arti field atau aturan jurnal/dedupe: versi baru, cloud mendukung versi lama sampai semua tablet diperbarui.
 
+## Cloud (B2, legend-wasr7.21)
+
+- `apps/api/src/edge/edc/cloud-runtime.ts`: satu agent per proses API (`EDC_BRIDGE_ENABLED`, bukan EDGE_MODE). Outlet diambil saat tablet pertama outlet itu `hello` (`agent.start`, advisory lock). Proses tanpa lock tidak memberi lease, jadi tidak pernah mengirim perintah; kasir di sana mendapat `EDC_AGENT_NOT_READY`. Tidak ada penerusan ke proses lain.
+- Lease: tabel `edc_bridge_terminal_leases` (jam cloud), `ttlMs` 120 s, diperpanjang tiap 30 s. Terminal pindah tablet hanya lewat `INSERT .. ON CONFLICT .. WHERE issued_at + ttl + 330 s <= sekarang`. Lease hanya untuk terminal `connection_kind = 'bridge'` yang ditugaskan ke perangkat itu (`payment_edc_terminals.bridge_device_id`, FK tenant+outlet+perangkat).
+- Perintah disimpan di memori sampai hasil atau tenggat (`timeoutMs` + 30 s) dan di `edc_bridge_commands` (tanpa frame). Hasil di luar memori (terlambat atau sesudah restart) dicocokkan di tenant + outlet + perangkat + terminal, disimpan, di-ack; baris ledger diselesaikan lewat inquiry.
+- Tidak terkirim sama sekali (sesi/lease hilang sebelum ditulis): `sale` -> `failed` "tidak pernah dikirim" (`edcNotSentError`); sesudah ditulis: selalu `unknown`.
+- `sale_record_release`: sesudah impor settlement X2 dan pada tiap `hello`, untuk sale perangkat itu yang barisnya `matched`; `release_sent_at` dicatat.
+- Manajemen perangkat: `/api/edc-bridge/devices` (daftar, terbitkan token sekali tampil, cabut, tugaskan terminal), izin `payment.edc.manage`. Kode pasang 8 karakter belum dibangun.
+
+## Provider cloud
+
+Registry cloud (`CloudEdcProviderRegistry`) memilih provider per terminal dari `payment_edc_terminals.connection_kind`:
+
+- `bridge`: `EdcBridgeProvider` = codec bank (`EdcBridgeCodec`, `bridge-codec.ts`: `encodeSale`/`encodeTrace` sinkron, `decodeResult`/`decodeInquiry` melempar `EcrTransportError("protocol")` bila tak terbaca) + transport WSS. Production belum punya codec (B5), jadi semua terminal ditolak `connection_unsupported`.
+- `bca_cloud` (B5a, legend-wasr7.23): isi `CloudEdcRuntimeOptions.bcaCloud` dengan `EdcProvider & { ready(terminal): boolean }`. Aturan yang harus dipenuhi: `ready` false = `EDC_AGENT_NOT_READY` sebelum baris ledger ada; `sale` menulis request HTTPS di tick yang sama dan, bila tidak ada yang terkirim, menolak dengan `edcNotSentError()`; `202IS00`, `504IS00`, timeout, dan error jaringan sesudah request terkirim = `EcrTransportError` (agent mencatat `unknown`, lalu inquiry `inquiry-status`), tidak pernah `failed`; `X-EXTERNAL-ID` baru tiap request, `partnerReferenceNo` = trace agent (tetap per percobaan bayar); nominal hanya dari `request.amountIdr`.
+
 ## Belum diputuskan (B2/B5)
 
 - Framing persis per bank menunggu dokumen ECR bank (B0/B5); `stx_bcdlen_etx_lrc` adalah bentuk umum dan bisa ditambah.
-- Nilai `ttlMs` dan interval perpanjangan ditetapkan di B2 (dalam batas 10 s-10 menit).
+- Nilai `ttlMs` (120 s) dan interval perpanjangan (30 s) ditetapkan di B2.

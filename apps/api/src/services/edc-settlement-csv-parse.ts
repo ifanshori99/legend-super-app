@@ -97,6 +97,8 @@ const BANK_EXTRA: Record<
     amount: ["nominaltrx"],
     rrn: ["norrn"],
   },
+  // B2: no BRI export sample yet; the common column names apply.
+  bri: {},
 };
 
 const SALE_TYPES = new Set([
