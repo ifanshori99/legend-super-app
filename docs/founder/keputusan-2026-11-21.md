@@ -84,3 +84,6 @@ Cara menjawab: cukup tulis nomor dan "setuju usulan" atau pilihan lain.
     - Mockup WFC (termasuk "Check-in tanpa kursi"): disetujui apa adanya.
     - Usulan AI harga WFC (W13): sesudah rilis. Rilis 1 memakai angka config yang diisi manusia; tanpa angka lengkap penjualan WFC mati.
     - Captain di meja bayar di muka: tetap ditolak, tamu ke kasir (sesuai PRD, dapur tidak masak sebelum dibayar).
+
+31. **Mini PC atau cloud saja.** **Jawaban founder (27 Nov): "saya lebih prefer opsi cloud karena real time dan data di server jadi bisa kita akses dari mana saja serta scalable dan uptimenya bagus ... kamu bereskan sistem kita sampai selesai yang penting workflow kita efektif effisien ... jangan merugikan cafe kita ... jangan berhenti sampai siap deploy dan saya tinggal memberikan credential duitku, kirimdev, vps, domain, dll".**
+    Keputusan CTO turunan (no. 30): server utama di cloud, kasir memakai tablet langsung ke cloud (standar POS kafe Indonesia). Kerja mini PC (edge, failover, E6/E9/F4) dibekukan di balik saklar mati bawaan, tidak wajib rilis 1, tidak dihapus. Keputusan 23 (POS wajib bisa offline) dan 22 (struk tercetak, EDC otomatis) dipenuhi dengan cara cloud: rancangan architect di `docs/design/cloud-only-release.md`.
