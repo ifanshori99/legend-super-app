@@ -23,6 +23,7 @@
 
 import {
   printPaperWidthQuerySchema,
+  printReprintQuerySchema,
   printPayloadSchema,
 } from "../pos/print-payload.ts";
 import {
@@ -172,7 +173,10 @@ export const getKitchenTicketPrint = defineEndpoint({
     outletId: outletIdSchema,
     ticketId: kitchenTicketIdSchema,
   }),
-  query: clientInputSchema({ paperWidth: printPaperWidthQuerySchema }),
+  query: clientInputSchema({
+    paperWidth: printPaperWidthQuerySchema,
+    reprint: printReprintQuerySchema.optional(),
+  }),
   response: dataResponseSchema(printPayloadSchema),
 });
 

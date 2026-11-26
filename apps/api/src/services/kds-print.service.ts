@@ -10,6 +10,7 @@ import {
 import { db } from "../db/index.ts";
 import { stations } from "../db/schema/menu.ts";
 import { withTenant } from "../db/tenant.ts";
+import { markReprint } from "../edge/print/escpos.ts";
 import { getEdgePrintAgent } from "../edge/print/runtime.ts";
 import { renderStationTicket } from "../edge/print/templates.ts";
 import { getEdgeRuntimeState } from "../edge/runtime.ts";
@@ -70,6 +71,8 @@ export function stationTicketPayload(
   ticket: KitchenTicketDetail,
   stationName: string,
   paperWidth: PrintPaperWidth,
+  /** A second print of the same ticket is marked "CETAK ULANG". */
+  reprint = false,
 ): PrintPayload {
   const items = ticket.items
     .filter((item) => item.status !== "voided" && item.status !== "served")
@@ -84,8 +87,7 @@ export function stationTicketPayload(
       "CONFLICT",
       "Tiket ini tidak punya baris untuk dicetak.",
     );
-  return toPrintPayload(
-    renderStationTicket(
+  const bytes = renderStationTicket(
       {
         stationName,
         ticketNumber: `K-${String(ticket.ticketNo).padStart(3, "0")}`,
@@ -95,8 +97,10 @@ export function stationTicketPayload(
         items,
       },
       paperWidth,
-    ),
+  );
+  return toPrintPayload(
+    reprint ? markReprint(bytes) : bytes,
     paperWidth,
-    false,
+    reprint,
   );
 }

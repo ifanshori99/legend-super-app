@@ -2419,4 +2419,23 @@ describe("P1 cloud station ticket bytes (legend-wasr7.2)", () => {
     expect((await printOf(uuidToUlid(randomUUID()))).status).toBe(404);
     expect((await printOf(ticketId, cook, "40")).status).toBe(422);
   });
+
+  it("marks a reprint (CETAK ULANG) only when the tablet asks for one (P3)", async () => {
+    const placed = await placeOrder([{ menuItemId: ids.kopi }]);
+    const ticketId = await ticketOn(placed.orderId, ids.barA);
+    const first = await printOf(ticketId, cook, "32&reprint=false");
+    expect(first.body.data.reprint).toBe(false);
+    expect(
+      Buffer.from(first.body.data.escposBase64, "base64").toString("latin1"),
+    ).not.toContain("CETAK ULANG");
+    const again = await printOf(ticketId, cook, "32&reprint=true");
+    expect(again.status, JSON.stringify(again.body)).toBe(200);
+    expect(again.body.data.reprint).toBe(true);
+    const bytes = Buffer.from(again.body.data.escposBase64, "base64");
+    expect(bytes.toString("latin1")).toContain("CETAK ULANG");
+    expect(bytes.toString("latin1")).toContain("Kopi");
+    expect((await printOf(ticketId, cook, "32&reprint=maybe")).status).toBe(
+      422,
+    );
+  });
 });

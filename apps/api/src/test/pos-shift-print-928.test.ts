@@ -596,6 +596,40 @@ describe("P1 cloud shift report bytes (legend-wasr7.2)", () => {
     expect(bad.status).toBe(422);
   });
 
+  it("marks a reprint of the closing report only when the tablet asks (P3)", async () => {
+    const fixture = await openShift();
+    const supervisor = await member(roleIds.supervisor, "Supervisor Ulang");
+    expect((await closeShift(fixture)).status).toBe(200);
+
+    const first = await get(
+      supervisor.client,
+      printPath(fixture.shiftId, "paperWidth=32&reprint=false"),
+    );
+    expect(first.body.data.reprint).toBe(false);
+    expect(
+      Buffer.from(first.body.data.escposBase64, "base64").toString("latin1"),
+    ).not.toContain("CETAK ULANG");
+
+    const again = await get(
+      supervisor.client,
+      printPath(fixture.shiftId, "paperWidth=32&reprint=true"),
+    );
+    expect(again.status, JSON.stringify(again.body)).toBe(200);
+    expect(again.body.data.reprint).toBe(true);
+    const text = Buffer.from(again.body.data.escposBase64, "base64").toString(
+      "latin1",
+    );
+    expect(text).toContain("CETAK ULANG");
+    expect(text).toContain("LAPORAN TUTUP SHIFT");
+
+    // The cashier of that shift stays blind, reprint or not.
+    const blind = await get(
+      fixture.cashier.client,
+      printPath(fixture.shiftId, "paperWidth=32&reprint=true"),
+    );
+    expect(blind.status).toBe(403);
+  });
+
   it("refuses a supervisor who is also the cashier of that shift (blind count)", async () => {
     const dual = await member(roleIds.dual, "Supervisor Kasir Bytes");
     const fixture = await openShift(dual);

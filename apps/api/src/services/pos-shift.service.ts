@@ -128,6 +128,7 @@ import {
 import { revokeActingStaffForDevice } from "./pos-acting-staff-revoke.ts";
 import { POS_OVERRIDE_SOURCE_MODULE } from "./staff-override.service.ts";
 import { isEdgeProcess, posWriteFailoverWindowId } from "./pos-edge-outlet.ts";
+import { markReprint } from "../edge/print/escpos.ts";
 import { renderShiftReport } from "../edge/print/templates.ts";
 import { toPrintPayload } from "./pos-receipt-edge-print.ts";
 import {
@@ -460,6 +461,8 @@ export async function getPosShiftPrint(
   outletId: OutletId,
   shiftId: string,
   paperWidth: PrintPaperWidth,
+  /** The tablet prints this report again: the bytes carry the banner. */
+  reprint = false,
 ): Promise<PrintPayload> {
   return withTenant(db, context, async (tx) => {
     await loadOutlet(tx, context, outletId);
@@ -479,10 +482,11 @@ export async function getPosShiftPrint(
       );
     const report = await buildShiftReportData(tx, row);
     if (!report) throw new CoreError("NOT_FOUND", "Shift tidak ditemukan.");
+    const bytes = renderShiftReport(report, paperWidth);
     return toPrintPayload(
-      renderShiftReport(report, paperWidth),
+      reprint ? markReprint(bytes) : bytes,
       paperWidth,
-      false,
+      reprint,
     );
   });
 }

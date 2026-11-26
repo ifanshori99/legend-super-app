@@ -1463,6 +1463,8 @@ export async function getKitchenTicketPrint(
   ticketId: string,
   paperWidth: PrintPaperWidth,
   now: Date,
+  /** The tablet prints this ticket again: the bytes carry the banner. */
+  reprint = false,
 ): Promise<PrintPayload> {
   const outletId = outletIdSchema.parse(outletRef);
   return withTenant(db, context, async (tx) => {
@@ -1487,7 +1489,12 @@ export async function getKitchenTicketPrint(
           eq(stations.id, ticket.stationId),
         ),
       );
-    return stationTicketPayload(detail, station?.name ?? "Dapur", paperWidth);
+    return stationTicketPayload(
+      detail,
+      station?.name ?? "Dapur",
+      paperWidth,
+      reprint,
+    );
   });
 }
 

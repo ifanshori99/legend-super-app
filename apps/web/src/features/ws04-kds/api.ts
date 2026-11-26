@@ -10,6 +10,7 @@ import {
   setKitchenTicketPriority,
   updateKitchenTicketItem,
   recordKitchenStationHeartbeat,
+  getKitchenTicketPrint,
 } from "@starter/shared/kitchen";
 import type {
   StationConfig,
@@ -17,6 +18,7 @@ import type {
   KitchenTicketItem,
   KitchenItemAction,
 } from "@starter/shared/kitchen";
+import type { PrintPaperWidth } from "@starter/shared/pos";
 import { callEndpoint } from "@/lib/api/endpoint.ts";
 import { newIdempotencyKey } from "../../lib/idempotency.ts";
 import { getKdsScannerStatus } from "./contract-gap.ts";
@@ -174,6 +176,23 @@ export async function fetchScannerStatus(
     await callEndpoint(
       getKdsScannerStatus,
       { params: { outletId } },
+      { signal },
+    )
+  ).data;
+}
+
+/** P3: the ticket as ESC/POS bytes for this tablet's own printer. */
+export async function fetchTicketPrint(
+  outletId: string,
+  ticketId: KitchenTicketDetail["id"],
+  paperWidth: PrintPaperWidth,
+  reprint: boolean,
+  signal?: AbortSignal,
+) {
+  return (
+    await callEndpoint(
+      getKitchenTicketPrint,
+      { params: { outletId, ticketId }, query: { paperWidth, reprint: reprint ? "true" : "false" } },
       { signal },
     )
   ).data;

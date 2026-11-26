@@ -14,6 +14,12 @@ export const printPaperWidthQuerySchema = z.coerce
   .number()
   .pipe(printPaperWidthSchema);
 
+/**
+ * Query-string form of the reprint ask ("true" or "false"). The cloud never
+ * learns whether paper came out, so the tablet says when it prints again (P3).
+ */
+export const printReprintQuerySchema = z.stringbool();
+
 export const printPayloadSchema = z.strictObject({
   paperWidth: printPaperWidthSchema,
   /** Standard base64 of the ESC/POS bytes, ready for `rawbt:base64,`. */
