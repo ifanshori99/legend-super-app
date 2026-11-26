@@ -12,3 +12,7 @@
 - (2) fetchOpenShiftsOfDay: semua halaman, tanpa businessDate.
 - Test terarah hijau: o5 (web), queue, o4-detect/review/ui, pos-offline-batch (API 26). Prettier, eslint, text-contract hijau.
 - Berikut: typecheck api+web, e2e browser nyata, screenshot, drill.
+
+## Langkah 3 (27 Nov)
+- Typecheck api 0 error, web 0 error (heavy). Drill ditulis: docs/qa/1272-o5-drill.md.
+- e2e browser nyata TERHENTI (butuh keputusan CTO), lihat laporan: browser harus bicara ke web+API lewat host tenant (`<slug>.legend.test`), padahal build e2e menanam VITE_API_URL=localhost:4101 (lintas situs, cookie SameSite tidak ikut), guard `/pos/kasir` (context.access) diambil per host, token perangkat dan service worker offline di build produksi. Tidak dibuat spec rapuh.
