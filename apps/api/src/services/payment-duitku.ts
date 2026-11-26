@@ -479,11 +479,12 @@ export function createDuitkuGateway(
       customerVaName: resolved.vaName,
       callbackUrl: `${callbackBaseUrl}/api/webhooks/payments/duitku/${input.context.tenant.tenantId}`,
       returnUrl: options.returnUrl,
+      // Floor, never ceil: Duitku must not keep a code alive past our expiry.
       ...(Number.isFinite(expiresAtMs)
         ? {
             expiryPeriodMinutes: Math.max(
               1,
-              Math.ceil((expiresAtMs - now().getTime()) / 60_000),
+              Math.floor((expiresAtMs - now().getTime()) / 60_000),
             ),
           }
         : {}),

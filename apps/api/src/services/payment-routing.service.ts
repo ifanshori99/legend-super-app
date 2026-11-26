@@ -30,8 +30,14 @@ import { paymentRoutingRules, tenantIntegrations, tenants } from "../db/schema";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
 import { recordAudit } from "./core-audit";
-import { registeredGatewayProviders } from "./payment-gateway";
-import { isPlatformGatewayEnabled } from "./platform-payment-gateway.service";
+import {
+  paymentGatewayLegacyMode,
+  registeredGatewayProviders,
+} from "./payment-gateway";
+import {
+  isPlatformGatewayEnabled,
+  platformDefaultGateway,
+} from "./platform-payment-gateway.service";
 import { assertPaymentPermission } from "./payment-support";
 import type { Tx } from "./permission-resolver";
 
@@ -91,26 +97,33 @@ function toRule(row: RoutingRow): PaymentRoutingRule {
 }
 
 /**
- * PRD §3.13 "Default Legend: seluruh metode online melalui DOIT." Used only
- * when neither the outlet nor the tenant has a stored rule. Non-online methods
- * have no gateway default (they are settled at the counter), so they resolve
- * disabled here and the caller fails closed.
+ * No stored rule: online methods go to the platform default gateway
+ * (`platformDefaultGateway()`, Super Admin's pick). No default (null) means
+ * the method is off, so the caller fails closed (legend-osqou.40). Only the
+ * test-only legacy port mode keeps the old PRD §3.13 "DOIT" default. Non-online
+ * methods have no gateway default (they are settled at the counter), so they
+ * resolve disabled here too.
  */
-export function defaultRouting(method: PaymentMethod): ResolvedRouting {
-  const online = onlinePaymentMethodSchema.safeParse(method).success;
-  return online
-    ? {
-        provider: "doit",
-        fallbackProvider: null,
-        enabled: true,
-        isDefault: true,
-      }
-    : {
-        provider: "manual",
-        fallbackProvider: null,
-        enabled: false,
-        isDefault: true,
-      };
+export async function defaultRouting(
+  method: PaymentMethod,
+): Promise<ResolvedRouting> {
+  const off: ResolvedRouting = {
+    provider: "manual",
+    fallbackProvider: null,
+    enabled: false,
+    isDefault: true,
+  };
+  if (!onlinePaymentMethodSchema.safeParse(method).success) return off;
+  const provider = paymentGatewayLegacyMode()
+    ? "doit"
+    : await platformDefaultGateway();
+  if (provider === null) return off;
+  return {
+    provider,
+    fallbackProvider: null,
+    enabled: true,
+    isDefault: true,
+  };
 }
 
 /** Outlet override first, then the tenant default, then the PRD default. */

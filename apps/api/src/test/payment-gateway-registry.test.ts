@@ -37,6 +37,9 @@ const platform = vi.hoisted(() => ({ enabled: new Set<string>() }));
 vi.mock("../services/platform-payment-gateway.service", () => ({
   isPlatformGatewayEnabled: async (provider: string) =>
     platform.enabled.has(provider),
+  // The seeded platform default is DOIT; a switched-off default is no default.
+  platformDefaultGateway: async () =>
+    platform.enabled.has("doit") ? "doit" : null,
 }));
 
 import { env } from "../config/env";
