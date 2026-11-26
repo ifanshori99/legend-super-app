@@ -140,6 +140,10 @@ export const OFFLINE_SALE_FLAGS = [
   "late_day",
   "tax_missing",
   "tax_mismatch",
+  /** Service charge, tax or rounding differ from the kit's tax snapshot (review O2 P1). */
+  "amount_mismatch",
+  /** paidAt after the cloud's clock; booked on today's business date (review O2 P3 2). */
+  "paid_in_future",
 ] as const;
 export const offlineSaleFlagSchema = z.enum(OFFLINE_SALE_FLAGS);
 export type OfflineSaleFlag = z.infer<typeof offlineSaleFlagSchema>;
