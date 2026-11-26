@@ -28,7 +28,7 @@ const VIEWPORTS = [
 const DEMO_ORDER_ULID = process.env.DEMO_ORDER_ULID ?? "";
 
 const STATES = [
-  { name: "isi", path: "/pos/pesanan", text: /Belum selesai/ },
+  { name: "isi", path: "/pos/pesanan", text: /Total/ },
   { name: "ditahan", path: "/pos/pesanan?tab=ditahan", text: /Lanjutkan/ },
   {
     name: "kosong",

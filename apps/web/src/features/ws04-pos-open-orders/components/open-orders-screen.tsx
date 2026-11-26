@@ -99,7 +99,7 @@ function TabLink({
       search={to === "parked" ? { tab: "ditahan" } : {}}
       aria-current={active ? "page" : undefined}
       className={cn(
-        "inline-flex min-h-14 items-center justify-center gap-2 rounded-control border-(length:--border-w) border-border bg-background px-6 text-(length:--density-text) font-semibold transition-colors duration-(--duration-fast) hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring sm:min-w-52",
+        "inline-flex min-h-14 items-center justify-center gap-2 rounded-control border-(length:--border-w) border-border bg-background px-3 text-(length:--density-text) font-semibold whitespace-nowrap sm:px-6 transition-colors duration-(--duration-fast) hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring sm:min-w-52",
         active && "border-foreground bg-surface-3",
       )}
     >
