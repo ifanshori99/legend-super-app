@@ -1653,6 +1653,14 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
       return activeShiftView(state.shift);
     },
 
+    /** Review K P1: the open shifts of the day (the mock has one terminal). */
+    openShiftsOfDay(): ActiveShift[] {
+      seedShifts();
+      return state.shift && state.shift.status !== "closed"
+        ? [activeShiftView(state.shift)]
+        : [];
+    },
+
     openShift(input: OpenShiftInput): ActiveShift {
       seedShifts();
       if (state.shift && state.shift.status !== "closed")

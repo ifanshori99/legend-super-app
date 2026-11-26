@@ -44,18 +44,27 @@ const choiceClass =
 export function ChannelToggle({
   value,
   onChange,
+  only,
 }: {
   value: SaleChannel;
   onChange: (channel: SaleChannel) => void;
+  /** O4: offline sells dine-in and takeaway only. */
+  only?: readonly SaleChannel[];
 }) {
   const t = useT();
+  const channels = only
+    ? CHANNELS.filter((channel) => only.includes(channel.value))
+    : CHANNELS;
   return (
     <div
       role="group"
       aria-label={t("posOrderCart.channel.label")}
-      className="grid grid-cols-3 gap-1.5"
+      className={cn(
+        "grid gap-1.5",
+        channels.length === 2 ? "grid-cols-2" : "grid-cols-3",
+      )}
     >
-      {CHANNELS.map((channel) => (
+      {channels.map((channel) => (
         <Button
           key={channel.value}
           type="button"

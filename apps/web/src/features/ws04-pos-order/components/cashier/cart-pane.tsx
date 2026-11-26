@@ -5,12 +5,18 @@ import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { Money } from "@/components/ui/money";
 import { cartTotals, lineTotalIdr } from "@/features/ws04-pos-order/cart-logic";
-import type { CartLine, OrderMeta } from "@/features/ws04-pos-order/types";
+import type {
+  CartLine,
+  OrderMeta,
+  SaleChannel,
+} from "@/features/ws04-pos-order/types";
 import {
   ChannelDetail,
   ChannelToggle,
   type ChannelDetailError,
 } from "./channel-toggle";
+
+const OFFLINE_CHANNELS: readonly SaleChannel[] = ["dine_in", "takeaway"];
 
 /** What the cashier has chosen for the order itself, next to the lines. */
 export type CartOrderMeta = OrderMeta;
@@ -34,6 +40,16 @@ export interface CartPaneProps {
   feedback?: ReactNode;
   parking: boolean;
   submitting: boolean;
+  /**
+   * O4: the tablet is offline. Only a new dine-in or takeaway cart is sold, at
+   * the kit's list price; cloud actions (park, held items, table, ojol) hide.
+   */
+  offline?: {
+    payLabel: string;
+    onPay: () => void;
+    /** Why this cart cannot be sold offline now; null when it can. */
+    blocked: string | null;
+  };
   className?: string;
 }
 
@@ -56,6 +72,7 @@ export function CartPane({
   feedback,
   parking,
   submitting,
+  offline,
   className,
 }: CartPaneProps) {
   const t = useT();
@@ -66,6 +83,7 @@ export function CartPane({
   const isEmpty = lines.length === 0;
   const noHeld = totals.heldCount === 0;
   const busy = parking || submitting;
+  const blockedId = `${id}-blocked`;
 
   return (
     <section
@@ -95,38 +113,47 @@ export function CartPane({
               {t("posOrderCart.cart.title")}
             </h2>
             <p className="text-sm text-muted-foreground">
-              {t("posOrderCart.cart.subtitle")}
+              {offline
+                ? t("posKasirOffline.cart.subtitle")
+                : t("posOrderCart.cart.subtitle")}
             </p>
           </div>
         </div>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={onOpenParked}
-          className="shrink-0 font-bold"
-        >
-          {t("posOrderCart.cart.parked")}
-        </Button>
+        {!offline && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={onOpenParked}
+            className="shrink-0 font-bold"
+          >
+            {t("posOrderCart.cart.parked")}
+          </Button>
+        )}
       </header>
 
       <ChannelToggle
         value={meta.channel}
         onChange={(channel) => onMetaChange({ channel })}
+        only={offline ? OFFLINE_CHANNELS : undefined}
       />
-      <ChannelDetail
-        channel={meta.channel}
-        tableLabel={meta.tableLabel}
-        onTableChange={({ label, sessionId }) =>
-          onMetaChange({ tableLabel: label, tableSessionId: sessionId })
-        }
-        ojolPlatform={meta.ojolPlatform}
-        onOjolPlatformChange={(ojolPlatform) => onMetaChange({ ojolPlatform })}
-        ojolRef={meta.ojolRef}
-        onOjolRefChange={(ojolRef) => onMetaChange({ ojolRef })}
-        error={fieldError}
-        focusToken={fieldErrorToken}
-      />
+      {!offline && (
+        <ChannelDetail
+          channel={meta.channel}
+          tableLabel={meta.tableLabel}
+          onTableChange={({ label, sessionId }) =>
+            onMetaChange({ tableLabel: label, tableSessionId: sessionId })
+          }
+          ojolPlatform={meta.ojolPlatform}
+          onOjolPlatformChange={(ojolPlatform) =>
+            onMetaChange({ ojolPlatform })
+          }
+          ojolRef={meta.ojolRef}
+          onOjolRefChange={(ojolRef) => onMetaChange({ ojolRef })}
+          error={fieldError}
+          focusToken={fieldErrorToken}
+        />
+      )}
 
       <div className="min-h-40 flex-1 overflow-y-auto max-[700px]:max-h-[50dvh]">
         {isEmpty ? (
@@ -172,44 +199,69 @@ export function CartPane({
         <span id={heldHintId} className="sr-only">
           {t("posOrderCart.cart.hintNoHeld")}
         </span>
-        <div className="grid grid-cols-2 gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            size="lg"
-            loading={parking}
-            aria-disabled={isEmpty || busy ? true : undefined}
-            aria-describedby={isEmpty ? emptyHintId : undefined}
-            onClick={isEmpty || busy ? undefined : onPark}
-            className="h-auto min-h-control px-3 font-bold whitespace-normal"
-          >
-            {t("posOrderCart.cart.park")}
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="lg"
-            aria-disabled={noHeld || busy ? true : undefined}
-            aria-describedby={noHeld ? heldHintId : undefined}
-            onClick={noHeld || busy ? undefined : onFireHeld}
-            className="h-auto min-h-control px-3 font-bold whitespace-normal"
-          >
-            {t("posOrderCart.cart.fireHeld")}
-          </Button>
-        </div>
-        <Button
-          type="button"
-          size="lg"
-          loading={submitting}
-          aria-disabled={isEmpty || busy ? true : undefined}
-          aria-describedby={isEmpty ? emptyHintId : undefined}
-          onClick={isEmpty || busy ? undefined : onContinue}
-          className="w-full font-bold"
-        >
-          {submitting
-            ? t("posOrderCart.cart.submitting")
-            : t("posOrderCart.cart.continue")}
-        </Button>
+        {offline ? (
+          <>
+            {offline.blocked && (
+              <p
+                id={blockedId}
+                className="text-base font-semibold text-foreground"
+              >
+                {offline.blocked}
+              </p>
+            )}
+            <Button
+              type="button"
+              size="lg"
+              aria-disabled={offline.blocked ? true : undefined}
+              aria-describedby={offline.blocked ? blockedId : undefined}
+              onClick={offline.blocked ? undefined : offline.onPay}
+              className="w-full font-bold"
+            >
+              {offline.payLabel}
+            </Button>
+          </>
+        ) : (
+          <>
+            <div className="grid grid-cols-2 gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="lg"
+                loading={parking}
+                aria-disabled={isEmpty || busy ? true : undefined}
+                aria-describedby={isEmpty ? emptyHintId : undefined}
+                onClick={isEmpty || busy ? undefined : onPark}
+                className="h-auto min-h-control px-3 font-bold whitespace-normal"
+              >
+                {t("posOrderCart.cart.park")}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="lg"
+                aria-disabled={noHeld || busy ? true : undefined}
+                aria-describedby={noHeld ? heldHintId : undefined}
+                onClick={noHeld || busy ? undefined : onFireHeld}
+                className="h-auto min-h-control px-3 font-bold whitespace-normal"
+              >
+                {t("posOrderCart.cart.fireHeld")}
+              </Button>
+            </div>
+            <Button
+              type="button"
+              size="lg"
+              loading={submitting}
+              aria-disabled={isEmpty || busy ? true : undefined}
+              aria-describedby={isEmpty ? emptyHintId : undefined}
+              onClick={isEmpty || busy ? undefined : onContinue}
+              className="w-full font-bold"
+            >
+              {submitting
+                ? t("posOrderCart.cart.submitting")
+                : t("posOrderCart.cart.continue")}
+            </Button>
+          </>
+        )}
       </div>
     </section>
   );

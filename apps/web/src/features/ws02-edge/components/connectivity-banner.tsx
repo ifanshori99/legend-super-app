@@ -20,6 +20,7 @@ import {
   deriveConnectivity,
   edgeProbeFailed,
   formatClock,
+  isCashierPath,
   isGuestPath,
   isOperationsPath,
   type ConnectivityState,
@@ -93,6 +94,8 @@ export function ConnectivityBanner() {
     statusFailed: edgeProbeFailed(isError, error),
   });
   if (state.kind === "online") return null;
+  // The cashier's O4 banner already says the tablet is offline.
+  if (state.kind === "device_offline" && isCashierPath(pathname)) return null;
 
   const view = VIEWS[state.kind];
   const Icon = view.Icon;

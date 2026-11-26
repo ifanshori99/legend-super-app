@@ -2,10 +2,12 @@
 // ./hooks.ts, brief 1268 W0). Same rules as ./hooks.ts: components import
 // hooks and never touch the api or the query cache directly.
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useRouteContext } from "@tanstack/react-router";
 import { useMemo } from "react";
 import { businessDateOf } from "@starter/shared/core";
+import { API_MOCK } from "@/lib/api/mock-flag";
 import { useOutletClock } from "@/lib/tenant-context";
-import { useIntentKey, useOutletId, useReady } from "./hooks";
+import { useCurrentUserId, useIntentKey, useOutletId, useReady } from "./hooks";
 import type { CloudPrintLoader } from "./print/cloud-print";
 import {
   approveShiftClose,
@@ -31,6 +33,7 @@ import {
   dayCloseRecapQuery,
   forceCloseViewQuery,
   heldCashOutsQuery,
+  openShiftsOfDayQuery,
   ownCountSummaryQuery,
   posKasirKeys,
   registeredTerminalsQuery,
@@ -38,11 +41,13 @@ import {
   supervisorsQuery,
   witnessesQuery,
 } from "./queries";
-import type {
-  DecideHeldCashInput,
-  ForceCloseInput,
-  SubmitForcedCountInput,
-  WitnessForcedCountInput,
+import {
+  MOCK_COUNTER_NAME,
+  type ApproveForcedCountInput,
+  type DecideHeldCashInput,
+  type ForceCloseInput,
+  type ForceCloseViewer,
+  type SubmitForcedCountInput,
 } from "./shift-extra-types";
 import type {
   ApproveShiftCloseInput,
@@ -254,21 +259,32 @@ export function useForceCloseWitnesses() {
   return useQuery(witnessesQuery(useOutletId()));
 }
 
-/** Force close of a shift after the cashier's recount limit (legend-7mlf). */
+/** The signed-in supervisor who counts and closes (mock: the mock counter). */
+export function useForceCloseViewer(): ForceCloseViewer {
+  const userId = useCurrentUserId();
+  const name = useRouteContext({
+    strict: false,
+    select: (context) => context.session?.user.name,
+  });
+  return { userId, name: API_MOCK ? MOCK_COUNTER_NAME : (name ?? "") };
+}
+
+/** Force close of a shift: by the recount limit or a lost tablet (O4). */
 export function useForceCloseView(shiftId: string) {
+  const viewer = useForceCloseViewer();
   return useQuery({
-    ...forceCloseViewQuery(useOutletId(), shiftId),
-    enabled: shiftId !== "",
+    ...forceCloseViewQuery(useOutletId(), shiftId, viewer),
+    enabled: shiftId !== "" && (API_MOCK || viewer.userId !== ""),
   });
 }
 
 function useForceCloseWrite<Input extends { shiftId: string }>(
-  call: (input: Input) => Promise<unknown>,
+  call: (outletId: string, input: Input) => Promise<unknown>,
 ) {
   const outletId = useOutletId();
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: call,
+    mutationFn: (input: Input) => call(outletId, input),
     // A refused write (stale count, spent approval) means the stored state moved.
     onError: (_error, input) =>
       queryClient.invalidateQueries({
@@ -293,21 +309,34 @@ function useForceCloseWrite<Input extends { shiftId: string }>(
 
 /** The supervisor counts the drawer; the server stores a forced count. */
 export function useSubmitForcedCount() {
-  return useForceCloseWrite((input: SubmitForcedCountInput) =>
-    submitForcedCount(input),
-  );
+  const intent = useIntentKey("force-count");
+  return useForceCloseWrite(async (outletId, input: SubmitForcedCountInput) => {
+    const result = await submitForcedCount(
+      outletId,
+      input,
+      intent.keyFor(input),
+    );
+    intent.clear();
+    return result;
+  });
 }
 
 /** A third person (not cashier, not counter) approves that count by PIN. */
-export function useWitnessForcedCount() {
-  return useForceCloseWrite((input: WitnessForcedCountInput) =>
-    witnessForcedCount(input),
+export function useWitnessForcedCount(cashierId?: string) {
+  const viewer = useForceCloseViewer();
+  return useForceCloseWrite((outletId, input: ApproveForcedCountInput) =>
+    witnessForcedCount(outletId, input, viewer, { cashierId }),
   );
 }
 
-/** Closes the shift with the approved forced count; once only (button locks while pending). */
+/** Closes the shift with the approved forced count; once per intent. */
 export function useForceCloseShift() {
-  return useForceCloseWrite((input: ForceCloseInput) => forceCloseShift(input));
+  const intent = useIntentKey("force-close");
+  return useForceCloseWrite(async (outletId, input: ForceCloseInput) => {
+    const result = await forceCloseShift(outletId, input, intent.keyFor(input));
+    intent.clear();
+    return result;
+  });
 }
 
 /** Reason + supervisor PIN in, `overrideId` out (never an approvalRequestId). */
@@ -357,6 +386,17 @@ export function useDayCloseRecap() {
   return useQuery({
     ...dayCloseRecapQuery(outletId, businessDate, cutoff),
     enabled: ready,
+  });
+}
+
+/** Review K P1: the shifts of the business day still open (supervisor view). */
+export function useOpenShiftsOfDay(enabled: boolean) {
+  const outletId = useOutletId();
+  const ready = useReady();
+  const { businessDate } = useBusinessDay();
+  return useQuery({
+    ...openShiftsOfDayQuery(outletId, businessDate),
+    enabled: ready && enabled,
   });
 }
 

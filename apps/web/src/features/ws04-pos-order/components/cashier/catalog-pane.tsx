@@ -11,7 +11,7 @@ import {
   useOrderingConnectivity,
   usePosCatalog,
 } from "@/features/ws04-pos-order/hooks";
-import type { MenuItem } from "@/features/ws04-pos-order/types";
+import type { Catalog, MenuItem } from "@/features/ws04-pos-order/types";
 import { Notice } from "@/features/ws04-pos-kasir/components/shared";
 import { MenuItemCard } from "./menu-item-card";
 
@@ -60,7 +60,23 @@ function normalize(value: string): string {
 
 // The cashier's menu grid: search (or scan a code + Enter), category tabs and
 // the item tiles. Owns its own data so the screen only reacts to onPick.
-export function CatalogPane({ onPick }: { onPick: (item: MenuItem) => void }) {
+export function CatalogPane({
+  onPick,
+  offlineCatalog,
+  hasKit = true,
+}: {
+  onPick: (item: MenuItem) => void;
+  /**
+   * O4: offline, the menu comes from the tablet's kit (list prices of the
+   * chosen service type); the screen's offline banner explains it.
+   */
+  offlineCatalog?: Catalog | null;
+  /**
+   * O4: the old "catalog not updated" notice is shown only when the tablet has
+   * an offline kit; without one the O4 banner says sales are not possible.
+   */
+  hasKit?: boolean;
+}) {
   const t = useT();
   const catalog = usePosCatalog();
   const connectivity = useOrderingConnectivity();
@@ -68,7 +84,7 @@ export function CatalogPane({ onPick }: { onPick: (item: MenuItem) => void }) {
   const [categoryId, setCategoryId] = useState<string | null>(null);
   const [scanMessage, setScanMessage] = useState<string | null>(null);
 
-  const data = catalog.data;
+  const data = offlineCatalog ?? catalog.data;
   const items = useMemo(() => {
     if (!data) return [];
     const needle = normalize(query);
@@ -81,7 +97,7 @@ export function CatalogPane({ onPick }: { onPick: (item: MenuItem) => void }) {
     );
   }, [data, query, categoryId]);
 
-  if (catalog.isPending) return <CatalogSkeleton />;
+  if (!offlineCatalog && catalog.isPending) return <CatalogSkeleton />;
 
   if (!data) {
     const pending = isContractPending(catalog.error);
@@ -121,7 +137,10 @@ export function CatalogPane({ onPick }: { onPick: (item: MenuItem) => void }) {
     );
   }
 
-  const offline = connectivity.mode === "edge_only" || data.source === "cached";
+  const offline =
+    hasKit &&
+    !offlineCatalog &&
+    (connectivity.mode === "edge_only" || data.source === "cached");
   const since = formatClock(data.updatedAt);
 
   function scan() {
@@ -145,7 +164,7 @@ export function CatalogPane({ onPick }: { onPick: (item: MenuItem) => void }) {
 
   return (
     <div className="grid min-w-0 gap-3">
-      {catalog.isError && (
+      {catalog.isError && !offlineCatalog && (
         <Notice
           tone="warning"
           title={t("posOrderCatalog.error.refreshFailed")}

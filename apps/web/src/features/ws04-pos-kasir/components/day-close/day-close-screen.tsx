@@ -12,7 +12,11 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ApiError } from "@/lib/api/errors";
 import { useOutletClock, useTenantContext } from "@/lib/tenant-context";
 import { isContractPending } from "../../hooks";
-import { useCloseDay, useDayCloseRecap } from "../../shift-hooks";
+import {
+  useCloseDay,
+  useDayCloseRecap,
+  useOpenShiftsOfDay,
+} from "../../shift-hooks";
 import type { DayCloseRecap, DayCloseResult } from "../../types";
 import {
   Notice,
@@ -22,6 +26,7 @@ import {
   StatusPill,
   type StatusPillTone,
 } from "../shared";
+import { OpenShiftLinks } from "./open-shift-links";
 
 // /pos/tutup-hari (mockups supervisor-day-close, supervisor-day-closed): the
 // outlet manager checks the recap, settles the EDC batches and closes the
@@ -206,7 +211,9 @@ function EmptyState() {
 
 function ChannelPanel({ recap }: { recap: DayCloseRecap }) {
   const t = useT();
+  const { timeZone } = useOutletClock();
   const allClosed = recap.shifts.closed >= recap.shifts.total;
+  const openShifts = useOpenShiftsOfDay(!allClosed);
   const variance = recap.shifts.cashVarianceIdr;
   return (
     <PosPanel title={t("posKasirDayclose.channels.title")}>
@@ -273,6 +280,10 @@ function ChannelPanel({ recap }: { recap: DayCloseRecap }) {
                 total: recap.shifts.total,
               })}
             </p>
+            <OpenShiftLinks
+              shifts={openShifts.data ?? []}
+              timeZone={timeZone}
+            />
           </Notice>
         )}
       </div>

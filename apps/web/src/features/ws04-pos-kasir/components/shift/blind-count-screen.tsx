@@ -8,6 +8,7 @@ import { Money } from "@/components/ui/money";
 import { ApiError } from "@/lib/api/errors";
 import { useActiveShift, useSubmitBlindCount } from "../../shift-hooks";
 import { usePosOffline } from "../../offline/hooks";
+import { OfflineCloseBlock } from "../../offline/offline-close-block";
 import { SHIFT_COUNT_LIMIT_CODE } from "../../shift-extra-types";
 import type { ActiveShift } from "../../types";
 import {
@@ -178,7 +179,8 @@ export function BlindCountScreen() {
   const t = useT();
   const shift = useActiveShift();
   // Review O3 P3: the queue keeps sending while the cashier counts the drawer.
-  usePosOffline();
+  // O4: while offline sales are on this tablet, the drawer is not counted.
+  const offline = usePosOffline();
   if (shift.isPending)
     return <ShiftScreenSkeleton label={t("posKasirShift.loading")} />;
   if (shift.isError)
@@ -202,7 +204,31 @@ export function BlindCountScreen() {
         }
       />
     );
+  const block =
+    shift.data.status === "open" && offline.pending > 0 ? (
+      <OfflineCloseBlock
+        shiftId={shift.data.id}
+        pending={offline.pending}
+        parked={offline.parked}
+        queue={offline.queue}
+        kit={offline.kit}
+        online={offline.online}
+        syncNow={offline.syncNow}
+      />
+    ) : null;
   if (shift.data.status !== "open" || shift.data.countSubmitted)
-    return <ShiftWaiting shift={shift.data} />;
+    return (
+      <div className="grid gap-4">
+        {block}
+        <ShiftWaiting shift={shift.data} />
+      </div>
+    );
+  if (block)
+    return (
+      <div className="grid gap-4">
+        <PosPageHeading title={t("posKasirShift.count.title")} />
+        {block}
+      </div>
+    );
   return <CountForm shift={shift.data} />;
 }

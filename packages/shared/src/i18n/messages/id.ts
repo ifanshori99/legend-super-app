@@ -127,6 +127,7 @@ import { posKasirPointsMessages } from "./pos-kasir-points.ts";
 import { posKasirTicketMessages } from "./pos-kasir-ticket.ts";
 import { posKasirCodeMessages } from "./pos-kasir-code.ts";
 import { posOfflineMessages } from "./pos-offline.ts";
+import { posKasirOfflineMessages } from "./pos-kasir-offline.ts";
 import { posKasirShiftMessages } from "./pos-kasir-shift.ts";
 import { posKasirSupervisorMessages } from "./pos-kasir-supervisor.ts";
 import { posKasirDaycloseMessages } from "./pos-kasir-dayclose.ts";
@@ -200,6 +201,7 @@ export const id = {
   },
   posKasirCode: posKasirCodeMessages,
   posOffline: posOfflineMessages,
+  posKasirOffline: posKasirOfflineMessages,
   posKasirShift: posKasirShiftMessages,
   posKasirSupervisor: posKasirSupervisorMessages,
   posKasirDayclose: posKasirDaycloseMessages,

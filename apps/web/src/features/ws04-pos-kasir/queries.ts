@@ -15,6 +15,7 @@ import {
   fetchActiveShift,
   fetchCashMovements,
   fetchDayCloseRecap,
+  fetchOpenShiftsOfDay,
   fetchRegisteredTerminals,
   fetchShiftReview,
   fetchSupervisors,
@@ -25,6 +26,7 @@ import {
   fetchOwnCountSummary,
   fetchWitnesses,
 } from "./shift-extra-api";
+import type { ForceCloseViewer } from "./shift-extra-types";
 import type { OverrideAction } from "./types";
 
 // Every key carries the outlet: a cashier who switches outlet must never see
@@ -62,6 +64,8 @@ export const posKasirKeys = {
     ["pos-kasir", outletId, "witnesses"] as const,
   day: (outletId: string, businessDate: string) =>
     ["pos-kasir", outletId, "day", businessDate] as const,
+  openShifts: (outletId: string, businessDate: string) =>
+    ["pos-kasir", outletId, "day", businessDate, "open-shifts"] as const,
 };
 
 /** Poll gaps while a payment waits: EDC answers fast, gateways slower. */
@@ -181,17 +185,22 @@ export const ownCountSummaryQuery = (outletId: string, shiftId: string) =>
     retry: false,
   });
 
-export const forceCloseViewQuery = (outletId: string, shiftId: string) =>
+export const forceCloseViewQuery = (
+  outletId: string,
+  shiftId: string,
+  viewer: ForceCloseViewer,
+) =>
   queryOptions({
     queryKey: posKasirKeys.forceClose(outletId, shiftId),
-    queryFn: () => fetchForceCloseView(shiftId),
+    queryFn: ({ signal }) =>
+      fetchForceCloseView(outletId, shiftId, viewer, signal),
     retry: false,
   });
 
 export const witnessesQuery = (outletId: string) =>
   queryOptions({
     queryKey: posKasirKeys.witnesses(outletId),
-    queryFn: () => fetchWitnesses(),
+    queryFn: () => fetchWitnesses(outletId),
     retry: false,
   });
 
@@ -204,5 +213,14 @@ export const dayCloseRecapQuery = (
     queryKey: posKasirKeys.day(outletId, businessDate),
     queryFn: ({ signal }) =>
       fetchDayCloseRecap(outletId, businessDate, cutoff, signal),
+    retry: false,
+  });
+
+/** Review K P1: the day's open shifts, each a link to its force close. */
+export const openShiftsOfDayQuery = (outletId: string, businessDate: string) =>
+  queryOptions({
+    queryKey: posKasirKeys.openShifts(outletId, businessDate),
+    queryFn: ({ signal }) =>
+      fetchOpenShiftsOfDay(outletId, businessDate, signal),
     retry: false,
   });
