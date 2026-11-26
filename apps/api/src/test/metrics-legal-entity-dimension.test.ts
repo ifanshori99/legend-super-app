@@ -252,35 +252,34 @@ describe("legend-brq1 metrics legal_entity dimension (DASH-02)", () => {
       expect(value).toBe(0);
   });
 
-  it("DASH-02 a ratio metric (gross_margin_pct) does not advertise legal_entity and refuses the split with METRIC_DIMENSION_NOT_SUPPORTED", async () => {
-    // Finding 7 (legend-lt0v4 batch): gross_margin_pct has no split source, so
-    // it must not list `legal_entity` in its dimensions. A per-entity request
+  it("DASH-02 a ratio metric (prime_cost_pct) does not advertise legal_entity and refuses the split with METRIC_DIMENSION_NOT_SUPPORTED", async () => {
+    // Finding 7 (legend-lt0v4 batch): prime_cost_pct has no split source, so
+    // it must not list `legal_entity` in its dimensions. (gross_margin_pct
+    // splits from gross_profit / net_sales since F6, legend-qlirp: see
+    // ms-finance.test.ts.) A per-entity request
     // is a plain 400 METRIC_DIMENSION_NOT_SUPPORTED, same as any dimension a
     // metric does not declare; it never returns the tenant ratio as if it
     // belonged to one entity. (Replaces the earlier "200 + availability
     // dimension_not_supported" answer, which came from advertising a
     // dimension that was not supported.)
     const response = await query({
-      metricCodes: ["gross_margin_pct"],
+      metricCodes: ["prime_cost_pct"],
       groupBy: "legal_entity",
     });
     expect(response.status).toBe(400);
     expect(response.body.error?.code).toBe("METRIC_DIMENSION_NOT_SUPPORTED");
   });
 
-  it("DASH-02 no ratio metric advertises legal_entity without a split source (gross_margin_pct, labor_cost_pct, prime_cost_pct)", () => {
-    // gross_margin_pct lives in the dashboard catalog; labor_cost_pct and
-    // prime_cost_pct in the metric definitions (metrics fixtures). All three
-    // are ratios with no split source.
+  it("DASH-02 no ratio metric advertises legal_entity without a split source (labor_cost_pct, prime_cost_pct)", () => {
+    // labor_cost_pct and prime_cost_pct live in the metric definitions
+    // (metrics fixtures); both are ratios with no split source.
+    // gross_margin_pct left this list in F6 (legend-qlirp): it now splits
+    // from gross_profit / net_sales.
     const dimensionsOf = (code: string) =>
       [...dashboardMetricDefinitions, ...cafeLegendMetricDefinitions]
         .filter((metric) => metric.code === code)
         .map((metric) => [...metric.dimensions]);
-    for (const code of [
-      "gross_margin_pct",
-      "labor_cost_pct",
-      "prime_cost_pct",
-    ]) {
+    for (const code of ["labor_cost_pct", "prime_cost_pct"]) {
       const found = dimensionsOf(code);
       expect(found.length, `${code} is defined`).toBeGreaterThan(0);
       for (const dimensions of found)

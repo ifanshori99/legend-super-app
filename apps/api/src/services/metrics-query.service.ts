@@ -101,6 +101,7 @@ import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
 import {
   glComponentsOf,
+  glUnmappedExclusionNote,
   type GlComponent,
   type GlMetricSource,
 } from "./metrics-gl-sources";
@@ -418,7 +419,7 @@ async function bookState(
 
 /**
  * accountId → sign and journal sources (null: every source), per component;
- * first matching term wins.
+ * first matching term wins. The accounts of an `exclude` term never enter it.
  */
 type ComponentAccounts = Map<
   string,
@@ -476,26 +477,72 @@ async function componentAccounts(
           `)
         ).rows;
   const result = new Map<GlComponent, ComponentAccounts>();
+  const roleIds = (term: GlComponent[number]) =>
+    byRole
+      .filter((row) =>
+        (term.roles as readonly string[] | undefined)?.includes(row.role),
+      )
+      .map((row) => row.id);
   for (const component of components) {
     const accounts: ComponentAccounts = new Map();
+    const excluded = new Set(
+      component.flatMap((term) => (term.exclude ? roleIds(term) : [])),
+    );
     for (const term of component) {
+      if (term.exclude) continue;
       const ids = [
         ...byGroup
           .filter((row) => term.reportGroups?.includes(row.group))
           .map((row) => row.id),
-        ...byRole
-          .filter((row) =>
-            (term.roles as readonly string[] | undefined)?.includes(row.role),
-          )
-          .map((row) => row.id),
+        ...roleIds(term),
       ];
       const sources = term.sourceTypes ? new Set(term.sourceTypes) : null;
       for (const id of ids)
-        if (!accounts.has(id)) accounts.set(id, { sign: term.sign, sources });
+        if (!excluded.has(id) && !accounts.has(id))
+          accounts.set(id, { sign: term.sign, sources });
     }
     result.set(component, accounts);
   }
   return result;
+}
+
+/**
+ * The excluded roles (`GlTerm.exclude`) some legal entity of the read has not
+ * mapped: every entity of the tenant, or those of the requested outlets. Its
+ * lines stay in the figure, so the answer names the role instead of guessing.
+ */
+async function unmappedExcludedRoles(
+  tx: Tx,
+  tenantId: string,
+  roles: readonly string[],
+  outletFilter: OutletQueryFilter,
+): Promise<Set<string>> {
+  if (roles.length === 0) return new Set();
+  const entities =
+    outletFilter.kind === "outlets"
+      ? sql`AND le.id IN (SELECT o.legal_entity_id FROM outlets o
+                           WHERE o.tenant_id = ${tenantId}
+                             AND o.id::text IN (${sql.join(
+                               outletFilter.outletIds.map((id) => sql`${id}`),
+                               sql`, `,
+                             )}))`
+      : sql``;
+  const rows = (
+    await tx.execute<{ role: string }>(sql`
+      SELECT r.role FROM unnest(ARRAY[${sql.join(
+        roles.map((role) => sql`${role}`),
+        sql`, `,
+      )}]::text[]) AS r (role)
+       WHERE EXISTS (
+         SELECT 1 FROM legal_entities le
+          WHERE le.tenant_id = ${tenantId} ${entities}
+            AND NOT EXISTS (
+              SELECT 1 FROM account_mappings m
+               WHERE m.tenant_id = le.tenant_id AND m.legal_entity_id = le.id
+                 AND m.role::text = r.role))
+    `)
+  ).rows;
+  return new Set(rows.map((row) => row.role));
 }
 
 type LedgerRow = {
@@ -1396,6 +1443,22 @@ export async function evaluateMetrics(
     { start: null, end: range.end },
     outletFilter,
   );
+  // Excluded roles per ledger code, in term order, for the availability note.
+  const excludedRolesOf = new Map(
+    [...plans.entries()].flatMap(([code, plan]) => {
+      if (plan.kind !== "gl") return [];
+      const roles = glComponentsOf(plan.gl).flatMap((component) =>
+        component.flatMap((term) => (term.exclude ? (term.roles ?? []) : [])),
+      );
+      return roles.length > 0 ? [[code, [...new Set(roles)]] as const] : [];
+    }),
+  );
+  const unmappedRoles = await unmappedExcludedRoles(
+    tx,
+    tenantId,
+    [...new Set([...excludedRolesOf.values()].flat())],
+    outletFilter,
+  );
   const index = new LedgerIndex(accounts, ledger, ranges, currentCount, {
     components: balanceComponents,
     rows: balanceLedger,
@@ -1893,7 +1956,16 @@ export async function evaluateMetrics(
       }
       continue;
     }
-    availability.push({ metricCode: definition.code, status: "available" });
+    const unmapped = (excludedRolesOf.get(definition.code) ?? []).filter(
+      (role) => unmappedRoles.has(role),
+    );
+    availability.push({
+      metricCode: definition.code,
+      status: "available",
+      ...(unmapped.length > 0
+        ? { note: glUnmappedExclusionNote(unmapped) }
+        : {}),
+    });
     for (const group of groupsOf(definition.code)) {
       const points: MetricPoint[] = buckets.map((bucket, at) => {
         const cell = group.cells[at]!;
