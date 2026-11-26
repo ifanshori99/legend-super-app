@@ -21,3 +21,4 @@ Layar tutup paksa `/pos/supervisor/shift/$shiftId` tidak punya link. `offline-cl
 - P1, P2 #1, #2, P3: dibetulkan sesuai saran.
 - P2 #3: `/api/health` dibaca lintas origin hanya untuk `WEB_URL` + `TRUSTED_ORIGINS` (GET, tanpa cookie, tanpa data rahasia); tablet hitung status >= 500 atau timeout sebagai gagal, 2 gagal = offline. Test: 502 -> offline, 200 -> online.
 - Screenshot `docs/review/img/o4-*` wajib sebelum gabung (spec `e2e/o4-offline-shots.spec.ts`, `O4_SHOTS=1`), lalu ui-auditor.
+- Screenshot (27 Nov): mode mock tidak punya bekal/antrean offline. Diputuskan opsi B: 5 adegan mock sekarang (banner tanpa bekal + 4 langkah tutup paksa); adegan bayar/tersimpan/antrean/blok tutup/keluar masuk O5 dengan domain tenant tes di browser nyata. Tidak menambah jalur mock di kode produksi.
