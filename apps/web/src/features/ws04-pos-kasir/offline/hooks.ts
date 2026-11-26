@@ -4,11 +4,13 @@
 // seconds while sales are queued. The counts feed the O4 banner ("N transaksi
 // belum terkirim"). All of it is best-effort: a failure is retried on the next
 // tick, the queue stays on the tablet.
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import type { PosOfflineKit } from "@starter/shared/pos";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { useOutletId } from "../hooks";
 import { useActiveShift } from "../shift-hooks";
 import { fetchOfflineKit, sendOfflineBatch, sendOfflineConflict } from "./api";
+import { useApiReachable } from "./connectivity";
 import { createOfflineQueue, type OfflineQueue } from "./queue";
 import { registerPosShell } from "./shell";
 import { defaultOfflineBackend } from "./store";
@@ -23,6 +25,14 @@ export type PosOfflineState = {
   pending: number;
   /** Sales set aside after a 409 ("perlu dicek"). */
   parked: number;
+  /** O4: the API answers (ping), not only the browser's signal. */
+  online: boolean;
+  /** O4: the kit an offline sale may use now; null when none or expired. */
+  kit: PosOfflineKit | null;
+  /** O4: reads the counts and the kit again (after a sale). */
+  refresh: () => Promise<void>;
+  /** O4: one sync now ("Coba kirim sekarang"); false when it failed. */
+  syncNow: () => Promise<boolean>;
 };
 
 /** Kit for the open shift: issued again for a new shift or near expiry. */
@@ -61,7 +71,34 @@ export function usePosOffline(): PosOfflineState {
       report: (event) => sendOfflineConflict(outletId, event),
     });
   }, [outletId]);
+  const online = useApiReachable();
   const [counts, setCounts] = useState({ pending: 0, parked: 0 });
+  const [kit, setKit] = useState<PosOfflineKit | null>(null);
+
+  const refresh = useCallback(async () => {
+    if (!queue) return;
+    const [pending, parked, stored] = await Promise.all([
+      queue.pendingCount(),
+      queue.parked().then((rows) => rows.length),
+      queue.kit(),
+    ]);
+    setCounts({ pending, parked });
+    setKit(
+      stored && Date.parse(stored.expiresAt) > Date.now() ? stored : null,
+    );
+  }, [queue]);
+
+  const syncNow = useCallback(async () => {
+    if (!queue) return false;
+    try {
+      await queue.sync();
+      return true;
+    } catch {
+      return false;
+    } finally {
+      await refresh().catch(() => undefined);
+    }
+  }, [queue, refresh]);
 
   useEffect(() => {
     void registerPosShell();
@@ -71,18 +108,11 @@ export function usePosOffline(): PosOfflineState {
     if (!queue) return;
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const refresh = async () => {
-      const [pending, parked] = await Promise.all([
-        queue.pendingCount(),
-        queue.parked().then((rows) => rows.length),
-      ]);
-      if (alive) setCounts({ pending, parked });
-      return pending;
-    };
     const tick = async () => {
       clearTimeout(timer);
-      // Review O3 P3: one failing step does not skip the other.
-      if (navigator.onLine) {
+      // Review O3 P3: one failing step does not skip the other. O4: "online"
+      // is the API's answer, not only the browser's signal.
+      if (online) {
         try {
           if (shiftId) await ensureKit(queue, outletId, shiftId, Date.now());
           else if (shiftGone) await queue.closeKit();
@@ -96,21 +126,18 @@ export function usePosOffline(): PosOfflineState {
         }
       }
       try {
-        await refresh();
+        if (alive) await refresh();
       } catch {
         // Storage unreadable: the close guard refuses on its own read.
       }
       if (alive) timer = setTimeout(() => void tick(), SYNC_EVERY_MS);
     };
-    const online = () => void tick();
-    window.addEventListener("online", online);
     void tick();
     return () => {
       alive = false;
       clearTimeout(timer);
-      window.removeEventListener("online", online);
     };
-  }, [queue, outletId, shiftId, shiftGone]);
+  }, [queue, outletId, shiftId, shiftGone, online, refresh]);
 
-  return { queue, ...counts };
+  return { queue, ...counts, online, kit, refresh, syncNow };
 }

@@ -69,6 +69,7 @@ export const AREA_MANIFEST: Readonly<
   posDisplay: "ops",
   posIssueCharge: "ops",
   posKasirCode: "ops",
+  posKasirOffline: "ops",
   posKasirDayclose: "ops",
   posKasirEdc: "ops",
   posKasirGateway: "ops",
