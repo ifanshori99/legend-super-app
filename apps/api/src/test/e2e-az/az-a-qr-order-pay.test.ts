@@ -744,7 +744,15 @@ describe("Alur A langkah 5 payment link: QRIS dan VA", () => {
     expect(qris.body.data.instructions.method).toBe("qris");
     expect(qris.body.data.amountIdr).toBe(144_375);
 
-    // A VA intent replaces the QRIS code as the active one.
+    // A live QRIS code refuses a second code on the link (legend-osqou.41):
+    // the VA waits until the provider has proven the QRIS code dead.
+    const refused = await createIntent(token, "va");
+    expect(refused.status).toBe(409);
+    expect(refused.body.error.code).toBe("ORDER_CODE_ACTIVE");
+    await owner.query(
+      "UPDATE payment_intents SET status = 'expired', provider_final_at = now() WHERE tenant_id = $1 AND id = $2",
+      [seededTenantId, qris.body.data.id],
+    );
     const va = await createIntent(token, "va");
     expect(va.status).toBe(201);
     expect(va.body.data.instructions).toMatchObject({
