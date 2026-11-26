@@ -50,6 +50,7 @@ const BANK_KEYS: Record<EdcTerminalView["bankCode"], MessageKey> = {
   mandiri: "paymentAdmin.bank.mandiri",
   bni: "paymentAdmin.bank.bni",
   bjb: "paymentAdmin.bank.bjb",
+  bri: "paymentAdmin.bank.bri",
 };
 
 export function bankLabelKey(bank: EdcTerminalView["bankCode"]): MessageKey {

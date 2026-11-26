@@ -1858,7 +1858,13 @@ export const id = {
       points: "Poin",
       voucher: "Voucher",
     },
-    bank: { bca: "BCA", mandiri: "Mandiri", bni: "BNI", bjb: "BJB" },
+    bank: {
+      bca: "BCA",
+      mandiri: "Mandiri",
+      bni: "BNI",
+      bjb: "BJB",
+      bri: "BRI",
+    },
     loadErrorTitle: "Data pembayaran tidak dapat dimuat",
     loadErrorHint: "Periksa koneksi internet, lalu coba lagi.",
     routing: {
