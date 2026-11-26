@@ -144,6 +144,7 @@ describe("EDG-01 edge registry", () => {
   it("TEN-02 EDG-01 edge tables have forced restrictive tenant and outlet policies", async () => {
     const names = [
       "edge_catalog_publisher_cursors",
+      "edge_edc_ingests",
       "edge_inbound_events",
       "edge_link_dead_letters",
       "edge_link_slots",

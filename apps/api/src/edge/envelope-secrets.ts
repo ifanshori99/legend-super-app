@@ -28,14 +28,56 @@ export function hasEdgeEnvelopeSecrets(event: EventEnvelope): boolean {
   return payload !== null && "material" in payload;
 }
 
+// 1269 E4: an `edc_transaction.*` event must never carry a card number, but a
+// faulty edge could send one. Every place that keeps an edge envelope (parked
+// row, link conflict) goes through `redactEdgeEnvelopeSecrets`, so a value
+// that looks like one is replaced there and never stored.
+const EDC_EVENT_PREFIX = "edc_transaction.";
+/** Payload keys holding ids or times: digits split by dashes, never a card. */
+const EDC_ID_KEYS = new Set([
+  "transactionId",
+  "tenantId",
+  "outletId",
+  "terminalId",
+  "completedAt",
+]);
+const UUID_OR_TIME =
+  /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\d{4}-\d{2}-\d{2}T[0-9:.]+(?:Z|[+-]\d{2}:\d{2}))$/i;
+/** 13+ digits, also split by spaces or dashes (a card number). */
+const SPLIT_CARD_NUMBER = /\d(?:[\s-]*\d){12,}/;
+/** The POS order number may hold 14 digits across a dash: contiguous only. */
+const CONTIGUOUS_CARD_NUMBER = /\d{13,19}/;
+export const REDACTED_CARD_NUMBER = "[redacted]";
+
+/** Payload keys of an EDC event whose value looks like a card number. */
+export function edcCardNumberKeys(event: EventEnvelope): string[] {
+  if (!event.name.startsWith(EDC_EVENT_PREFIX)) return [];
+  const payload = payloadRecord(event);
+  if (payload === null) return [];
+  const keys: string[] = [];
+  for (const [key, value] of Object.entries(payload)) {
+    if (value === null || value === undefined || typeof value === "boolean")
+      continue;
+    const text = typeof value === "string" ? value : JSON.stringify(value);
+    if (EDC_ID_KEYS.has(key) && UUID_OR_TIME.test(text)) continue;
+    const pattern =
+      key === "reference" ? CONTIGUOUS_CARD_NUMBER : SPLIT_CARD_NUMBER;
+    if (pattern.test(text)) keys.push(key);
+  }
+  return keys;
+}
+
 /**
- * The envelope without `payload.material`; the same object when there is
- * nothing to strip. Never mutates its input.
+ * The envelope without `payload.material` and without a card-number-like
+ * value of an EDC event; the same object when there is nothing to strip.
+ * Never mutates its input.
  */
 export function redactEdgeEnvelopeSecrets(event: EventEnvelope): EventEnvelope {
-  if (!hasEdgeEnvelopeSecrets(event)) return event;
+  const cardKeys = edcCardNumberKeys(event);
+  if (!hasEdgeEnvelopeSecrets(event) && cardKeys.length === 0) return event;
   const rest = { ...payloadRecord(event)! };
   delete rest.material;
+  for (const key of cardKeys) rest[key] = REDACTED_CARD_NUMBER;
   return { ...event, payload: rest } as EventEnvelope;
 }
 
