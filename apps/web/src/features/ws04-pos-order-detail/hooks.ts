@@ -1,9 +1,16 @@
 // The data door of the order detail screen: components import these hooks and
 // never touch the endpoints or the mock.
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useRouteContext } from "@tanstack/react-router";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { PosOrderStatus } from "@starter/shared/pos";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { useTenantContext } from "@/lib/tenant-context";
-import { kitchenVoidsQuery, orderQuery } from "./queries";
+import { useActorId } from "@/features/ws04-pos-kasir/hooks";
+import { openOrdersKeys } from "@/features/ws04-pos-open-orders/queries";
+import { fireHeldItems, pendingFireOf } from "./api";
+import { orderActionRights } from "./fire";
+import { kitchenVoidsQuery, orderDetailKeys, orderQuery } from "./queries";
 
 /** The outlet this screen works in; "" when none (queries stay idle). */
 function useOutletId(): string {
@@ -23,4 +30,82 @@ export function useOrderDetail(orderId: string) {
 export function useKitchenVoids(orderId: string) {
   const { outletId, enabled } = useReady(orderId);
   return useQuery({ ...kitchenVoidsQuery(outletId, orderId), enabled });
+}
+
+// Sends on this screen and other tabs (the storage event) re-read the slot.
+const listeners = new Set<() => void>();
+function subscribe(listener: () => void) {
+  listeners.add(listener);
+  window.addEventListener("storage", listener);
+  return () => {
+    listeners.delete(listener);
+    window.removeEventListener("storage", listener);
+  };
+}
+function notify() {
+  for (const listener of listeners) listener();
+}
+
+/**
+ * The fire of this order whose answer is unknown (the key lives in
+ * sessionStorage, so the server render has none), re-read after every send.
+ */
+export function usePendingFire(orderId: string) {
+  const outletId = useOutletId();
+  const actorId = useActorId();
+  const text = useSyncExternalStore(
+    subscribe,
+    () => JSON.stringify(pendingFireOf(outletId, actorId, orderId)),
+    () => "null",
+  );
+  const itemIds = useMemo(() => JSON.parse(text) as string[] | null, [text]);
+  return { itemIds, refresh: notify };
+}
+
+/**
+ * Send held items. On success the detail shows the server's order; the list
+ * of open orders is read again (its held counts changed).
+ */
+export function useFireHeld(orderId: string, onSettled: () => void) {
+  const queryClient = useQueryClient();
+  const outletId = useOutletId();
+  const actorId = useActorId();
+  return useMutation({
+    mutationFn: (input: {
+      itemIds: readonly string[];
+      status: PosOrderStatus;
+    }) =>
+      fireHeldItems(outletId, actorId, orderId, input.itemIds, input.status),
+    onSuccess: (order) => {
+      queryClient.setQueryData(orderDetailKeys.order(outletId, orderId), order);
+      void queryClient.invalidateQueries({ queryKey: openOrdersKeys.all });
+    },
+    onError: () =>
+      void queryClient.invalidateQueries({
+        queryKey: orderDetailKeys.order(outletId, orderId),
+      }),
+    onSettled,
+  });
+}
+
+/** The current time, refreshed every `everyMs` (for "is this still fresh"). */
+export function useNow(everyMs: number): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), everyMs);
+    return () => window.clearInterval(id);
+  }, [everyMs]);
+  return now;
+}
+
+/** The order actions this account may take (presentation; the API re-checks). */
+export function useOrderActionRights() {
+  const access = useRouteContext({ strict: false, select: (c) => c.access });
+  return useMemo(
+    () =>
+      access
+        ? orderActionRights(access)
+        : { fire: false, pay: false, cashier: false },
+    [access],
+  );
 }

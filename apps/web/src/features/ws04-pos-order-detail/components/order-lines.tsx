@@ -1,4 +1,4 @@
-import { TriangleAlert } from "lucide-react";
+import { CirclePause, TriangleAlert } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Money } from "@/components/ui/money";
 import { formatRupiah } from "@starter/shared/i18n";
@@ -17,6 +17,7 @@ type Line = {
 
 // The order's lines. A line the kitchen voided carries a warning pill (icon and
 // text); its price stays, because the bill does not change until the POS void.
+// A held line (not sent to the kitchen yet) carries a "Ditahan" pill.
 export function OrderLines({
   items,
   kitchenVoided,
@@ -55,6 +56,10 @@ export function OrderLines({
                   className="w-fit"
                 >
                   {t("posOrderDetail.item.kitchenVoided")}
+                </StatusPill>
+              ) : !sent ? (
+                <StatusPill tone="warning" icon={CirclePause} className="w-fit">
+                  {t("posOrderDetail.item.held")}
                 </StatusPill>
               ) : null}
             </div>
