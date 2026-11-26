@@ -1,6 +1,7 @@
 // The data door of the order detail screen: components import these hooks and
 // never touch the endpoints or the mock.
-import { useMemo, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useRouteContext } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PosOrderStatus } from "@starter/shared/pos";
 import { API_MOCK } from "@/lib/api/mock-flag";
@@ -8,6 +9,7 @@ import { useTenantContext } from "@/lib/tenant-context";
 import { useActorId } from "@/features/ws04-pos-kasir/hooks";
 import { openOrdersKeys } from "@/features/ws04-pos-open-orders/queries";
 import { fireHeldItems, pendingFireOf } from "./api";
+import { orderActionRights } from "./fire";
 import { kitchenVoidsQuery, orderDetailKeys, orderQuery } from "./queries";
 
 /** The outlet this screen works in; "" when none (queries stay idle). */
@@ -84,4 +86,26 @@ export function useFireHeld(orderId: string, onSettled: () => void) {
       }),
     onSettled,
   });
+}
+
+/** The current time, refreshed every `everyMs` (for "is this still fresh"). */
+export function useNow(everyMs: number): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), everyMs);
+    return () => window.clearInterval(id);
+  }, [everyMs]);
+  return now;
+}
+
+/** The order actions this account may take (presentation; the API re-checks). */
+export function useOrderActionRights() {
+  const access = useRouteContext({ strict: false, select: (c) => c.access });
+  return useMemo(
+    () =>
+      access
+        ? orderActionRights(access)
+        : { fire: false, pay: false, cashier: false },
+    [access],
+  );
 }

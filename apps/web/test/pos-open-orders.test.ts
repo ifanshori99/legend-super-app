@@ -7,8 +7,16 @@ import type { PosOrderSummary, PosParkedOrder } from "@starter/shared/pos";
 import { listPosOrders } from "@starter/shared/pos";
 import { createEndpointCaller } from "@/lib/api/endpoint-core";
 import { fireItems } from "@/features/ws04-pos-order/captain-flow";
-import { canFire, heldItemIds } from "@/features/ws04-pos-order-detail/fire";
+import type { AreaAccess } from "@/lib/areas/access";
 import {
+  canFire,
+  heldItemIds,
+  orderActionRights,
+  primaryActionOf,
+} from "@/features/ws04-pos-order-detail/fire";
+import { openOrdersGate } from "@/features/ws04-pos-open-orders/guard";
+import {
+  OLD_LINK_FRESH_MS,
   OPEN_ORDER_STATUSES,
   minutesAgo,
   oldLinkRemainingIdr,
@@ -114,9 +122,96 @@ test("time since opening reads in minutes, then hours", () => {
 });
 
 test("an old paid link lowers the list's remaining: the detail shows it", () => {
-  assert.equal(oldLinkRemainingIdr(192_900, { remainingIdr: 0 }), 0);
-  assert.equal(oldLinkRemainingIdr(192_900, { remainingIdr: 192_900 }), null);
-  assert.equal(oldLinkRemainingIdr(192_900, undefined), null);
+  assert.equal(oldLinkRemainingIdr(192_900, { remainingIdr: 0 }, 1_000), 0);
+  assert.equal(
+    oldLinkRemainingIdr(192_900, { remainingIdr: 192_900 }, 1_000),
+    null,
+  );
+  assert.equal(oldLinkRemainingIdr(192_900, undefined, 1_000), null);
+});
+
+test("the paid-link warning needs a list read under 20 seconds ago", () => {
+  assert.equal(oldLinkRemainingIdr(192_900, { remainingIdr: 0 }, 19_999), 0);
+  assert.equal(
+    oldLinkRemainingIdr(192_900, { remainingIdr: 0 }, OLD_LINK_FRESH_MS),
+    null,
+  );
+  // No list read yet (age unknown) hides it too.
+  assert.equal(oldLinkRemainingIdr(192_900, { remainingIdr: 0 }, -1), null);
+});
+
+const access = (permissions: string[]): AreaAccess =>
+  ({
+    authenticated: true,
+    permissions,
+    mfaRequired: false,
+    mfaVerified: false,
+  }) as unknown as AreaAccess;
+
+test("a waiter is sent to the captain screen, not to an empty not-found", () => {
+  assert.equal(
+    openOrdersGate(access(["order.view", "order.create"])),
+    "captain",
+  );
+  assert.equal(openOrdersGate(access(["pos.sale.create"])), "allowed");
+  assert.equal(openOrdersGate(access(["pos.payment.accept"])), "allowed");
+  assert.equal(openOrdersGate(access(["order.view"])), "hidden");
+  assert.equal(
+    openOrdersGate({ ...access([]), authenticated: false }),
+    "hidden",
+  );
+});
+
+test("fire and payment buttons follow the API's permissions", () => {
+  assert.deepEqual(orderActionRights(access(["pos.payment.accept"])), {
+    fire: false,
+    pay: true,
+    cashier: false,
+  });
+  assert.deepEqual(orderActionRights(access(["pos.void.request"])), {
+    fire: false,
+    pay: false,
+    cashier: false,
+  });
+  assert.deepEqual(orderActionRights(access(["order.create"])), {
+    fire: true,
+    pay: false,
+    cashier: false,
+  });
+  assert.deepEqual(orderActionRights(access(["pos.sale.create"])), {
+    fire: true,
+    pay: false,
+    cashier: true,
+  });
+  const base = { unclear: false, fireable: false, status: "sent" as const };
+  assert.equal(
+    primaryActionOf({ ...base, rights: { pay: false, cashier: true } }),
+    null,
+  );
+  assert.equal(
+    primaryActionOf({ ...base, rights: { pay: true, cashier: false } }),
+    "pay",
+  );
+  assert.equal(
+    primaryActionOf({
+      ...base,
+      fireable: true,
+      rights: { pay: true, cashier: true },
+    }),
+    "fire",
+  );
+});
+
+test("a draft order offers the cashier, never payment", () => {
+  const draft = { unclear: false, fireable: false, status: "draft" as const };
+  assert.equal(
+    primaryActionOf({ ...draft, rights: { pay: true, cashier: true } }),
+    "cashier",
+  );
+  assert.equal(
+    primaryActionOf({ ...draft, rights: { pay: true, cashier: false } }),
+    null,
+  );
 });
 
 test("fire takes only held, live lines of an order on the shift", () => {

@@ -70,6 +70,7 @@ export const posOrderDetailMessages = {
   pay: {
     action: "Lanjut ke pembayaran",
     finish: "Selesaikan dan cetak struk",
+    continueAtCashier: "Lanjutkan di kasir",
     unpaid: "Belum lunas",
     paid: "Lunas",
   },

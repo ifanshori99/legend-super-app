@@ -100,17 +100,24 @@ export function minutesAgo(
   return { unit: "hour", count: Math.floor(minutes / 60) };
 }
 
+/** How old the list may be for its paid-link figure to be trusted. */
+export const OLD_LINK_FRESH_MS = 20_000;
+
 /**
  * The list remembers payments the order detail does not count yet (a paid
  * link from an older flow, review B2 P3-4). When the list says less is left
  * than the detail computes, the detail shows the list's figure as a warning
- * and never asks for the difference again on its own.
+ * and never asks for the difference again on its own. Only a list read in the
+ * last 20 seconds counts (CTO 26 Nov, review W5 no. 4): an older list may
+ * predate a change to the bill and would warn for nothing.
  */
 export function oldLinkRemainingIdr(
   detailRemainingIdr: number,
   summary: Pick<OpenOrderRow, "remainingIdr"> | undefined,
+  listAgeMs: number,
 ): number | null {
-  if (!summary) return null;
+  if (!summary || !(listAgeMs >= 0 && listAgeMs < OLD_LINK_FRESH_MS))
+    return null;
   return summary.remainingIdr < detailRemainingIdr
     ? summary.remainingIdr
     : null;

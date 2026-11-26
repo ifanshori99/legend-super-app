@@ -15,7 +15,7 @@ import {
   StatusPill,
   type StatusPillTone,
 } from "@/features/ws04-pos-kasir/components/shared";
-import { useKitchenVoids, useOrderDetail } from "../hooks";
+import { useKitchenVoids, useNow, useOrderDetail } from "../hooks";
 import {
   billRows,
   capturedTendersIdr,
@@ -35,6 +35,10 @@ import {
   SecondaryPay,
   useOrderActions,
 } from "./order-actions";
+
+// The paid-link warning is re-checked this often, so it hides once the list
+// it came from is older than OLD_LINK_FRESH_MS.
+const OLD_LINK_CHECK_MS = 5_000;
 
 const STATUS_TONE: Record<PosOrderDetail["status"], StatusPillTone> = {
   draft: "neutral",
@@ -146,6 +150,7 @@ function OrderDetailLoaded({
   const { timeZone } = useOutletClock();
   const actions = useOrderActions(data);
   const openOrders = useOpenOrders();
+  const now = useNow(OLD_LINK_CHECK_MS);
   const notices = openKitchenVoidNotices(voids.data ?? [], data.items);
   const kitchenVoided = kitchenVoidedItemIds(notices);
   const completed = data.status === "completed";
@@ -162,6 +167,7 @@ function OrderDetailLoaded({
   const listRemainingIdr = oldLinkRemainingIdr(
     remainingIdr,
     openOrders.data?.find((row) => row.id === data.id),
+    openOrders.dataUpdatedAt > 0 ? now - openOrders.dataUpdatedAt : -1,
   );
   const heldCount = actions.held.length;
   const unpaid = !completed && data.status !== "voided";

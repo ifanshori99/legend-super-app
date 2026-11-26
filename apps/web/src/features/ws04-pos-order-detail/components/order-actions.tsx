@@ -14,8 +14,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Notice } from "@/features/ws04-pos-kasir/components/shared";
-import { canFire, heldItemIds } from "../fire";
-import { useFireHeld, usePendingFire } from "../hooks";
+import { canFire, heldItemIds, primaryActionOf } from "../fire";
+import { useFireHeld, useOrderActionRights, usePendingFire } from "../hooks";
 
 type Order = Pick<PosOrderDetail, "id" | "number" | "status" | "items">;
 
@@ -34,7 +34,9 @@ export function useOrderActions(order: Order) {
   const fire = useFireHeld(order.id, pending.refresh);
   const held = heldItemIds(order.items);
   const unclear = pending.itemIds !== null;
-  const fireable = canFire(order.status, held.length);
+  const rights = useOrderActionRights();
+  // Fire only with the route's permission (pos.sale.create or order.create).
+  const fireable = rights.fire && canFire(order.status, held.length);
 
   function send(itemIds: readonly string[]) {
     setSentCount(null);
@@ -52,6 +54,7 @@ export function useOrderActions(order: Order) {
 
   return {
     held,
+    rights,
     unclear,
     fireable,
     confirming,
@@ -125,8 +128,7 @@ function PayLink({
 }
 
 /**
- * The screen's one primary action: Periksa lagi while a fire is unclear, else
- * Kirim ke dapur while items are held, else payment. Null for a final order.
+ * The screen's one primary action, chosen by `primaryActionOf` (../fire.ts).
  */
 export function PrimaryAction({
   state,
@@ -140,7 +142,13 @@ export function PrimaryAction({
   className?: string;
 }) {
   const t = useT();
-  if (state.unclear)
+  const kind = primaryActionOf({
+    unclear: state.unclear,
+    fireable: state.fireable,
+    status: order.status,
+    rights: state.rights,
+  });
+  if (kind === "retry")
     return (
       <Button
         size="lg"
@@ -152,22 +160,31 @@ export function PrimaryAction({
         {t("posOrderDetail.fire.retry")}
       </Button>
     );
-  if (state.fireable)
+  if (kind === "fire")
     return (
       <Button size="lg" className={className} onClick={state.openConfirm}>
         <ChefHat aria-hidden="true" />
         {t("posOrderDetail.fire.action")}
       </Button>
     );
-  if (order.status === "completed" || order.status === "voided") return null;
-  return (
-    <PayLink
-      orderId={order.id}
-      remainingIdr={remainingIdr}
-      primary
-      className={className}
-    />
-  );
+  // A draft is not on the shift yet: it is sent from the cashier, never paid
+  // from here (CTO 26 Nov, review W5 no. 3).
+  if (kind === "cashier")
+    return (
+      <Button asChild size="lg" className={className}>
+        <Link to="/pos/kasir">{t("posOrderDetail.pay.continueAtCashier")}</Link>
+      </Button>
+    );
+  if (kind === "pay")
+    return (
+      <PayLink
+        orderId={order.id}
+        remainingIdr={remainingIdr}
+        primary
+        className={className}
+      />
+    );
+  return null;
 }
 
 /** Payment as the quieter action while items still wait for the kitchen. */
@@ -180,7 +197,7 @@ export function SecondaryPay({
   order: Order;
   remainingIdr: number;
 }) {
-  if (state.unclear || !state.fireable) return null;
+  if (state.unclear || !state.fireable || !state.rights.pay) return null;
   return (
     <PayLink
       orderId={order.id}
