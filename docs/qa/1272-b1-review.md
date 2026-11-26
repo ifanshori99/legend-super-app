@@ -30,3 +30,6 @@ Keputusan 1, 3, 4, 5, 6 terpenuhi. Sisa:
 - P2 keputusan 2: jembatan tidak tahu kapan settlement tercocok. CTO: downlink `sale_record_release` {terminalId, traces[]} dikirim cloud sesudah pencocokan settlement; jembatan hapus catatan bila (lewat 48 jam DAN sudah menerima release) ATAU lewat 30 hari (batas keras penyimpanan, hello melaporkan jumlah catatan tertahan). Test parse.
 - P3 `bridge.ts:301`: `EdcBridgeSaleRecord.answer: EdcBridgeAnswer | null`.
 - P3 doc:30: `issuedAt` = lease/perpanjangan terakhir untuk terminal itu; cloud tidak mengirim perintah bila sisa lease < 30 s.
+
+## Re-review 2 27 Nov (b74bad2e9): LULUS
+Release + aturan hapus 48 jam&release atau 30 hari, `heldSaleRecords`, `answer`, aturan lease 30 s tertutup dan ditest di batas. P3 baru ke B3 (wasr7.22): umur catatan pakai jam monotonik + waktu boot, ambil yang lebih lama (jam dinding tablet bisa dimajukan).
