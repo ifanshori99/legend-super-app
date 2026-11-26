@@ -113,6 +113,12 @@ import {
 import { withTenant } from "../db/tenant.ts";
 import { logger } from "../lib/logger.ts";
 import { isReservedAddress } from "../services/identity-email-login.service.ts";
+import { isPublicHttpsUrl } from "@starter/shared/adapters";
+import {
+  createKirimdevMessagingProvider,
+  kirimdevSenderFromPlatformMapping,
+} from "../services/messaging-kirimdev.ts";
+import type { WhatsAppTemplateProvider } from "../services/notification-delivery.ts";
 import { notifyBrevoAuthFailed } from "../services/edge-sync-conflict-alert.ts";
 import {
   dutyWindowEnd,
@@ -1959,7 +1965,9 @@ export type NotificationProviderConfig = {
         publicKey: string;
         privateKey: string;
       };
-  whatsapp: { provider: "disabled" };
+  whatsapp:
+    | { provider: "disabled" }
+    | { provider: "kirimdev"; apiKey: string; baseUrl?: string };
 };
 
 type Env = Record<string, string | undefined>;
@@ -1993,7 +2001,31 @@ export function parseNotificationProviderEnv(
     "disabled",
     "web_push",
   ]);
-  choice("NOTIFICATION_WHATSAPP_PROVIDER", ["disabled"]);
+  const whatsappProvider = choice("NOTIFICATION_WHATSAPP_PROVIDER", [
+    "disabled",
+    "kirimdev",
+  ]);
+  let whatsapp: NotificationProviderConfig["whatsapp"] = {
+    provider: "disabled",
+  };
+  if (whatsappProvider === "kirimdev") {
+    const apiKey = present(env, "KIRIM_API_KEY");
+    const baseUrl = present(env, "KIRIM_API_BASE_URL");
+    if (apiKey === undefined)
+      problems.push(
+        "KIRIM_API_KEY is required when the WhatsApp provider is kirimdev",
+      );
+    else if (!/^kdv_live_[A-Za-z0-9_-]{24}$/.test(apiKey))
+      problems.push("KIRIM_API_KEY is not a valid KirimDev API key");
+    else if (baseUrl !== undefined && !isPublicHttpsUrl(baseUrl))
+      problems.push("KIRIM_API_BASE_URL must be a public https URL");
+    else
+      whatsapp = {
+        provider: "kirimdev",
+        apiKey,
+        ...(baseUrl === undefined ? {} : { baseUrl }),
+      };
+  }
   let email: NotificationProviderConfig["email"] = { provider: "disabled" };
   let push: NotificationProviderConfig["push"] = { provider: "disabled" };
   if (pushProvider === "web_push") {
@@ -2073,7 +2105,7 @@ export function parseNotificationProviderEnv(
   return {
     email,
     push,
-    whatsapp: { provider: "disabled" },
+    whatsapp,
   };
 }
 
@@ -2143,7 +2175,27 @@ export function createWorkerNotificationHandlers(
       reservationLink: (context, notification) =>
         prepareReservationEmail(context, notification),
       // Left undefined while WhatsApp is disabled: worker-main only polls
-      // WhatsApp attempts when this provider is present.
+      // WhatsApp attempts when this provider is present. With kirimdev the
+      // hook exists, but a send still needs a recipient with an opted-in
+      // number and an approved template, plus a platform-mapped sender.
+      ...(config.whatsapp.provider === "kirimdev"
+        ? {
+            whatsapp: (() => {
+              const kirimdev = createKirimdevMessagingProvider({
+                apiKey: config.whatsapp.apiKey,
+                ...(config.whatsapp.baseUrl
+                  ? { baseUrl: config.whatsapp.baseUrl }
+                  : {}),
+                fetch: options.fetch,
+                resolveSender: kirimdevSenderFromPlatformMapping(database),
+              });
+              return {
+                send: (context, request) =>
+                  kirimdev.sendTemplate(context, request),
+              } satisfies WhatsAppTemplateProvider;
+            })(),
+          }
+        : {}),
     },
   };
 }

@@ -14,6 +14,7 @@
 //   text, the response body or the Authorization header.
 import { createHash } from "node:crypto";
 import { and, eq, isNull } from "drizzle-orm";
+import { z } from "zod";
 import {
   isPublicHttpsUrl,
   messageRequestSchema,
@@ -43,7 +44,8 @@ export type KirimdevMessagingOptions = {
     context: ScopedTenantContext,
     message: { outletId: string | null },
   ) => Promise<string | null>;
-  webhookSecrets: readonly string[];
+  /** Optional for an outbound-only caller (templates); verifyWebhook rejects when empty. */
+  webhookSecrets?: readonly string[];
   /** Default 10000. */
   timeoutMs?: number;
   /** Default 3. */
@@ -145,9 +147,40 @@ function acceptMessage(context: ScopedTenantContext, input: unknown) {
   return value;
 }
 
+export type KirimdevTemplateRequest = {
+  tenantId: string;
+  outletId: string | null;
+  reference: string;
+  recipient: string;
+  templateName: string;
+  variables: Record<string, string>;
+};
+const templateRequestSchema = z.strictObject({
+  tenantId: z.string().min(1),
+  outletId: z.string().min(1).nullable(),
+  reference: z.string().min(1).max(255),
+  recipient: z.string().regex(/^[1-9][0-9]{7,14}$/),
+  templateName: z.string().min(1).max(512),
+  variables: z.record(z.string().min(1).max(64), z.string().max(1000)),
+});
+const TEMPLATE_NAME_PATTERN = /^[a-z0-9_]{1,512}$/;
+
+/** Positional {{1}}, {{2}}...: numeric keys ascending, else insertion order.
+ * Kirimdev rejects blank, newline, tab or 4+ spaces, so clean each value. */
+function orderedParameters(variables: Record<string, string>): string[] {
+  const keys = Object.keys(variables);
+  if (keys.every((k) => /^[0-9]+$/.test(k))) keys.sort((a, b) => +a - +b);
+  return keys.map((k) => variables[k]!.replace(/\s+/g, " ").trim() || "-");
+}
+
 export function createKirimdevMessagingProvider(
   options: KirimdevMessagingOptions,
-): Pick<MessagingProvider, "verifyWebhook" | "send"> {
+): Pick<MessagingProvider, "verifyWebhook" | "send"> & {
+  sendTemplate: (
+    context: ScopedTenantContext,
+    request: KirimdevTemplateRequest,
+  ) => Promise<{ reference: string; accepted: true }>;
+} {
   if (!API_KEY_PATTERN.test(options.apiKey))
     throw new TypeError("Invalid Kirimdev API key format");
   const rawBaseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
@@ -161,7 +194,7 @@ export function createKirimdevMessagingProvider(
   const sleep =
     options.sleep ??
     ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-  const secrets = [...options.webhookSecrets];
+  const secrets = [...(options.webhookSecrets ?? [])];
   const authorization = `Bearer ${options.apiKey}`;
 
   async function attempt(
@@ -246,6 +279,20 @@ export function createKirimdevMessagingProvider(
     return Math.min(MAX_DELAY_MS, Math.round(base * jitter));
   }
 
+  async function postWithRetry(
+    url: string,
+    idempotencyKey: string,
+    body: string,
+  ): Promise<void> {
+    for (let attemptNumber = 1; ; attemptNumber += 1) {
+      const result = await attempt(url, idempotencyKey, body);
+      if ("ok" in result) return;
+      const { error, retryAfterMs } = result.failure;
+      if (!error.retryable || attemptNumber >= maxAttempts) throw error;
+      await sleep(delayFor(attemptNumber, retryAfterMs));
+    }
+  }
+
   return {
     verifyWebhook(input) {
       const nowSeconds = input.nowSeconds ?? options.now?.();
@@ -280,17 +327,65 @@ export function createKirimdevMessagingProvider(
         text: { body: message.text },
       });
 
-      for (let attemptNumber = 1; ; attemptNumber += 1) {
-        const result = await attempt(url, idempotencyKey, body);
-        if ("ok" in result)
-          return operationResultSchema.parse({
-            reference: message.reference,
-            accepted: true,
-          });
-        const { error, retryAfterMs } = result.failure;
-        if (!error.retryable || attemptNumber >= maxAttempts) throw error;
-        await sleep(delayFor(attemptNumber, retryAfterMs));
-      }
+      await postWithRetry(url, idempotencyKey, body);
+      return operationResultSchema.parse({
+        reference: message.reference,
+        accepted: true,
+      });
+    },
+
+    /** Approved template (works outside the 24 h window). Same retry and key rules. */
+    async sendTemplate(context, input) {
+      assertTrustedScopedContext(context);
+      const request = templateRequestSchema.parse(input);
+      if (context.tenant.tenantId !== request.tenantId)
+        throw new TypeError("Tenant mismatch");
+      if (request.outletId === null) {
+        if (context.outletScope.kind !== "tenant")
+          throw new CoreError(
+            "OUTLET_OUT_OF_SCOPE",
+            "Anda tidak memiliki akses ke operasi tingkat tenant.",
+          );
+      } else assertOutletInScope(context.outletScope, request.outletId);
+      const fail = (code: string) =>
+        new KirimdevSendError({
+          code,
+          status: null,
+          retryable: false,
+          requestId: null,
+        });
+      if (!TEMPLATE_NAME_PATTERN.test(request.templateName))
+        throw fail("invalid_template");
+      const sender = (
+        await options.resolveSender(context, { outletId: request.outletId })
+      )?.trim();
+      if (!sender || !SENDER_PATTERN.test(sender)) throw fail("no_sender");
+      const url = `${baseUrl}/v1/${encodeURIComponent(sender)}/messages`;
+      const idempotencyKey = createHash("sha256")
+        .update(
+          `template:${request.tenantId}:${request.outletId}:${request.reference}`,
+        )
+        .digest("hex");
+      const body = JSON.stringify({
+        messaging_product: "whatsapp",
+        to: `+${request.recipient}`,
+        type: "template",
+        template: {
+          name: request.templateName,
+          language: "id",
+          components: [
+            {
+              type: "body",
+              parameters: orderedParameters(request.variables).map((text) => ({
+                type: "text",
+                text,
+              })),
+            },
+          ],
+        },
+      });
+      await postWithRetry(url, idempotencyKey, body);
+      return { reference: request.reference, accepted: true as const };
     },
   };
 }
