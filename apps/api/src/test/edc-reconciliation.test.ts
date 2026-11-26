@@ -1227,6 +1227,49 @@ describe("EDC-03 resolving an unknown request as approved books the payment exac
     expect(await auditRows(id)).toHaveLength(0);
   });
 
+  // X1 (cloud-only release §3): a difference between the bank evidence and
+  // the booked amount leaves the row "perlu dicek" (still flagged) and alerts
+  // the outlet supervisors and owners once per row and stated amount.
+  it("X1 a charged amount that differs from the row stays flagged and raises one alert", async () => {
+    const order = await newOrder();
+    const id = await ledgerSale({
+      reference: order.number,
+      amountIdr: order.totalIdr,
+      status: "approved",
+      mode: "standalone",
+    });
+    const alerts = async () =>
+      (
+        await owner.query<{ payload: Record<string, unknown> }>(
+          `SELECT payload FROM notification_outbox
+           WHERE tenant_id = $1 AND event_type = 'edc_reconciliation.amount_mismatch'
+             AND payload->>'edcTransactionId' = $2`,
+          [tenant.tenantId, id],
+        )
+      ).rows;
+    const counts: number[] = [];
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const res = await resolve(ownerUser, id, approved(order.totalIdr - 500));
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expectAmountMismatch(res);
+      counts.push((await alerts()).length);
+    }
+    // The same stated amount alerts once, however often it is sent.
+    expect(counts[0]).toBeGreaterThan(0);
+    expect(counts[1]).toBe(counts[0]);
+    expect(await row(id)).toMatchObject({
+      status: "approved",
+      needs_reconciliation: true,
+    });
+    expect(await auditRows(id)).toHaveLength(0);
+    const sent = await alerts();
+    expect(sent[0]?.payload).toMatchObject({
+      edcTransactionId: id,
+      amountIdr: String(order.totalIdr),
+      chargedAmountIdr: String(order.totalIdr - 500),
+    });
+  });
+
   it("a declined answer does not need (and ignores) the charged amount", async () => {
     const order = await newOrder();
     const id = await ledgerSale({
