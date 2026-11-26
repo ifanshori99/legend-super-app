@@ -434,6 +434,7 @@ const accessBaseMessages = {
       edc_standalone: { approve: "Setujui pembayaran EDC standalone" },
       day: { close: "Tutup hari usaha" },
       receipt: { writeoff: "Hapus buku nomor struk yang hilang" },
+      failover: { manage: "Kelola pengalihan outlet ke server pusat" },
     },
     shift: {
       cash: {

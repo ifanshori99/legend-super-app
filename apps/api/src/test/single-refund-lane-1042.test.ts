@@ -95,6 +95,7 @@ import {
   setPosReceiptPort,
   type PosReceiptPort,
 } from "../services/pos-order-ports.ts";
+import { setPosWriteGateEdgeModeForTests } from "../services/pos-edge-outlet.ts";
 import { openPosShift } from "../services/pos-shift.service.ts";
 import { createPosOverride } from "../services/staff-override.service.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
@@ -868,6 +869,11 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
+  // 1271 F3: the outlet has an active edge, so the cloud refuses its POS writes
+  // (POS_WRITE_ON_EDGE) unless they belong to a failover window. This file
+  // exercises the refund lane (cashier refund, void, manual refund, edge void),
+  // not the gate (edge-failover tests cover it): this process plays the edge.
+  setPosWriteGateEdgeModeForTests(() => true);
   resetEdgeApplierRegistryForTests();
   registerStockMovedEdgeApplier();
   registerPosDeferredEdgeApplier();
@@ -876,6 +882,7 @@ beforeEach(() => {
 });
 
 afterAll(() => {
+  setPosWriteGateEdgeModeForTests(null);
   resetEdgeApplierRegistryForTests();
   setAuditWriter(null);
   setPosReceiptPort(null);
