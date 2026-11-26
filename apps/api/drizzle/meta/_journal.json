@@ -3669,6 +3669,13 @@
       "when": 1795714694306,
       "tag": "0537_offline_cash_clearing_mapping",
       "breakpoints": true
+    },
+    {
+      "idx": 538,
+      "version": "7",
+      "when": 1795717345508,
+      "tag": "0538_pos_shift_offline_queue_unverified",
+      "breakpoints": true
     }
   ]
 }

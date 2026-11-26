@@ -68,6 +68,8 @@ import { approvalPolicies } from "../db/schema/platform-access.ts";
 import { approvalRequests } from "../db/schema/platform-approval.ts";
 import { posOverrides } from "../db/schema/device-pin.ts";
 import { posQrisHolds } from "../db/schema/pos-qris-hold.ts";
+import { posOfflineKits } from "../db/schema/pos-offline.ts";
+import { alertSupervisors, edgeAlertId } from "../edge/late-adjustment.ts";
 import { outletFailoverSwitchoverCounts } from "../db/schema/edge-failover-switchover.ts";
 import {
   cashMovementOutcomes,
@@ -1411,7 +1413,17 @@ export async function closePosShift(
       return shiftDto(shift, undefined, { blind: true });
     }
     // O3 (CTO O2 (a)): offline sales still on the tablet hold cash that is
-    // in the drawer but not yet in these figures; they sync first.
+    // in the drawer but not yet in these figures; they sync first. Review O3
+    // P2 1: a shift with an offline kit closes only with the queue count of
+    // the kit's own device; otherwise a supervisor force closes it.
+    const kitDevices = await offlineKitDevicesOf(tx, context, shift.id);
+    if (
+      kitDevices.length > 0 &&
+      (offlineQueuePending === undefined ||
+        caller.deviceId === null ||
+        !kitDevices.some((deviceId) => sameUser(deviceId, caller.deviceId!)))
+    )
+      throw new PosError("OFFLINE_QUEUE_UNVERIFIED");
     if ((offlineQueuePending ?? 0) > 0)
       throw new PosError("OFFLINE_QUEUE_PENDING");
     // legend-yhia9 D-01: a QR this cashier issued can still be paid, so the
@@ -1567,6 +1579,8 @@ async function writeClose(
     fingerprint: string;
     now: Date;
     auditAction: "pos_shift.closed" | "pos_shift.force_closed";
+    /** Review O3 P2 1: force close of a shift whose tablet queue is unknown. */
+    offlineQueueUnverified?: boolean;
   },
 ): Promise<PosShift> {
   const { outletId, shift, aggregates, count, closed, override, now } = input;
@@ -1615,6 +1629,7 @@ async function writeClose(
         closedBy: caller.userId,
         closeKey: input.idempotencyKey,
         closeFingerprint: input.fingerprint,
+        offlineQueueUnverified: input.offlineQueueUnverified === true,
         version: shift.version + 1,
         updatedAt: now,
       })
@@ -1903,7 +1918,13 @@ export async function forceClosePosShift(
       deviceId: caller.deviceId,
       now,
     });
-    return writeClose(tx, context, caller, {
+    // Review O3 P2 1: the tablet holding the shift's offline kit never
+    // reported its queue. The close stands (the cafe is never locked out);
+    // the shift is marked and finance (the owners) alerted. Sales synced
+    // later take the `shift_closed` path (offline clearing account).
+    const unverified =
+      (await offlineKitDevicesOf(tx, context, shift.id)).length > 0;
+    const result = await writeClose(tx, context, caller, {
       outletId,
       shift,
       aggregates,
@@ -1915,8 +1936,40 @@ export async function forceClosePosShift(
       fingerprint,
       now,
       auditAction: "pos_shift.force_closed",
+      offlineQueueUnverified: unverified,
     });
+    if (unverified)
+      await alertSupervisors(tx, context, {
+        alsoOwners: true,
+        outletId,
+        id: edgeAlertId("offline_queue_unverified", tenantId, shift.id),
+        eventName: "pos_shift.offline_queue_unverified",
+        aggregateType: "pos_shift",
+        aggregateId: shift.id,
+        payload: { shiftId: shift.id },
+        title: "Antrean offline shift belum dicek",
+        body: "Shift dengan bekal offline ditutup paksa tanpa jumlah antrean dari tablet kasir. Penjualan offline yang masuk sesudahnya dicatat di Kas Offline Belum Dicocokkan; finance mencocokkannya dengan laci shift.",
+      });
+    return result;
   });
+}
+
+/** Review O3 P2 1: the devices holding an offline kit of the shift. */
+async function offlineKitDevicesOf(
+  tx: Tx,
+  context: ScopedTenantContext,
+  shiftId: string,
+): Promise<string[]> {
+  const rows = await tx
+    .selectDistinct({ deviceId: posOfflineKits.deviceId })
+    .from(posOfflineKits)
+    .where(
+      and(
+        eq(posOfflineKits.tenantId, context.tenant.tenantId),
+        eq(posOfflineKits.shiftId, shiftId),
+      ),
+    );
+  return rows.map((row) => row.deviceId);
 }
 
 // ---- Order service hook -----------------------------------------------------

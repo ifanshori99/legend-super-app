@@ -56,6 +56,7 @@ import { signDeviceToken } from "../lib/device-token.ts";
 import { originHeader } from "./helpers.ts";
 import {
   closeShiftExactly,
+  forceCloseShiftExactly,
   outletSupervisor,
 } from "./pos-offline-test-helpers.ts";
 import {
@@ -566,6 +567,67 @@ describe("Review O1 fixes", () => {
       [till.shiftId],
     );
     expect(after.rows[0]?.status).toBe("closed");
+  });
+
+  it("review O3 P2 1: a shift with a kit closes only with its device's queue count; a force close marks it", async () => {
+    const till = await newTill(app);
+    const supervisorId = await outletSupervisor(app, "Offline Unverified Close");
+    const close = (offlineQueuePending: number | null) =>
+      closeShiftExactly({
+        scope,
+        cashierId: till.cashier.userId,
+        deviceId: till.deviceId,
+        shiftId: till.shiftId,
+        supervisorId,
+        drawerIdr: 500_000,
+        offlineQueuePending,
+      });
+    // Once a kit is out, the close needs the kit device's queue count.
+    await issuePosOfflineKit(scope, callerOf(till), outletId, till.shiftId, {
+      resumeSequenceId: null,
+    });
+    await expect(close(null)).rejects.toMatchObject({
+      code: "OFFLINE_QUEUE_UNVERIFIED",
+      status: 409,
+    });
+    const statusOf = async () =>
+      (
+        await owner.query<{ status: string; unverified: boolean }>(
+          "SELECT status, offline_queue_unverified AS unverified FROM pos_shifts WHERE id = $1",
+          [till.shiftId],
+        )
+      ).rows[0];
+    expect(await statusOf()).toEqual({ status: "open", unverified: false });
+
+    // The tablet is broken: a supervisor force closes, the shift is marked.
+    await forceCloseShiftExactly({
+      scope,
+      deviceId: till.deviceId,
+      shiftId: till.shiftId,
+      supervisorId,
+      witnessId: await outletSupervisor(app, "Offline Unverified Witness"),
+      drawerIdr: 500_000,
+    });
+    expect(await statusOf()).toEqual({ status: "closed", unverified: true });
+    // Supervisors and owners (finance) are told.
+    const alerts = await owner.query(
+      "SELECT 1 FROM notifications WHERE tenant_id = $1 AND title = $2 AND created_at > now() - interval '1 minute'",
+      [seededTenantId, "Antrean offline shift belum dicek"],
+    );
+    expect(alerts.rows.length).toBeGreaterThan(0);
+  });
+
+  it("review O3 P2 1: a shift without a kit closes as before, count or not", async () => {
+    const till = await newTill(app);
+    await closeShiftExactly({
+      scope,
+      cashierId: till.cashier.userId,
+      deviceId: till.deviceId,
+      shiftId: till.shiftId,
+      supervisorId: await outletSupervisor(app, "Offline No Kit Close"),
+      drawerIdr: 500_000,
+      offlineQueuePending: null,
+    });
   });
 
   it("P3 3: refuses a shift that was really closed", async () => {
