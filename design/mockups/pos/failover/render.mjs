@@ -3,8 +3,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 const dir=path.dirname(fileURLToPath(import.meta.url));
 const browser=await chromium.launch({headless:true});
-const screens=['banner','pin','pin-salah','tanpa-internet','hitung-laci','kasir-cloud','tutup-hari','bo-edge','bo-konfirmasi','bo-aktif','kembali','kembali-siap','kembali-selesai'];
-const dialogs=new Set(['pin','pin-salah','tanpa-internet','bo-konfirmasi']);
+const screens=['banner','pin','pin-isi','pin-lainnya','pin-salah','tanpa-internet','hitung-laci','hitung-laci-isi','hitung-laci-konfirmasi','kasir-cloud','tutup-hari','bo-edge','bo-konfirmasi','bo-konfirmasi-isi','bo-aktif','kembali','kembali-siap','kembali-konfirmasi','kembali-selesai'];
+const dialogs=new Set(['pin','pin-isi','pin-lainnya','pin-salah','tanpa-internet','hitung-laci-konfirmasi','bo-konfirmasi','bo-konfirmasi-isi','kembali-konfirmasi']);
 for(const screen of screens){
  for(const width of [1280,390,320]){
   const page=await browser.newPage({viewport:{width,height:width===1280?800:844},deviceScaleFactor:1});

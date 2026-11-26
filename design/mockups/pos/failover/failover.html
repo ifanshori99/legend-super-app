@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Legend · Mode cloud saat edge mati (mockup F6a)</title>
+<title>Legend · Mode cloud saat server kasir mati (mockup F6a)</title>
 <style>
 @font-face{font-family:Jakarta;src:url('../../assets/plus-jakarta-sans-latin.woff2');font-weight:200 800;font-display:swap}
 *{box-sizing:border-box}
@@ -20,7 +20,8 @@ svg{width:24px;height:24px;flex:none;fill:none;stroke:currentColor;stroke-width:
 header.ops{display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:64px;padding:8px 16px;background:var(--shell);border-bottom:2px solid var(--border)}
 header.ops strong{display:block;font-size:21px;line-height:28px}
 header.ops small{font-size:14px;line-height:20px;color:var(--muted-foreground)}
-header.ops .right{display:flex;align-items:center;gap:12px}
+header.ops>div:first-child{min-width:0}header.ops small{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+header.ops .right{display:flex;align-items:center;gap:12px;flex:none}
 header.ops time{font-size:20px;font-weight:700}
 main{padding:16px;display:grid;gap:16px;min-width:0;max-width:1280px;margin:0 auto}
 .heading{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:12px}
@@ -32,8 +33,8 @@ main{padding:16px;display:grid;gap:16px;min-width:0;max-width:1280px;margin:0 au
 .btn:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid var(--primary);outline-offset:2px}
 .btn[aria-disabled=true]{background:var(--surface-3);color:var(--muted-foreground);border-color:var(--border);pointer-events:none}
 .full{width:100%}
-.pill{display:inline-flex;align-items:center;gap:6px;width:fit-content;padding:4px 12px;border-radius:999px;background:var(--surface-3);color:var(--muted-foreground);font-size:14px;line-height:20px;font-weight:600;white-space:nowrap}
-.pill svg{width:16px;height:16px}
+.pill{display:inline-flex;align-items:center;gap:6px;width:fit-content;padding:4px 12px;border-radius:999px;background:var(--surface-3);color:var(--muted-foreground);font-size:16px;line-height:24px;font-weight:600;white-space:nowrap}
+.pill svg{width:18px;height:18px}
 .pill.success{background:var(--success-subtle);color:var(--success)}
 .pill.warning{background:var(--warning-subtle);color:var(--warning)}
 .pill.danger{background:var(--danger-subtle);color:var(--danger)}
@@ -64,6 +65,7 @@ main{padding:16px;display:grid;gap:16px;min-width:0;max-width:1280px;margin:0 au
 .actions{display:grid;gap:12px}
 .field{display:grid;gap:8px}
 .field label{font-weight:600}
+.hint{font-size:14px;line-height:20px;color:var(--muted-foreground)}
 .field .hint{font-size:14px;line-height:20px;color:var(--muted-foreground)}
 .field .err{display:flex;align-items:center;gap:6px;font-size:16px;line-height:24px;color:var(--danger);font-weight:600}
 .field .err svg{width:18px;height:18px}
@@ -118,6 +120,7 @@ dialog .foot{display:flex;justify-content:flex-end;gap:12px}
 @media(prefers-contrast:more){.notice,.panel,.node,.chk li{border-color:#000}}
 </style>
 </head>
+<!-- Catatan F6b (audit no. 7): tombol mati wajib punya alasan tertulis di dekatnya (sudah ditiru di mockup ini); layar Tutup hari perlu dialog konfirmasi sebelum menutup (belum digambar di F6a). -->
 <body>
 <div id="app"></div>
 <p class="foot-note" id="note"></p>
@@ -150,17 +153,17 @@ const off = (text, cls = '') => `<a class="btn ${cls}" aria-disabled="true" role
 const terminalHeader = (status) => `<header class="ops"><div><strong>Kasir</strong><small>Cafe Legend Bandung · Contoh data</small></div><div class="right">${status}<time>14.32</time></div></header>`;
 const officeHeader = () => `<header class="ops"><div><strong>Back office</strong><small>Cafe Legend Bandung · Contoh data</small></div><div class="right"><span class="who base muted">Rina · Manajer</span></div></header>`;
 const sPill = {
-  down: pill('danger', 'wifioff', 'Edge terputus'),
+  down: pill('danger', 'wifioff', 'Server kasir mati'),
   cloud: pill('info', 'cloud', 'Mode cloud'),
-  ok: pill('success', 'wifi', 'Edge terhubung'),
+  ok: pill('success', 'wifi', 'Server kasir hidup'),
 };
 
 // ---------- Terminal ----------
 function bannerView() {
   return `
-  <div class="notice danger alert-row" role="alert"><div style="margin:0"><b>${ic('wifioff')}Edge outlet tidak terjangkau sejak 14.31</b><div>Kasir belum bisa menjual. Penjualan sebelumnya tersimpan di edge.</div></div>
+  <div class="notice danger alert-row" role="alert"><div style="margin:0"><b>${ic('wifioff')}Server kasir di outlet mati sejak 14.31</b><div>Kasir belum bisa menjual. Penjualan sebelumnya tersimpan di server kasir.</div></div>
    ${link('pin', ic('cloud') + 'Pindah ke mode cloud', 'primary')}</div>
-  <div class="heading"><div><h1>Penjualan dihentikan sementara</h1><p class="muted">Menunggu edge menyala lagi atau manajer memindahkan outlet ke mode cloud</p></div></div>
+  <div class="heading"><div><h1>Penjualan dihentikan sementara</h1><p class="muted">Menunggu server kasir menyala lagi atau manajer memindahkan outlet ke mode cloud</p></div></div>
   <div class="two">
    <section class="panel"><header><h2>Bila pindah ke mode cloud</h2></header>
     <ol class="steps">
@@ -169,23 +172,33 @@ function bannerView() {
      <li><div><p class="strong">Penjualan jalan lewat internet</p><p class="base muted">Nomor struk berawalan F, misalnya F1-000001.</p></div></li>
     </ol></section>
    <section class="panel"><header><h2>Sambil menunggu</h2></header>
-    <p class="base">Cek listrik dan kabel perangkat edge. Bila edge menyala lagi, kasir bisa menjual seperti biasa dan tidak perlu pindah.</p>
+    <p class="base">Cek listrik dan kabel server kasir. Bila server kasir menyala lagi, kasir bisa menjual seperti biasa dan tidak perlu pindah.</p>
     <p class="base muted">Bila internet outlet juga mati, catat penjualan di buku dan masukkan nanti.</p></section>
   </div>`;
 }
-const reasons = ['Edge mati listrik', 'Edge rusak atau tidak bisa dibuka', 'Jaringan outlet bermasalah', 'Lainnya (tulis di catatan)'];
-function reasonFields(invalid) {
-  return `<div class="field"><label for="pin">PIN manajer atau supervisor</label>
-   <input id="pin" type="password" inputmode="numeric" autocomplete="off" maxlength="6" value="••••" ${invalid ? 'aria-invalid="true" aria-describedby="pin-e"' : ''}>
-   ${invalid ? `<p class="err" id="pin-e" role="alert">${ic('warn')}PIN salah. Sisa 2 percobaan sebelum terkunci 5 menit.</p>` : ''}</div>
-  <div class="field"><label for="why">Alasan pindah</label><select id="why">${reasons.map((r, i) => `<option ${i === 0 ? 'selected' : ''}>${r}</option>`).join('')}</select></div>
-  <div class="field"><label for="memo">Catatan (boleh kosong)</label><textarea id="memo" placeholder="Contoh: listrik padam sejak 14.30"></textarea><p class="hint">Alasan dan nama penanggung jawab tercatat di riwayat outlet.</p></div>`;
+const reasons = ['Server kasir mati listrik', 'Server kasir rusak atau tidak bisa dibuka', 'Jaringan outlet bermasalah', 'Lainnya'];
+// st: kosong (belum diisi), isi (siap), lainnya (Lainnya tanpa catatan), salah (PIN salah). office: tanpa PIN (sudah login).
+function reasonFields(st, office) {
+  const pinHtml = office ? '' : `<div class="field"><label for="pin">PIN manajer atau supervisor</label>
+   <input id="pin" type="password" inputmode="numeric" autocomplete="off" maxlength="6" ${st === 'kosong' ? '' : 'value="••••"'} ${st === 'salah' ? 'aria-invalid="true" aria-describedby="pin-e"' : ''}>
+   ${st === 'salah' ? `<p class="err" id="pin-e" role="alert">${ic('warn')}PIN salah. Sisa 2 percobaan sebelum terkunci 5 menit.</p>` : ''}</div>`;
+  const pick = st === 'kosong' ? -1 : st === 'lainnya' ? 3 : 0;
+  const bad = st === 'lainnya';
+  return `${pinHtml}
+  <div class="field"><label for="why">Alasan pindah (wajib)</label><select id="why" required><option value="" disabled ${pick < 0 ? 'selected' : ''}>Pilih alasan</option>${reasons.map((r, i) => `<option ${i === pick ? 'selected' : ''}>${r}</option>`).join('')}</select></div>
+  <div class="field"><label for="memo">Catatan${bad ? ' (wajib)' : ' (wajib bila alasan Lainnya)'}</label><textarea id="memo" ${bad ? 'aria-invalid="true" aria-describedby="memo-e"' : ''} placeholder="Contoh: listrik padam sejak 14.30"></textarea>
+   ${bad ? `<p class="err" id="memo-e" role="alert">${ic('warn')}Tulis catatan singkat bila alasannya Lainnya.</p>` : '<p class="hint">Alasan dan nama penanggung jawab tercatat di riwayat outlet.</p>'}</div>`;
 }
-function pinDialog(invalid) {
+function pinDialog(st, office) {
+  const ready = st === 'isi' || st === 'salah';
+  const cancel = link(office ? 'bo-edge' : 'banner', 'Batal');
+  const go = ready ? link(office ? 'bo-aktif' : 'hitung-laci', ic('cloud') + 'Pindah ke mode cloud', 'primary') : off(ic('cloud') + 'Pindah ke mode cloud');
+  const hint = ready ? '' : `<p class="hint" id="why-h">${st === 'lainnya' ? 'Tulis catatan dulu.' : office ? 'Pilih alasan dulu.' : 'Isi PIN dan pilih alasan dulu.'}</p>`;
   return `<dialog id="dlg" aria-labelledby="dt" aria-describedby="dd"><div class="in">
-   <div><h2 id="dt">Pindah ke mode cloud?</h2><p id="dd" class="base muted">Edge baru terputus 1 menit, jadi alasan wajib diisi. Setelah pindah, edge tidak menerima penjualan sampai outlet kembali.</p></div>
-   ${reasonFields(invalid)}
-   <div class="foot">${link('banner', 'Batal')}${link('hitung-laci', ic('cloud') + 'Pindah ke mode cloud', 'primary')}</div></div></dialog>`;
+   <div><h2 id="dt">Pindah ke mode cloud?</h2><p id="dd" class="base muted">Server kasir di outlet baru mati sekitar 1 menit. Pindah sekarang hanya bila Anda yakin server itu tidak bisa dipakai. Selama mode cloud, server kasir tidak menerima penjualan.${office ? ' Semua kasir di outlet akan diminta menghitung laci.' : ''}</p></div>
+   ${reasonFields(st, office)}
+   ${hint}
+   <div class="foot">${cancel}${go}</div></div></dialog>`;
 }
 function noNetDialog() {
   return `<dialog id="dlg" aria-labelledby="dt" aria-describedby="dd"><div class="in">
@@ -197,24 +210,33 @@ function noNetDialog() {
 
 const denoms = [[100000, 5], [50000, 8], [20000, 10], [10000, 12], [5000, 10], [2000, 15], [1000, 20]];
 const coins = 25000;
-function countView() {
-  const total = denoms.reduce((a, [d, n]) => a + d * n, 0) + coins;
-  const rows = denoms.map(([d, n]) => `<div class="r"><label for="d${d}">${rp(d)}</label><input id="d${d}" inputmode="numeric" autocomplete="off" value="${n}" aria-describedby="u"><span class="sub">${rp(d * n)}</span></div>`).join('');
-  const btn = link('kasir-cloud', ic('cloud') + 'Buka shift mode cloud', 'primary full');
-  return `<div class="notice info" role="status"><b>${ic('cloud')}Mode cloud aktif sejak 14.35</b><div>Dibuka oleh Rina (Manajer). Alasan: Edge mati listrik.</div></div>
+// st: kosong (isian kosong, tombol mati), isi (siap diperiksa), konfirmasi (dialog "sudah benar?").
+function countView(st) {
+  const filled = st !== 'kosong';
+  const total = filled ? denoms.reduce((a, [d, n]) => a + d * n, 0) + coins : 0;
+  const rows = denoms.map(([d, n]) => `<div class="r"><label for="d${d}">${rp(d)}</label><input id="d${d}" inputmode="numeric" autocomplete="off" placeholder="0" value="${filled ? n : ''}" aria-describedby="u"><span class="sub">${rp(filled ? d * n : 0)}</span></div>`).join('');
+  const btn = filled ? link('hitung-laci-konfirmasi', ic('cloud') + 'Periksa total', 'primary full') : off(ic('cloud') + 'Periksa total', 'full');
+  const hint = filled ? '' : '<p class="base muted">Isi jumlah lembar minimal satu pecahan dulu.</p>';
+  return `<div class="notice info" role="status"><b>${ic('cloud')}Mode cloud aktif sejak 14.35</b><div>Dibuka oleh Rina (Manajer). Alasan: Server kasir mati listrik.</div></div>
   <div class="heading"><div><h1>Hitung uang di laci</h1><p class="muted">Kasir 1 · Dewi · Kasir utama</p></div></div>
   <div class="two">
    <section class="panel"><header><h2>Jumlah lembar</h2>${pill('warning', 'lock', 'Hitung tanpa melihat saldo')}</header>
     <p class="base muted" id="u">Isi jumlah lembar tiap pecahan. Sistem tidak menampilkan saldo yang seharusnya, supaya hitungan jujur.</p>
     <div class="count"><div class="r head"><span>Pecahan</span><span>Lembar</span><span>Jumlah</span></div>${rows}
-     <div class="r"><label for="coin">Koin (Rp)</label><input id="coin" inputmode="numeric" autocomplete="off" value="${coins.toLocaleString('id-ID')}"><span class="sub">${rp(coins)}</span></div>
+     <div class="r"><label for="coin">Koin (Rp)</label><input id="coin" inputmode="numeric" autocomplete="off" placeholder="0" value="${filled ? coins.toLocaleString('id-ID') : ''}"><span class="sub">${rp(filled ? coins : 0)}</span></div>
      <div class="sum"><span>Total laci</span><b>${rp(total)}</b></div></div></section>
    <section class="panel"><header><h2>Setelah ini</h2></header>
-    <p class="base">Total ${rp(total)} jadi modal awal shift mode cloud Dewi. Shift edge yang terputus ditutup dengan hitungan yang sama.</p>
+    <p class="base">${filled ? `Total ${rp(total)} akan jadi modal awal shift mode cloud Dewi. Anda diminta memeriksanya dulu.` : 'Total laci akan jadi modal awal shift mode cloud Dewi. Anda diminta memeriksanya dulu sebelum shift dibuka.'} Shift lama yang terputus ditutup dengan hitungan yang sama.</p>
     <p class="base muted">Satu kasir, satu laci, satu hitungan. Kasir lain menghitung laci masing-masing di terminalnya.</p>
-    <div class="actions inline-act">${btn}${link('banner', 'Kembali')}</div></section>
+    <div class="actions inline-act">${btn}${hint}</div></section>
   </div>
-  <div class="bar">${btn}</div>`;
+  <div class="bar">${btn}${hint}</div>`;
+}
+function countConfirm() {
+  const total = denoms.reduce((a, [d, n]) => a + d * n, 0) + coins;
+  return `<dialog id="dlg" aria-labelledby="dt" aria-describedby="dd"><div class="in">
+   <div><h2 id="dt">Total ${rp(total)} sudah benar?</h2><p id="dd" class="base muted">Angka ini jadi modal awal shift mode cloud Dewi. Bila ragu, hitung ulang sekarang.</p></div>
+   <div class="foot">${link('hitung-laci-isi', 'Hitung ulang')}${link('kasir-cloud', ic('cloud') + 'Ya, buka shift', 'primary')}</div></div></dialog>`;
 }
 
 function qrSvg() {
@@ -246,17 +268,17 @@ function cloudSaleView() {
    <section class="panel"><header><h2>Struk di layar</h2></header>
     <div class="qr">${qrSvg()}<span class="no">F1-000001</span></div>
     <p class="base muted">Minta pelanggan memindai kode ini untuk menyimpan struk. Struk kertas tidak bisa dicetak sekarang.</p>
-    <div class="actions">${link('', ic('plus') + 'Pesanan baru', 'primary full')}${off(ic('print') + 'Cetak struk', 'full')}<p class="base muted">Cetak mati karena printer terhubung ke edge. Kartu: pakai EDC mandiri dan catat nomor referensi.</p></div></section>
+    <div class="actions">${link('', ic('plus') + 'Pesanan baru', 'primary full')}${off(ic('print') + 'Cetak struk', 'full')}<p class="base muted">Cetak mati karena printer terhubung ke server kasir. Kartu: pakai EDC mandiri dan catat nomor referensi.</p></div></section>
   </div>`;
 }
 function closeDayView() {
-  return `<div class="heading"><div><h1>Tutup hari</h1><p class="muted">Rabu, 26 November 2026 · Penjualan di edge</p></div></div>
-  <div class="notice info" role="status"><b>${ic('cloud')}Penjualan mode cloud ada di back office</b><div>14 pesanan dengan nomor F1-000001 sampai F1-000014 dicatat di cloud saat edge mati. Angka di layar ini hanya penjualan edge. Rekap lengkap ada di back office.</div></div>
+  return `<div class="heading"><div><h1>Tutup hari</h1><p class="muted">Rabu, 26 November 2026 · Penjualan di server kasir</p></div></div>
+  <div class="notice info" role="status"><b>${ic('cloud')}Penjualan mode cloud ada di back office</b><div>14 pesanan dengan nomor F1-000001 sampai F1-000014 dicatat di cloud saat server kasir mati. Angka di layar ini hanya penjualan server kasir. Rekap lengkap ada di back office.</div></div>
   <div class="two">
-   <section class="panel"><header><h2>Ringkasan edge</h2>${pill('success', 'wifi', 'Edge terhubung')}</header>
-    <dl class="bill"><div><dt>Jumlah pesanan</dt><dd>38</dd></div><div><dt>Tunai</dt><dd>${rp(2145000)}</dd></div><div><dt>QRIS dan kartu</dt><dd>${rp(2070000)}</dd></div><div class="total"><dt>Penjualan edge</dt><dd>${rp(4215000)}</dd></div></dl></section>
+   <section class="panel"><header><h2>Ringkasan server kasir</h2>${pill('success', 'wifi', 'Server kasir hidup')}</header>
+    <dl class="bill"><div><dt>Jumlah pesanan</dt><dd>38</dd></div><div><dt>Tunai</dt><dd>${rp(2145000)}</dd></div><div><dt>QRIS dan kartu</dt><dd>${rp(2070000)}</dd></div><div class="total"><dt>Penjualan server kasir</dt><dd>${rp(4215000)}</dd></div></dl></section>
    <section class="panel"><header><h2>Sebelum menutup</h2></header>
-    <p class="base">Pastikan semua shift edge sudah ditutup dan tidak ada pesanan terbuka.</p>
+    <p class="base">Pastikan semua shift server kasir sudah ditutup dan tidak ada pesanan terbuka.</p>
     <div class="actions inline-act">${link('', 'Tutup hari', 'primary full')}</div></section>
   </div>
   <div class="bar">${link('', 'Tutup hari', 'primary full')}</div>`;
@@ -264,32 +286,25 @@ function closeDayView() {
 
 // ---------- Back office ----------
 function nodeRow(status, extra) {
-  return `<li class="node"><div><h3>Edge utama · Cafe Legend Bandung</h3><p class="base muted">${extra}</p></div><div class="pills">${status}</div></li>`;
+  return `<li class="node"><div><h3>Server kasir utama · Cafe Legend Bandung</h3><p class="base muted">${extra}</p></div><div class="pills">${status}</div></li>`;
 }
 function officeDown() {
-  return `<div class="heading"><div><h1>Perangkat edge</h1><p class="muted">Status server kasir di outlet</p></div></div>
+  return `<div class="heading"><div><h1>Server kasir outlet</h1><p class="muted">Status server kasir di outlet</p></div></div>
   <ul class="nodes">${nodeRow(pill('danger', 'wifioff', 'Terputus'), 'Terakhir terlihat 14.31 · 4 menit lalu · Versi 2.4.1')}</ul>
   <section class="panel"><header><h2>Pindah ke mode cloud</h2></header>
-   <p class="base">Gunakan bila edge tidak bisa dipulihkan dengan cepat. Kasir menghitung laci, lalu menjual lewat internet.</p>
-   <p class="base muted">Pesanan mode cloud tidak masuk ke layar edge. Void atau refund pesanan berawalan F dilakukan dari back office.</p>
+   <p class="base">Gunakan bila server kasir tidak bisa dipulihkan dengan cepat. Kasir menghitung laci, lalu menjual lewat internet.</p>
+   <p class="base muted">Pesanan mode cloud tidak masuk ke layar server kasir. Void atau refund pesanan berawalan F dilakukan dari back office.</p>
    <div class="actions">${link('bo-konfirmasi', ic('cloud') + 'Pindah ke mode cloud', 'primary')}</div></section>`;
 }
-function officeConfirm() {
-  return `<dialog id="dlg" aria-labelledby="dt" aria-describedby="dd"><div class="in">
-   <div><h2 id="dt">Pindah ke mode cloud?</h2><p id="dd" class="base muted">Edge tidak menerima penjualan sampai outlet kembali ke edge. Semua kasir di outlet akan diminta menghitung laci.</p></div>
-   <div class="field"><label for="why">Alasan pindah</label><select id="why">${reasons.map((r, i) => `<option ${i === 0 ? 'selected' : ''}>${r}</option>`).join('')}</select></div>
-   <div class="field"><label for="memo">Catatan (boleh kosong)</label><textarea id="memo"></textarea></div>
-   <div class="foot">${link('bo-edge', 'Batal')}${link('bo-aktif', ic('cloud') + 'Pindah ke mode cloud', 'primary')}</div></div></dialog>`;
-}
 function officeActive() {
-  return `<div class="heading"><div><h1>Perangkat edge</h1><p class="muted">Status server kasir di outlet</p></div></div>
-  <ul class="nodes">${nodeRow(pill('success', 'wifi', 'Terhubung kembali') + pill('info', 'cloud', 'Mode cloud aktif'), 'Terlihat lagi 15.02 · Versi 2.4.1')}</ul>
+  return `<div class="heading"><div><h1>Server kasir outlet</h1><p class="muted">Status server kasir di outlet</p></div></div>
+  <ul class="nodes">${nodeRow(pill('success', 'wifi', 'Hidup kembali') + pill('info', 'cloud', 'Mode cloud aktif'), 'Terlihat lagi 15.02 · Versi 2.4.1')}</ul>
   <div class="two">
    <section class="panel"><header><h2>Mode cloud sejak 14.35</h2></header>
-    <dl class="meta"><div><dt>Dibuka oleh</dt><dd>Rina (Manajer)</dd></div><div><dt>Alasan</dt><dd>Edge mati listrik</dd></div><div><dt>Pesanan mode cloud</dt><dd>14 pesanan</dd></div><div><dt>Penjualan</dt><dd>${rp(1482000)}</dd></div><div><dt>Shift mode cloud</dt><dd>2 shift · 1 sudah ditutup</dd></div><div><dt>Nomor struk</dt><dd>F1-000001 sampai F1-000014</dd></div></dl>
-    ${notice('info', 'info', 'Void dan refund pesanan F', 'Setelah kembali ke edge, void atau refund pesanan berawalan F tetap dilakukan dari back office.')}</section>
+    <dl class="meta"><div><dt>Dibuka oleh</dt><dd>Rina (Manajer)</dd></div><div><dt>Alasan</dt><dd>Server kasir mati listrik</dd></div><div><dt>Pesanan mode cloud</dt><dd>14 pesanan</dd></div><div><dt>Penjualan</dt><dd>${rp(1482000)}</dd></div><div><dt>Shift mode cloud</dt><dd>2 shift · 1 sudah ditutup</dd></div><div><dt>Nomor struk</dt><dd>F1-000001 sampai F1-000014</dd></div></dl>
+    ${notice('info', 'info', 'Void dan refund pesanan F', 'Setelah kembali ke server kasir, void atau refund pesanan berawalan F tetap dilakukan dari back office.')}</section>
    <section class="panel"><header><h2>Langkah berikut</h2></header>
-    <div class="actions">${link('kembali', ic('arrow') + 'Kembali ke edge', 'primary')}${off(ic('x') + 'Batalkan mode cloud')}<p class="base muted">Tidak bisa dibatalkan karena sudah ada 14 pesanan mode cloud.</p></div></section>
+    <div class="actions">${link('kembali', ic('arrow') + 'Kembali ke server kasir', 'primary')}${off(ic('x') + 'Batalkan mode cloud')}<p class="base muted">Tidak bisa dibatalkan karena sudah ada 14 pesanan mode cloud.</p></div></section>
   </div>`;
 }
 function chk(kind, title, body, pillHtml) {
@@ -298,47 +313,58 @@ function chk(kind, title, body, pillHtml) {
 }
 function returnView(ready) {
   const items = [
-    chk('ok', 'Edge tersambung lagi', 'Terlihat 15.02, 12 detik lalu.', pill('success', 'ok', 'Siap')),
+    chk('ok', 'Server kasir tersambung lagi', 'Terlihat 15.02, 12 detik lalu.', pill('success', 'ok', 'Siap')),
     ready ? chk('ok', 'Semua pesanan sudah dibayar', '14 dari 14 pesanan mode cloud lunas.', pill('success', 'ok', 'Siap')) : chk('wait', 'Semua pesanan sudah dibayar', '1 pesanan belum dibayar: Meja 5 · ' + rp(71500) + '. Bayar atau batalkan pesanan itu.', pill('warning', 'clock', 'Belum')),
     ready ? chk('ok', 'Semua shift mode cloud ditutup dengan hitung laci', 'Dewi dan Agus sudah menutup shift.', pill('success', 'ok', 'Siap')) : chk('wait', 'Semua shift mode cloud ditutup dengan hitung laci', 'Dewi selesai. Agus belum menghitung laci di Kasir 2.', pill('warning', 'clock', 'Belum')),
   ];
-  const btn = ready ? link('kembali-selesai', ic('arrow') + 'Kembali ke edge', 'primary full') : off('Kembali ke edge', 'full');
-  return `<div class="heading"><div><h1>Kembali ke edge</h1><p class="muted">Periksa tiga hal ini sebelum outlet memakai edge lagi</p></div><div>${link('bo-aktif', ic('back') + 'Perangkat edge')}</div></div>
+  const btn = ready ? link('kembali-konfirmasi', ic('arrow') + 'Kembali ke server kasir', 'primary full') : off('Kembali ke server kasir', 'full');
+  return `<div class="heading"><div><h1>Kembali ke server kasir</h1><p class="muted">Periksa tiga hal ini sebelum outlet memakai server kasir lagi</p></div><div>${link('bo-aktif', ic('back') + 'Server kasir outlet')}</div></div>
   <ul class="chk">${items.join('')}</ul>
-  ${notice('info', 'info', 'Setelah kembali', 'Kasir membuka shift baru di edge. Modal awalnya sama dengan hitungan saat menutup shift mode cloud.')}
+  ${notice('info', 'info', 'Setelah kembali', 'Kasir membuka shift baru di server kasir. Modal awalnya sama dengan hitungan saat menutup shift mode cloud.')}
   <div class="actions inline-act">${btn}${ready ? '' : '<p class="base muted">Selesaikan 2 hal di atas dulu.</p>'}</div>
   <div class="bar">${btn}</div>`;
 }
+function returnConfirm() {
+  return `<dialog id="dlg" aria-labelledby="dt" aria-describedby="dd"><div class="in">
+   <div><h2 id="dt">Kembali ke server kasir sekarang?</h2><p id="dd" class="base muted">Terminal berhenti memakai cloud dan memakai server kasir lagi. Kasir membuka shift baru dengan modal dari hitungan penutupan.</p></div>
+   <div class="foot">${link('kembali-siap', 'Belum')}${link('kembali-selesai', ic('arrow') + 'Ya, kembali ke server kasir', 'primary')}</div></div></dialog>`;
+}
 function doneView() {
-  return `<div class="heading"><div><h1>Kembali ke edge</h1><p class="muted">Cafe Legend Bandung</p></div></div>
-  ${notice('success', 'ok', 'Outlet kembali ke edge', 'Terminal akan memakai edge lagi. Kasir membuka shift baru dengan modal dari hitungan penutupan.')}
+  return `<div class="heading"><div><h1>Kembali ke server kasir</h1><p class="muted">Cafe Legend Bandung</p></div></div>
+  ${notice('success', 'ok', 'Outlet kembali ke server kasir', 'Terminal akan memakai server kasir lagi. Kasir membuka shift baru dengan modal dari hitungan penutupan.')}
   <section class="panel"><header><h2>Yang sedang berjalan</h2></header>
    <ul class="chk">
     ${chk('ok', 'Mode cloud ditutup', '14 pesanan, ' + rp(1482000) + ' tercatat di cloud.', pill('success', 'ok', 'Selesai'))}
-    ${chk('run', 'Edge menutup shift lama', 'Shift yang terputus ditutup dengan hitungan laci saat pindah.', pill('info', 'clock', 'Berjalan'))}
+    ${chk('run', 'Server kasir menutup shift lama', 'Shift yang terputus ditutup dengan hitungan laci saat pindah.', pill('info', 'clock', 'Berjalan'))}
    </ul></section>`;
 }
 
 const views = {
   banner: () => terminalHeader(sPill.down) + '<main>' + bannerView() + '</main>',
-  pin: () => terminalHeader(sPill.down) + '<main class="dim">' + bannerView() + '</main>' + pinDialog(false),
-  'pin-salah': () => terminalHeader(sPill.down) + '<main class="dim">' + bannerView() + '</main>' + pinDialog(true),
+  pin: () => terminalHeader(sPill.down) + '<main class="dim">' + bannerView() + '</main>' + pinDialog('kosong'),
+  'pin-isi': () => terminalHeader(sPill.down) + '<main class="dim">' + bannerView() + '</main>' + pinDialog('isi'),
+  'pin-lainnya': () => terminalHeader(sPill.down) + '<main class="dim">' + bannerView() + '</main>' + pinDialog('lainnya'),
+  'pin-salah': () => terminalHeader(sPill.down) + '<main class="dim">' + bannerView() + '</main>' + pinDialog('salah'),
   'tanpa-internet': () => terminalHeader(pill('danger', 'wifioff', 'Tanpa internet')) + '<main class="dim">' + bannerView() + '</main>' + noNetDialog(),
-  'hitung-laci': () => terminalHeader(sPill.cloud) + '<main>' + countView() + '</main>',
+  'hitung-laci': () => terminalHeader(sPill.cloud) + '<main>' + countView('kosong') + '</main>',
+  'hitung-laci-isi': () => terminalHeader(sPill.cloud) + '<main>' + countView('isi') + '</main>',
+  'hitung-laci-konfirmasi': () => terminalHeader(sPill.cloud) + '<main class="dim">' + countView('isi') + '</main>' + countConfirm(),
   'kasir-cloud': () => terminalHeader(sPill.cloud) + '<main>' + cloudSaleView() + '</main>',
   'tutup-hari': () => terminalHeader(sPill.ok) + '<main>' + closeDayView() + '</main>',
   'bo-edge': () => officeHeader() + '<main>' + officeDown() + '</main>',
-  'bo-konfirmasi': () => officeHeader() + '<main class="dim">' + officeDown() + '</main>' + officeConfirm(),
+  'bo-konfirmasi': () => officeHeader() + '<main class="dim">' + officeDown() + '</main>' + pinDialog('kosong', true),
+  'bo-konfirmasi-isi': () => officeHeader() + '<main class="dim">' + officeDown() + '</main>' + pinDialog('isi', true),
   'bo-aktif': () => officeHeader() + '<main>' + officeActive() + '</main>',
   kembali: () => officeHeader() + '<main>' + returnView(false) + '</main>',
   'kembali-siap': () => officeHeader() + '<main>' + returnView(true) + '</main>',
+  'kembali-konfirmasi': () => officeHeader() + '<main class="dim">' + returnView(true) + '</main>' + returnConfirm(),
   'kembali-selesai': () => officeHeader() + '<main>' + doneView() + '</main>',
 };
 const app = document.getElementById('app');
 app.innerHTML = (views[screen] || views.banner)();
 const dlg = app.querySelector('dialog');
 if (dlg) dlg.showModal();
-document.getElementById('note').innerHTML = 'Hanya untuk review F6a, semua nama dan angka adalah contoh. Layar: ' + Object.keys(views).map((k) => `<a href="?screen=${k}" ${k === screen ? 'aria-current="page"' : ''}>${k}</a>`).join(' · ');
+document.getElementById('note').innerHTML = 'Hanya untuk review F6a, semua nama dan angka adalah contoh. Catatan F6b: tombol mati selalu disertai alasan; Tutup hari memakai dialog konfirmasi. Layar: ' + Object.keys(views).map((k) => `<a href="?screen=${k}" ${k === screen ? 'aria-current="page"' : ''}>${k}</a>`).join(' · ');
 document.body.dataset.ready = screen;
 </script>
 </body>
