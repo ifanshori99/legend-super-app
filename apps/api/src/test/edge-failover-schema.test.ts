@@ -468,3 +468,83 @@ describe("1271 F1 receipt_sequences.series", () => {
     });
   });
 });
+
+describe("1271 F1 migration 0529 backfills", () => {
+  const statements = readFileSync(
+    new URL("../../drizzle/0529_edge_failover.sql", import.meta.url),
+    "utf8",
+  ).split("--> statement-breakpoint");
+  const statement = (marker: string) => {
+    const found = statements.filter((text) => text.includes(marker));
+    expect(found).toHaveLength(1);
+    return found[0]!;
+  };
+
+  it("marks the outlet-keyed C run as the cloud series and leaves device runs alone", async () => {
+    const backfill = statement("SET series = 'cloud'");
+    await inRollback(async (place) => {
+      await place.client.query(
+        "ALTER TABLE receipt_sequences DISABLE TRIGGER receipt_sequences_series_fixed_trg",
+      );
+      expect(
+        await insertSequence(place, {
+          prefix: "C",
+          deviceId: place.outletId,
+        }),
+      ).toBeNull();
+      const deviceId = randomUUID();
+      expect(
+        await insertSequence(place, { prefix: "P1", deviceId }),
+      ).toBeNull();
+      await place.client.query(backfill);
+      await place.client.query(backfill);
+      const { rows } = await place.client.query<{
+        prefix: string;
+        series: string;
+      }>(
+        "SELECT prefix, series FROM receipt_sequences WHERE outlet_id = $1 ORDER BY prefix",
+        [place.outletId],
+      );
+      expect(rows).toEqual([
+        { prefix: "C", series: "cloud" },
+        { prefix: "P1", series: "device" },
+      ]);
+    });
+  });
+
+  it("grants pos.failover.manage to the stored owner, outlet_manager and supervisor templates only, once", async () => {
+    const grant = statement("('supervisor', 'pos.failover.manage')");
+    const code = "pos.failover.manage";
+    await inRollback(async (place) => {
+      await place.client.query(
+        "UPDATE roles SET permissions = permissions - $2 WHERE tenant_id = $1",
+        [tenantAId, code],
+      );
+      const { rows: custom } = await place.client.query<{ id: string }>(
+        `INSERT INTO roles (tenant_id, name, is_template, permissions, allowed_scope_types)
+         VALUES ($1, $2, false, '["pos.day.close"]'::jsonb, '["tenant"]'::jsonb) RETURNING id`,
+        [tenantAId, `EFS ${hex()}`],
+      );
+      await place.client.query(grant);
+      await place.client.query(grant);
+      await place.client.query("SELECT set_config('app.tenant_id', $1, true)", [
+        tenantAId,
+      ]);
+      const { rows } = await place.client.query<{ key: string; n: number }>(
+        `SELECT template_key AS key,
+                (SELECT count(*)::int FROM jsonb_array_elements_text(permissions) c WHERE c = $2) AS n
+           FROM roles WHERE tenant_id = $1 AND permissions ? $2 ORDER BY template_key`,
+        [tenantAId, code],
+      );
+      expect(rows).toEqual([
+        { key: "outlet_manager", n: 1 },
+        { key: "owner", n: 1 },
+        { key: "supervisor", n: 1 },
+      ]);
+      const { rows: kept } = await place.client.query<{
+        permissions: string[];
+      }>("SELECT permissions FROM roles WHERE id = $1", [custom[0]!.id]);
+      expect(kept[0]!.permissions).toEqual(["pos.day.close"]);
+    });
+  });
+});
