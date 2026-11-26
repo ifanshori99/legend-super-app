@@ -1,2 +1,0 @@
-ALTER TABLE "wfc_seat_reservations" ADD COLUMN "payment_link_token_sealed" text;--> statement-breakpoint
-CREATE UNIQUE INDEX "wfc_seat_reservations_one_hold_key" ON "wfc_seat_reservations" USING btree ("tenant_id","customer_profile_id") WHERE "wfc_seat_reservations"."status" = 'pending_payment';

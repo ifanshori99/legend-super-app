@@ -3606,13 +3606,6 @@
       "when": 1795651500562,
       "tag": "0528_edge_pos_ingests",
       "breakpoints": true
-    },
-    {
-      "idx": 529,
-      "version": "7",
-      "when": 1795653873013,
-      "tag": "0529_wfc_sale_hold",
-      "breakpoints": true
     }
   ]
 }
