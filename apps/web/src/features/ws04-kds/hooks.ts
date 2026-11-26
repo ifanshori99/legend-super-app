@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
+import type { CloudPrintLoader } from "../ws04-pos-kasir/print/cloud-print.ts";
 import type {
   KitchenTicket,
   KitchenTicketItem,
@@ -11,6 +12,7 @@ import {
   ticketAction,
   updateItem,
   sendKdsHeartbeat,
+  fetchTicketPrint,
 } from "./api.ts";
 import {
   boardQuery,
@@ -106,3 +108,9 @@ export function useKdsActions(outletId: string) {
     onSuccess: refresh,
   });
 }
+
+/** P3: loads the ticket's ESC/POS bytes for this tablet's printer. */
+export const ticketPrintLoader =
+  (outletId: string, ticketId: KitchenTicket["id"]): CloudPrintLoader =>
+  ({ paperWidth, reprint }) =>
+    fetchTicketPrint(outletId, ticketId, paperWidth, reprint);

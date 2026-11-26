@@ -88,15 +88,15 @@ export function stationTicketPayload(
       "Tiket ini tidak punya baris untuk dicetak.",
     );
   const bytes = renderStationTicket(
-      {
-        stationName,
-        ticketNumber: `K-${String(ticket.ticketNo).padStart(3, "0")}`,
-        orderLabel: ticket.tableLabel ?? `#${ticket.ticketNo}`,
-        orderType: ticket.channel,
-        createdAt: new Date(ticket.firedAt),
-        items,
-      },
-      paperWidth,
+    {
+      stationName,
+      ticketNumber: `K-${String(ticket.ticketNo).padStart(3, "0")}`,
+      orderLabel: ticket.tableLabel ?? `#${ticket.ticketNo}`,
+      orderType: ticket.channel,
+      createdAt: new Date(ticket.firedAt),
+      items,
+    },
+    paperWidth,
   );
   return toPrintPayload(
     reprint ? markReprint(bytes) : bytes,

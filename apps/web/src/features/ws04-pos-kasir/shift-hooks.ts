@@ -6,10 +6,12 @@ import { useMemo } from "react";
 import { businessDateOf } from "@starter/shared/core";
 import { useOutletClock } from "@/lib/tenant-context";
 import { useIntentKey, useOutletId, useReady } from "./hooks";
+import type { CloudPrintLoader } from "./print/cloud-print";
 import {
   approveShiftClose,
   closeDay,
   discardOwnCount,
+  fetchShiftPrint,
   isCloseSettled,
   openShift,
   recordCashMovement,
@@ -382,4 +384,11 @@ export function useCloseDay() {
         recap,
       ),
   });
+}
+
+/** P3: loads the closing report's ESC/POS bytes for this tablet's printer. */
+export function useShiftPrintLoader(shiftId: string): CloudPrintLoader {
+  const outletId = useOutletId();
+  return ({ paperWidth, reprint }) =>
+    fetchShiftPrint(outletId, shiftId, paperWidth, reprint);
 }

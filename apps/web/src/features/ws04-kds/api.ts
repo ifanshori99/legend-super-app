@@ -192,7 +192,10 @@ export async function fetchTicketPrint(
   return (
     await callEndpoint(
       getKitchenTicketPrint,
-      { params: { outletId, ticketId }, query: { paperWidth, reprint: reprint ? "true" : "false" } },
+      {
+        params: { outletId, ticketId },
+        query: { paperWidth, reprint: reprint ? "true" : "false" },
+      },
       { signal },
     )
   ).data;

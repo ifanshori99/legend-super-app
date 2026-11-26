@@ -92,8 +92,7 @@ export const posKasirCommonMessages = {
       shift: "Cetak laporan shift",
       shiftAgain: "Cetak ulang laporan shift",
       sent: "Dikirim ke printer. Bila kertas tidak keluar, periksa printer lalu cetak ulang.",
-      sentAgain:
-        "Dikirim ulang ke printer. Kertasnya bertanda CETAK ULANG.",
+      sentAgain: "Dikirim ulang ke printer. Kertasnya bertanda CETAK ULANG.",
       none: "Tablet ini diatur tanpa printer. Ubah printer lalu cetak.",
       failed:
         "RawBT atau dialog cetak tidak terbuka. Pastikan aplikasi RawBT terpasang atau pilih Browser, lalu cetak ulang.",

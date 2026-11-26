@@ -120,8 +120,8 @@ test("6 the test page fits the paper and says it is a test", () => {
 
 test("3-5 copy: cause of a missed print, saved printer, test print", () => {
   const p = posKasirCommonMessages.printer;
-  assert.match(p.description, /Struk dikirim ke printer ini/);
-  assert.doesNotMatch(p.description, /laporan/i);
+  // P3 connected the shift report: the description names all three.
+  assert.match(p.description, /Struk, tiket dapur, dan laporan shift/);
   assert.match(p.saved, /^Printer disimpan: \{summary\}$/);
   assert.ok(p.notSent.none.title && p.notSent.failed.title);
   assert.match(p.notSent.failed.body, /RawBT/);
