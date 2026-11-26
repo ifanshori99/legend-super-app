@@ -147,3 +147,10 @@ high: F3 access). Second opinion Codex once for the whole area (xhigh), before t
 - Edge local stock does not see failover sales until normal cloud -> edge stock flow; sold-out gating may lag (v1 accepted).
 - F6b blocked if the POS edge/cloud API target card is not merged.
 - QR guest orders stay refused during a window (design out of scope).
+
+
+## Ralat dari review K F1 (27 Nov, docs/qa/1271-f1-review.md)
+- F2: run `C` berseri `cloud`. Cari/buat sequence dengan `series <> 'failover'` atau seri eksplisit, jangan `series='device'`; `insertSequence` menerima `series` eksplisit. Test: jual cloud tanpa perangkat tetap jalan sesudah 0529.
+- F3: isi `failover_window_id` di semua jalur insert order/shift, termasuk split, merge, pindah bill. Pakai konstanta event `pos_failover_window.state` / `.closed`.
+- F4: salinan window di edge memakai `idempotency_key` = id window; tabel window masuk `EDGE_REQUIRED_TABLES`.
+- F5: write-off menolak run F; celah nomor F dilaporkan, tidak dihapuskan.
