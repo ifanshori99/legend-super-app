@@ -26,3 +26,7 @@
 - API: `listPosShifts` query `status` (open|closed, strict zod, opsional). Web kirim `status=open`, tanpa businessDate, semua halaman.
 - Gagal-dulu (implementasi API dibalik): pos-offline-batch "O5 (1)" GAGAL (flag/alasan tidak dikenal, skema strict menolak); pos-shift "O5 (2)" GAGAL (`expected 422 to be 200`, status ditolak). Dipulihkan: pos-offline-batch 26 lulus, pos-shift 88 lulus, web o5 6 lulus.
 - Catatan: guard DB melarang mengubah business_date shift, jadi test API tidak memundurkan tanggal; "tanpa batas hari" dibuktikan lewat daftar tanpa businessDate + gabungan status=open&businessDate=lain kosong.
+
+## Langkah 4: harness e2e offline (27 Nov)
+- Dibuat: `playwright.offline.config.ts`, `e2e-offline/pos-offline.spec.ts`, mode `e2e-offline` di `scripts/test.mjs` (API `api.legend.test:4101`, web `o5-offline.legend.test:3101`, `COOKIE_DOMAIN=.legend.test`, `LEGEND_E2E_SKIP_BUILD=1` untuk iterasi spec).
+- Percobaan 1 gagal: API `NODE_ENV=development` crash (pino-pretty worker, `__dirname` di bundle ESM). Dipindah ke `NODE_ENV=test` (tanpa pretty, aturan https produksi tak disentuh). Web tetap production.

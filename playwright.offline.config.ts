@@ -8,9 +8,10 @@ import { defineConfig, devices } from "@playwright/test";
 // COOKIE_DOMAIN set for these origins and creates the disposable database.
 //
 // Only this config relaxes anything, and only for the test API process:
-// - NODE_ENV=development there, because production refuses an http API origin
-//   that is not localhost (env.ts, 1209); the web server still runs as
-//   production. Nothing in the production rules changes.
+// - NODE_ENV=test there, because production refuses an http API origin that is
+//   not localhost (env.ts, 1209) and the bundled API cannot run the
+//   development pretty-printer; the web server still runs as production.
+//   Nothing in the production rules changes.
 // - TRUST_PROXY=loopback so the API honors the web server's X-Forwarded-Host
 //   (the SSR hop), as behind the real proxy.
 // Chromium maps every `*.legend.test` name to this machine; Node never
@@ -49,7 +50,7 @@ export default defineConfig({
       reuseExistingServer: false,
       timeout: 60_000,
       env: {
-        NODE_ENV: "development",
+        NODE_ENV: "test",
         PORT: "4101",
         BETTER_AUTH_URL: OFFLINE_API_URL,
         WEB_URL: OFFLINE_WEB_URL,
