@@ -18,6 +18,7 @@ import { openOrdersGate } from "@/features/ws04-pos-open-orders/guard";
 import {
   OLD_LINK_FRESH_MS,
   OPEN_ORDER_STATUSES,
+  listAgeMs,
   minutesAgo,
   oldLinkRemainingIdr,
   ordersWithHeldItems,
@@ -267,4 +268,18 @@ test("the status filter goes out as the comma list the API parses", async () => 
     query: { status: OPEN_ORDER_STATUSES.join(","), limit: 100 } as never,
   } as never);
   assert.deepEqual(sent, { status: "draft,awaiting_payment,sent", limit: 100 });
+});
+
+test("the list age never goes negative after a refetch lands past `now`", () => {
+  assert.equal(listAgeMs(10_000, 4_000), 6_000);
+  assert.equal(listAgeMs(10_000, 12_500), 0);
+  assert.equal(listAgeMs(10_000, 0), -1);
+  assert.equal(
+    oldLinkRemainingIdr(
+      192_900,
+      { remainingIdr: 0 },
+      listAgeMs(10_000, 12_500),
+    ),
+    0,
+  );
 });

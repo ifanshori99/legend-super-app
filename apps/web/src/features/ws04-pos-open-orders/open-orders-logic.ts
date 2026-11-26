@@ -104,6 +104,14 @@ export function minutesAgo(
 export const OLD_LINK_FRESH_MS = 20_000;
 
 /**
+ * How old the list is, in ms; -1 when it was never read. `now` ticks on its
+ * own timer, so a refetch can land after it: the age is never negative.
+ */
+export function listAgeMs(now: number, dataUpdatedAt: number): number {
+  return dataUpdatedAt > 0 ? Math.max(0, now - dataUpdatedAt) : -1;
+}
+
+/**
  * The list remembers payments the order detail does not count yet (a paid
  * link from an older flow, review B2 P3-4). When the list says less is left
  * than the detail computes, the detail shows the list's figure as a warning

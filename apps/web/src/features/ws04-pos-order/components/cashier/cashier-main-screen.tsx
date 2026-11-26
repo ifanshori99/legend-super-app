@@ -27,6 +27,7 @@ import { readDraft, useDraftCart } from "@/features/ws04-pos-order/draft-store";
 import {
   isContractPending,
   useCashierDraftKey,
+  useContinueCashierDraft,
   useCloseResume,
   useOtherCashierPending,
   usePendingOrder,
@@ -95,7 +96,7 @@ export function CashierMainScreen() {
     ojolRef: "",
   });
   // The phone view lives in the URL (`?v=keranjang`), so Back returns to the menu.
-  const { v, ditahan } = useSearch({ from: "/_ops/pos/kasir" });
+  const { v, ditahan, draft } = useSearch({ from: "/_ops/pos/kasir" });
   const view = v === "keranjang" ? "cart" : "menu";
   // Whether the cart view was opened by a push from this screen: then "back to
   // menu" is a real history Back; a cart opened directly (deep link) is replaced.
@@ -131,6 +132,20 @@ export function CashierMainScreen() {
       replace: true,
     });
   }, [ditahan, navigate]);
+  // An unsent order opened from its detail ("Lanjutkan di kasir"): sending it
+  // here never creates a second order; it goes on to the order's detail.
+  const continueDraft = useContinueCashierDraft();
+  const sendDraft = (orderId: string) =>
+    continueDraft.mutate(
+      { orderId, tableSessionId: null },
+      {
+        onSuccess: () =>
+          void navigate({
+            to: "/pos/pesanan/$orderId",
+            params: { orderId },
+          }),
+      },
+    );
   const [fieldError, setFieldError] = useState<ChannelDetailError>(null);
   const [fieldErrorToken, setFieldErrorToken] = useState(0);
   // The lines the cashier just removed (newest last), kept briefly so "Urungkan"
@@ -403,6 +418,30 @@ export function CashierMainScreen() {
             {t("posOrderCart.status.undo")}
           </Button>
         </Notice>
+      )}
+      {draft && (
+        <Notice tone="warning" title={t("posOrderCart.draftOrder.title")}>
+          <div className="grid gap-2">
+            <p>{t("posOrderCart.draftOrder.body")}</p>
+            <Button
+              type="button"
+              variant="outline"
+              loading={continueDraft.isPending}
+              onClick={() => sendDraft(draft)}
+            >
+              {t("posOrderCart.draftOrder.send")}
+            </Button>
+          </div>
+        </Notice>
+      )}
+      {draft && continueDraft.isError && (
+        <ActionError
+          pending={isContractPending(continueDraft.error)}
+          title={t("posOrderCart.draftOrder.errorTitle")}
+          body={t("posOrderCart.draftOrder.errorBody")}
+          error={continueDraft.error}
+          onRetry={() => sendDraft(draft)}
+        />
       )}
       {pendingOrder.pending && !submit.isPending && !keyRefused && (
         <Notice tone="warning" title={t("posOrderCart.pending.title")}>

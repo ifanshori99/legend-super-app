@@ -172,7 +172,9 @@ export function PrimaryAction({
   if (kind === "cashier")
     return (
       <Button asChild size="lg" className={className}>
-        <Link to="/pos/kasir">{t("posOrderDetail.pay.continueAtCashier")}</Link>
+        <Link to="/pos/kasir" search={{ draft: order.id }}>
+          {t("posOrderDetail.pay.continueAtCashier")}
+        </Link>
       </Button>
     );
   if (kind === "pay")

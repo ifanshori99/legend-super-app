@@ -763,6 +763,27 @@ test("a draft with no stored intent is submitted on its own key, repeated as it 
   assert.equal(keys[0], keys[1]);
 });
 
+test("the cashier continues a draft with no table session on its own key, once", async () => {
+  const storage = new MemoryStorage();
+  const keys: string[] = [];
+  let lose = 1;
+  const deps = (store: MemoryStorage) => ({
+    storage: store,
+    makeKey,
+    scope: WHO,
+    submit: async (orderId: string, body: { idempotencyKey: string }) => {
+      keys.push(body.idempotencyKey);
+      if (lose-- > 0) throw NETWORK();
+      return { id: orderId, status: "awaiting_payment" };
+    },
+  });
+  await assert.rejects(continueDraft(deps(storage), "order-4", null));
+  const sent = await continueDraft(deps(storage.clone()), "order-4", null);
+  assert.equal(sent.status, "awaiting_payment");
+  assert.equal(keys.length, 2);
+  assert.equal(keys[0], keys[1]);
+});
+
 test("create lost, then Continue, then Resend: one order, nothing left to resend", async () => {
   const server = orderServer();
   const storage = new MemoryStorage();
