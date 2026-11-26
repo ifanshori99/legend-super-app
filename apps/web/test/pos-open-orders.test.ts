@@ -5,10 +5,7 @@
 import assert from "node:assert/strict";
 import type { PosOrderSummary, PosParkedOrder } from "@starter/shared/pos";
 import { fireItems } from "@/features/ws04-pos-order/captain-flow";
-import {
-  canFire,
-  heldItemIds,
-} from "@/features/ws04-pos-order-detail/fire";
+import { canFire, heldItemIds } from "@/features/ws04-pos-order-detail/fire";
 import {
   OPEN_ORDER_STATUSES,
   minutesAgo,
@@ -58,7 +55,10 @@ class MemoryStorage {
 }
 
 test("the tab asks for open statuses only, never completed or voided", () => {
-  assert.deepEqual([...OPEN_ORDER_STATUSES], ["draft", "awaiting_payment", "sent"]);
+  assert.deepEqual(
+    [...OPEN_ORDER_STATUSES],
+    ["draft", "awaiting_payment", "sent"],
+  );
 });
 
 test("rows keep the server's money and leave final orders out", () => {
