@@ -1,0 +1,308 @@
+<!doctype html><html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Legend · Kasir offline (O4)</title>
+<!-- Mockup O4 (bead legend-wasr7.8). Dasar: docs/design/cloud-only-release.md "Keputusan CTO O2" dan "Keputusan CTO 27 Nov",
+     docs/qa/1272-o3-review.md, kode apps/web/src/features/ws04-pos-kasir/offline/. Kondisi lewat ?state=... (lihat render.mjs). -->
+<style>
+@font-face{font-family:Jakarta;src:url('../../assets/plus-jakarta-sans-latin.woff2');font-display:swap}
+*{box-sizing:border-box}
+:root{--ink:#1c1b19;--hint:#5f5b55;--edge:#68635c;--line:#a9a49d;--rule:#c1bcb5;--canvas:#f7f6f4;--shell:#fbfaf9;--soft:#f1efec;--primary:#0f5e68;--warn:#8f5800;--warn-ink:#704500;--warn-bg:#fcf1dc;--ok:#155b32;--ok-bg:#e4f5eb;--bad:#a12227;--bad-bg:#fdebeb;--info:#1f4fb8;--info-bg:#e9f0fd}
+body{margin:0;font:16px/1.4 Jakarta,sans-serif;color:var(--ink);background:var(--canvas);font-variant-numeric:tabular-nums}
+button,input{font:inherit;color:inherit}
+button{border:2px solid var(--edge);border-radius:8px;background:#fff;font-weight:700;min-height:56px;padding:10px 16px}
+button:disabled{background:var(--soft);color:var(--hint);border-color:var(--line)}
+.primary{background:var(--primary);border-color:var(--primary);color:#fff}
+h1,h2,h3,p{margin:0}h1{font-size:26px;line-height:1.25}h2{font-size:21px;line-height:1.3}h3{font-size:17px}
+.sub{color:var(--hint);font-size:14px}
+[hidden]{display:none!important}
+header{height:72px;background:var(--shell);border-bottom:2px solid var(--rule);display:flex;align-items:center;justify-content:space-between;padding:0 24px;gap:12px}
+.brand{font-size:21px;font-weight:700}
+.meta{display:flex;gap:14px;align-items:center;font-size:14px}
+.meta button{min-height:44px;padding:6px 14px;font-size:14px}
+.status{font-weight:700;border-radius:30px;padding:7px 12px;white-space:nowrap}
+.status.off{background:var(--warn-bg);color:var(--warn-ink)}
+.status.on{background:var(--ok-bg);color:var(--ok)}
+.sample{color:var(--hint)}
+.page{padding:20px 24px;display:grid;grid-template-columns:minmax(0,1fr) 390px;gap:20px;height:calc(100vh - 72px)}
+.title{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:12px}
+/* Banner offline: ikon + teks, bukan warna saja */
+.banner{background:var(--warn-bg);border:2px solid var(--warn);border-left-width:6px;border-radius:8px;padding:12px 14px;display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:12px;align-items:center;margin-bottom:12px}
+.banner .ico{font-size:22px;line-height:1;color:var(--warn-ink)}
+.banner strong{display:block;font-size:17px}
+.banner p{font-size:14px}
+.banner button{min-height:48px;padding:6px 14px;font-size:15px;background:#fff}
+.banner button.primary{background:var(--primary)}
+.banner.stop{background:var(--bad-bg);border-color:var(--bad)}
+.banner.stop .ico{color:var(--bad)}
+.promo{display:flex;gap:8px;align-items:center;font-size:14px;font-weight:700;color:var(--warn-ink);margin-bottom:10px}
+.promo i{font-style:normal;border:2px solid var(--warn);border-radius:50%;width:22px;height:22px;display:inline-flex;align-items:center;justify-content:center;font-size:13px}
+.search{width:100%;height:56px;padding:0 18px;border:2px solid var(--edge);border-radius:8px;background:#fff;font-size:17px}
+.categories{display:flex;gap:8px;margin:12px 0;overflow:hidden}
+.categories button{white-space:nowrap;min-height:48px}
+.selected{background:var(--soft);border-color:var(--ink)}
+.items{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.item{border:2px solid var(--line);background:#fff;border-radius:10px;padding:14px;min-height:118px;display:flex;flex-direction:column;justify-content:space-between}
+.item-top{display:flex;gap:10px;align-items:start}
+.item-top img{width:52px;height:52px;object-fit:cover;border-radius:6px;flex:none}
+.orderrow{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
+.price{font-weight:700}
+.listtag{font-size:12px;color:var(--hint);font-weight:600}
+.pill{display:inline-block;font-size:13px;font-weight:700;padding:4px 9px;border-radius:20px;background:#e8e5e1;color:#39352f;white-space:nowrap}
+.pill.warn{background:var(--warn-bg);color:var(--warn-ink)}
+.pill.bad{background:var(--bad-bg);color:var(--bad)}
+.pill.ok{background:var(--ok-bg);color:var(--ok)}
+.pill.info{background:var(--info-bg);color:var(--info)}
+.cart{background:#fff;border:2px solid var(--line);border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:8px;overflow:hidden;min-width:0}
+.channel{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.channel button{min-height:48px;font-size:15px}
+.line{border-top:1px solid var(--rule);padding-top:8px}
+.details{font-size:14px;color:var(--hint);margin-top:2px}
+.spacer{flex:1}
+.sumrow{display:flex;justify-content:space-between;font-size:15px}
+.total{display:flex;justify-content:space-between;font-size:21px;font-weight:700}
+.cartnote{background:var(--warn-bg);border-radius:8px;padding:8px 12px;font-size:14px;color:var(--warn-ink);font-weight:600}
+.mobilecart{display:none}
+/* Dialog dan sheet */
+.overlay{position:fixed;inset:0;background:#0008;display:flex;align-items:center;justify-content:center;padding:20px}
+.dialog{background:#fff;border:2px solid var(--edge);border-radius:12px;width:560px;max-width:100%;padding:24px;box-shadow:0 20px 60px #0003}
+.dialog.small{width:480px}
+.dialog .head{display:flex;justify-content:space-between;align-items:start;gap:12px;margin-bottom:4px}
+.dialog footer{display:flex;gap:8px;margin-top:18px}
+.dialog footer button{flex:1}
+.methods{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:16px}
+.method{border:2px solid var(--line);border-radius:10px;padding:12px 14px;min-height:64px;display:flex;flex-direction:column;justify-content:center;background:#fff}
+.method strong{font-size:17px}
+.method.on{border:3px solid var(--primary);background:#eef6f7}
+.method.on strong::before{content:"● ";color:var(--primary)}
+.method.off{background:var(--soft);border-style:dashed;color:var(--hint)}
+.offline-only{margin-top:10px;font-size:14px;color:var(--hint)}
+label{display:block;font-weight:700;margin:16px 0 6px}
+.field{width:100%;height:60px;border:2px solid var(--edge);border-radius:8px;padding:0 16px;font-size:24px;font-weight:700;background:#fff}
+.quick{display:flex;gap:8px;margin-top:8px}
+.quick button{flex:1;min-height:48px;font-size:15px}
+.change{display:flex;justify-content:space-between;margin-top:14px;font-size:18px;font-weight:700;background:var(--ok-bg);color:var(--ok);padding:10px 14px;border-radius:8px}
+.done{text-align:center}
+.done .badge{width:64px;height:64px;border-radius:50%;background:var(--ok-bg);color:var(--ok);display:inline-flex;align-items:center;justify-content:center;font-size:32px;font-weight:700;margin-bottom:10px}
+.receiptno{font-size:34px;font-weight:700;letter-spacing:.02em;margin:6px 0 2px}
+.facts{text-align:left;margin-top:16px;border-top:1px solid var(--rule)}
+.facts div{display:flex;justify-content:space-between;gap:12px;padding:9px 0;border-bottom:1px solid var(--rule);font-size:15px}
+.facts span:first-child{color:var(--hint)}
+/* Antrean */
+.full{padding:20px 24px;height:calc(100vh - 72px);overflow:hidden}
+.full .title{margin-bottom:14px}
+.summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:14px}
+.card{background:#fff;border:2px solid var(--line);border-radius:10px;padding:14px 16px}
+.card .num{font-size:28px;font-weight:700;margin-top:2px}
+.card.warn{border-color:var(--warn)}
+.card.bad{border-color:var(--bad)}
+.rows{background:#fff;border:2px solid var(--line);border-radius:10px}
+.row{display:grid;grid-template-columns:110px 70px minmax(0,1fr) 120px 120px 240px;gap:12px;align-items:center;padding:12px 16px;border-top:1px solid var(--rule);font-size:15px}
+.row.headrow{border-top:0;font-size:13px;color:var(--hint);font-weight:700;text-transform:uppercase;letter-spacing:.05em;padding:10px 16px}
+.row .no{font-weight:700}
+.row .amt{text-align:right;font-weight:700}
+.row.parked{background:#fff8f8}
+.explain{grid-column:1/-1;background:var(--bad-bg);border-radius:8px;padding:10px 12px;font-size:14px}
+.explain strong{display:block;font-size:15px}
+.foot{display:flex;justify-content:space-between;align-items:center;margin-top:14px;gap:16px}
+.foot p{font-size:14px;color:var(--hint);max-width:62ch}
+/* Tutup shift */
+.close-grid{display:grid;grid-template-columns:minmax(0,1fr) 400px;gap:20px}
+.block{background:var(--bad-bg);border:2px solid var(--bad);border-left-width:6px;border-radius:10px;padding:18px 20px}
+.block .t{display:flex;gap:10px;align-items:center;font-size:20px;font-weight:700}
+.block .t i{font-style:normal;color:var(--bad);font-size:22px}
+.block p{margin-top:8px;max-width:64ch}
+.block .acts{display:flex;gap:10px;margin-top:16px;flex-wrap:wrap}
+.dimmed{opacity:.55}
+.denoms{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:10px}
+.denom{border:2px solid var(--line);border-radius:8px;padding:10px 12px;background:var(--soft)}
+.denom b{display:block;font-size:20px}
+.expect div{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--rule);font-size:15px}
+.expect div.tot{font-size:19px;font-weight:700;border-bottom:0}
+.textlink{border:0;background:transparent;padding:0;min-height:24px;display:inline;text-decoration:underline;font-weight:700;color:var(--ink)}
+/* Shell /pos-offline */
+.shell{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+.shellcard{max-width:448px;width:100%;text-align:center;background:#fff;border:2px solid var(--line);border-radius:14px;padding:32px 28px}
+.shellcard .ico{width:64px;height:64px;border-radius:50%;background:var(--soft);display:inline-flex;align-items:center;justify-content:center;margin-bottom:14px}
+.shellcard p{margin-top:10px;color:var(--hint);max-width:52ch;margin-left:auto;margin-right:auto}
+.shellcard .count{margin-top:14px;color:var(--warn-ink);background:var(--warn-bg);border-radius:8px;padding:10px 12px;font-weight:700}
+.shellcard button{margin-top:18px;width:100%}
+.shellcard .fine{font-size:14px;margin-top:14px}
+@media(max-width:700px){
+ header{height:64px;padding:0 16px}.brand{font-size:18px;white-space:nowrap}.brand .area{display:none}.status .long{display:none}
+ .listtag{display:none}.meta .sample,.meta .terminal{display:none}
+ .page{display:block;height:auto;padding:12px 16px 100px}
+ .title h1{font-size:22px}
+ .banner{grid-template-columns:auto minmax(0,1fr);padding:10px 12px}
+ .banner button{grid-column:1/-1;width:100%}
+ .items{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+ .item{min-height:112px;padding:12px}.item-top img{width:40px;height:40px}.item h3{font-size:16px}
+ .categories{overflow-x:auto}.categories button{flex:none}
+ .cart{display:none}
+ .mobilecart{display:flex;position:fixed;bottom:0;left:0;right:0;background:var(--primary);color:#fff;padding:12px 16px;align-items:center;justify-content:space-between;min-height:76px;font-weight:700}
+ .mobilecart span{font-size:14px;font-weight:600}
+ .overlay{align-items:end;padding:0}
+ .dialog,.dialog.small{width:100%;border-radius:16px 16px 0 0;padding:18px 16px 20px;max-height:100vh;overflow:auto}
+ .methods{grid-template-columns:1fr 1fr}
+ .full{height:auto;overflow:visible;padding:12px 16px 24px}
+ .summary{grid-template-columns:1fr 1fr}.summary .card:last-child{grid-column:1/-1}
+ .row.headrow{display:none}
+ .row{grid-template-columns:minmax(0,1fr) auto;gap:4px 10px;padding:12px 14px}
+ .row .time,.row .pay{display:none}
+ .row .items-cell{grid-column:1/-1;order:3;color:var(--hint);font-size:14px}
+ .row .stat{grid-column:1/-1;order:4}
+ .row .amt{order:2}
+ .explain{order:5}
+ .foot{flex-direction:column;align-items:stretch}.foot button{width:100%}
+ .close-grid{grid-template-columns:1fr}
+ .block .acts button{width:100%}
+ .closeform{display:none}
+}
+</style></head><body>
+
+<!-- ============ Kasir (banner, bayar, tersimpan, keluar, tanpa-bekal) ============ -->
+<div id="kasir">
+<header><div class="brand"><span class="area">Legend / </span>Kasir</div><div class="meta"><span class="terminal">Cafe Legend · Terminal 01</span><span class="status off" id="conn">⚠ Offline · 3<span class="long"> belum terkirim</span></span><span class="sample">Contoh data · Mockup</span><button id="logoutBtn">Keluar</button></div></header>
+<main class="page"><section class="catalog">
+ <div class="title"><div><h1>Pesanan baru</h1><p class="sub">Kasir 01 · Shift dibuka 07.58</p></div></div>
+ <div class="banner" id="banner" role="status">
+  <span class="ico" aria-hidden="true">⚠</span>
+  <div><strong id="bTitle">Offline · 3 penjualan belum terkirim</strong><p id="bText">Tetap bisa jualan: tunai dan EDC manual. Penjualan disimpan di tablet dan terkirim otomatis saat tablet tersambung lagi.</p></div>
+  <button id="bBtn">Lihat antrean</button>
+ </div>
+ <p class="promo" id="promo"><i aria-hidden="true">%</i>Promo tidak berlaku saat offline · harga daftar</p>
+ <input class="search" aria-label="Cari menu" placeholder="⌕  Cari nama menu">
+ <nav class="categories" aria-label="Kategori menu"><button class="selected">Semua menu</button><button>Makanan</button><button>Minuman</button><button>Camilan</button></nav>
+ <div class="items" id="items">
+  <div class="item"><div class="item-top"><img src="../../../../apps/web/demo/sample/menu/nasi-goreng.jpg" alt=""><div><h3>Nasi goreng kampung</h3><p class="sub">Makanan</p></div></div><div class="orderrow"><span><span class="price">Rp38.000</span> <span class="listtag">harga daftar</span></span><span aria-hidden="true">＋</span></div></div>
+  <div class="item"><div class="item-top"><img src="../../../../apps/web/demo/sample/menu/ayam-geprek.jpg" alt=""><div><h3>Ayam geprek</h3><p class="sub">Makanan</p></div></div><div class="orderrow"><span><span class="price">Rp42.000</span> <span class="listtag">harga daftar</span></span><span aria-hidden="true">＋</span></div></div>
+  <div class="item"><div class="item-top"><img src="../../../../apps/web/demo/sample/menu/sate-ayam.jpg" alt=""><div><h3>Sate ayam</h3><p class="sub">Makanan</p></div></div><div class="orderrow"><span><span class="price">Rp40.000</span> <span class="listtag">harga daftar</span></span><span aria-hidden="true">＋</span></div></div>
+  <div class="item"><div class="item-top"><img src="../../../../apps/web/demo/sample/menu/iced-tea.jpg" alt=""><div><h3>Es teh manis</h3><p class="sub">Minuman</p></div></div><div class="orderrow"><span><span class="price">Rp12.000</span> <span class="listtag">harga daftar</span></span><span aria-hidden="true">＋</span></div></div>
+  <div class="item"><div class="item-top"><img src="../../../../apps/web/demo/sample/menu/es-kopi-susu.jpg" alt=""><div><h3>Kopi susu</h3><p class="sub">Minuman</p></div></div><div class="orderrow"><span><span class="price">Rp24.000</span> <span class="listtag">harga daftar</span></span><span aria-hidden="true">＋</span></div></div>
+  <div class="item"><div class="item-top"><img src="../../../../apps/web/demo/sample/menu/fries.jpg" alt=""><div><h3>Kentang goreng</h3><p class="sub">Camilan</p></div></div><div class="orderrow"><span><span class="price">Rp25.000</span> <span class="listtag">harga daftar</span></span><span aria-hidden="true">＋</span></div></div>
+ </div>
+</section>
+<aside class="cart" id="cart">
+ <div><h2>Keranjang</h2><p class="sub">Penjualan offline · Kasir 01</p></div>
+ <div class="channel"><button class="selected">Dine-in</button><button>Takeaway</button></div>
+ <div class="line"><div class="orderrow"><strong>Nasi goreng kampung</strong><strong>Rp38.000</strong></div><p class="details">1 × · Pedas sedang</p></div>
+ <div class="line"><div class="orderrow"><strong>Es teh manis</strong><strong>Rp24.000</strong></div><p class="details">2 × Rp12.000</p></div>
+ <div class="spacer"></div>
+ <p class="cartnote">% Promo tidak berlaku saat offline. Harga di atas harga daftar.</p>
+ <div class="line"><div class="sumrow"><span>Subtotal · 3 item</span><span>Rp62.000</span></div><div class="sumrow"><span>Layanan 5%</span><span>Rp3.100</span></div><div class="sumrow"><span>PB1 10%</span><span>Rp6.510</span></div><div class="sumrow"><span>Pembulatan</span><span>−Rp10</span></div></div>
+ <div class="total"><span>Total</span><span>Rp71.600</span></div>
+ <button class="primary" id="payBtn">Bayar Rp71.600</button>
+</aside></main>
+<div class="mobilecart" id="mcart"><div><span>3 item · Total · harga daftar</span><br>Rp71.600</div><div>Lihat keranjang →</div></div>
+
+<!-- Bayar offline -->
+<div class="overlay" id="bayar" hidden><div class="dialog" role="dialog" aria-modal="true" aria-labelledby="pay-t">
+ <div class="head"><div><h2 id="pay-t">Bayar · offline</h2><p class="sub">Total Rp71.600 · harga daftar, tanpa promo</p></div><span class="pill warn">⚠ Offline</span></div>
+ <div class="methods" role="radiogroup" aria-label="Metode bayar">
+  <div class="method on" role="radio" aria-checked="true"><strong>Tunai</strong><span class="sub">Masuk laci shift ini</span></div>
+  <div class="method" role="radio" aria-checked="false"><strong>EDC manual</strong><span class="sub">Nomor slip wajib</span></div>
+ </div>
+ <p class="offline-only">Hanya saat online: QRIS, VA/e-wallet, poin, voucher, DP.</p>
+ <label for="cash">Uang diterima</label><input id="cash" class="field" inputmode="numeric" value="Rp100.000">
+ <div class="quick"><button>Uang pas</button><button>Rp75.000</button><button>Rp100.000</button></div>
+ <div class="change"><span>Kembalian</span><span>Rp28.400</span></div>
+ <footer><button>Kembali</button><button class="primary">Simpan penjualan</button></footer>
+</div></div>
+
+<!-- Tersimpan di tablet -->
+<div class="overlay" id="tersimpan" hidden><div class="dialog small done" role="dialog" aria-modal="true" aria-labelledby="done-t">
+ <span class="badge" aria-hidden="true">✓</span>
+ <h2 id="done-t">Penjualan disimpan di tablet</h2>
+ <p class="receiptno">L-0043</p><p class="sub">Nomor struk offline</p>
+ <div class="facts">
+  <div><span>Kembalian</span><strong>Rp28.400</strong></div>
+  <div><span>Pengiriman ke cloud</span><strong>⏳ Menunggu sambungan</strong></div>
+  <div><span>Struk</span><strong>Dikirim ke printer</strong></div>
+  <div><span>Antrean tablet</span><strong>4 penjualan belum terkirim</strong></div>
+ </div>
+ <footer><button>Cetak ulang struk</button><button class="primary">Pesanan baru</button></footer>
+</div></div>
+
+<!-- Keluar ditolak -->
+<div class="overlay" id="keluar" hidden><div class="dialog small" role="alertdialog" aria-modal="true" aria-labelledby="out-t" aria-describedby="out-d">
+ <div class="head"><h2 id="out-t">Belum bisa keluar</h2><span class="pill bad">⛔ Ditahan</span></div>
+ <p id="out-d" style="margin-top:8px">3 penjualan offline belum terkirim. Sambungkan tablet ke internet dan tunggu sampai terkirim sebelum keluar.</p>
+ <p class="sub" style="margin-top:8px">Penjualan ini hanya ada di tablet ini. Keluar sekarang membuat tunainya tidak tercatat.</p>
+ <footer><button>Tetap di kasir</button><button class="primary">Lihat antrean</button></footer>
+</div></div>
+</div>
+
+<!-- ============ Antrean dan laporan konflik ============ -->
+<div id="antrean" hidden>
+<header><div class="brand"><span class="area">Legend / </span>Kasir</div><div class="meta"><span class="terminal">Cafe Legend · Terminal 01</span><span class="status on">✓ Terhubung</span><span class="sample">Contoh data · Mockup</span></div></header>
+<main class="full">
+ <div class="title"><div><h1>Penjualan offline di tablet ini</h1><p class="sub">Shift Kasir 01 · dibuka 07.58 · bekal offline berlaku sampai besok 07.58</p></div><button>← Kembali ke kasir</button></div>
+ <div class="banner stop" role="status"><span class="ico" aria-hidden="true">⛔</span><div><strong>Pengiriman berhenti di L-0040</strong><p>Nomor ini sudah tercatat dari perangkat lain. Tablet mengirim laporan konflik; penjualan sesudahnya menunggu sampai laporan diterima. Dicoba lagi otomatis tiap 30 detik.</p></div><button class="primary">Coba kirim sekarang</button></div>
+ <div class="summary">
+  <div class="card warn"><p class="sub">Menunggu terkirim</p><p class="num">2</p><p class="sub">Rp110.000 · tunai Rp62.000</p></div>
+  <div class="card bad"><p class="sub">Disisihkan, perlu dicek</p><p class="num">1</p><p class="sub">Rp71.600 · tunai</p></div>
+  <div class="card"><p class="sub">Tunai di antrean</p><p class="num">Rp133.600</p><p class="sub">Sudah di laci, belum tercatat di cloud</p></div>
+ </div>
+ <div class="rows" role="table" aria-label="Antrean penjualan offline">
+  <div class="row headrow" role="row"><span>No. struk</span><span>Jam</span><span>Item</span><span>Bayar</span><span style="text-align:right">Total</span><span>Status</span></div>
+  <div class="row parked" role="row"><span class="no">L-0040</span><span class="time">13.52</span><span class="items-cell">Nasi goreng kampung, Es teh manis ×2</span><span class="pay">Tunai</span><span class="amt">Rp71.600</span><span class="stat"><span class="pill bad">⛔ Disisihkan · laporan dikirim</span></span>
+   <div class="explain"><strong>Laporan konflik belum diterima cloud</strong>Isi laporan: nominal dan item penjualan ini. Setelah diterima, penjualan tercatat untuk diperiksa supervisor dan Finance, dan tidak lagi menahan tutup shift. Penjualan ini tidak bisa dihapus dari tablet.</div></div>
+  <div class="row" role="row"><span class="no">L-0041</span><span class="time">14.05</span><span class="items-cell">Ayam geprek, Kopi susu</span><span class="pay">EDC · slip 004812</span><span class="amt">Rp48.000</span><span class="stat"><span class="pill warn">⏳ Menunggu L-0040</span></span></div>
+  <div class="row" role="row"><span class="no">L-0042</span><span class="time">14.11</span><span class="items-cell">Kentang goreng, Kopi susu ×2</span><span class="pay">Tunai</span><span class="amt">Rp62.000</span><span class="stat"><span class="pill warn">⏳ Menunggu L-0040</span></span></div>
+ </div>
+ <div class="foot"><p>Tutup shift dan keluar ditahan sampai antrean kosong. Penjualan yang sudah diterima cloud hilang dari daftar ini; stok dipotong cloud saat itu.</p></div>
+</main>
+</div>
+
+<!-- ============ Tutup shift ditolak ============ -->
+<div id="tutup" hidden>
+<header><div class="brand"><span class="area">Legend / </span>Kasir</div><div class="meta"><span class="terminal">Cafe Legend · Terminal 01</span><span class="status off">⚠ Offline · 3<span class="long"> belum terkirim</span></span><span class="sample">Contoh data · Mockup</span></div></header>
+<main class="full">
+ <div class="title"><div><h1>Tutup shift</h1><p class="sub">Kasir 01 · dibuka 07.58</p></div></div>
+ <div class="close-grid">
+  <section>
+   <div class="block" role="alert"><p class="t"><i aria-hidden="true">⛔</i>Shift belum bisa ditutup</p>
+    <p>3 penjualan offline belum terkirim, 1 di antaranya disisihkan. Tunainya sudah ada di laci, jadi harus tercatat di cloud dulu sebelum laci dihitung.</p>
+    <div class="acts"><button class="primary">Lihat antrean</button><button>Coba tutup lagi</button></div>
+    <p class="sub" style="margin-top:14px">Tablet rusak atau tidak bisa tersambung? <button class="textlink">Minta supervisor tutup paksa</button>. Supervisor menulis alasan; Finance mendapat pemberitahuan, dan penjualan yang datang belakangan tetap dicatat.</p>
+   </div>
+   <div class="closeform dimmed" aria-hidden="true" style="margin-top:16px"><h2>Hitung laci</h2><p class="sub">Terbuka setelah antrean kosong.</p>
+    <div class="denoms"><div class="denom">Rp100.000<b>—</b></div><div class="denom">Rp50.000<b>—</b></div><div class="denom">Rp20.000<b>—</b></div></div></div>
+  </section>
+  <aside class="card expect"><h2 style="margin-bottom:6px">Perkiraan laci</h2>
+   <div><span>Modal awal</span><strong>Rp500.000</strong></div>
+   <div><span>Tunai online</span><strong>Rp1.284.000</strong></div>
+   <div><span>Tunai offline terkirim</span><strong>Rp412.000</strong></div>
+   <div><span>Tunai offline belum terkirim</span><strong>Rp133.600 ⏳</strong></div>
+   <div class="tot"><span>Perkiraan</span><span>Rp2.329.600</span></div>
+   <p class="sub">Angka akhir dipakai setelah semua penjualan offline diterima cloud.</p>
+  </aside>
+ </div>
+</main>
+</div>
+
+<!-- ============ Shell /pos-offline ============ -->
+<div id="shell" hidden><main class="shell"><div class="shellcard">
+ <span class="ico" aria-hidden="true"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#1c1b19" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h.01"/><path d="M8.5 16.43a5 5 0 0 1 7 0"/><path d="M5 12.86a10 10 0 0 1 5.17-2.69"/><path d="M19 12.86a10 10 0 0 0-2-1.43"/><path d="M2 8.82a15 15 0 0 1 4.18-2.65"/><path d="M22 8.82a15 15 0 0 0-11.29-3.76"/><path d="m2 2 20 20"/></svg></span>
+ <h1>Kasir offline</h1>
+ <p>Tablet ini belum tersambung ke internet. Penjualan yang tersimpan di tablet terkirim setelah tablet tersambung lagi dan layar kasir dibuka kembali.</p>
+ <p class="count" role="status">⏳ 3 penjualan offline belum terkirim.</p>
+ <button class="primary">Buka kasir lagi</button>
+ <p class="fine sub">Penjualan baru dibuat dari layar kasir. Halaman ini tidak menyimpan data akun.</p>
+</div></main></div>
+
+<script>
+const s=new URLSearchParams(location.search).get('state')||'banner';
+const $=q=>document.querySelector(q);
+if(s==='bayar')$('#bayar').hidden=false;
+if(s==='tersimpan'){$('#tersimpan').hidden=false;$('#conn').innerHTML='⚠ Offline · 4<span class="long"> belum terkirim</span>';$('#bTitle').textContent='Offline · 4 penjualan belum terkirim'}
+if(s==='keluar')$('#keluar').hidden=false;
+if(s==='tanpa-bekal'){
+ const b=$('#banner');b.classList.add('stop');b.querySelector('.ico').textContent='⛔';
+ $('#bTitle').textContent='Offline · penjualan offline tidak tersedia';
+ $('#bText').textContent='Bekal offline tablet ini sudah lewat 24 jam. Sambungkan tablet ke internet untuk jualan lagi; bekal baru diambil otomatis.';
+ $('#bBtn').textContent='Coba sambungkan';
+ $('#conn').textContent='⚠ Offline';$('#promo').hidden=true;$('.cartnote').hidden=true;
+ $('#items').style.opacity='.55';$('#payBtn').disabled=true;$('#payBtn').textContent='Bayar tidak tersedia saat offline';
+ $('#mcart').style.background='#5f5b55';$('#mcart').innerHTML='<div><span>Bayar tidak tersedia</span><br>Sambungkan tablet</div><div>Rp71.600</div>';
+}
+if(['antrean','tutup','shell'].includes(s)){$('#kasir').hidden=true;$('#'+({antrean:'antrean',tutup:'tutup',shell:'shell'})[s]).hidden=false}
+</script>
+</body></html>
