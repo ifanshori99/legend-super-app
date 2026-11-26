@@ -238,23 +238,36 @@ export function ReceiptPreview({ order, subtitle, switcher }: Props) {
       }
     >
       {body}
-      {printed && printed.printResult !== "queued_to_printer" && (
+      {printed?.tabletPrint === "failed" && (
         <Notice
           tone="warning"
-          title={t("posCorrection.receipt.notPrintedTitle")}
+          title={t("posKasirCommon.printer.notSent.failed.title", {
+            receiptNo: printed.receipt.number,
+          })}
         >
-          {t("posCorrection.receipt.notPrintedBody", {
-            receiptNo: printed.receipt.number,
-          })}
+          {t("posKasirCommon.printer.notSent.failed.body")}
         </Notice>
       )}
-      {printed?.printResult === "queued_to_printer" && (
-        <Notice tone="info" title={t("posCorrection.receipt.printedTitle")}>
-          {t("posCorrection.receipt.printedBody", {
-            receiptNo: printed.receipt.number,
-          })}
-        </Notice>
-      )}
+      {printed &&
+        printed.tabletPrint !== "failed" &&
+        printed.printResult !== "queued_to_printer" && (
+          <Notice
+            tone="warning"
+            title={t("posCorrection.receipt.notPrintedTitle")}
+          >
+            {t("posCorrection.receipt.notPrintedBody", {
+              receiptNo: printed.receipt.number,
+            })}
+          </Notice>
+        )}
+      {printed?.printResult === "queued_to_printer" &&
+        printed.tabletPrint !== "failed" && (
+          <Notice tone="info" title={t("posCorrection.receipt.printedTitle")}>
+            {t("posCorrection.receipt.printedBody", {
+              receiptNo: printed.receipt.number,
+            })}
+          </Notice>
+        )}
       {print.isError && (
         <Notice tone="danger" title={t("posCorrection.state.submitErrorTitle")}>
           {correctionErrorText(

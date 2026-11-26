@@ -32,6 +32,7 @@ import {
   submitPosShiftCount,
   getEndOfDayRecap,
   getPosShift,
+  getPosShiftPrint,
   listPosCashMovements,
   listPosShifts,
   openPosShift,
@@ -175,6 +176,22 @@ posShiftRouter.get("/shifts/:shiftId", readShift, async (req, res) => {
       await caller(req),
       outletId,
       shiftId,
+    ),
+  });
+});
+
+// P1: the closing report as ESC/POS bytes for the tablet's own printer.
+posShiftRouter.get("/shifts/:shiftId/print", readShift, async (req, res) => {
+  const { outletId, shiftId } = getPosShiftPrint.params.parse(req.params);
+  const { paperWidth } = getPosShiftPrint.query.parse(req.query);
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json({
+    data: await shifts.getPosShiftPrint(
+      getScopedTenantContext(req),
+      await caller(req),
+      outletId,
+      shiftId,
+      paperWidth,
     ),
   });
 });

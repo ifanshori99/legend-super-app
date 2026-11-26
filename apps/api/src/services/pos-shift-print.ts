@@ -28,6 +28,138 @@ const methodLabels = new Map<string, string>(
   Object.entries(messagesId.posReceiptPublic.tender),
 );
 
+/**
+ * The figures of a closed shift's closing report (frozen count, committed
+ * attributed sale facts). Null when the shift is not closed or its outlet or
+ * cashier is gone. Shared by the edge print job and the cloud bytes (P1).
+ */
+export async function buildShiftReportData(
+  tx: Tx,
+  shift: ShiftRow,
+): Promise<ShiftReportData | null> {
+  const [outlet] = await tx
+    .select({ name: outlets.name })
+    .from(outlets)
+    .where(
+      and(eq(outlets.tenantId, shift.tenantId), eq(outlets.id, shift.outletId)),
+    )
+    .limit(1);
+  const [cashier] = await tx
+    .select({ name: user.name })
+    .from(user)
+    .where(eq(user.id, shift.cashierId))
+    .limit(1);
+  if (!outlet || !cashier || !shift.closedAt) return null;
+
+  // Cash tenders name the drawer they entered; noncash tenders have no
+  // drawer id and belong to the order's originating shift instead.
+  const captured = await tx
+    .select({
+      method: posOrderTenders.method,
+      count: sql<string>`count(distinct ${posOrderTenders.orderId})::text`,
+      amount: sql<string>`coalesce(sum(${posOrderTenders.amountIdr}), 0)::text`,
+    })
+    .from(posOrderTenders)
+    .innerJoin(
+      posOrders,
+      and(
+        eq(posOrders.tenantId, posOrderTenders.tenantId),
+        eq(posOrders.outletId, posOrderTenders.outletId),
+        eq(posOrders.orderId, posOrderTenders.orderId),
+      ),
+    )
+    .where(
+      and(
+        eq(posOrderTenders.tenantId, shift.tenantId),
+        eq(posOrderTenders.outletId, shift.outletId),
+        eq(posOrderTenders.status, "captured"),
+        eq(posOrders.isTraining, false),
+        or(
+          eq(posOrderTenders.shiftId, shift.id),
+          and(isNull(posOrderTenders.shiftId), eq(posOrders.shiftId, shift.id)),
+        ),
+      ),
+    )
+    .groupBy(posOrderTenders.method)
+    .orderBy(asc(posOrderTenders.method));
+
+  const [refunds] = await tx
+    .select({
+      amount: sql<string>`coalesce(sum(${posOrderRefunds.amountIdr}), 0)::text`,
+    })
+    .from(posOrderRefunds)
+    .innerJoin(
+      posOrders,
+      and(
+        eq(posOrders.tenantId, posOrderRefunds.tenantId),
+        eq(posOrders.outletId, posOrderRefunds.outletId),
+        eq(posOrders.orderId, posOrderRefunds.orderId),
+      ),
+    )
+    .where(
+      and(
+        eq(posOrderRefunds.tenantId, shift.tenantId),
+        eq(posOrderRefunds.outletId, shift.outletId),
+        eq(posOrders.isTraining, false),
+        eq(posOrderRefunds.needsApproval, false),
+        or(
+          eq(posOrderRefunds.shiftId, shift.id),
+          and(isNull(posOrderRefunds.shiftId), eq(posOrders.shiftId, shift.id)),
+        ),
+      ),
+    );
+  const [voids] = await tx
+    .select({
+      amount: sql<string>`coalesce(sum(${posOrderVoids.amountIdr}), 0)::text`,
+    })
+    .from(posOrderVoids)
+    .innerJoin(
+      posOrders,
+      and(
+        eq(posOrders.tenantId, posOrderVoids.tenantId),
+        eq(posOrders.outletId, posOrderVoids.outletId),
+        eq(posOrders.orderId, posOrderVoids.orderId),
+      ),
+    )
+    .where(
+      and(
+        eq(posOrderVoids.tenantId, shift.tenantId),
+        eq(posOrderVoids.outletId, shift.outletId),
+        eq(posOrders.isTraining, false),
+        eq(posOrderVoids.needsApproval, false),
+        or(
+          eq(posOrderVoids.shiftId, shift.id),
+          and(isNull(posOrderVoids.shiftId), eq(posOrders.shiftId, shift.id)),
+        ),
+      ),
+    );
+
+  const sales = captured.map((row) => ({
+    method: methodLabels.get(row.method) ?? row.method,
+    count: Number(row.count),
+    amount: Number(row.amount),
+  }));
+  return {
+    outletName: outlet.name,
+    cashierName: cashier.name,
+    shiftOpenedAt: shift.openedAt,
+    shiftClosedAt: shift.closedAt,
+    openingCash: Number(shift.openingFloatIdr),
+    expectedCash: Number(shift.expectedIdr),
+    countedCash: Number(shift.countedIdr),
+    variance: Number(shift.varianceIdr),
+    sales,
+    totalSales: sales.reduce((total, sale) => total + sale.amount, 0),
+    refunds: Number(refunds?.amount ?? 0),
+    voids: Number(voids?.amount ?? 0),
+    denominations: (shift.counts ?? []).map((line) => ({
+      label: new Intl.NumberFormat("id-ID").format(line.denominationIdr),
+      count: line.quantity,
+      amount: line.denominationIdr * line.quantity,
+    })),
+  };
+}
+
 export async function enqueueClosedShiftReport(
   tx: Tx,
   context: ScopedTenantContext,
@@ -63,139 +195,8 @@ export async function enqueueClosedShiftReport(
         .limit(1);
       if (!printer) return;
 
-      const [outlet] = await savepoint
-        .select({ name: outlets.name })
-        .from(outlets)
-        .where(
-          and(
-            eq(outlets.tenantId, shift.tenantId),
-            eq(outlets.id, shift.outletId),
-          ),
-        )
-        .limit(1);
-      const [cashier] = await savepoint
-        .select({ name: user.name })
-        .from(user)
-        .where(eq(user.id, shift.cashierId))
-        .limit(1);
-      if (!outlet || !cashier || !shift.closedAt) return;
-
-      // Cash tenders name the drawer they entered; noncash tenders have no
-      // drawer id and belong to the order's originating shift instead.
-      const captured = await savepoint
-        .select({
-          method: posOrderTenders.method,
-          count: sql<string>`count(distinct ${posOrderTenders.orderId})::text`,
-          amount: sql<string>`coalesce(sum(${posOrderTenders.amountIdr}), 0)::text`,
-        })
-        .from(posOrderTenders)
-        .innerJoin(
-          posOrders,
-          and(
-            eq(posOrders.tenantId, posOrderTenders.tenantId),
-            eq(posOrders.outletId, posOrderTenders.outletId),
-            eq(posOrders.orderId, posOrderTenders.orderId),
-          ),
-        )
-        .where(
-          and(
-            eq(posOrderTenders.tenantId, shift.tenantId),
-            eq(posOrderTenders.outletId, shift.outletId),
-            eq(posOrderTenders.status, "captured"),
-            eq(posOrders.isTraining, false),
-            or(
-              eq(posOrderTenders.shiftId, shift.id),
-              and(
-                isNull(posOrderTenders.shiftId),
-                eq(posOrders.shiftId, shift.id),
-              ),
-            ),
-          ),
-        )
-        .groupBy(posOrderTenders.method)
-        .orderBy(asc(posOrderTenders.method));
-
-      const [refunds] = await savepoint
-        .select({
-          amount: sql<string>`coalesce(sum(${posOrderRefunds.amountIdr}), 0)::text`,
-        })
-        .from(posOrderRefunds)
-        .innerJoin(
-          posOrders,
-          and(
-            eq(posOrders.tenantId, posOrderRefunds.tenantId),
-            eq(posOrders.outletId, posOrderRefunds.outletId),
-            eq(posOrders.orderId, posOrderRefunds.orderId),
-          ),
-        )
-        .where(
-          and(
-            eq(posOrderRefunds.tenantId, shift.tenantId),
-            eq(posOrderRefunds.outletId, shift.outletId),
-            eq(posOrders.isTraining, false),
-            eq(posOrderRefunds.needsApproval, false),
-            or(
-              eq(posOrderRefunds.shiftId, shift.id),
-              and(
-                isNull(posOrderRefunds.shiftId),
-                eq(posOrders.shiftId, shift.id),
-              ),
-            ),
-          ),
-        );
-      const [voids] = await savepoint
-        .select({
-          amount: sql<string>`coalesce(sum(${posOrderVoids.amountIdr}), 0)::text`,
-        })
-        .from(posOrderVoids)
-        .innerJoin(
-          posOrders,
-          and(
-            eq(posOrders.tenantId, posOrderVoids.tenantId),
-            eq(posOrders.outletId, posOrderVoids.outletId),
-            eq(posOrders.orderId, posOrderVoids.orderId),
-          ),
-        )
-        .where(
-          and(
-            eq(posOrderVoids.tenantId, shift.tenantId),
-            eq(posOrderVoids.outletId, shift.outletId),
-            eq(posOrders.isTraining, false),
-            eq(posOrderVoids.needsApproval, false),
-            or(
-              eq(posOrderVoids.shiftId, shift.id),
-              and(
-                isNull(posOrderVoids.shiftId),
-                eq(posOrders.shiftId, shift.id),
-              ),
-            ),
-          ),
-        );
-
-      const sales = captured.map((row) => ({
-        method: methodLabels.get(row.method) ?? row.method,
-        count: Number(row.count),
-        amount: Number(row.amount),
-      }));
-      const report: ShiftReportData = {
-        outletName: outlet.name,
-        cashierName: cashier.name,
-        shiftOpenedAt: shift.openedAt,
-        shiftClosedAt: shift.closedAt,
-        openingCash: Number(shift.openingFloatIdr),
-        expectedCash: Number(shift.expectedIdr),
-        countedCash: Number(shift.countedIdr),
-        variance: Number(shift.varianceIdr),
-        sales,
-        totalSales: sales.reduce((total, sale) => total + sale.amount, 0),
-        refunds: Number(refunds?.amount ?? 0),
-        voids: Number(voids?.amount ?? 0),
-        denominations: (shift.counts ?? []).map((line) => ({
-          label: new Intl.NumberFormat("id-ID").format(line.denominationIdr),
-          count: line.quantity,
-          amount: line.denominationIdr * line.quantity,
-        })),
-      };
+      const report = await buildShiftReportData(savepoint, shift);
+      if (!report) return;
       await agent.enqueue(
         {
           printerId: printer.id,

@@ -218,7 +218,7 @@ test("legend-mjmm PAY-01 cash pays the whole bill and shows the change", async (
   await expect(area).toContainText("Lunas");
   await expect(area).toContainText(new RegExp(`Sisa bayar\\s*${rp("0")}`));
   await expect(
-    page.getByRole("button", { name: /Cetak struk & transaksi baru/ }),
+    page.getByRole("button", { name: "Cetak struk", exact: true }),
   ).toBeVisible();
 });
 
@@ -297,7 +297,7 @@ test("legend-mjmm PAY-01 paid order shows the allocation breakdown and receipt",
     page.getByRole("button", { name: "Lihat e-receipt" }),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: /Cetak struk & transaksi baru/ }),
+    page.getByRole("button", { name: "Cetak struk", exact: true }),
   ).toBeVisible();
   await shot(page, "payment-success");
 });

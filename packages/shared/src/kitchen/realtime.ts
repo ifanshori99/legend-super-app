@@ -22,6 +22,10 @@
 // (docs/plan/contracts.md "Events, outbox and sync").
 
 import {
+  printPaperWidthQuerySchema,
+  printPayloadSchema,
+} from "../pos/print-payload.ts";
+import {
   z,
   clientInputSchema,
   dataResponseSchema,
@@ -158,6 +162,18 @@ export const getKitchenTicket = defineEndpoint({
     ticketId: kitchenTicketIdSchema,
   }),
   response: dataResponseSchema(kitchenTicketDetailSchema),
+});
+
+/** P1: the station ticket as ESC/POS bytes for the KDS tablet's own printer. */
+export const getKitchenTicketPrint = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/kitchen/tickets/:ticketId/print",
+  params: z.strictObject({
+    outletId: outletIdSchema,
+    ticketId: kitchenTicketIdSchema,
+  }),
+  query: clientInputSchema({ paperWidth: printPaperWidthQuerySchema }),
+  response: dataResponseSchema(printPayloadSchema),
 });
 
 /* --------------------------------------------------------------- realtime */

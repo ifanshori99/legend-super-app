@@ -6,7 +6,10 @@
 // Plain TypeScript with no runtime imports (type imports only): Node tests load
 // it directly.
 import type { VoucherRejectionReason } from "@starter/shared/crm";
-import type { PosPaymentUnavailableReason } from "@starter/shared/pos";
+import type {
+  PosPaymentUnavailableReason,
+  PrintPayload,
+} from "@starter/shared/pos";
 
 /**
  * One EDC request of a bill as `getPosOrder` lists it (`edcAttempts`, newest
@@ -15,6 +18,7 @@ import type { PosPaymentUnavailableReason } from "@starter/shared/pos";
  */
 export type { PosEdcAttempt } from "@starter/shared/pos";
 
+import type { TabletPrintOutcome } from "./print/send-to-printer";
 import type { TenderVoidReason } from "./tender-void-reason";
 
 /** Error code a hook returns outside mock mode when the contract is missing. */
@@ -247,6 +251,10 @@ export type ReceiptResult = {
   receiptId?: string;
   /** What the server did with the print; only `queued_to_printer` may print. */
   printResult: "queued_to_printer" | "not_printed" | null;
+  /** P2: the bytes for this tablet's printer; absent on the edge and in mock. */
+  print?: PrintPayload | null;
+  /** P2: what this tablet did with the bytes; a failure keeps the receipt. */
+  tabletPrint?: TabletPrintOutcome;
 };
 
 // ---- Cashier code ("Bayar di kasir") ---------------------------------------

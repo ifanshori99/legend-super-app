@@ -18,6 +18,7 @@ import {
   resolvePosPaymentIntent,
   type PosOrderDetail,
   type PosQrisStatus,
+  type PrintPaperWidth,
 } from "@starter/shared/pos";
 import {
   createPosOverride,
@@ -1239,6 +1240,8 @@ export async function printReceipt(
   outletId: string,
   orderId: string,
   actorId: string,
+  /** P2: this tablet's paper; the cloud then answers with the ESC/POS bytes. */
+  paperWidth?: PrintPaperWidth,
 ): Promise<ReceiptResult> {
   if (API_MOCK)
     return runPosKasirMock((engine) => engine.printReceipt(orderId));
@@ -1264,10 +1267,14 @@ export async function printReceipt(
   const scope = scopeOf(outletId, orderId, "receipt");
   const begun = beginIntent(intentStorage(), scope, {
     kind: "receipt",
-    signature: "print",
+    signature: paperWidth === undefined ? "print" : `print:${paperWidth}`,
     actorId,
     makeKey: () => `receipt:${globalThis.crypto.randomUUID()}`,
-    makeBody: (idempotencyKey) => ({ deliveries: ["print"], idempotencyKey }),
+    makeBody: (idempotencyKey) => ({
+      deliveries: ["print"],
+      ...(paperWidth === undefined ? {} : { paperWidth }),
+      idempotencyKey,
+    }),
     now: () => new Date(),
   });
   const { data } = await settleIntent(scope, begun, (body) =>
@@ -1279,6 +1286,7 @@ export async function printReceipt(
     reprint: data.receipt.reprintCount > 0,
     receiptId: data.receipt.id,
     printResult: data.printResult,
+    print: data.print ?? null,
   };
 }
 

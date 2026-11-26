@@ -41,6 +41,7 @@ import {
 import type { Idr } from "../core/index.ts";
 import { posDiscountThresholdBpSchema } from "../core/money.ts";
 import { posOverrideIdSchema } from "../access/override.ts";
+import { printPayloadSchema } from "./print-payload.ts";
 import {
   edcBankSchema,
   edcMethodSchema,
@@ -2485,6 +2486,11 @@ export const posReceiptIssueResultSchema = z.strictObject({
   link: receiptLinkSchema.nullable(),
   /** Null when this request asked for no print (also on a lookup). */
   printResult: receiptPrintResultSchema.nullable(),
+  /**
+   * Cloud only, when the request named a `paperWidth`: the ESC/POS bytes the
+   * tablet sends to its own printer (P1). Absent otherwise.
+   */
+  print: printPayloadSchema.nullable().optional(),
 });
 export type PosReceiptIssueResult = z.infer<typeof posReceiptIssueResultSchema>;
 
