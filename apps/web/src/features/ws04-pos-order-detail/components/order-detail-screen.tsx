@@ -23,7 +23,10 @@ import {
   kitchenVoidedItemIds,
   openKitchenVoidNotices,
 } from "../kitchen-void";
-import { oldLinkRemainingIdr } from "@/features/ws04-pos-open-orders/open-orders-logic";
+import {
+  listAgeMs,
+  oldLinkRemainingIdr,
+} from "@/features/ws04-pos-open-orders/open-orders-logic";
 import { useOpenOrders } from "@/features/ws04-pos-open-orders/hooks";
 import { KitchenNotices } from "./kitchen-notices";
 import { OrderLines } from "./order-lines";
@@ -167,7 +170,7 @@ function OrderDetailLoaded({
   const listRemainingIdr = oldLinkRemainingIdr(
     remainingIdr,
     openOrders.data?.find((row) => row.id === data.id),
-    openOrders.dataUpdatedAt > 0 ? now - openOrders.dataUpdatedAt : -1,
+    listAgeMs(now, openOrders.dataUpdatedAt),
   );
   const heldCount = actions.held.length;
   const unpaid = !completed && data.status !== "voided";

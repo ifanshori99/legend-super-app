@@ -72,3 +72,11 @@ Aturan uang: potongan voucher, nilai poin, dan total dihitung server. Layar hany
 Tersambung ke server (bukan mock lagi): pakai/hapus voucher (`applyPosDiscount` source `voucher`, `removePosDiscount`), saldo/quote/tukar poin (`/api/pos/orders/:orderId/points`), dan EDC ditolak dari `order.edcAttempts`. Baris voucher di tagihan memakai `posDiscountSchema.voucherCode` dari server.
 
 Demo mock: voucher `HEMAT20` (20% maks Rp30.000), `LEGEND50K` (Rp50.000, minimum belanja Rp150.000), `EXPIRED1` (kedaluwarsa), `PAKAI001` (sudah dipakai). Poin: member Rina Kusuma, saldo 12.500, minimum 1.000, 1 poin = Rp1; pesanan kode `LG-0044` tanpa member. EDC: terminal `edc-02` (Bank B) menolak dengan "Saldo tidak cukup", kode 51.
+
+## E2E POS nyata (1268 W6, legend-9yw78.10)
+
+- `e2e/pos-real.spec.ts` berjalan di build produksi (`pnpm test:e2e`): buka shift, jual tunai dengan kembalian, EDC standalone (PIN supervisor, satu override untuk satu tagihan, baris `edc_transactions` ditandai rekonsiliasi), hitung buta, PIN supervisor, tutup shift. Angka laci diperiksa: modal + penjualan tunai; tagihan EDC tidak masuk laci; tampilan kasir tetap buta (`expectedIdr` null), supervisor melihat selisih 0.
+- Dunia uji disemai langsung ke database uji dalam `beforeAll` spec (tenant, outlet, peran, perangkat terdaftar, menu, pajak, terminal EDC). Staf adalah akun Better Auth sungguhan; PIN supervisor diatur lewat `PUT /api/staff-pins`. Token perangkat ditandatangani spec dengan kunci turunan `BETTER_AUTH_SECRET` (sama dengan `lib/device-token.ts`).
+- Host tenant `<slug>.legend.test` lewat header Host. `<slug>.localhost` tidak dipakai: `normalizeHostname` menolak TLD `localhost` (aturan keamanan, tidak dilonggarkan).
+- Ini uji tingkat API di atas build produksi, bukan klik layar kasir. Layar kasir di browser butuh sesi staf dan konteks outlet dari akses, belum ada di e2e produksi.
+- QRIS belum tercakup: build produksi tidak punya gateway simulasi (adapter Duitku menolak akun sandbox di build produksi dan memanggil penyedia lewat jaringan). Perlu penyedia palsu atau tombol simulasi untuk e2e; keputusan CTO.

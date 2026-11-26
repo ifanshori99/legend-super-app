@@ -25,6 +25,8 @@ import { useRouteContext } from "@tanstack/react-router";
 import { useTenantContext } from "@/lib/tenant-context";
 import { useCloudConnection } from "@/features/ws02-edge/hooks";
 import { useActiveStaff } from "@/features/ws01-device-pin/storage";
+import { openOrdersKeys } from "@/features/ws04-pos-open-orders/queries";
+import { orderDetailKeys } from "@/features/ws04-pos-order-detail/queries";
 import {
   acknowledgeCall,
   closePendingFire,
@@ -539,6 +541,36 @@ export function useContinueDraft(
       notifyPending();
       void queryClient.invalidateQueries({
         queryKey: posOrderKeys.tableOrder(outletId, tableId),
+      });
+    },
+  });
+}
+
+/**
+ * Send an order that was created but never sent, from the cashier ("Lanjutkan
+ * di kasir" on the open order). The same keyed continue as the captain's: the
+ * draft is sent once, never created again.
+ */
+export function useContinueCashierDraft(): UseMutationResult<
+  void,
+  Error,
+  { orderId: string; tableSessionId: string | null }
+> {
+  const queryClient = useQueryClient();
+  const outletId = useOutletId();
+  const actorId = useActorId();
+  return useMutation<
+    void,
+    Error,
+    { orderId: string; tableSessionId: string | null }
+  >({
+    mutationFn: ({ orderId, tableSessionId }) =>
+      continueDraftOrder(outletId, actorId, orderId, tableSessionId),
+    onSettled: (_data, _error, { orderId }) => {
+      notifyPending();
+      void queryClient.invalidateQueries({ queryKey: openOrdersKeys.all });
+      void queryClient.invalidateQueries({
+        queryKey: orderDetailKeys.order(outletId, orderId),
       });
     },
   });

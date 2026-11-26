@@ -13,6 +13,8 @@ export const Route = createFileRoute("/_ops/pos/kasir")({
     v: z.enum(["keranjang"]).optional().catch(undefined),
     // "Lanjutkan" on /pos/pesanan?tab=ditahan: open the parked carts sheet.
     ditahan: z.enum(["1"]).optional().catch(undefined),
+    // "Lanjutkan di kasir" on an unsent order (draft): the cashier sends it.
+    draft: z.string().min(1).max(80).optional().catch(undefined),
     // Mock seed (`?demo=offline`, `?demo=...`) read by the POS ordering mock;
     // kept so navigation does not drop it.
     demo: z.string().optional().catch(undefined),
