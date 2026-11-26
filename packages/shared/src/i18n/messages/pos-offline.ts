@@ -7,7 +7,7 @@ export const posOfflineMessages = {
   shell: {
     title: "Kasir offline",
     description:
-      "Tablet ini belum tersambung ke internet. Penjualan yang tersimpan di tablet terkirim sendiri begitu tersambung lagi.",
+      "Tablet ini belum tersambung ke internet. Penjualan yang tersimpan di tablet terkirim setelah tablet tersambung lagi dan layar kasir dibuka kembali.",
     pending: "{count} penjualan offline belum terkirim.",
     none: "Tidak ada penjualan offline yang menunggu.",
     retry: "Buka kasir lagi",

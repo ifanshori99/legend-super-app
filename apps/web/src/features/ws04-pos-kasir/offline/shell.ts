@@ -14,14 +14,17 @@ export async function registerPosShell(): Promise<void> {
 }
 
 /** The worker's cache name (public/sw.js `POS_SHELL`). */
-export const POS_SHELL_CACHE = "legend-pos-shell-v1";
+export const POS_SHELL_CACHE = "legend-pos-shell-v2";
 
 /** Sign-out: drops the cached shell and assets. Best-effort. */
 export async function clearPosShell(): Promise<void> {
   if (typeof window === "undefined" || !("caches" in window)) return;
   try {
     await caches.delete(POS_SHELL_CACHE);
+    // The worker would otherwise wait out its refresh interval.
+    const registration = await navigator.serviceWorker?.getRegistration();
+    registration?.active?.postMessage({ type: "legend-pos-shell-reset" });
   } catch {
-    // Storage refused: nothing to drop.
+    // Storage refused or no worker: nothing to drop.
   }
 }

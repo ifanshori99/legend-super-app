@@ -12,7 +12,7 @@
  * content-hashed: served from the cache once fetched, at most ASSET_LIMIT.
  * Sign-out deletes the cache (window side, `caches.delete`).
  */
-const POS_SHELL = "legend-pos-shell-v1";
+const POS_SHELL = "legend-pos-shell-v2";
 const SHELL_PATH = "/pos-offline";
 const SHELL_REFRESH_MS = 10 * 60 * 1000;
 const ASSET_LIMIT = 400;
@@ -65,10 +65,10 @@ async function posPage(event, url) {
   }
 }
 
-/** The shell itself: the network while online, else the kept copy. */
-async function shellPage(request, url) {
+/** The shell itself: the network (still without cookies), else the kept copy. */
+async function shellPage(url) {
   try {
-    return await fetch(request);
+    return await fetch(url.origin + SHELL_PATH, { credentials: "omit" });
   } catch {
     const cache = await caches.open(POS_SHELL);
     return (await cache.match(url.origin + SHELL_PATH)) ?? Response.error();
@@ -120,8 +120,13 @@ self.addEventListener("fetch", (event) => {
     return;
   }
   if (request.mode === "navigate" && url.pathname === SHELL_PATH) {
-    event.respondWith(shellPage(request, url));
+    event.respondWith(shellPage(url));
     return;
   }
   if (url.pathname.startsWith("/assets/")) event.respondWith(asset(request));
+});
+
+// Sign-out deleted the cache: the next /pos page fetches the shell again.
+self.addEventListener("message", (event) => {
+  if (event.data?.type === "legend-pos-shell-reset") shellFetchedAt = 0;
 });

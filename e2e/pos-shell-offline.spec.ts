@@ -13,6 +13,7 @@ test("the offline POS shell loads without a cookie, carries no session, and may 
   // With the cookie the document carries the session: the probe below sees it.
   const signedIn = await request.get("/pos-offline");
   expect(signedIn.status()).toBe(200);
+  expect(signedIn.headers()["cache-control"]).toBe("private, no-store");
   expect(await signedIn.text()).toContain(email);
 
   const anonymous = await playwright.request.newContext({ baseURL: WEB_URL });
