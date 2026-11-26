@@ -9,6 +9,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ulidToUuid } from "@starter/shared/core";
+import { originHeader } from "./helpers.ts";
 import { owner, type Staff } from "./floor-test-helpers.ts";
 import {
   createWorld,
@@ -177,6 +178,68 @@ describe("1269 E3b POS_WRITE_ON_EDGE on the order recovery flow", () => {
         choice: "voucher",
       });
       expect(anonymous.status).toBe(401);
+    } finally {
+      await revoke(id);
+    }
+  });
+
+  it("W1 an apology voucher on an outlet its edge serves: 201, a replay is the same voucher, no edge-owned row changes", async () => {
+    const edgeOwned = async () => {
+      const tables = [
+        "orders",
+        "order_items",
+        "pos_orders",
+        "kitchen_tickets",
+        "pos_shifts",
+        "cash_movements",
+      ];
+      const { rows } = await owner.query(
+        `SELECT ${tables
+          .map(
+            (table) =>
+              `(SELECT md5(coalesce(string_agg(t::text, ',' ORDER BY t::text), ''))
+                  FROM ${table} t WHERE t.tenant_id = $1) AS ${table}`,
+          )
+          .join(", ")},
+           (SELECT count(*)::int FROM apology_vouchers WHERE tenant_id = $1) AS vouchers`,
+        [w.tenant.tenantId],
+      );
+      return rows[0] as Record<string, unknown>;
+    };
+    const id = await addEdge();
+    try {
+      const before = await edgeOwned();
+      // A standalone voucher always needs an approval (legend-1222).
+      const post = (key: string, body: Record<string, unknown>) =>
+        w.outletSupervisor.client
+          .post("/api/apology-vouchers")
+          .set(w.headers)
+          .set(originHeader)
+          .set("Idempotency-Key", key)
+          .send(body);
+      const body = { valueIdr: 5000, reason: "Pesanan terlambat lama" };
+      const asked = await post(randomUUID(), body);
+      expect(asked.body.error?.code, JSON.stringify(asked.body)).toBe(
+        "APPROVAL_REQUIRED",
+      );
+      const [requestId] =
+        JSON.stringify(asked.body.error).match(
+          /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g,
+        ) ?? [];
+      await w.approveExisting(requestId!);
+      const idempotencyKey = randomUUID();
+      const issue = () =>
+        post(idempotencyKey, { ...body, approvalRequestId: requestId });
+      const first = await issue();
+      expect(first.status, JSON.stringify(first.body)).toBe(201);
+      const replay = await issue();
+      expect([200, 201], JSON.stringify(replay.body)).toContain(replay.status);
+      expect(replay.body.data.id).toBe(first.body.data.id);
+      expect(replay.body.data.code).toBe(first.body.data.code);
+      expect(await edgeOwned()).toEqual({
+        ...before,
+        vouchers: Number(before.vouchers) + 1,
+      });
     } finally {
       await revoke(id);
     }

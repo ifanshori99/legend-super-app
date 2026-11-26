@@ -56,14 +56,26 @@ export function setPosWriteGateEdgeModeForTests(
   isEdgeWriter = fn ?? isEdgeProcess;
 }
 
+/**
+ * True when the cloud must not write this outlet's POS rows: its edge does.
+ * Every gate goes through here, so failover (1271 F3) changes one place.
+ */
+export async function posWritesOnEdge(
+  tx: Tx,
+  tenantId: TenantId,
+  outletId: OutletId,
+): Promise<boolean> {
+  if (isEdgeWriter()) return false;
+  return outletHasActiveEdge(tx, tenantId, outletId);
+}
+
 /** 409 POS_WRITE_ON_EDGE for a cloud write on an outlet its edge serves. */
 export async function assertPosWriteNotOnEdge(
   tx: Tx,
   tenantId: TenantId,
   outletId: OutletId,
 ): Promise<void> {
-  if (isEdgeWriter()) return;
-  if (await outletHasActiveEdge(tx, tenantId, outletId))
+  if (await posWritesOnEdge(tx, tenantId, outletId))
     throw new PosError("POS_WRITE_ON_EDGE");
 }
 
