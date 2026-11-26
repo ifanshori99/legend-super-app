@@ -33,6 +33,7 @@ import {
   ulidToUuid,
   uuidToUlid,
   type OutletId,
+  type TenantId,
 } from "@starter/shared/core";
 import {
   conflictResolution,
@@ -108,7 +109,7 @@ async function assertCloudEventScope(
 
 async function lockCopy(
   tx: EdgeTx,
-  tenantId: string,
+  tenantId: TenantId,
   windowId: string,
 ): Promise<FailoverWindowRow | null> {
   const [row] = await tx
@@ -130,7 +131,7 @@ const dateOrNull = (value: string | null) =>
 /** The window's node when this database holds it, else this node. */
 async function copyNodeId(
   tx: EdgeTx,
-  tenantId: string,
+  tenantId: TenantId,
   outletId: OutletId,
   window: FailoverWindow,
   meta: EdgeApplyMeta,
@@ -265,7 +266,7 @@ async function recordRefusal(
       payloadSchemaRef: definition.payloadSchemaRef,
       payload: {
         windowId,
-        closingEventId: ulidToUuid(event.id),
+        closingEventId: event.id,
         shifts: refused,
       },
     }),
@@ -311,7 +312,8 @@ export async function applyFailoverWindowClosed(
         status: "cancelled",
         cancelledAt: new Date(event.occurredAt),
         cancelledBy: actorId,
-        businessDateTo: copy.businessDateTo ?? lastDate ?? copy.businessDateFrom,
+        businessDateTo:
+          copy.businessDateTo ?? lastDate ?? copy.businessDateFrom,
         closingEventId: ulidToUuid(event.id),
         updatedAt: now,
       })

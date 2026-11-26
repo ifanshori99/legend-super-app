@@ -545,6 +545,8 @@ describe("legend-eo3lc edge node status list", () => {
 
     const allowed = [
       "alerts",
+      // 1271 F4: the outlet's open failover window (null when none).
+      "failover",
       "id",
       "label",
       "lastHeartbeatAt",

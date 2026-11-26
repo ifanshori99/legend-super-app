@@ -18,6 +18,7 @@ import {
   idempotencyKeySchema,
   isoDateTimeSchema,
   outletIdSchema,
+  ulidSchema,
   userIdSchema,
   uuidSchema,
 } from "../core/index.ts";
@@ -235,8 +236,8 @@ export const FAILOVER_EDGE_REFUSAL_REASONS = [
 
 export const failoverEdgeRefusedPayloadSchema = z.strictObject({
   windowId: failoverWindowIdSchema,
-  /** The cloud's closing event the edge refused. */
-  closingEventId: uuidSchema,
+  /** The cloud's closing event the edge refused (event id). */
+  closingEventId: ulidSchema,
   shifts: z
     .array(
       z.strictObject({

@@ -35,6 +35,7 @@ import type {
 import {
   blindCountTotalIdr,
   closeShift,
+  posShiftIdSchema,
   shiftExpectedCashIdr,
   type PosShiftWithFigures,
 } from "@starter/shared/pos";
@@ -164,7 +165,7 @@ export async function closeShiftsForFailoverReturn(
     if (await activityAfter(tx, open, new Date(count.countedAt))) {
       refused.push({
         deviceId: count.deviceId,
-        shiftId: open.id,
+        shiftId: posShiftIdSchema.parse(open.id),
         reason: "shift_activity",
       });
       continue;
@@ -175,7 +176,7 @@ export async function closeShiftsForFailoverReturn(
     if (approver === undefined) {
       refused.push({
         deviceId: count.deviceId,
-        shiftId: open.id,
+        shiftId: posShiftIdSchema.parse(open.id),
         reason: "no_approver",
       });
       continue;
@@ -200,7 +201,12 @@ export async function closeShiftsForFailoverReturn(
 async function closeOne(
   tx: Tx,
   context: ScopedTenantContext,
-  input: { outletId: OutletId; windowId: string; closingEventId: string; now: Date },
+  input: {
+    outletId: OutletId;
+    windowId: string;
+    closingEventId: string;
+    now: Date;
+  },
   plan: Plan,
   closeKey: string,
 ): Promise<void> {
