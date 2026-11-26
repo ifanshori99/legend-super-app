@@ -12,7 +12,7 @@
 //   before `createPaymentLink` (its own transaction); the link (30 min) is
 //   attached under the lock order link -> claim. A link that cannot be opened
 //   releases the seat at once.
-// - One unpaid hold per member (unique index, migration 0529).
+// - One unpaid hold per member (unique index, migration 0530).
 // - The slot is real: inside the facility's hours of that day, never across
 //   midnight; `off_peak` entirely outside the zone's Wi-Fi peak schedule (no
 //   schedule: unproven, refused). A day pass runs to the last closing of the day.

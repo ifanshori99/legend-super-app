@@ -358,7 +358,7 @@ export async function settleWfcIntent(
   if (claim.status !== "cancelled") return "unchanged";
   // The money of a claim that never got its seat: recorded once (when the
   // link holds the full price), then refunded in full.
-  const linkNow = await loadLink(tx, context, claim.paymentLinkId);
+  const linkNow = await loadLink(tx, context, link.id);
   if (claim.paidIdr === 0 && linkNow && linkNow.paidIdr === linkNow.totalIdr)
     claim = await setClaim(tx, context, claim.id, {
       paidIdr: claim.priceIdr,
