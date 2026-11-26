@@ -9,7 +9,10 @@
 //                      no order, `reason` says why (finance settles it). The
 //                      payload is kept as sent: it is the only record of a
 //                      held sale. (sequence_id, sequence_number) is unique, so
-//                      one offline receipt number is never two sales.
+//                      one offline receipt number is never two sales, except
+//                      a `number_taken` hold (review O2 P3 1): another sale
+//                      the tablet put under a number already used, kept for
+//                      finance and never an order or a receipt.
 //                      Append-only (custom SQL).
 //
 // (T, O) rules: tenant_id + outlet_id NOT NULL, children reference parents
@@ -25,7 +28,7 @@ import {
   primaryKey,
   text,
   timestamp,
-  unique,
+  uniqueIndex,
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
@@ -81,11 +84,9 @@ export const posOfflineSales = pgTable(
       name: "pos_offline_sales_pkey",
       columns: [table.tenantId, table.eventId],
     }),
-    unique("pos_offline_sales_sequence_number_key").on(
-      table.tenantId,
-      table.sequenceId,
-      table.sequenceNumber,
-    ),
+    uniqueIndex("pos_offline_sales_sequence_number_uidx")
+      .on(table.tenantId, table.sequenceId, table.sequenceNumber)
+      .where(sql`${table.reason} IS DISTINCT FROM 'number_taken'`),
     index("pos_offline_sales_outlet_idx").on(
       table.tenantId,
       table.outletId,

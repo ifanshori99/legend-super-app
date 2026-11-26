@@ -21,6 +21,13 @@
 // the run row lock, so concurrent batches of one tablet serialise per run.
 // Review O1 P3 4: a run already retired (`offline_epoch`) still takes the
 // sales the tablet made on it.
+//
+// Review O2: service charge, tax and rounding are checked against the kit's
+// tax snapshot (`amount_mismatch`, a flag, never a refusal: R2); a second sale
+// under a number the cloud already holds is stored `held` / `number_taken`
+// (the money was taken; the tablet stops resending); a paidAt ahead of the
+// cloud clock is flagged and booked on today's business date; one event id
+// under two kits is a 409.
 import { and, eq } from "drizzle-orm";
 import {
   businessDateOf,
@@ -42,6 +49,7 @@ import {
   type PosOfflineBatchResult,
   type SubmitPosOfflineBatchInput,
 } from "@starter/shared/pos";
+import { formatRupiah } from "@starter/shared/i18n";
 import { db } from "../db/index.ts";
 import { posOfflineKits } from "../db/schema/pos-offline.ts";
 import { posOfflineSales } from "../db/schema/pos-offline-sale.ts";
@@ -53,6 +61,7 @@ import {
 import { posReceipts, receiptSequences } from "../db/schema/pos-receipt.ts";
 import { posShifts } from "../db/schema/pos-shift.ts";
 import { outlets } from "../db/schema/platform-org.ts";
+import { user } from "../db/schema/user.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
@@ -73,6 +82,11 @@ import type { Tx } from "./menu-internals.ts";
 import { orderRevenueSplit } from "./order-revenue.ts";
 import { outletBusinessDayClock } from "./outlet-clock.ts";
 import {
+  computePosBill,
+  posPriceChannel,
+  type PosBillLine,
+} from "./pos-order-pricing.ts";
+import {
   appendOrderEvent,
   appendPosEvent,
   auditPos,
@@ -86,8 +100,13 @@ export type OfflineBatchCaller = { userId: UserId; deviceId: string | null };
 
 /** The ledger's name for this source (CTO O2 (d)). */
 export const OFFLINE_SALE_SOURCE = "offline_tablet";
+const NUMBER_TAKEN = "number_taken";
 
 const NO_DEVICE = "Sinkron offline hanya untuk perangkat kasir terdaftar.";
+const EVENT_CONFLICT =
+  "Penjualan offline ini sudah tercatat dari bekal lain; periksa tablet kasir.";
+/** Tablet clock drift tolerated before a paidAt counts as in the future. */
+const FUTURE_SKEW_MS = 5 * 60 * 1000;
 const sameId = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 type KitRow = typeof posOfflineKits.$inferSelect;
@@ -215,6 +234,10 @@ async function ingestOne(
       ingestInTransaction(tx, context, userId, deviceId, input),
     );
   } catch (error) {
+    // Review O2 P3 3: a concurrent batch stored the event id under another
+    // kit first (ledger primary key).
+    if (sqlStateOf(error) === "23505")
+      throw new CoreError("CONFLICT", EVENT_CONFLICT);
     if (
       error instanceof RetryLater ||
       isTransientReason(`db_error:${sqlStateOf(error)}`)
@@ -280,6 +303,7 @@ async function ingestInTransaction(
   // 3. Replay: one event id is one sale, whatever the resend carries.
   const [stored] = await tx
     .select({
+      kitId: posOfflineSales.kitId,
       state: posOfflineSales.state,
       reason: posOfflineSales.reason,
       flags: posOfflineSales.flags,
@@ -300,18 +324,21 @@ async function ingestInTransaction(
         eq(posOfflineSales.eventId, event.eventId),
       ),
     );
-  if (stored)
+  if (stored) {
+    if (!sameId(stored.kitId, kit.id))
+      throw new CoreError("CONFLICT", EVENT_CONFLICT);
     return {
       result: result(event, "duplicate", {
         reason: stored.reason,
         flags: stored.flags,
-        receiptNumber: formatReceiptNumber(
-          stored.prefix,
-          stored.sequenceNumber,
-        ),
+        receiptNumber:
+          stored.reason === NUMBER_TAKEN
+            ? null
+            : formatReceiptNumber(stored.prefix, stored.sequenceNumber),
       }),
       run: runOut(run.lastNumber),
     };
+  }
 
   // 4. The number must continue the run exactly.
   const expected = run.lastNumber + 1;
@@ -323,10 +350,31 @@ async function ingestInTransaction(
       kind: taken ? "number_taken" : "sequence_gap",
       number: taken ? event.sequenceNumber : expected,
     });
+    // Review O2 P3 1: a reused number is a sale the tablet took; it is kept
+    // for finance (the number stays the other sale's, the run is unchanged).
+    if (taken) {
+      await tx.insert(posOfflineSales).values({
+        tenantId,
+        eventId: event.eventId,
+        outletId,
+        deviceId,
+        kitId: kit.id,
+        shiftId: kit.shiftId,
+        sequenceId: run.id,
+        sequenceNumber: event.sequenceNumber,
+        state: "held",
+        reason: NUMBER_TAKEN,
+        flags: [],
+        payload: event,
+        receivedBy: userId,
+      });
+      return {
+        result: result(event, "held", { reason: NUMBER_TAKEN }),
+        run: runOut(run.lastNumber),
+      };
+    }
     return {
-      result: result(event, "rejected", {
-        reason: taken ? "number_taken" : "sequence_gap",
-      }),
+      result: result(event, "rejected", { reason: "sequence_gap" }),
       run: runOut(run.lastNumber),
     };
   }
@@ -348,6 +396,7 @@ async function ingestInTransaction(
   // 6. The sale, in its own savepoint (R1): a refusal rolls back the sale only.
   let flags: OfflineSaleFlag[] = [];
   let late: { original: string; late: string } | null = null;
+  let closedShift: string | null = null;
   let reason: string | null = null;
   try {
     const applied = await tx.transaction((sp) =>
@@ -355,6 +404,7 @@ async function ingestInTransaction(
     );
     flags = applied.flags;
     late = applied.late;
+    closedShift = applied.closedShift;
   } catch (error) {
     reason = reasonOf(error);
     if (isTransientReason(reason)) throw new RetryLater();
@@ -382,18 +432,22 @@ async function ingestInTransaction(
       outletId,
       id: edgeAlertId("offline_sale_review", tenantId, event.eventId),
       eventName: "offline_sale.review_needed",
-      aggregateType: "order",
+      aggregateType: "offline_sale",
       aggregateId: event.eventId,
       payload: {
         receiptNumber,
         state: reason === null ? "ingested" : "held",
         reason: reason ?? flags.join(","),
+        shiftId: kit.shiftId,
+        totalIdr: String(event.totalIdr),
       },
       title: "Penjualan offline perlu dicek",
       body:
-        reason === null
-          ? `Struk ${receiptNumber} dari kasir offline sudah masuk, tetapi perlu dicek (${flags.join(", ")}).`
-          : `Struk ${receiptNumber} dari kasir offline disimpan tanpa pesanan (${reason}). Uangnya sudah diterima; hubungi finance.`,
+        reason !== null
+          ? `Struk ${receiptNumber} (${formatRupiah(Number(event.totalIdr))}) dari kasir offline disimpan tanpa pesanan (${reason}). Uangnya sudah diterima; hubungi finance.`
+          : closedShift !== null
+            ? `Struk ${receiptNumber} (${formatRupiah(Number(event.totalIdr))}) dari kasir offline masuk sesudah ${closedShift} ditutup. Tunainya tidak ada di hitungan laci shift itu; finance mencocokkannya dengan selisih shift (${flags.join(", ")}).`
+            : `Struk ${receiptNumber} (${formatRupiah(Number(event.totalIdr))}) dari kasir offline sudah masuk, tetapi perlu dicek (${flags.join(", ")}).`,
     });
   return {
     result: result(event, reason === null ? "ingested" : "held", {
@@ -426,7 +480,7 @@ async function alertRun(
       String(input.number),
     ),
     eventName: `offline_sale.${input.kind}`,
-    aggregateType: "receipt_sequence",
+    aggregateType: "offline_sale",
     aggregateId: input.run.id,
     payload: { receiptNumber, kind: input.kind },
     title:
@@ -438,6 +492,55 @@ async function alertRun(
         ? `Kasir offline mengirim penjualan sesudah ${receiptNumber} sebelum ${receiptNumber} sendiri. Penjualan sesudahnya ditahan sampai ${receiptNumber} terkirim.`
         : `Kasir offline mengirim penjualan lain dengan nomor ${receiptNumber}. Penjualan itu tidak dicatat; periksa tablet kasir.`,
   });
+}
+
+/**
+ * Review O2 P1: service charge, tax, rounding and total of the sale as the
+ * kit's tax snapshot computes them for the sent lines (no discount offline,
+ * no table zone). A line the kit does not know, or a snapshot the engine
+ * refuses, is a mismatch.
+ */
+function amountsMatchSnapshot(
+  context: ScopedTenantContext,
+  kit: KitRow,
+  event: OfflineSaleEvent,
+  businessDate: string,
+): boolean {
+  const items = kit.snapshot.catalogs[event.serviceType]?.items ?? [];
+  const lines: PosBillLine[] = [];
+  for (const [index, line] of event.lines.entries()) {
+    const item = items.find((row) => sameId(row.id, line.menuItemId));
+    if (!item) return false;
+    lines.push({
+      lineId: createUlid(Date.parse(event.paidAt) + index),
+      menuItemId: line.menuItemId,
+      categoryId: item.categoryId,
+      quantity: line.quantity,
+      unitPriceIdr: Number(line.unitPriceIdr),
+      modifiersTotalIdr: Number(line.modifiersTotalIdr),
+    });
+  }
+  try {
+    const bill = computePosBill({
+      context,
+      outletId: kit.outletId as OutletId,
+      businessDate,
+      channel: posPriceChannel("pos", event.serviceType),
+      zone: null,
+      lines,
+      orderDiscountIdr: 0,
+      taxConfig: { ...kit.snapshot.tax, ruleNames: new Map() },
+    });
+    return (
+      Number(bill.serviceChargeIdr) === Number(event.serviceChargeIdr) &&
+      Number(bill.taxIdr) === Number(event.taxIdr) &&
+      Number(bill.roundingIdr) === Number(event.roundingIdr) &&
+      Number(bill.totalIdr) === Number(event.totalIdr) &&
+      bill.pricesIncludeTax === event.pricesIncludeTax
+    );
+  } catch {
+    return false;
+  }
 }
 
 /** Price of a line as the kit told the tablet, or null when it is not there. */
@@ -483,6 +586,8 @@ async function applySale(
 ): Promise<{
   flags: OfflineSaleFlag[];
   late: { original: string; late: string } | null;
+  /** "shift <cashier> dibuka <time>" when the kit shift was already closed. */
+  closedShift: string | null;
 }> {
   const { kit, run, event, receiptNumber, now } = input;
   const tenantId = context.tenant.tenantId;
@@ -550,6 +655,10 @@ async function applySale(
   const paidAt = new Date(event.paidAt);
   if (paidAt > kit.expiresAt || paidAt < kit.issuedAt)
     flags.push("kit_expired");
+  // Review O2 P3 2: a tablet clock ahead of the cloud never books tomorrow.
+  if (paidAt.getTime() > now.getTime() + FUTURE_SKEW_MS)
+    flags.push("paid_in_future");
+  const soldAt = paidAt > now ? now : paidAt;
   const taxesUsable =
     event.taxes !== undefined &&
     event.taxes.reduce((sum, row) => sum + Number(row.taxIdr), 0) ===
@@ -563,6 +672,7 @@ async function applySale(
       id: posShifts.id,
       status: posShifts.status,
       cashierId: posShifts.cashierId,
+      openedAt: posShifts.openedAt,
     })
     .from(posShifts)
     .where(and(eq(posShifts.tenantId, tenantId), eq(posShifts.id, kit.shiftId)))
@@ -580,7 +690,23 @@ async function applySale(
     .from(outlets)
     .where(and(eq(outlets.tenantId, tenantId), eq(outlets.id, outletId)));
   if (!outlet) throw new SaleRefusal("outlet_unknown");
-  const soldOn = businessDateOf(paidAt, outletBusinessDayClock(outlet));
+  const soldOn = businessDateOf(soldAt, outletBusinessDayClock(outlet));
+  // Review O2 P1: what the kit's tax snapshot computes for these lines.
+  if (!amountsMatchSnapshot(context, kit, event, soldOn))
+    flags.push("amount_mismatch");
+  let closedShift: string | null = null;
+  if (drawerShiftId === null) {
+    const [cashier] = await tx
+      .select({ name: user.name })
+      .from(user)
+      .where(eq(user.id, shift.cashierId));
+    const opened = new Intl.DateTimeFormat("id-ID", {
+      timeZone: outlet.timezone,
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(shift.openedAt);
+    closedShift = `shift ${cashier?.name ?? "kasir"} (dibuka ${opened})`;
+  }
   const businessDate = await openBusinessDateFrom(
     tx,
     context,
@@ -788,5 +914,5 @@ async function applySale(
     },
     now,
   );
-  return { flags, late };
+  return { flags, late, closedShift };
 }

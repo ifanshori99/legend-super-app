@@ -100,6 +100,7 @@ type Till = {
 };
 type Menu = { itemId: string; name: string; priceIdr: number };
 const devices = new Set<string>();
+let seededItemId = "";
 
 async function asOwner<T>(run: (client: PoolClient) => Promise<T>) {
   const client = await owner.connect();
@@ -180,15 +181,36 @@ async function seedMenu(): Promise<void> {
        VALUES ($1, $2, $3, $4, 20000)`,
       [randomUUID(), seededTenantId, priceListId, itemId],
     );
+    // Review O2 P1: the kit's tax snapshot must compute this item's bill
+    // whatever other files left in the shared tenant (an item rule is the
+    // most specific): no tax, so the plain sales below match it exactly.
+    await client.query(
+      `INSERT INTO tax_rules
+         (id, tenant_id, outlet_id, code, name, tax_type, rate_bp, region_code, channels, applies_to,
+          price_includes_tax, include_service_in_base, is_active, version, effective_from, status,
+          published_at, published_by)
+       VALUES ($1, $2, $3, $4, 'Bebas pajak uji offline', 'pbjt', 0, NULL, '[]',
+               jsonb_build_object('itemClasses', '[]'::jsonb, 'categoryIds', '[]'::jsonb,
+                                  'itemIds', jsonb_build_array($5::text)),
+               false, true, true, 1, $6, 'published', now(),
+               (SELECT id FROM "user" ORDER BY created_at LIMIT 1))`,
+      [
+        randomUUID(),
+        seededTenantId,
+        seededOutletA,
+        `OFFLINE-${itemId.slice(0, 8)}`.toUpperCase(),
+        itemId,
+        rows[0]!.today,
+      ],
+    );
+    seededItemId = itemId;
   });
 }
 
-/** A plain-priced takeaway item of the kit (no variant, no required group). */
+/** The seeded takeaway item in the kit (plain price, no modifier group). */
 function menuOf(kit: PosOfflineKit): Menu {
   const item = kit.catalogs.takeaway.items.find(
-    (row) =>
-      row.plainPriceIdr !== null &&
-      row.modifierGroups.every((group) => !group.required && group.min === 0),
+    (row) => row.id === seededItemId && row.plainPriceIdr !== null,
   );
   if (!item) throw new Error("The kit prices no plain takeaway item");
   return {
@@ -316,6 +338,8 @@ beforeAll(async () => {
     tenantId === seededTenantId && devices.has(deviceId) ? seededOutletA : null,
   );
   await seedMenu();
+  // Someone to receive the supervisor alerts.
+  await outletSupervisor(app, "Offline Batch Alerts");
   a = await newTill(app);
   b = await newTill(app);
 });
@@ -551,6 +575,16 @@ describe("O2 ingest", () => {
       { sequenceId: kit.receiptRun.sequenceId, lastNumber: n - 1 },
     ]);
     expect(await ordersOf(later.eventId)).toBe(0);
+    // The gap is alerted, never silent.
+    expect(
+      await countOf(
+        "SELECT count(*) AS n FROM notifications WHERE tenant_id = $1 AND body LIKE $2",
+        [
+          seededTenantId,
+          `%${kit.receiptRun.prefix}-${String(n).padStart(6, "0")}%`,
+        ],
+      ),
+    ).toBeGreaterThan(0);
     // Sent out of order in one batch: the cloud walks them by number.
     const filled = await submit(a, [later, missing]);
     expect(
@@ -791,7 +825,6 @@ describe("O2 ingest", () => {
 describe("Review O2 fixes", () => {
   let c: Till;
   beforeAll(async () => {
-    await outletSupervisor(app, "Offline Review Supervisor");
     c = await newTill(app);
   });
 
@@ -811,9 +844,7 @@ describe("Review O2 fixes", () => {
       ...base,
       roundingIdr: -50_000,
       totalIdr,
-      tenders: [
-        { method: "cash", amountIdr: totalIdr, receivedIdr: totalIdr },
-      ],
+      tenders: [{ method: "cash", amountIdr: totalIdr, receivedIdr: totalIdr }],
     });
     const result = await submit(c, [event]);
     expect(result.results[0]).toMatchObject({
@@ -834,9 +865,7 @@ describe("Review O2 fixes", () => {
       ...base,
       serviceChargeIdr: 3_000,
       totalIdr,
-      tenders: [
-        { method: "cash", amountIdr: totalIdr, receivedIdr: totalIdr },
-      ],
+      tenders: [{ method: "cash", amountIdr: totalIdr, receivedIdr: totalIdr }],
     });
     expect((await submit(c, [event])).results[0]).toMatchObject({
       status: "ingested",

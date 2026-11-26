@@ -113,6 +113,7 @@ import {
   type ReceiptSequenceRetiredReason,
 } from "../db/schema/pos-receipt.ts";
 import { receiptNumberWriteoffs } from "../db/schema/pos-receipt-writeoff.ts";
+import { posOfflineSales } from "../db/schema/pos-offline-sale.ts";
 import type { PosReceiptPort } from "./pos-order-ports.ts";
 import { reportReceiptsArrivedAfterWriteoff } from "./pos-receipt-writeoff-arrival.ts";
 import type { Tx } from "./permission-resolver.ts";
@@ -2214,6 +2215,14 @@ export async function receiptGapsForOutlet(
           inArray(receiptNumberWriteoffs.sequenceId, sequenceIds),
         ),
       ),
+    // Review O2 P2 1: a held offline sale used its number (no receipt row).
+    tx
+      .select({
+        sequenceId: posOfflineSales.sequenceId,
+        sequenceNumber: posOfflineSales.sequenceNumber,
+      })
+      .from(posOfflineSales)
+      .where(heldOfflineNumber(tenantId, sequenceIds)),
   );
   const bySequence = new Map<string, { sequenceNumber: number }[]>();
   for (const row of present) {
@@ -2294,10 +2303,18 @@ export async function receiptGapsForOutletFast(
     tenantId,
     counted.map((row) => row.sequence.id),
   );
+  // Review O2 P2 1: held offline sales have no receipt either, never a
+  // write-off (their number is not missing), so the sum stays exact.
+  const held = await heldOfflineOrdinalsBySequence(
+    tx,
+    tenantId,
+    counted.map((row) => row.sequence.id),
+  );
   const suspect = counted.filter(
     (row) =>
       row.issued +
-        countUpTo(writeoffs.get(row.sequence.id), row.sequence.lastNumber) !==
+        countUpTo(writeoffs.get(row.sequence.id), row.sequence.lastNumber) +
+        countUpTo(held.get(row.sequence.id), row.sequence.lastNumber) !==
       row.sequence.lastNumber,
   );
   if (suspect.length === 0) return [];
@@ -2331,6 +2348,7 @@ export async function receiptGapsForOutletFast(
       missing: receiptGaps(sequence, [
         ...(bySequence.get(sequence.id) ?? []),
         ...asOrdinals(writeoffs.get(sequence.id)),
+        ...asOrdinals(held.get(sequence.id)),
       ]),
     }))
     .filter((entry) => entry.missing.length > 0);
@@ -2418,8 +2436,14 @@ async function receiptGapsOfRun(
       sequence.id,
     ) ?? [];
   if (sequence.lastNumber === 0) return { missing: [], writtenOff };
+  const held =
+    (await heldOfflineOrdinalsBySequence(tx, tenantId, [sequence.id])).get(
+      sequence.id,
+    ) ?? [];
   if (
-    (counted?.issued ?? 0) + countUpTo(writtenOff, sequence.lastNumber) ===
+    (counted?.issued ?? 0) +
+      countUpTo(writtenOff, sequence.lastNumber) +
+      countUpTo(held, sequence.lastNumber) ===
     sequence.lastNumber
   )
     return { missing: [], writtenOff };
@@ -2433,9 +2457,51 @@ async function receiptGapsOfRun(
       ),
     );
   return {
-    missing: receiptGaps(sequence, [...issued, ...asOrdinals(writtenOff)]),
+    missing: receiptGaps(sequence, [
+      ...issued,
+      ...asOrdinals(writtenOff),
+      ...asOrdinals(held),
+    ]),
     writtenOff,
   };
+}
+
+/**
+ * Review O2 P2 1: an offline sale stored `held` used its `L<n>` number without
+ * a receipt row (no order); its number is present, not a gap. A
+ * `number_taken` hold shares the number of the sale that holds it, so it is
+ * not counted again.
+ */
+function heldOfflineNumber(tenantId: TenantId, sequenceIds: string[]) {
+  return and(
+    eq(posOfflineSales.tenantId, tenantId),
+    inArray(posOfflineSales.sequenceId, sequenceIds),
+    eq(posOfflineSales.state, "held"),
+    ne(posOfflineSales.reason, "number_taken"),
+  );
+}
+
+async function heldOfflineOrdinalsBySequence(
+  tx: Tx,
+  tenantId: TenantId,
+  sequenceIds: string[],
+): Promise<Map<string, number[]>> {
+  const bySequence = new Map<string, number[]>();
+  if (sequenceIds.length === 0) return bySequence;
+  const rows = await tx
+    .select({
+      sequenceId: posOfflineSales.sequenceId,
+      sequenceNumber: posOfflineSales.sequenceNumber,
+    })
+    .from(posOfflineSales)
+    .where(heldOfflineNumber(tenantId, sequenceIds))
+    .orderBy(asc(posOfflineSales.sequenceNumber));
+  for (const row of rows) {
+    const list = bySequence.get(row.sequenceId) ?? [];
+    list.push(row.sequenceNumber);
+    bySequence.set(row.sequenceId, list);
+  }
+  return bySequence;
 }
 
 /**

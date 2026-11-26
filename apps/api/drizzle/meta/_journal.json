@@ -3648,6 +3648,13 @@
       "when": 1795711963690,
       "tag": "0534_pos_offline_sales",
       "breakpoints": true
+    },
+    {
+      "idx": 535,
+      "version": "7",
+      "when": 1795713957114,
+      "tag": "0535_pos_offline_number_taken",
+      "breakpoints": true
     }
   ]
 }
