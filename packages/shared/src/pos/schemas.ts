@@ -58,7 +58,12 @@ import {
   tableSessionIdSchema,
   taxLineSchema,
 } from "../qr-order/schemas.ts";
-import type { PaymentMethod } from "../payment/index.ts";
+import {
+  ewalletPaymentInstructionsSchema,
+  paymentChannelSchema,
+  vaPaymentInstructionsSchema,
+  type PaymentMethod,
+} from "../payment/index.ts";
 import { PosError } from "./errors.ts";
 import { shiftExpectedCashIdr, shiftVarianceIdr } from "./calculations.ts";
 import { receiptNumberSchema, receiptRunPrefixSchema } from "./receipts.ts";
@@ -2076,6 +2081,15 @@ export const posQrisHoldSchema = z.strictObject({
 });
 export type PosQrisHold = z.infer<typeof posQrisHoldSchema>;
 
+/** 1269 C3a: what the cashier shows for a VA or e-wallet code. */
+export const posOnlineCodeInstructionsSchema = z.discriminatedUnion("method", [
+  vaPaymentInstructionsSchema,
+  ewalletPaymentInstructionsSchema,
+]);
+export type PosOnlineCodeInstructions = z.infer<
+  typeof posOnlineCodeInstructionsSchema
+>;
+
 /**
  * GET .../qris only (cancel and release never carry a payload). `qrPayload` is
  * set only while this QR may be shown for exactly this bill: hold `open` and
@@ -2084,6 +2098,12 @@ export type PosQrisHold = z.infer<typeof posQrisHoldSchema>;
  */
 export const posQrisStatusSchema = posQrisHoldSchema.extend({
   qrPayload: z.string().min(16).nullable(),
+  /**
+   * 1269 C3a: a VA or e-wallet code of the hold (the VA number or the Duitku
+   * payment page), under the same rules as `qrPayload`; null = show nothing.
+   * Absent for a QRIS hold.
+   */
+  instructions: posOnlineCodeInstructionsSchema.nullable().optional(),
 });
 export type PosQrisStatus = z.infer<typeof posQrisStatusSchema>;
 
@@ -2117,11 +2137,24 @@ export const posPaymentOptionSchema = z
     method: z.enum(POS_PAYMENT_OPTION_METHODS),
     enabled: z.boolean(),
     unavailableReason: posPaymentUnavailableReasonSchema.nullable(),
+    /** 1269 C3a: VA and e-wallet only, the channels the cashier may pick. */
+    channels: z.array(paymentChannelSchema).optional(),
   })
   .refine((row) => row.enabled === (row.unavailableReason === null), {
     path: ["unavailableReason"],
     message: "A disabled method says why, an enabled one does not",
-  });
+  })
+  .refine(
+    (row) =>
+      row.channels === undefined ||
+      ((row.method === "va" || row.method === "ewallet") &&
+        (row.enabled ? row.channels.length > 0 : row.channels.length === 0)),
+    {
+      path: ["channels"],
+      message:
+        "Only VA and e-wallet list channels; an enabled one lists at least one",
+    },
+  );
 
 /** What a cashier needs to pick a terminal: no merchant id, address or full id. */
 export const posPaymentTerminalSchema = z.strictObject({
@@ -2559,6 +2592,20 @@ export const customerDisplayQrisSchema = z.strictObject({
 });
 export type CustomerDisplayQris = z.infer<typeof customerDisplayQrisSchema>;
 
+/**
+ * 1269 C3a: a cashier VA or e-wallet code on the second screen (VA number or
+ * Duitku payment page). Same rules as `qris`: open hold, exactly the remaining
+ * balance, unexpired.
+ */
+export const customerDisplayOnlineCodeSchema = z.strictObject({
+  amountIdr: positiveIdr,
+  instructions: posOnlineCodeInstructionsSchema,
+  expiresAt: isoDateTimeSchema,
+});
+export type CustomerDisplayOnlineCode = z.infer<
+  typeof customerDisplayOnlineCodeSchema
+>;
+
 export const customerDisplayPromotionSchema = z.strictObject({
   title: z.string().min(1),
   body: z.string().min(1),
@@ -2600,6 +2647,8 @@ export const customerDisplayStateSchema = z
     /** Derived from the gross total less the deposit and captured tenders. */
     remainingIdr: nonnegativeIdr.optional(),
     qris: customerDisplayQrisSchema.nullable(),
+    /** 1269 C3a: absent when no VA / e-wallet code is shown. */
+    onlineCode: customerDisplayOnlineCodeSchema.nullable().optional(),
     /** Captured amounts applied to the bill, excluding cash handed over. */
     tenders: z.array(posDocumentTenderSchema),
     changeIdr: nonnegativeIdr.nullable(),
@@ -2638,6 +2687,7 @@ export const customerDisplayStateSchema = z
         (state.remainingIdr !== undefined &&
           Number(state.remainingIdr) !== 0) ||
         state.qris !== null ||
+        (state.onlineCode ?? null) !== null ||
         state.tenders.length > 0 ||
         state.changeIdr !== null)
     )
@@ -2711,6 +2761,21 @@ export const customerDisplayStateSchema = z
           code: "custom",
           path: ["qris", "amountIdr"],
           message: "The QRIS amount is the positive remaining bill balance",
+        });
+    }
+    if (state.onlineCode) {
+      if (state.state !== "awaiting_payment" || state.qris !== null)
+        ctx.addIssue({
+          code: "custom",
+          path: ["onlineCode"],
+          message:
+            "A VA or e-wallet code is shown alone while the bill awaits payment",
+        });
+      if (remaining <= 0 || Number(state.onlineCode.amountIdr) !== remaining)
+        ctx.addIssue({
+          code: "custom",
+          path: ["onlineCode", "amountIdr"],
+          message: "The code amount is the positive remaining bill balance",
         });
     }
     if (state.state === "paid" && remaining !== 0)

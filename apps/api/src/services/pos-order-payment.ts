@@ -12,9 +12,13 @@
 //   link is stored on the tender row, never on `orders.payment_link_id`, so
 //   the QR consumer (qr-order-payment.ts) never mistakes a POS bill for a QR
 //   pay-first order.
-// - EDC and points settle through ports (legend-m0k, loyalty); VA, e-wallet
-//   and online card need a bank/channel the contract body does not carry and
-//   are refused for now.
+// - EDC and points settle through ports (legend-m0k, loyalty). Online card
+//   stays refused (no chargeback procedure or journal yet, 1269 C).
+// - 1269 C3a: VA and e-wallet take the QRIS path on the cloud only, through
+//   Duitku only, with the bank / e-wallet code the cashier picked: one live
+//   code per bill, held like the QR (pos-qris-hold.ts), so every other method
+//   stays locked until the provider is proven final (Duitku `02` after the
+//   code lapsed), paid, or a manager released it.
 
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, eq, inArray, isNotNull, sql } from "drizzle-orm";
@@ -37,6 +41,7 @@ import {
 } from "@starter/shared/pos";
 import { orderNetSubtotalIdr } from "@starter/shared/tax";
 import { db } from "../db/index.ts";
+import { HttpError } from "../lib/http-error.ts";
 import { paymentIntents, paymentLinks } from "../db/schema/index.ts";
 import { posOrders, posOrderTenders } from "../db/schema/pos-order.ts";
 import { posQrisHolds } from "../db/schema/pos-qris-hold.ts";
@@ -47,7 +52,12 @@ import { withTenant } from "../db/tenant.ts";
 import { sealSecret } from "../lib/secrets.ts";
 import type { Tx } from "./menu-internals.ts";
 import { refundableBalance } from "./payment-admin.service.ts";
+import {
+  methodIssuable,
+  selectGatewayForNewIntent,
+} from "./payment-gateway-select.ts";
 import { netAllocatedIdrSql } from "./payment-net-allocated-sql.ts";
+import { resolveRoutingRule } from "./payment-routing.service.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 import {
   cancelPaymentLinkInTx,
@@ -67,6 +77,7 @@ import { settlePosEdcStandalone } from "./pos-edc-standalone.ts";
 import { posEdcTenderPort, posPointsTenderPort } from "./pos-order-ports.ts";
 import { freshDetail, mutatePosOrder } from "./pos-order.service.ts";
 import {
+  POS_ONLINE_CODE_LIFETIME_MS,
   POS_QRIS_LIFETIME_MS,
   assertNoActiveQrisHold,
   closeQrisHoldTx,
@@ -94,6 +105,74 @@ import {
 } from "./pos-order-support.ts";
 
 type AddTenderInput = z.output<typeof addTenderEndpoint.body>;
+
+/** Methods whose tender is a provider code the guest pays later (a hold). */
+const CODE_METHODS = ["qris", "va", "ewallet"] as const;
+type CodeMethod = (typeof CODE_METHODS)[number];
+function isCodeMethod(method: string): method is CodeMethod {
+  return CODE_METHODS.some((code) => code === method);
+}
+
+/** 1269 C3a: the only provider a cashier VA or e-wallet code may come from. */
+const POS_ONLINE_CODE_PROVIDER = "duitku";
+
+function onlineCodeUnavailable(): HttpError {
+  return new HttpError(
+    422,
+    "VALIDATION_ERROR",
+    "Metode atau kanal ini belum tersedia di kasir.",
+  );
+}
+
+/**
+ * 1269 C3a: refused before any link or provider call. A VA or e-wallet code
+ * is issued only where the outlet's routing for the method is on, the gateway
+ * it selects now is Duitku, and Duitku lists the method and the chosen channel
+ * at the bill amount (`DUITKU_ENABLED_METHODS`, 1269 C0). A failed read is
+ * 503, never "available".
+ */
+async function assertOnlineCodeIssuable(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    outletId: string;
+    method: "va" | "ewallet";
+    channelCode: string | null;
+    amountIdr: number;
+  },
+): Promise<void> {
+  if (input.channelCode === null) throw onlineCodeUnavailable();
+  const routing = await resolveRoutingRule(
+    tx,
+    context,
+    input.outletId,
+    input.method,
+  );
+  if (!routing.enabled) throw onlineCodeUnavailable();
+  const selected = await selectGatewayForNewIntent(
+    context,
+    input.outletId,
+    routing,
+  );
+  if (selected.provider === null)
+    throw new CoreError(
+      "SERVICE_UNAVAILABLE",
+      "Gateway pembayaran sedang tidak tersedia. Pakai metode lain.",
+    );
+  if (selected.provider !== POS_ONLINE_CODE_PROVIDER)
+    throw onlineCodeUnavailable();
+  const issuable = await methodIssuable(context, input.outletId, routing, {
+    method: input.method,
+    channelCode: input.channelCode,
+    amountIdr: input.amountIdr,
+  });
+  if (issuable === "gateway_down")
+    throw new CoreError(
+      "SERVICE_UNAVAILABLE",
+      "Gateway pembayaran sedang tidak tersedia. Pakai metode lain.",
+    );
+  if (issuable !== "yes") throw onlineCodeUnavailable();
+}
 
 /** The envelope a WS-05 outbox consumer hands over (`payment.paid`). */
 export type DomainEvent = EventEnvelope;
@@ -303,7 +382,7 @@ export async function addPosTender(
         // (settlesEcrRequest) skips this guard (founder Q7).
         if (
           input.method === "cash" ||
-          input.method === "qris" ||
+          isCodeMethod(input.method) ||
           input.method === "points" ||
           ((input.method === "edc_card" || input.method === "edc_qris") &&
             input.standalone)
@@ -365,8 +444,9 @@ export async function addPosTender(
         );
       let tenders = await tendersOf(tx, context, order.id);
       // legend-b0au: another method while a QRIS waits closes that QRIS first
-      // (its link stops taking money) unless the guest already paid it.
-      if (input.method !== "qris") {
+      // (its link stops taking money) unless the guest already paid it. A new
+      // code (QRIS, VA, e-wallet) never does: it is refused below instead.
+      if (!isCodeMethod(input.method)) {
         const waiting = tenders.filter(
           (tender) =>
             tender.status === "authorized" && tender.paymentLinkId !== null,
@@ -482,7 +562,10 @@ export async function addPosTender(
             .returning();
           break;
         }
-        case "qris": {
+        case "qris":
+        case "va":
+        case "ewallet": {
+          // One live code per bill: any code still waiting refuses a new one.
           if (
             tenders.some(
               (tender) =>
@@ -491,16 +574,27 @@ export async function addPosTender(
           )
             throw new CoreError(
               "CONFLICT",
-              "Masih ada QRIS yang menunggu pembayaran untuk pesanan ini.",
+              "Masih ada kode pembayaran yang menunggu untuk pesanan ini.",
             );
           // D-09: an edge node calls the provider itself, so it needs gateway
           // credentials locally; without them the QR cannot be issued (and a
-          // hold could never be closed there).
+          // hold could never be closed there). 1269 C3a (founder no. 31): VA
+          // and e-wallet are cloud only, never issued on an edge process.
           if (
             isEdgeProcess() &&
-            !(await edgeHasGatewayCredentials(context, order.outletId))
+            (input.method !== "qris" ||
+              !(await edgeHasGatewayCredentials(context, order.outletId)))
           )
             throw new PosError("QRIS_NEEDS_CLOUD");
+          const channelCode =
+            input.method === "qris" ? null : (input.channelCode ?? null);
+          if (input.method !== "qris")
+            await assertOnlineCodeIssuable(tx, context, {
+              outletId: order.outletId,
+              method: input.method,
+              channelCode,
+              amountIdr: remaining,
+            });
           // WS-05 bill for exactly the remaining balance (PAY-01: the amount
           // is the server's). The already covered part shows as a reduction.
           const covered = order.totalIdr - remaining;
@@ -527,8 +621,8 @@ export async function addPosTender(
             context,
             opened.token,
             {
-              method: "qris",
-              channelCode: null,
+              method: input.method,
+              channelCode,
               idempotencyKey: `pos-${createHash("sha256")
                 // legend-yhia9 QH-17: bound to the link too. A POS transaction
                 // that rolled back after the provider made the intent leaves
@@ -538,16 +632,24 @@ export async function addPosTender(
                 .digest("hex")
                 .slice(0, 48)}`,
               // Q92: the cashier QR lives 5 minutes (a per-tender decision;
-              // the shared QRIS intent lifetime stays 10 minutes).
+              // the shared QRIS intent lifetime stays 10 minutes). 1269 C3a:
+              // a cashier VA / e-wallet code lives 10 minutes, never the 24
+              // hour guest VA (the bill is frozen while it lives).
               expiresAt: new Date(
-                now.getTime() + POS_QRIS_LIFETIME_MS,
+                now.getTime() +
+                  (input.method === "qris"
+                    ? POS_QRIS_LIFETIME_MS
+                    : POS_ONLINE_CODE_LIFETIME_MS),
               ).toISOString(),
             },
             now,
             { orderLockedByCaller: true },
           );
           // The intent names the gateway that issued the code (routing rule or
-          // its fallback); it committed before this read.
+          // its fallback); it committed before this read. A code the provider
+          // already made is always recorded and held, whoever issued it (a
+          // fallback that raced the Duitku check above): dropping it would
+          // leave a payable code nobody holds.
           const [issued] = await tx
             .select({ provider: paymentIntents.provider })
             .from(paymentIntents)

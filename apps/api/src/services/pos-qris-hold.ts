@@ -32,7 +32,9 @@ import {
 } from "@starter/shared/core";
 import {
   canSettlePosOrder,
+  posOnlineCodeInstructionsSchema,
   PosError,
+  type PosOnlineCodeInstructions,
   type PosQrisHold,
   type PosQrisStatus,
 } from "@starter/shared/pos";
@@ -79,6 +81,13 @@ type HoldRow = typeof posQrisHolds.$inferSelect;
 
 /** Q92 (founder, 13 Nov 2026): a cashier QR lives 5 minutes. */
 export const POS_QRIS_LIFETIME_MS = 5 * 60_000;
+/**
+ * 1269 C3a: a cashier VA or e-wallet code lives 10 minutes (time to open a
+ * bank or e-wallet app). Duitku may keep a fixed-expiry e-wallet code longer
+ * (at most 30 minutes); the hold waits for its own `02`, and a manager release
+ * only opens from `expires_at` + 30 minutes.
+ */
+export const POS_ONLINE_CODE_LIFETIME_MS = 10 * 60_000;
 /** D-03: clock skew margin between us and the provider. */
 export const HOLD_CLOSE_MARGIN_MS = 60_000;
 /** Q93: a manager may release a hold only this long after the QR expired. */
@@ -468,7 +477,7 @@ export async function closeQrisHoldTx(
       type: "order.tender_voided",
       payload: {
         tenderId: hold.tenderId,
-        method: "qris",
+        method: tender?.method ?? "qris",
         amountIdr: hold.amountIdr,
         reason: input.reason,
         holdId: hold.id,
@@ -730,6 +739,36 @@ export async function showableQrPayload(
   hold: HoldRow,
   now: Date,
 ): Promise<string | null> {
+  const instructions = await showableInstructions(tx, context, hold, now);
+  return instructions?.method === "qris" &&
+    typeof instructions.qrPayload === "string" &&
+    instructions.qrPayload.length >= 16
+    ? instructions.qrPayload
+    : null;
+}
+
+/**
+ * 1269 C3a: the VA number or e-wallet payment page a cashier may show now,
+ * under exactly the rules of `showableQrPayload`; null = show nothing.
+ */
+export async function showableOnlineCode(
+  tx: Tx,
+  context: ScopedTenantContext,
+  hold: HoldRow,
+  now: Date,
+): Promise<PosOnlineCodeInstructions | null> {
+  const parsed = posOnlineCodeInstructionsSchema.safeParse(
+    await showableInstructions(tx, context, hold, now),
+  );
+  return parsed.success ? parsed.data : null;
+}
+
+async function showableInstructions(
+  tx: Tx,
+  context: ScopedTenantContext,
+  hold: HoldRow,
+  now: Date,
+): Promise<{ method?: string; qrPayload?: string } | null> {
   if (hold.state !== "open" || hold.tenderId === null) return null;
   const tenantId = context.tenant.tenantId;
   const active = await tx
@@ -782,18 +821,15 @@ export async function showableQrPayload(
     !intent ||
     intent.status !== "pending" ||
     Number(intent.amountIdr) !== Number(hold.amountIdr) ||
-    intent.expiresAt.getTime() <= now.getTime()
+    intent.expiresAt.getTime() <= now.getTime() ||
+    // The code shown is the one the tender was issued for.
+    tender.method !== intent.method
   )
     return null;
-  const instructions = intent.instructions as {
+  return (intent.instructions ?? null) as {
     method?: string;
     qrPayload?: string;
   } | null;
-  return instructions?.method === "qris" &&
-    typeof instructions.qrPayload === "string" &&
-    instructions.qrPayload.length >= 16
-    ? instructions.qrPayload
-    : null;
 }
 
 /**
@@ -819,11 +855,30 @@ export async function getPosQrisStatus(
     const hold = await newestHold(tx, tenantId, orderId);
     if (!hold || hold.outletId !== outletId)
       throw notFound("Pesanan ini belum punya QRIS.");
+    const [code] = await tx
+      .select({ method: paymentIntents.method })
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, tenantId),
+          eq(paymentIntents.id, hold.paymentIntentId),
+        ),
+      );
+    const online = code?.method === "va" || code?.method === "ewallet";
     return {
       ...(await holdDto(tx, tenantId, hold)),
-      qrPayload: access.canAcceptPayment
-        ? await showableQrPayload(tx, context, hold, now)
-        : null,
+      qrPayload:
+        access.canAcceptPayment && !online
+          ? await showableQrPayload(tx, context, hold, now)
+          : null,
+      // 1269 C3a: a VA / e-wallet hold carries its code instead of a QR.
+      ...(online
+        ? {
+            instructions: access.canAcceptPayment
+              ? await showableOnlineCode(tx, context, hold, now)
+              : null,
+          }
+        : {}),
     };
   });
 }

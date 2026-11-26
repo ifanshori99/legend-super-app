@@ -499,8 +499,19 @@ export const addPosTender = defineEndpoint({
       .optional(),
     /** A points tender: the member's QR token for this order and amount. */
     memberToken: z.string().min(1).max(512).optional(),
+    /** 1269 C3a: the bank / e-wallet code of a VA or e-wallet tender. */
+    channelCode: z.string().min(1).max(40).optional(),
     ...expectedStatus,
   })
+    .refine(
+      (value) =>
+        (value.method === "va" || value.method === "ewallet") ===
+        (value.channelCode !== undefined),
+      {
+        message: "VA and e-wallet name a channel; no other method sends one",
+        path: ["channelCode"],
+      },
+    )
     .refine(
       (value) =>
         value.method === "cash"

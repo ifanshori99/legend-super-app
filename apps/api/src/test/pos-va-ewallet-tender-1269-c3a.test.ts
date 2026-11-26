@@ -462,13 +462,13 @@ describe("1269 C3a cashier VA and e-wallet (Duitku, cloud)", () => {
     const status = await orderStatus(order.id);
     const before = fx.gateway.requests.length;
     const noChannel = await postTender(order.id, status, { method: "va" });
-    expect(noChannel.status, JSON.stringify(noChannel.body)).toBe(400);
+    expect(noChannel.status, JSON.stringify(noChannel.body)).toBe(422);
     const cashChannel = await postTender(order.id, status, {
       method: "cash",
       receivedIdr: 50_000,
       channelCode: "BC",
     });
-    expect(cashChannel.status, JSON.stringify(cashChannel.body)).toBe(400);
+    expect(cashChannel.status, JSON.stringify(cashChannel.body)).toBe(422);
     const unknown = await postTender(order.id, status, {
       method: "va",
       channelCode: "M2",
@@ -485,7 +485,7 @@ describe("1269 C3a cashier VA and e-wallet (Duitku, cloud)", () => {
       fx.gateway.listed.add("ewallet");
     }
     const card = await postTender(order.id, status, { method: "card" });
-    expect(card.status, JSON.stringify(card.body)).toBe(422);
+    expect(card.status, JSON.stringify(card.body)).toBe(400);
     expect(errorCode(card.body)).toBe("VALIDATION_ERROR");
     expect(fx.gateway.requests.length).toBe(before);
     expect(await tenderStatuses(fx, order.id)).toEqual([]);
