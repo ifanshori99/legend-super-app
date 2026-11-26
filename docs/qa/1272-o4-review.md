@@ -22,3 +22,8 @@ Layar tutup paksa `/pos/supervisor/shift/$shiftId` tidak punya link. `offline-cl
 - P2 #3: `/api/health` dibaca lintas origin hanya untuk `WEB_URL` + `TRUSTED_ORIGINS` (GET, tanpa cookie, tanpa data rahasia); tablet hitung status >= 500 atau timeout sebagai gagal, 2 gagal = offline. Test: 502 -> offline, 200 -> online.
 - Screenshot `docs/review/img/o4-*` wajib sebelum gabung (spec `e2e/o4-offline-shots.spec.ts`, `O4_SHOTS=1`), lalu ui-auditor.
 - Screenshot (27 Nov): mode mock tidak punya bekal/antrean offline. Diputuskan opsi B: 5 adegan mock sekarang (banner tanpa bekal + 4 langkah tutup paksa); adegan bayar/tersimpan/antrean/blok tutup/keluar masuk O5 dengan domain tenant tes di browser nyata. Tidak menambah jalur mock di kode produksi.
+
+## Re-review 27 Nov (ab26bc919): LULUS
+- P1 (3 jalan ke tutup paksa), P2 #1-#3 (`/api/health` sudah di belakang `cors(trustedOrigins)`, `health-cors.test.ts`), P3 tertutup.
+- P3 sisa -> O5: `fetchOpenShiftsOfDay` hanya shift hari ini satu halaman; shift buka sejak kemarin tidak tampil di tutup hari (jalan lain: notice 409).
+- Keputusan CTO (sebelum rilis, O5): pesanan belum pasti tidak boleh mengunci item populer selama offline panjang. Jalan keluar: kasir menandai "pelanggan lain" (wajib alasan singkat), sale tetap tercatat offline dengan flag "perlu dicek" untuk Finance. Tanpa tanda itu, baris yang sama tetap ditolak.
