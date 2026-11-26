@@ -1127,6 +1127,9 @@ describe("review 1: paid is proven by the payment link", () => {
 describe("review 2: a claim is a frozen snapshot on legal steps", () => {
   it("no sale value ever changes", async () => {
     const s = await setup();
+    // Saved before any version: once one is in force, a Rp70.000 day pass is
+    // under the W1b price floor.
+    const other = await asDayPass(s);
     const build = await claimRow(s);
     const row = build();
     await insertClaim(s, row);
@@ -1136,7 +1139,6 @@ describe("review 2: a claim is a frozen snapshot on legal steps", () => {
       { proposer: s.actor, approver: s.approver },
       { version: 2 },
     );
-    const other = await asDayPass(s);
     const profile = (await seedProfile(s.world.tenantId)).id;
     for (const change of [
       "seat_fee_idr = 40000, credit_idr = 30000",

@@ -9,8 +9,8 @@
 //   writes, seat switches and zone switches take one advisory lock per outlet,
 //   so none can slip past the other.
 // - Product: price = seat fee + credit, computed here, never sent by a client.
-//   Every change leaves the product switched off; switching it on belongs to the
-//   price floor (W1b).
+//   Every change leaves the product switched off and never goes under the price
+//   floor; switching it on is wfc-settings.service.ts (W1b).
 //
 // Writes run inside `withTenant` (RLS scopes rows to the tenant and the
 // caller's outlets), re-check the permission on the row's outlet (TEN-03) and
@@ -45,6 +45,7 @@ import {
 import { eqId } from "../db/branded-ids.ts";
 import { db } from "../db/index.ts";
 import { facilityProducts } from "../db/schema/facility.ts";
+import { approvalRequests } from "../db/schema/platform-approval.ts";
 import { floorZones } from "../db/schema/floor.ts";
 import { wfcSeatReservations, wfcSeats } from "../db/schema/wfc-seat.ts";
 import {
@@ -65,6 +66,7 @@ import {
   pgErrorCode,
   type Tx,
 } from "./facility-shared.ts";
+import { assertWfcProductFloor } from "./wfc-settings.service.ts";
 import {
   findWfcSettings,
   wfcBusinessDate,
@@ -217,8 +219,29 @@ async function approvedWfcSeats(
         gt(wfcBusinessSettings.effectiveFrom, today),
       ),
     );
-  if (!inForce) return coming?.seats ?? null;
-  return Math.min(inForce.wfcSeats, coming?.seats ?? inForce.wfcSeats);
+  // W1b: a proposal still waiting for approval caps the quota too, so the
+  // seats a second person approves are never below a quota set meanwhile.
+  const [pending] = await tx
+    .select({
+      seats: min(
+        sql<number>`(${approvalRequests.payload} ->> 'wfcSeats')::int`,
+      ),
+    })
+    .from(approvalRequests)
+    .where(
+      and(
+        eq(approvalRequests.tenantId, context.tenant.tenantId),
+        eq(approvalRequests.sourceModule, "wfc"),
+        eq(approvalRequests.objectType, "wfc_business_settings"),
+        eqId(approvalRequests.outletId, outletId),
+        eq(approvalRequests.status, "pending"),
+      ),
+    );
+  const caps = [inForce?.wfcSeats, coming?.seats, pending?.seats].filter(
+    (value): value is number => value !== null && value !== undefined,
+  );
+  if (!inForce && (coming?.seats ?? null) === null) return null;
+  return Math.min(...caps.map(Number));
 }
 
 /**
@@ -663,6 +686,16 @@ export async function setWfcProduct(
         409,
         "NOT_WFC_ELIGIBLE",
         "Hanya produk tunggal fasilitas coworking tanpa menu kasir yang bisa jadi produk WFC.",
+      );
+    // W1b: never saved under the floor of a version in force or to come.
+    if (wfc !== null)
+      await assertWfcProductFloor(
+        tx,
+        context,
+        existing.outletId,
+        { facilityId: existing.facilityId, ...wfc },
+        now,
+        { requireInForce: false },
       );
     if (existing.wfcKind !== null && existing.wfcKind !== wfc?.kind) {
       const [claim] = await tx

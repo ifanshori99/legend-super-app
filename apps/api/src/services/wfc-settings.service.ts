@@ -838,8 +838,7 @@ export async function handleWfcSettingsApprovalResolved(
   const parsed = approvalResolvedEvent.envelopeSchema.safeParse(event);
   if (!parsed.success) return;
   if (
-    parsed.data.tenantId.toLowerCase() !==
-    context.tenant.tenantId.toLowerCase()
+    parsed.data.tenantId.toLowerCase() !== context.tenant.tenantId.toLowerCase()
   )
     return;
   await withTenant(db, context, (tx) =>

@@ -113,6 +113,7 @@ import { runScheduledLeaveJobs } from "./services/hris-leave-jobs.ts";
 import { runScheduledExitClearance } from "./services/hris-offboarding-jobs.ts";
 import { handleJournalApprovalResolved } from "./services/accounting-journal-consumers.ts";
 import { handleCashBankApprovalResolved } from "./services/cash-bank-approval-consumer.ts";
+import { handleWfcSettingsApprovalResolved } from "./services/wfc-settings.service.ts";
 import { handleProfitShareApprovalResolved } from "./services/profit-share-approval-consumers.ts";
 import { handleReconciliationApprovalResolved } from "./services/payment-reconciliation-approval-consumer.ts";
 import { handleApprovalResolved } from "./services/staff-override-consumers.ts";
@@ -460,6 +461,9 @@ const runtime = createWorkerRuntime({
             // Cash out held for approval (legend-4qowr, Q7): approved/rejected
             // settles from the chain re-read under the entry row lock.
             await handleCashBankApprovalResolved(context, event);
+            // WFC settings (brief 1270 W1b): an approved chain writes its
+            // version, re-read under the outlet lock; replays are no-ops.
+            await handleWfcSettingsApprovalResolved(context, event);
             // Profit share (legend-33im6): distribution runs and recipient
             // changes settle from the chain outcome re-read under the row lock.
             await handleProfitShareApprovalResolved(context, event);
