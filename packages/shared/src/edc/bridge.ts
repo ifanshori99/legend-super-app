@@ -46,9 +46,16 @@ export type EdcBridgeOp = z.infer<typeof edcBridgeOpSchema>;
 export const EDC_BRIDGE_DEDUPED_OPS: readonly EdcBridgeOp[] = ["sale"];
 
 /** The bridge keeps a sale's dedupe record (separate from the unacked result
- * queue, which an `ack` empties) at least this long, and also until the
- * terminal batch holding it was settled and matched. */
+ * queue, which an `ack` empties) at least this long AND until the cloud sent
+ * `sale_record_release` for it (settlement matched). */
 export const EDC_BRIDGE_SALE_RECORD_MIN_RETENTION_MS = 48 * 3_600_000;
+
+/** Hard storage limit: a sale record never released is dropped after this
+ * (and counted in `hello.heldSaleRecords` until then). */
+export const EDC_BRIDGE_SALE_RECORD_MAX_RETENTION_MS = 30 * 86_400_000;
+
+/** The cloud sends no command on a lease with less than this left. */
+export const EDC_BRIDGE_MIN_LEASE_REMAINING_MS = 30_000;
 
 /** Upper bound of `command.timeoutMs`. */
 export const EDC_BRIDGE_MAX_COMMAND_TIMEOUT_MS = 300_000;
@@ -135,6 +142,9 @@ export const edcBridgeHelloSchema = z.strictObject({
   /** Results in the local journal still waiting for an `ack`. The bridge
    * resends them right after the lease. */
   unackedResults: z.number().int().min(0).max(10_000),
+  /** Sale records past 48 h still kept because no `sale_record_release`
+   * came for them (settlement not matched yet). */
+  heldSaleRecords: z.number().int().min(0).max(100_000),
 });
 export type EdcBridgeHello = z.infer<typeof edcBridgeHelloSchema>;
 
@@ -243,6 +253,18 @@ export const edcBridgeAckSchema = z.strictObject({
 });
 export type EdcBridgeAck = z.infer<typeof edcBridgeAckSchema>;
 
+/** Settlement for these sale traces was matched in the cloud: their dedupe
+ * records may go once they are 48 h old (`edcBridgeSaleRecordDeletable`).
+ * Unknown traces are ignored. */
+export const edcBridgeSaleRecordReleaseSchema = z.strictObject({
+  type: z.literal("sale_record_release"),
+  terminalId: uuidSchema,
+  traces: z.array(ecrTraceSchema).min(1).max(500),
+});
+export type EdcBridgeSaleRecordRelease = z.infer<
+  typeof edcBridgeSaleRecordReleaseSchema
+>;
+
 /** Sent right before the cloud closes the socket. */
 export const edcBridgeGoodbyeSchema = z.strictObject({
   type: z.literal("goodbye"),
@@ -259,6 +281,7 @@ export const edcBridgeDownlinkSchema = z.discriminatedUnion("type", [
   edcBridgeLeaseSchema,
   edcBridgeCommandSchema,
   edcBridgeAckSchema,
+  edcBridgeSaleRecordReleaseSchema,
   edcBridgeGoodbyeSchema,
 ]);
 export type EdcBridgeDownlink = z.infer<typeof edcBridgeDownlinkSchema>;
@@ -302,6 +325,8 @@ export type EdcBridgeSaleRecord = {
   readonly commandId: string;
   readonly frameSha256: string;
   readonly state: "in_flight" | "done";
+  /** The first result, replayed as is; `null` while in flight. */
+  readonly answer: EdcBridgeAnswer | null;
 };
 
 export type EdcBridgeDedupeDecision =
@@ -325,12 +350,36 @@ export function edcBridgeDedupeDecision(
     return { action: "run" };
   if (record.frameSha256 !== frameSha256)
     return { action: "refuse", reason: "trace_conflict" };
-  if (record.state === "in_flight")
+  if (record.state === "in_flight" || record.answer === null)
     return { action: "refuse", reason: "duplicate_in_flight" };
   return { action: "replay", replayOf: record.commandId };
 }
 
-/** Cloud clock: the earliest instant a terminal leased at `issuedAt` for
+/** Bridge side: a sale record may be deleted once it is 48 h old AND
+ * released, or once it is 30 days old whatever happened. */
+export function edcBridgeSaleRecordDeletable(
+  record: { readonly storedAt: Date; readonly released: boolean },
+  now: Date,
+): boolean {
+  const age = now.getTime() - record.storedAt.getTime();
+  if (age >= EDC_BRIDGE_SALE_RECORD_MAX_RETENTION_MS) return true;
+  return record.released && age >= EDC_BRIDGE_SALE_RECORD_MIN_RETENTION_MS;
+}
+
+/** Cloud clock: may a command go out on a lease whose last grant or renewal
+ * for that terminal was sent at `issuedAt`? Only while at least 30 s of
+ * `ttlMs` is left (and never before `issuedAt`). */
+export function edcBridgeLeaseAllowsCommand(
+  issuedAt: Date,
+  ttlMs: number,
+  now: Date,
+): boolean {
+  const elapsed = now.getTime() - issuedAt.getTime();
+  return elapsed >= 0 && ttlMs - elapsed > EDC_BRIDGE_MIN_LEASE_REMAINING_MS;
+}
+
+/** Cloud clock: `issuedAt` is the last grant or renewal of this terminal's
+ * lease. The earliest instant a terminal leased at `issuedAt` for
  * `ttlMs` may be leased to ANOTHER tablet. Covers a tablet whose clock runs
  * slow, a command started at the last moment and the result's way back. */
 export function edcBridgeLeaseReusableAt(issuedAt: Date, ttlMs: number): Date {

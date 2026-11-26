@@ -7,7 +7,11 @@ import {
   EDC_BRIDGE_MAX_MESSAGE_BYTES,
   EDC_BRIDGE_PAIRING_MAX_ATTEMPTS,
   EDC_BRIDGE_PROTOCOL_VERSION,
+  EDC_BRIDGE_MIN_LEASE_REMAINING_MS,
+  EDC_BRIDGE_SALE_RECORD_MAX_RETENTION_MS,
   EDC_BRIDGE_SALE_RECORD_MIN_RETENTION_MS,
+  edcBridgeLeaseAllowsCommand,
+  edcBridgeSaleRecordDeletable,
   edcBridgeDedupeDecision,
   edcBridgeDedupeKey,
   edcBridgeFrameSha256,
@@ -71,6 +75,7 @@ describe("EDC bridge contract: versions and hello", () => {
       protocolVersion: 2,
       appVersion: "1.0.0",
       unackedResults: 0,
+      heldSaleRecords: 0,
     };
     expect(parseEdcBridgeUplink(JSON.stringify(hello))).toEqual(hello);
     expect(() =>
@@ -86,6 +91,7 @@ describe("EDC bridge contract: versions and hello", () => {
           protocolVersion: 1,
           appVersion: "1.0.0",
           unackedResults: 0,
+          heldSaleRecords: 0,
           token: "x",
         }),
       ),
@@ -137,6 +143,19 @@ describe("EDC bridge contract: lease", () => {
     expect(edcBridgeLeaseReusableAt(issuedAt, 60_000).toISOString()).toBe(
       "2026-11-27T03:06:30.000Z",
     );
+  });
+
+  it("the cloud sends no command when less than 30 s of the lease is left", () => {
+    const issuedAt = new Date("2026-11-27T03:00:00.000Z");
+    const at = (ms: number) => new Date(issuedAt.getTime() + ms);
+    expect(EDC_BRIDGE_MIN_LEASE_REMAINING_MS).toBe(30_000);
+    expect(edcBridgeLeaseAllowsCommand(issuedAt, 60_000, at(29_999))).toBe(
+      true,
+    );
+    expect(edcBridgeLeaseAllowsCommand(issuedAt, 60_000, at(30_000))).toBe(
+      false,
+    );
+    expect(edcBridgeLeaseAllowsCommand(issuedAt, 60_000, at(-1))).toBe(false);
   });
 
   it("LAN link only reaches a private IPv4 address", () => {
@@ -242,6 +261,7 @@ describe("EDC bridge contract: commands", () => {
             commandId: COMMAND,
             frameSha256: "0".repeat(64),
             state: "done",
+            answer: { outcome: "response", frame: FRAME },
           },
           "0".repeat(64),
         ),
@@ -273,6 +293,7 @@ describe("EDC bridge contract: commands", () => {
           commandId: first,
           frameSha256: hash,
           state: "done",
+          answer: { outcome: "response", frame: FRAME },
         },
         hash,
       ),
@@ -284,6 +305,7 @@ describe("EDC bridge contract: commands", () => {
           commandId: first,
           frameSha256: hash,
           state: "in_flight",
+          answer: null,
         },
         hash,
       ),
@@ -296,14 +318,62 @@ describe("EDC bridge contract: commands", () => {
             commandId: first,
             frameSha256: other,
             state,
+            answer: null,
           },
           hash,
         ),
       ).toEqual({ action: "refuse", reason: "trace_conflict" });
+    expect(
+      edcBridgeDedupeDecision(
+        sale,
+        { commandId: first, frameSha256: hash, state: "done", answer: null },
+        hash,
+      ),
+    ).toEqual({ action: "refuse", reason: "duplicate_in_flight" });
   });
 
   it("sale records outlive the unacked queue: at least 48 hours", () => {
     expect(EDC_BRIDGE_SALE_RECORD_MIN_RETENTION_MS).toBe(48 * 3_600_000);
+    expect(EDC_BRIDGE_SALE_RECORD_MAX_RETENTION_MS).toBe(30 * 86_400_000);
+  });
+
+  it("a sale record goes after 48 h AND a release, or after 30 days", () => {
+    const storedAt = new Date("2026-11-01T00:00:00.000Z");
+    const at = (hours: number) =>
+      new Date(storedAt.getTime() + hours * 3_600_000);
+    expect(
+      edcBridgeSaleRecordDeletable({ storedAt, released: true }, at(47)),
+    ).toBe(false);
+    expect(
+      edcBridgeSaleRecordDeletable({ storedAt, released: true }, at(48)),
+    ).toBe(true);
+    expect(
+      edcBridgeSaleRecordDeletable({ storedAt, released: false }, at(48)),
+    ).toBe(false);
+    expect(
+      edcBridgeSaleRecordDeletable({ storedAt, released: false }, at(719)),
+    ).toBe(false);
+    expect(
+      edcBridgeSaleRecordDeletable({ storedAt, released: false }, at(720)),
+    ).toBe(true);
+  });
+
+  it("sale_record_release parses; empty, oversized or bad traces do not", () => {
+    const release = {
+      type: "sale_record_release",
+      terminalId: TERMINAL,
+      traces: ["TRACE0001", "TRACE0002"],
+    };
+    expect(parseEdcBridgeDownlink(JSON.stringify(release))).toEqual(release);
+    for (const bad of [
+      { ...release, traces: [] },
+      { ...release, traces: Array.from({ length: 501 }, (_, i) => `T${i}`) },
+      { ...release, traces: ["TR-1"] },
+      { ...release, terminalId: "x" },
+      { ...release, batchNo: "001" },
+    ])
+      expect(() => parseEdcBridgeDownlink(JSON.stringify(bad))).toThrow();
+    expect(() => parseEdcBridgeUplink(JSON.stringify(release))).toThrow();
   });
 });
 
