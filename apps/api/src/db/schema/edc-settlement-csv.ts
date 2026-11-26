@@ -5,9 +5,10 @@
 // sale already approved and booked (through resolveEdcReconciliation), and a
 // difference raises the X1 mismatch alert. Append-only for the app role.
 //
-// Idempotent per file (sha256 of the bytes, per outlet) and per line (a line
-// key of bank, terminal, RRN and amount, per outlet): a re-export that repeats
-// lines of an earlier file records only its new lines.
+// Idempotent per file (sha256 of bank and text, per outlet) and per line (a
+// line key of bank, kind, terminal, RRN and amount, per outlet): a re-export
+// that repeats matched or mismatched lines records only its new lines; an
+// unmatched line is looked at again.
 import { sql } from "drizzle-orm";
 import {
   boolean,
@@ -108,8 +109,11 @@ export const edcSettlementRows = pgTable(
   },
   (t) => [
     unique("edc_settlement_rows_tenant_id_key").on(t.tenantId, t.id),
-    // One bank line once per outlet, whichever file carried it.
-    unique("edc_settlement_rows_row_key").on(t.tenantId, t.outletId, t.rowKey),
+    // One bank line once per outlet, whichever file carried it. An unmatched
+    // line may come again (the sale was keyed later) and is matched then.
+    uniqueIndex("edc_settlement_rows_row_key")
+      .on(t.tenantId, t.outletId, t.rowKey)
+      .where(sql`${t.matchStatus} <> 'unmatched'`),
     // One sale is confirmed by one bank line.
     uniqueIndex("edc_settlement_rows_matched_txn_key")
       .on(t.tenantId, t.matchedEdcTransactionId)

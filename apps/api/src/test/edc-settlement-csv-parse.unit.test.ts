@@ -15,6 +15,8 @@ describe("EDC settlement CSV reader (X2)", () => {
     expect(parseRupiah("Rp 1.250.000,00")).toBe(1_250_000);
     expect(parseRupiah("1,250,000.00")).toBe(1_250_000);
     expect(parseRupiah("55000.00")).toBe(55_000);
+    expect(parseRupiah("Rp 55.000,-")).toBe(55_000);
+    expect(parseRupiah("55.000.-")).toBe(55_000);
     expect(parseRupiah("55000.50")).toBeNull();
     expect(parseRupiah("1.250.000,50")).toBeNull();
     expect(parseRupiah("-55000")).toBeNull();
@@ -100,5 +102,19 @@ describe("EDC settlement CSV reader (X2)", () => {
     expect(() =>
       parseEdcSettlementCsv("bca", "Nama,Jumlah\nKopi,55000\n"),
     ).toThrow(/TID, RRN dan nominal/);
+  });
+
+  it("X2 review P3 6: a line with another cell count than the header refuses the file", () => {
+    let error: unknown;
+    try {
+      parseEdcSettlementCsv(
+        "bca",
+        "TID,RRN,Amount\nT1,111,55000\nT1,222,55000,EXTRA\nT1,333\n",
+      );
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(EdcSettlementCsvError);
+    expect((error as EdcSettlementCsvError).lines).toEqual([3, 4]);
   });
 });

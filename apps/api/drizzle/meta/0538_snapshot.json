@@ -1,5 +1,5 @@
 {
-  "id": "6ece6d78-6591-4427-90df-f00087004c0e",
+  "id": "02f2b11a-2a2d-45a4-8578-002a2f29bb0a",
   "prevId": "04b03df2-eadb-40b1-8788-7e682fa4e76f",
   "version": "7",
   "dialect": "postgresql",
@@ -103592,6 +103592,34 @@
         }
       },
       "indexes": {
+        "edc_settlement_rows_row_key": {
+          "name": "edc_settlement_rows_row_key",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "outlet_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "row_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"edc_settlement_rows\".\"match_status\" <> 'unmatched'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "edc_settlement_rows_matched_txn_key": {
           "name": "edc_settlement_rows_matched_txn_key",
           "columns": [
@@ -103704,15 +103732,6 @@
           "columns": [
             "tenant_id",
             "id"
-          ]
-        },
-        "edc_settlement_rows_row_key": {
-          "name": "edc_settlement_rows_row_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "outlet_id",
-            "row_key"
           ]
         }
       },

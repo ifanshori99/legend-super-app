@@ -1755,4 +1755,113 @@ describe("X2 EDC settlement CSV import matches terminal + RRN + amount and never
       },
     ]);
   });
+
+  describe("X2 review K fixes", () => {
+    const alertsOf = async (event: string) =>
+      (
+        await owner.query<{ payload: Record<string, unknown> }>(
+          `SELECT payload FROM notification_outbox
+           WHERE tenant_id = $1 AND event_type = $2`,
+          [tenant.tenantId, event],
+        )
+      ).rows;
+
+    it("P2 1: a bank void for an approved, already cleared sale is a mismatch and alerts", async () => {
+      const { order, id } = await manualSlip("X2RRN000080");
+      const cleared = await importCsv(
+        financeUser,
+        file(line(1, "TID-RECON", "X2RRN000080", String(order.totalIdr))),
+      );
+      expect(cleared.body.data).toMatchObject({ matched: 1, cleared: 1 });
+      const voided = await importCsv(
+        financeUser,
+        [
+          "TID;RRN;Nominal;Jenis",
+          `TID-RECON;X2RRN000080;${order.totalIdr};VOID`,
+        ].join("\n"),
+      );
+      expect(voided.status, JSON.stringify(voided.body)).toBe(200);
+      expect(voided.body.data).toMatchObject({ mismatch: 1, unmatched: 0 });
+      expect(await row(id)).toMatchObject({
+        status: "approved",
+        amount_idr: String(order.totalIdr),
+      });
+      const sent = await mismatchAlerts(id);
+      expect(sent.map((alert) => alert.payload.kind)).toEqual(["void"]);
+    });
+
+    it("P2 2: an unmatched line is matched again by a later file once the sale exists", async () => {
+      const first = await importCsv(
+        financeUser,
+        file(line(1, "TID-RECON", "X2RRN000090", "55000")),
+      );
+      expect(first.body.data).toMatchObject({ unmatched: 1 });
+      // Two Kopi Susu with PBJT 10%: the bill is Rp55.000, as the line said.
+      const { order, id } = await manualSlip("X2RRN000090");
+      expect(order.totalIdr).toBe(55_000);
+      const later = await importCsv(
+        financeUser,
+        file(
+          line(1, "TID-RECON", "X2RRN000090", "55000"),
+          line(2, "TID-RECON", "X2RRN000091", "1000"),
+        ),
+      );
+      expect(later.status, JSON.stringify(later.body)).toBe(200);
+      expect(later.body.data).toMatchObject({
+        matched: 1,
+        duplicate: 0,
+        unmatched: 1,
+      });
+      expect(await row(id)).toMatchObject({ needs_reconciliation: false });
+    });
+
+    it("P2 3: the same text imported for another bank is not a replay", async () => {
+      const csv = file(line(1, "TID-RECON", "X2RRN000100", "1000"));
+      const bca = await importCsv(financeUser, csv);
+      const mandiri = await importCsv(financeUser, csv, { bank: "mandiri" });
+      expect(mandiri.status, JSON.stringify(mandiri.body)).toBe(200);
+      expect(mandiri.body.data.replayed).toBe(false);
+      expect(mandiri.body.data.id).not.toBe(bca.body.data.id);
+    });
+
+    it("P3 4: an approved ECR sale with no live tender is matched but never cleared", async () => {
+      const order = await newOrder();
+      const id = await ledgerSale({
+        reference: order.number,
+        amountIdr: order.totalIdr,
+        status: "approved",
+        rrn: "X2RRN000110",
+      });
+      const res = await importCsv(
+        financeUser,
+        file(line(1, "TID-RECON", "X2RRN000110", String(order.totalIdr))),
+      );
+      expect(res.body.data).toMatchObject({ matched: 1, cleared: 0 });
+      expect(await row(id)).toMatchObject({
+        status: "approved",
+        needs_reconciliation: true,
+      });
+      expect(await auditRows(id)).toHaveLength(0);
+    });
+
+    it("P3 5: unregistered terminals alert once per import; a second amount for the RRN in the file holds the clear", async () => {
+      const before = (await alertsOf("edc_settlement.unknown_terminal")).length;
+      const { order, id } = await manualSlip("X2RRN000120");
+      const res = await importCsv(
+        financeUser,
+        file(
+          line(1, "TID-NOPE1", "X2RRN000121", "1000"),
+          line(2, "TID-NOPE2", "X2RRN000122", "2000"),
+          line(3, "TID-RECON", "X2RRN000120", String(order.totalIdr)),
+          line(4, "TID-RECON", "X2RRN000120", String(order.totalIdr + 500)),
+        ),
+      );
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body.data).toMatchObject({ matched: 0, cleared: 0 });
+      expect(await row(id)).toMatchObject({ needs_reconciliation: true });
+      const unknown = await alertsOf("edc_settlement.unknown_terminal");
+      expect(unknown).toHaveLength(before + 1);
+      expect(unknown.at(-1)?.payload).toMatchObject({ count: "2" });
+    });
+  });
 });

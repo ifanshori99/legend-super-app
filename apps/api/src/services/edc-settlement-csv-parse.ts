@@ -174,11 +174,15 @@ export function readCsvRows(input: string): string[][] {
 
 /**
  * Whole rupiah from a bank amount: "55000", "55.000", "55,000", "Rp 55.000",
- * "55.000,00" or "55,000.00". Cents other than 00, a sign, or anything
+ * "55.000,00", "55,000.00" or "Rp 55.000,-". Cents other than 00, a sign, or anything
  * ambiguous gives null (the file is refused).
  */
 export function parseRupiah(raw: string): number | null {
-  const value = raw.replaceAll(/\s/g, "").replace(/^(rp|idr)\.?/i, "");
+  // "Rp 55.000,-": the trailing ",-" (or ".-") means no cents.
+  const value = raw
+    .replaceAll(/\s/g, "")
+    .replace(/^(rp|idr)\.?/i, "")
+    .replace(/[.,]-$/, "");
   let digits: string | null = null;
   let match = /^(\d{1,3}(?:\.\d{3})+)(?:,(\d{2}))?$/.exec(value);
   if (match) {
@@ -235,6 +239,7 @@ export function parseEdcSettlementCsv(
     const index = at[column];
     return index === undefined ? "" : (row[index] ?? "").trim();
   };
+  const headerWidth = rows[headerIndex]!.length;
   const lines: EdcSettlementCsvLine[] = [];
   const bad: number[] = [];
   for (let i = headerIndex + 1; i < rows.length; i += 1) {
@@ -244,6 +249,12 @@ export function parseEdcSettlementCsv(
     const rrnRaw = cell(row, "rrn");
     // Blank lines and the bank's total/footer lines carry no terminal and RRN.
     if (terminal === "" && rrnRaw === "") continue;
+    // X2 review P3 6: a shifted line (a stray delimiter, a missing cell)
+    // would read another column as the amount: refused.
+    if (row.length !== headerWidth) {
+      bad.push(lineNo);
+      continue;
+    }
     const rrn = normalizeRrn(rrnRaw);
     const terminalCode = terminal.toUpperCase();
     const amountIdr = parseRupiah(cell(row, "amount"));

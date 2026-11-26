@@ -43,7 +43,6 @@ CREATE TABLE "edc_settlement_rows" (
 	"reason" varchar(300),
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "edc_settlement_rows_tenant_id_key" UNIQUE("tenant_id","id"),
-	CONSTRAINT "edc_settlement_rows_row_key" UNIQUE("tenant_id","outlet_id","row_key"),
 	CONSTRAINT "edc_settlement_rows_status_check" CHECK ("edc_settlement_rows"."match_status" IN ('matched','mismatch','unmatched')),
 	CONSTRAINT "edc_settlement_rows_amount_check" CHECK ("edc_settlement_rows"."amount_idr" > 0),
 	CONSTRAINT "edc_settlement_rows_link_check" CHECK (("edc_settlement_rows"."match_status" = 'matched') <= ("edc_settlement_rows"."matched_edc_transaction_id" IS NOT NULL) AND ("edc_settlement_rows"."match_status" = 'unmatched') <= ("edc_settlement_rows"."matched_edc_transaction_id" IS NULL)),
@@ -57,6 +56,7 @@ ALTER TABLE "edc_settlement_rows" ADD CONSTRAINT "edc_settlement_rows_tenant_id_
 ALTER TABLE "edc_settlement_rows" ADD CONSTRAINT "edc_settlement_rows_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "edc_settlement_rows" ADD CONSTRAINT "edc_settlement_rows_file_fk" FOREIGN KEY ("tenant_id","file_id","outlet_id") REFERENCES "public"."edc_settlement_files"("tenant_id","id","outlet_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "edc_settlement_rows" ADD CONSTRAINT "edc_settlement_rows_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+CREATE UNIQUE INDEX "edc_settlement_rows_row_key" ON "edc_settlement_rows" USING btree ("tenant_id","outlet_id","row_key") WHERE "edc_settlement_rows"."match_status" <> 'unmatched';--> statement-breakpoint
 CREATE UNIQUE INDEX "edc_settlement_rows_matched_txn_key" ON "edc_settlement_rows" USING btree ("tenant_id","matched_edc_transaction_id") WHERE "edc_settlement_rows"."match_status" = 'matched';--> statement-breakpoint
 CREATE INDEX "edc_settlement_rows_txn_idx" ON "edc_settlement_rows" USING btree ("tenant_id","matched_edc_transaction_id");
 --> statement-breakpoint

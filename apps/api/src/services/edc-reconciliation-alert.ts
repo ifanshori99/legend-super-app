@@ -47,8 +47,9 @@ const rupiah = (value: number) => `Rp ${value.toLocaleString("id-ID")}`;
 
 export type EdcReconciliationMismatch = {
   /** `amount`: another charged amount; `reference`: another bank RRN;
-   * `terminal` (X2): the bank line names the RRN on another terminal. */
-  kind: "amount" | "reference" | "terminal";
+   * `terminal` (X2): the bank line names the RRN on another terminal;
+   * `void` (X2): the bank voided an approved sale. */
+  kind: "amount" | "reference" | "terminal" | "void";
   edcTransactionId: string;
   outletId: string;
   amountIdr: number;
@@ -78,9 +79,11 @@ export async function alertEdcReconciliationMismatch(
   const body =
     mismatch.kind === "amount" && mismatch.chargedAmountIdr !== null
       ? `Bukti bank menyebut ${rupiah(mismatch.chargedAmountIdr)}, tercatat ${rupiah(mismatch.amountIdr)}. Transaksi tetap perlu dicek; periksa slip dan laporan bank sebelum memutuskan koreksi.`
-      : mismatch.kind === "terminal"
-        ? `Laporan bank mencatat nomor referensi ini di terminal EDC lain (${rupiah(mismatch.amountIdr)}). Transaksi tetap perlu dicek; periksa slip dan laporan bank sebelum memutuskan koreksi.`
-        : `Nomor referensi di laporan bank tidak sama dengan slip EDC manual yang dicatat kasir (${rupiah(mismatch.amountIdr)}). Transaksi tetap perlu dicek; periksa slip dan laporan bank sebelum memutuskan koreksi.`;
+      : mismatch.kind === "void"
+        ? `Laporan bank mencatat void atau pembatalan untuk pembayaran EDC yang tercatat disetujui (${rupiah(mismatch.amountIdr)}). Periksa slip dan laporan bank sebelum memutuskan koreksi.`
+        : mismatch.kind === "terminal"
+          ? `Laporan bank mencatat nomor referensi ini di terminal EDC lain (${rupiah(mismatch.amountIdr)}). Transaksi tetap perlu dicek; periksa slip dan laporan bank sebelum memutuskan koreksi.`
+          : `Nomor referensi di laporan bank tidak sama dengan slip EDC manual yang dicatat kasir (${rupiah(mismatch.amountIdr)}). Transaksi tetap perlu dicek; periksa slip dan laporan bank sebelum memutuskan koreksi.`;
   try {
     await withTenant(db, context, (tx) =>
       notifyOutletSupervisors(
@@ -112,6 +115,67 @@ export async function alertEdcReconciliationMismatch(
     logger.warn(
       { err, tenantId, edcTransactionId: mismatch.edcTransactionId },
       "EDC reconciliation mismatch alert failed",
+    );
+  }
+}
+
+export type EdcSettlementUnknownTerminals = {
+  fileId: string;
+  outletId: string;
+  /** Terminal codes of the file that are not this outlet's (for its bank). */
+  terminalCodes: readonly string[];
+  lineCount: number;
+  totalIdr: number;
+};
+
+/**
+ * X2 review P3 5: one alert per import for the lines naming a terminal the
+ * outlet has not registered for the bank (money the books cannot place).
+ * Own transaction, after the import committed; never throws.
+ */
+export async function alertEdcSettlementUnknownTerminals(
+  context: ScopedTenantContext,
+  input: EdcSettlementUnknownTerminals,
+  now: Date = new Date(),
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const id = alertUlid([
+    "edc_settlement.unknown_terminal",
+    tenantId,
+    input.fileId.toLowerCase(),
+  ]);
+  const codes = input.terminalCodes.slice(0, 10).join(", ");
+  try {
+    await withTenant(db, context, (tx) =>
+      notifyOutletSupervisors(
+        tx,
+        context,
+        {
+          tenantId,
+          outletId: outletIdSchema.parse(input.outletId),
+          category: "operational_anomaly",
+          alsoOwners: true,
+          recordEmpty: true,
+          id,
+          eventName: "edc_settlement.unknown_terminal",
+          aggregateType: "edc_settlement",
+          aggregateId: id,
+          payload: {
+            fileId: input.fileId,
+            terminalCodes: codes,
+            count: String(input.lineCount),
+            totalIdr: String(input.totalIdr),
+          },
+          title: "Terminal EDC tidak dikenal di laporan bank",
+          body: `${input.lineCount} baris laporan bank (${rupiah(input.totalIdr)}) memakai terminal yang tidak terdaftar di outlet ini: ${codes}. Periksa data terminal EDC dan laporan bank.`,
+        },
+        now,
+      ),
+    );
+  } catch (err) {
+    logger.warn(
+      { err, tenantId, fileId: input.fileId },
+      "EDC settlement unknown terminal alert failed",
     );
   }
 }

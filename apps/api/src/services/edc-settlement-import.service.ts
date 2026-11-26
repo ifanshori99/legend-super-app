@@ -9,22 +9,27 @@
 // person's resolve; a manual slip still needs its live tender). Everything
 // else leaves the sale as it is:
 //
-// - same RRN, other amount: mismatch, X1 alert `amount`;
+// - same RRN, other amount: mismatch, X1 alert `amount`; a second amount for
+//   the RRN in the same file holds the clear of the matching line;
 // - same RRN on another terminal of the outlet: mismatch, alert `terminal`;
-// - a void line for the RRN in the same file: the sale is not cleared;
+// - a void line for an approved sale (cleared or not): mismatch, alert
+//   `void`; the sale line of the same file is not cleared;
+// - a terminal the outlet has not registered: one alert per import;
+// - a sale not booked as a live tender is never cleared;
 // - a sale still `unknown` (or declined): unmatched, a person decides;
 // - no sale: unmatched (the bank holds money the POS did not book; the outlet
 //   is not short). A booked sale no line confirms stays flagged and the H+1
 //   overdue alert (edc-reconciliation-alert.ts) reaches its shift.
 //
-// Idempotent per file (sha256 of the text, per outlet: a replay returns the
-// first result) and per line (a line key of bank, kind, terminal, RRN and
-// amount, per outlet: a re-export records only its new lines). Imports of one
+// Idempotent per file (sha256 of bank and text, per outlet: a replay returns
+// the first result) and per line (a line key of bank, kind, terminal, RRN and
+// amount, per outlet: a re-export records only its new lines; an unmatched
+// line is looked at again). Imports of one
 // outlet run one at a time. An outlet outside the tenant or the caller's
 // scope is 404; payment.reconcile at the outlet and a second factor are
 // required, as for the person's resolve.
 import { createHash } from "node:crypto";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, ne, notInArray, sql } from "drizzle-orm";
 import { AccessError } from "@starter/shared/access";
 import {
   CoreError,
@@ -49,10 +54,12 @@ import {
 } from "../db/schema/edc-settlement-csv.ts";
 import { paymentEdcTerminals } from "../db/schema/payment-admin.ts";
 import { outlets } from "../db/schema/platform-org.ts";
+import { posOrderTenders } from "../db/schema/pos-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import {
   alertEdcReconciliationMismatch,
+  alertEdcSettlementUnknownTerminals,
   type EdcReconciliationMismatch,
 } from "./edc-reconciliation-alert.ts";
 import { resolveEdcReconciliation } from "./edc-reconciliation.service.ts";
@@ -132,8 +139,10 @@ export async function importEdcSettlementCsv(
   }
   const tenantId = context.tenant.tenantId;
   const outletId = input.outletId;
-  const fileHash = sha256(input.csv);
+  // X2 review P2 3: the bank is part of the file's identity.
+  const fileHash = sha256(`${input.bank}|${input.csv}`);
   const alerts: EdcReconciliationMismatch[] = [];
+  const unknownTerminals = { codes: new Set<string>(), count: 0, total: 0 };
 
   const result = await withTenant(db, context, async (tx) => {
     const [outlet] = await tx
@@ -204,6 +213,8 @@ export async function importEdcSettlementCsv(
             and(
               eq(edcSettlementRows.tenantId, tenantId),
               eq(edcSettlementRows.outletId, outletId),
+              // X2 review P2 2: an unmatched line is looked at again.
+              ne(edcSettlementRows.matchStatus, "unmatched"),
               inArray(edcSettlementRows.rowKey, [...new Set(keys)]),
             ),
           )
@@ -257,6 +268,37 @@ export async function importEdcSettlementCsv(
               )
           ).flatMap((row) => (row.id ? [row.id] : [])),
     );
+    // X2 review P3 4: a flag is cleared only for a sale booked as a live
+    // tender (the strictest rule), never for an ECR sale not yet booked.
+    const live = new Set(
+      sales.length === 0
+        ? []
+        : (
+            await tx
+              .select({ id: posOrderTenders.edcTransactionId })
+              .from(posOrderTenders)
+              .where(
+                and(
+                  eq(posOrderTenders.tenantId, tenantId),
+                  inArray(
+                    posOrderTenders.edcTransactionId,
+                    sales.map((sale) => sale.id),
+                  ),
+                  notInArray(posOrderTenders.status, ["voided", "failed"]),
+                ),
+              )
+          ).flatMap((row) => (row.id ? [row.id.toLowerCase()] : [])),
+    );
+    // X2 review P3 5: two amounts for one terminal + RRN in the same file
+    // hold the clear, like a void does.
+    const amountsOf = new Map<string, Set<number>>();
+    for (const line of lines) {
+      if (line.kind !== "sale") continue;
+      const at = `${line.terminalCode}:${line.rrn}`;
+      const set = amountsOf.get(at) ?? new Set<number>();
+      set.add(line.amountIdr);
+      amountsOf.set(at, set);
+    }
     const voided = new Set(
       lines
         .filter((line) => line.kind === "void")
@@ -284,9 +326,37 @@ export async function importEdcSettlementCsv(
         reason: null,
       };
       decisions.push(decision);
+      if (terminalId === null) {
+        unknownTerminals.codes.add(line.terminalCode);
+        unknownTerminals.count += 1;
+        unknownTerminals.total += line.amountIdr;
+      }
+      const all = salesByRrn.get(line.rrn) ?? [];
+      const sameTerminal = (sale: (typeof all)[number]) =>
+        terminalId !== null &&
+        sale.terminalId.toLowerCase() === terminalId.toLowerCase();
+      const here = all.filter(sameTerminal);
       if (line.kind === "void") {
-        decision.reason =
-          "Baris void atau pembatalan di laporan bank; tidak dicocokkan.";
+        // X2 review P2 1: the bank voided a sale the books hold as approved
+        // (cleared or not): a difference, alerted; the flag is not touched.
+        const sale =
+          here.find((s) => s.status === "approved") ??
+          all.find((s) => s.status === "approved");
+        if (sale) {
+          decision.status = "mismatch";
+          decision.edcTransactionId = sale.id;
+          decision.reason =
+            "Laporan bank mencatat void untuk transaksi yang tercatat disetujui.";
+          alerts.push({
+            kind: "void",
+            edcTransactionId: sale.id,
+            outletId: sale.outletId,
+            amountIdr: Number(sale.amountIdr),
+            chargedAmountIdr: line.amountIdr,
+          });
+        } else
+          decision.reason =
+            "Baris void atau pembatalan di laporan bank; tidak ada transaksi disetujui untuk RRN ini.";
         continue;
       }
       if (voided.has(`${line.terminalCode}:${line.rrn}`)) {
@@ -294,11 +364,6 @@ export async function importEdcSettlementCsv(
           "Laporan bank juga memuat void untuk RRN ini; transaksi tetap perlu dicek.";
         continue;
       }
-      const all = salesByRrn.get(line.rrn) ?? [];
-      const sameTerminal = (sale: (typeof all)[number]) =>
-        terminalId !== null &&
-        sale.terminalId.toLowerCase() === terminalId.toLowerCase();
-      const here = all.filter(sameTerminal);
       const onTerminal = here.filter((sale) => sale.status === "approved");
       if (onTerminal.length === 0) {
         // Only when this terminal has no sale for the RRN at all: a sale here
@@ -345,6 +410,11 @@ export async function importEdcSettlementCsv(
         });
         continue;
       }
+      if ((amountsOf.get(`${line.terminalCode}:${line.rrn}`)?.size ?? 0) > 1) {
+        decision.reason =
+          "Laporan bank memuat nominal lain untuk RRN ini; transaksi tetap perlu dicek.";
+        continue;
+      }
       if (claimed.has(exact.id)) {
         decision.reason =
           "Transaksi ini sudah dicocokkan dengan baris laporan lain.";
@@ -354,6 +424,11 @@ export async function importEdcSettlementCsv(
       decision.status = "matched";
       decision.edcTransactionId = exact.id;
       if (!exact.needsReconciliation) continue;
+      if (!live.has(exact.id.toLowerCase())) {
+        decision.reason =
+          "Cocok, tetapi transaksi belum menjadi pembayaran di tagihan; tanda perlu dicek tetap.";
+        continue;
+      }
       // Clears the flag only: the row is approved, so the resolve never
       // changes its status or amount. A refusal (no live tender, terminal
       // still processing) rolls back to the savepoint and keeps the flag.
@@ -437,8 +512,21 @@ export async function importEdcSettlementCsv(
     return view(file, false);
   });
   // After the import committed, in their own transactions; never throws.
-  if (!result.replayed)
+  if (!result.replayed) {
     for (const alert of alerts)
       await alertEdcReconciliationMismatch(context, alert, now);
+    if (unknownTerminals.count > 0)
+      await alertEdcSettlementUnknownTerminals(
+        context,
+        {
+          fileId: result.id,
+          outletId,
+          terminalCodes: [...unknownTerminals.codes],
+          lineCount: unknownTerminals.count,
+          totalIdr: unknownTerminals.total,
+        },
+        now,
+      );
+  }
   return result;
 }
