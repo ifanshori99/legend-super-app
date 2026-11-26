@@ -219,12 +219,13 @@ export type ConfirmCashInput = {
 export type RecordEdcStandaloneInput = {
   orderId: string;
   terminalId: string;
-  /** What the supervisor approved; a changed balance is refused. */
+  /** What the slip says was charged; a changed balance is refused. */
   amountIdr: number;
   edcMode: EdcMode;
   bankRef: string;
   approvalCode?: string;
-  overrideId: string;
+  /** X1: manual EDC is a normal method; an approval is optional. */
+  overrideId?: string;
 };
 
 export type AttemptRef = { orderId: string; attemptId: string };

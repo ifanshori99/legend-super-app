@@ -75,7 +75,7 @@ export const posKasirEdcMessages = {
       "Nyalakan mesin EDC dan pastikan terhubung, lalu muat ulang. Atau pilih metode lain.",
     manualTitle: "Nominal diketik di mesin EDC",
     manualBody:
-      "Terima pembayaran di mesin EDC, lalu catat dari struk bank dengan persetujuan supervisor.",
+      "Terima pembayaran di mesin EDC, lalu catat nominal dan nomor referensi dari struk bank.",
     autoTitle: "Nominal dikirim otomatis",
     autoBody:
       "Setelah dikirim, nominal terkunci. Jangan ketik ulang nominal di mesin EDC.",
@@ -166,27 +166,20 @@ export const posKasirEdcMessages = {
     back: "Kembali ke kasir",
   },
   standalone: {
-    title: "Verifikasi bukti & supervisor",
+    title: "Catat dari struk EDC",
     pill: "Belum dicatat",
-    noApprover: "Supervisor belum bisa dimuat",
-    noApproverHint:
-      "Daftar supervisor yang boleh menyetujui kosong atau gagal dimuat.",
-    noticeTitle: "Koneksi ECR tidak tersedia",
+    noticeTitle: "Nominal diketik di mesin EDC",
     noticeBody:
-      "Hanya jika belum ada permintaan pembayaran atau transaksi sebelumnya dipastikan gagal/batal. Jangan catat ulang transaksi berhasil.",
+      "Catat hanya transaksi yang berhasil di struk EDC. Jangan catat ulang transaksi yang sudah tercatat.",
     bankRef: "Nomor referensi bank · wajib",
-    bankRefHint: "Salin dari struk pembayaran EDC, minimal 6 karakter.",
+    bankRefHint:
+      "Salin dari struk EDC (RRN), 6 sampai 24 huruf atau angka. Dicocokkan dengan mutasi bank besok.",
     bankRefRequired: "Isi nomor referensi bank dari struk EDC.",
     approval: "Kode persetujuan",
-    supervisor: "Supervisor yang menyetujui",
-    supervisorPlaceholder: "Pilih supervisor",
-    pin: "PIN supervisor · wajib",
-    pinHint: "PIN dimasukkan oleh supervisor.",
     confirm:
-      "Dengan persetujuan ini, supervisor mengonfirmasi pembayaran {amount} berhasil di EDC.",
-    reason: "EDC standalone, referensi bank {ref}",
+      "Pembayaran {amount} dicatat sebagai EDC manual dan dicocokkan dengan mutasi bank H+1.",
     back: "Kembali",
-    submit: "Setujui & catat pembayaran",
+    submit: "Catat pembayaran EDC",
     submitting: "Mencatat…",
     recordError: "Pembayaran belum tercatat",
   },

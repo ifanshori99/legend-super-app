@@ -62,8 +62,6 @@ vi.mock("@/features/ws04-pos-kasir/hooks", () => {
     useConfirmCash: idle,
     useRemoveVoucher: idle,
     useRecordEdcStandalone: idle,
-    useRequestEdcApproval: idle,
-    useEdcApprovers: () => ({ data: [], isError: false }),
   };
 });
 

@@ -62,10 +62,7 @@ import {
   wasRefused,
 } from "@/features/ws04-pos-kasir/payment-intent-store";
 import { isSendingIntent } from "@/features/ws04-pos-kasir/payment-intent-browser";
-import {
-  edcApprovalKey,
-  edcSlipRefProblem,
-} from "@/features/ws04-pos-kasir/components/payment/payment-helpers";
+import { edcSlipRefProblem } from "@/features/ws04-pos-kasir/components/payment/payment-helpers";
 import { trackSender } from "@/features/ws04-pos-kasir/sender-lock";
 
 type Tender = Record<string, unknown>;
@@ -171,7 +168,6 @@ const edc = (over: Record<string, unknown> = {}) =>
     amountIdr: 100_000,
     edcMode: "card",
     bankRef: "736214805192",
-    overrideId: OVERRIDE,
     ...over,
   });
 
@@ -1085,25 +1081,6 @@ describe("a reference that looks like a card number never reaches an approval", 
   );
 });
 
-describe("review 6: one PIN approves one slip", () => {
-  const input = {
-    orderId: ORDER,
-    terminalId: TERMINAL,
-    amountIdr: 100_000,
-    approverId: OTHER,
-    bankRef: "736214805192",
-  };
-
-  it("another bank reference needs another PIN", () => {
-    expect(edcApprovalKey({ ...input, bankRef: "736214805193" })).not.toBe(
-      edcApprovalKey(input),
-    );
-    expect(edcApprovalKey({ ...input, bankRef: " 736214805192 " })).toBe(
-      edcApprovalKey(input),
-    );
-  });
-});
-
 describe("review 6: the note goes once the server proves the bill paid", () => {
   it("a pending note", async () => {
     server.onTender = lost;
@@ -1316,7 +1293,7 @@ describe("bug 4: QRIS", () => {
 });
 
 describe("EDC standalone", () => {
-  it("records the approved slip and keeps the request until it is answered", async () => {
+  it("X1: records the slip without a supervisor approval and keeps the request until it is answered", async () => {
     server.onTender = lost;
     await expect(edc()).rejects.toThrow();
     server.onTender = () => pay(tender({ method: "edc_card" }));
@@ -1324,13 +1301,20 @@ describe("EDC standalone", () => {
     expect(money()[1]?.body).toEqual(money()[0]?.body);
     expect(money()[0]?.body).toMatchObject({
       method: "edc_card",
-      standalone: {
-        terminalId: TERMINAL,
-        bankRef: "736214805192",
-        overrideId: OVERRIDE,
-      },
+      standalone: { terminalId: TERMINAL, bankRef: "736214805192" },
     });
+    expect(money()[0]?.body?.standalone).not.toHaveProperty("overrideId");
+    expect(posts().map((c) => c.path)).not.toContainEqual(
+      expect.stringContaining("/overrides"),
+    );
     expect(JSON.stringify(money())).not.toContain("amount");
+  });
+
+  it("an approval the till still holds is sent along", async () => {
+    await edc({ overrideId: OVERRIDE });
+    expect(money()[0]?.body?.standalone).toMatchObject({
+      overrideId: OVERRIDE,
+    });
   });
 
   // legend-9yw78.17: the card may be charged before any check of the bill, so a
@@ -1343,8 +1327,8 @@ describe("EDC standalone", () => {
     await expect(qris()).rejects.toMatchObject({ code: "PAYMENT_UNRESOLVED" });
   };
 
-  it("refuses an approval for another amount, the note and its amount kept", async () => {
-    await lockedAfter(edc({ amountIdr: 90_000 }), "OVERRIDE_INVALID");
+  it("refuses a slip of another amount, the note and its amount kept", async () => {
+    await lockedAfter(edc({ amountIdr: 90_000 }), "EDC_SLIP_AMOUNT_MISMATCH");
     const kept = readIntent(storage(), scope);
     expect(kept.status === "pending" && kept.intent.amountIdr).toBe(90_000);
   });

@@ -1080,17 +1080,7 @@ export async function cancelAttempt(
   return fetchPaymentSession(outletId, ref.orderId);
 }
 
-export async function fetchEdcApprovers(
-  outletId: string,
-): Promise<SupervisorOption[]> {
-  if (API_MOCK) return runPosKasirMock((engine) => engine.supervisors());
-  const { data } = await callEndpoint(listPosOverrideApprovers, {
-    query: { outletId, action: "edc_standalone" },
-  });
-  return data.map((row) => ({ userId: row.userId, name: row.displayName }));
-}
-
-/** A supervisor's PIN for one hand-keyed EDC payment of exactly this amount. */
+/** A supervisor's PIN for one EDC slip of exactly this amount (resolve only). */
 export async function requestEdcApproval(
   outletId: string,
   input: {
@@ -1154,19 +1144,19 @@ export async function recordEdcStandalone(
       terminalId,
       keptRef,
       approvalCode ?? "",
-      overrideId,
+      overrideId ?? "",
     ].join(":"),
     amountIdr: input.amountIdr,
     prepare: async () => {
       let before: PosOrderDetail | undefined;
       try {
         before = await fetchPosOrder(outletId, orderId);
-        // The supervisor approved one amount: refuse to record a different one.
+        // The slip charged one amount: never record it for another.
         if (input.amountIdr !== sessionFromOrder(before).bill.remainingIdr)
           problem = new ApiError(
-            403,
-            "OVERRIDE_INVALID",
-            "Sisa tagihan berubah sejak persetujuan. Minta persetujuan ulang.",
+            409,
+            EDC_SLIP_AMOUNT_MISMATCH,
+            "Nominal slip EDC berbeda dari sisa tagihan. Cocokkan slip dulu; jangan void bila sudah tercatat.",
           );
       } catch (error) {
         problem = error;
@@ -1178,7 +1168,8 @@ export async function recordEdcStandalone(
             terminalId,
             bankRef,
             ...(approvalCode ? { approvalCode } : {}),
-            overrideId,
+            // X1: the slip reference alone books it (H+1 reconciliation).
+            ...(overrideId ? { overrideId } : {}),
           },
           // Unread bill: a guess that the server answers 412 and keeps locked.
           expectedStatus: before?.status ?? "awaiting_payment",
@@ -1193,7 +1184,10 @@ export async function recordEdcStandalone(
           parsed.error.issues[0]?.message ?? "Data pembayaran tidak valid.",
         );
         // What the contract refuses (a card number) is never stored.
-        return { ...body, standalone: { terminalId, overrideId } };
+        return {
+          ...body,
+          standalone: { terminalId, ...(overrideId ? { overrideId } : {}) },
+        };
       };
     },
     refusal: () => problem,

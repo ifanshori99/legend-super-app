@@ -38,7 +38,6 @@ import {
   removeVoucherCode,
   replayPayment,
   resolvePayment,
-  requestEdcApproval,
   startPayment,
   validateVoucherCode,
 } from "./api";
@@ -53,7 +52,6 @@ import {
   type PaymentIntent,
 } from "./payment-intent-store";
 import {
-  edcApproversQuery,
   edcTerminalsQuery,
   ewalletsQuery,
   paymentMethodsQuery,
@@ -240,19 +238,6 @@ export function useRecordEdcStandalone() {
   return useSessionMutation<RecordEdcStandaloneInput>((input) =>
     recordEdcStandalone(outletId, actorId, input),
   );
-}
-
-/** Supervisors who may approve a hand-keyed EDC payment here. */
-export function useEdcApprovers() {
-  return useQuery(edcApproversQuery(useOutletId()));
-}
-
-export function useRequestEdcApproval() {
-  const outletId = useOutletId();
-  return useMutation({
-    mutationFn: (input: Parameters<typeof requestEdcApproval>[1]) =>
-      requestEdcApproval(outletId, input),
-  });
 }
 
 // ---- Payment request without a known answer (1268 W2) ------------------------

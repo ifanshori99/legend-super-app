@@ -3,7 +3,6 @@
 // demand and refreshed by the mutations in ./hooks.ts.
 import { queryOptions } from "@tanstack/react-query";
 import {
-  fetchEdcApprovers,
   fetchEdcTerminals,
   fetchResolveApprovers,
   fetchEwallets,
@@ -106,13 +105,6 @@ export const edcTerminalsQuery = (outletId: string) =>
   queryOptions({
     queryKey: posKasirKeys.edcTerminals(outletId),
     queryFn: () => fetchEdcTerminals(outletId),
-    retry: false,
-  });
-
-export const edcApproversQuery = (outletId: string) =>
-  queryOptions({
-    queryKey: posKasirKeys.edcApprovers(outletId),
-    queryFn: () => fetchEdcApprovers(outletId),
     retry: false,
   });
 
