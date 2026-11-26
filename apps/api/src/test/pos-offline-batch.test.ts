@@ -70,6 +70,10 @@ import {
   type Staff,
 } from "./floor-test-helpers.ts";
 import { pinOverrideFixtureFingerprint } from "./pos-override-fixture.ts";
+import {
+  closeShiftExactly,
+  outletSupervisor,
+} from "./pos-offline-test-helpers.ts";
 
 const scope = establishScopedTenantContext(
   establishTenantContext({
@@ -81,7 +85,13 @@ const scope = establishScopedTenantContext(
 );
 const outletId = outletIdSchema.parse(seededOutletA);
 
-type Till = { cashier: Staff; deviceId: string; shiftId: string };
+type Till = {
+  cashier: Staff;
+  deviceId: string;
+  shiftId: string;
+  /** The offline run the tablet holds (review O1 P3 2: epochs are rate-limited). */
+  run?: string;
+};
 type Menu = { itemId: string; name: string; priceIdr: number };
 const devices = new Set<string>();
 
@@ -182,10 +192,17 @@ function menuOf(kit: PosOfflineKit): Menu {
   };
 }
 
-async function kitFor(till: Till, resume: string | null = null) {
-  return issuePosOfflineKit(scope, callerOf(till), outletId, till.shiftId, {
-    resumeSequenceId: resume,
-  });
+/** The till's kit; continues the run it holds unless `resume` says otherwise. */
+async function kitFor(till: Till, resume?: string | null) {
+  const kit = await issuePosOfflineKit(
+    scope,
+    callerOf(till),
+    outletId,
+    till.shiftId,
+    { resumeSequenceId: resume === undefined ? (till.run ?? null) : resume },
+  );
+  till.run = kit.receiptRun.sequenceId;
+  return kit;
 }
 
 /** One offline cash (or EDC) sale of `quantity` x the menu item, no tax. */
@@ -419,7 +436,12 @@ describe("O2 ingest", () => {
       [seededTenantId, ulidToUuid(event.eventId)],
     );
     expect(ledger).toEqual([
-      { state: "ingested", reason: null, sequence_number: 1, shift_id: a.shiftId },
+      {
+        state: "ingested",
+        reason: null,
+        sequence_number: 1,
+        shift_id: a.shiftId,
+      },
     ]);
     expect(
       await countOf(
@@ -564,9 +586,9 @@ describe("O2 ingest", () => {
     ]);
     expect((await submit(a, [bad])).results[0]!.status).toBe("duplicate");
     // The number is accounted for: the run continues after it.
-    expect(
-      (await submit(a, [sale(kit, menu, n + 1)])).results[0]!.status,
-    ).toBe("ingested");
+    expect((await submit(a, [sale(kit, menu, n + 1)])).results[0]!.status).toBe(
+      "ingested",
+    );
   });
 
   it("refuses another device's kit and stores nothing", async () => {
@@ -699,5 +721,52 @@ describe("O2 ingest", () => {
       eventId: event.eventId,
       status: "ingested",
     });
+  });
+  it("(a) a sale on a shift already closed: ingested, cash outside any drawer, flagged", async () => {
+    const till = await newTill(app);
+    const kit = await kitFor(till);
+    const menu = menuOf(kit);
+    await closeShiftExactly({
+      scope,
+      cashierId: till.cashier.userId,
+      deviceId: till.deviceId,
+      shiftId: till.shiftId,
+      supervisorId: await outletSupervisor(app, "Offline Batch Close"),
+      drawerIdr: 500_000,
+    });
+    const event = sale(kit, menu, kit.receiptRun.lastNumber + 1);
+    const result = await submit(till, [event]);
+    expect(result.results[0]).toMatchObject({
+      status: "ingested",
+      flags: ["shift_closed"],
+    });
+    const { rows } = await owner.query(
+      "SELECT shift_id FROM pos_order_tenders WHERE tenant_id = $1 AND order_id = $2",
+      [seededTenantId, ulidToUuid(event.eventId)],
+    );
+    expect(rows).toEqual([{ shift_id: null }]);
+    const { rows: shift } = await owner.query(
+      "SELECT status, expected_idr FROM pos_shifts WHERE tenant_id = $1 AND id = $2",
+      [seededTenantId, till.shiftId],
+    );
+    // The closed drawer's figures never change.
+    expect(shift[0]).toEqual({ status: "closed", expected_idr: "500000" });
+  });
+
+  it("review O1 P2: refuses on an edge process and stores nothing", async () => {
+    const kit = await kitFor(a);
+    const menu = menuOf(kit);
+    const event = sale(kit, menu, kit.receiptRun.lastNumber + 1);
+    const previous = process.env.EDGE_MODE;
+    process.env.EDGE_MODE = "true";
+    try {
+      await expect(submit(a, [event])).rejects.toMatchObject({
+        code: "CONFLICT",
+      });
+    } finally {
+      if (previous === undefined) delete process.env.EDGE_MODE;
+      else process.env.EDGE_MODE = previous;
+    }
+    expect(await ordersOf(event.eventId)).toBe(0);
   });
 });

@@ -43,12 +43,24 @@ import {
 import { createApp } from "../app.ts";
 import { setDeviceOutletResolver } from "../services/device-pin.service.ts";
 import { issuePosOfflineKit } from "../services/pos-offline-kit.service.ts";
-import { allocateReceipt } from "../services/pos-receipt.service.ts";
+import {
+  allocateReceipt,
+  localReceiptRunReport,
+} from "../services/pos-receipt.service.ts";
 import { openPosShift } from "../services/pos-shift.service.ts";
 import { withTenant } from "../db/tenant.ts";
 import { db } from "../db/index.ts";
+import { readFileSync } from "node:fs";
+import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
+import { signDeviceToken } from "../lib/device-token.ts";
+import { originHeader } from "./helpers.ts";
+import {
+  closeShiftExactly,
+  outletSupervisor,
+} from "./pos-offline-test-helpers.ts";
 import {
   owner,
+  seededHostname,
   seededOutletA,
   seededTenantId,
   staffWithRole,
@@ -93,7 +105,10 @@ const callerOf = (till: Till, deviceId: string | null = till.deviceId) => ({
   deviceId,
 });
 
-async function newTill(app: ReturnType<typeof createApp>): Promise<Till> {
+async function newTill(
+  app: ReturnType<typeof createApp>,
+  sharedMode = true,
+): Promise<Till> {
   const cashier = await staffWithRole(app, {
     template: "cashier",
     label: "Offline Kit Cashier",
@@ -103,8 +118,8 @@ async function newTill(app: ReturnType<typeof createApp>): Promise<Till> {
   await asOwner((client) =>
     client.query(
       `INSERT INTO devices (id, tenant_id, outlet_id, type, label, token_issued_at, shared_mode)
-       VALUES ($1, $2, $3, 'pos', 'Tablet offline uji', now() - interval '1 minute', true)`,
-      [deviceId, seededTenantId, seededOutletA],
+       VALUES ($1, $2, $3, 'pos', 'Tablet offline uji', now() - interval '1 minute', $4)`,
+      [deviceId, seededTenantId, seededOutletA, sharedMode],
     ),
   );
   const shift = await openPosShift(
@@ -413,5 +428,209 @@ describe("O1 database backstops", () => {
         ),
       ),
     ).rejects.toMatchObject({ code: "23514" });
+  });
+});
+
+/** Runs `work` with the process in edge mode, then restores the setting. */
+async function asEdgeProcess<T>(work: () => Promise<T>): Promise<T> {
+  const previous = process.env.EDGE_MODE;
+  process.env.EDGE_MODE = "true";
+  try {
+    return await work();
+  } finally {
+    if (previous === undefined) delete process.env.EDGE_MODE;
+    else process.env.EDGE_MODE = previous;
+  }
+}
+
+const offlineRunsOf = async (deviceId: string) =>
+  (await runsOf(deviceId)).filter((run) => run.series === "offline");
+
+describe("Review O1 fixes", () => {
+  it("P2: an edge process never issues a kit nor reports an offline run", async () => {
+    const till = await newTill(app);
+    await expect(
+      asEdgeProcess(() =>
+        issuePosOfflineKit(scope, callerOf(till), outletId, till.shiftId, {
+          resumeSequenceId: null,
+        }),
+      ),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(await offlineRunsOf(till.deviceId)).toEqual([]);
+    // The outlet does hold offline runs: the edge report leaves them out.
+    await issuePosOfflineKit(scope, callerOf(b), outletId, b.shiftId, {
+      resumeSequenceId: null,
+    });
+    const report = await asEdgeProcess(() =>
+      withTenant(db, scope, (tx) => localReceiptRunReport(tx, scope, outletId)),
+    );
+    expect(
+      [...report.keys()].filter((prefix) => /^L[0-9]+$/.test(prefix)),
+    ).toEqual([]);
+  });
+
+  it("P3 2: at most 6 new epochs per device per hour (429); continuing a run is not limited", async () => {
+    const till = await newTill(app);
+    let last = null as string | null;
+    for (let epoch = 0; epoch < 6; epoch += 1)
+      last = (
+        await issuePosOfflineKit(
+          scope,
+          callerOf(till),
+          outletId,
+          till.shiftId,
+          {
+            resumeSequenceId: null,
+          },
+        )
+      ).receiptRun.sequenceId;
+    await expect(
+      issuePosOfflineKit(scope, callerOf(till), outletId, till.shiftId, {
+        resumeSequenceId: null,
+      }),
+    ).rejects.toMatchObject({ code: "RATE_LIMITED", status: 429 });
+    expect(await offlineRunsOf(till.deviceId)).toHaveLength(6);
+    const resumed = await issuePosOfflineKit(
+      scope,
+      callerOf(till),
+      outletId,
+      till.shiftId,
+      { resumeSequenceId: last },
+    );
+    expect(resumed.receiptRun.sequenceId).toBe(last);
+  });
+
+  it("P3 3: resuming the device's own retired run opens a new epoch", async () => {
+    const till = await newTill(app);
+    const first = await issuePosOfflineKit(
+      scope,
+      callerOf(till),
+      outletId,
+      till.shiftId,
+      { resumeSequenceId: null },
+    );
+    const second = await issuePosOfflineKit(
+      scope,
+      callerOf(till),
+      outletId,
+      till.shiftId,
+      { resumeSequenceId: null },
+    );
+    const third = await issuePosOfflineKit(
+      scope,
+      callerOf(till),
+      outletId,
+      till.shiftId,
+      { resumeSequenceId: first.receiptRun.sequenceId },
+    );
+    expect(
+      new Set([
+        first.receiptRun.sequenceId,
+        second.receiptRun.sequenceId,
+        third.receiptRun.sequenceId,
+      ]).size,
+    ).toBe(3);
+    const runs = await offlineRunsOf(till.deviceId);
+    expect(runs.map((run) => [run.id, run.retired_reason])).toEqual([
+      [first.receiptRun.sequenceId, "offline_epoch"],
+      [second.receiptRun.sequenceId, "offline_epoch"],
+      [third.receiptRun.sequenceId, null],
+    ]);
+  });
+
+  it("P3 3: refuses a shift that was really closed", async () => {
+    const till = await newTill(app);
+    await closeShiftExactly({
+      scope,
+      cashierId: till.cashier.userId,
+      deviceId: till.deviceId,
+      shiftId: till.shiftId,
+      supervisorId: await outletSupervisor(app, "Offline Kit Close"),
+      drawerIdr: 500_000,
+    });
+    await expect(
+      issuePosOfflineKit(scope, callerOf(till), outletId, till.shiftId, {
+        resumeSequenceId: null,
+      }),
+    ).rejects.toMatchObject({ code: "SHIFT_NOT_OPEN" });
+    expect(await offlineRunsOf(till.deviceId)).toEqual([]);
+  });
+
+  it("P3 3: refuses the shift's cashier once shift.cash.operate is gone", async () => {
+    const till = await newTill(app);
+    await owner.query(
+      "UPDATE role_assignments SET valid_until = now() - interval '1 second' WHERE tenant_id = $1 AND user_id = $2",
+      [seededTenantId, till.cashier.userId],
+    );
+    await expect(
+      issuePosOfflineKit(scope, callerOf(till), outletId, till.shiftId, {
+        resumeSequenceId: null,
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(await offlineRunsOf(till.deviceId)).toEqual([]);
+  });
+
+  it("P3 3: the HTTP route needs the trusted origin", async () => {
+    const till = await newTill(app, false);
+    const path = `/api/outlets/${encodeURIComponent(seededOutletA)}/pos/shifts/${till.shiftId}/offline-kit`;
+    const token = signDeviceToken({
+      version: 1,
+      issuedAt: Math.floor(Date.now() / 1000),
+      tenantId: seededTenantId,
+      brandId: null,
+      deviceId: till.deviceId,
+    });
+    const refused = await till.cashier.client
+      .post(path)
+      .set({ Host: seededHostname })
+      .set(DEVICE_TOKEN_HEADER, token)
+      .send({ resumeSequenceId: null });
+    expect(refused.status).toBe(403);
+    expect(await offlineRunsOf(till.deviceId)).toEqual([]);
+    const issued = await till.cashier.client
+      .post(path)
+      .set({ Host: seededHostname })
+      .set(originHeader)
+      .set(DEVICE_TOKEN_HEADER, token)
+      .send({ resumeSequenceId: null });
+    expect(issued.status, JSON.stringify(issued.body)).toBe(201);
+    expect(posOfflineKitSchema.parse(issued.body.data).deviceId).toBe(
+      till.deviceId,
+    );
+  });
+
+  it("P3 3: the 0533 preflight stops on a run already printing under L<n>", async () => {
+    const migration = readFileSync(
+      new URL("../../drizzle/0533_pos_offline_kits.sql", import.meta.url),
+      "utf8",
+    );
+    const preflight = /DO \$\$[\s\S]*?END \$\$;/.exec(migration)?.[0];
+    expect(preflight).toContain("O1 preflight");
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [seededTenantId],
+      );
+      // The state before 0533: no L rule yet, a device run named L<n>.
+      await client.query(
+        "ALTER TABLE receipt_sequences DROP CONSTRAINT receipt_sequences_offline_prefix_check",
+      );
+      await client.query(
+        `INSERT INTO receipt_sequences (tenant_id, outlet_id, device_id, prefix, series)
+         VALUES ($1, $2, $3, 'L999998', 'device')`,
+        [seededTenantId, seededOutletA, randomUUID()],
+      );
+      await client.query(
+        "ALTER TABLE receipt_sequences NO FORCE ROW LEVEL SECURITY",
+      );
+      await expect(client.query(preflight!)).rejects.toMatchObject({
+        code: "23514",
+      });
+    } finally {
+      await client.query("ROLLBACK");
+      client.release();
+    }
   });
 });

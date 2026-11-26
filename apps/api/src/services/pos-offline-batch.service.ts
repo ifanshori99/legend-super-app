@@ -212,7 +212,10 @@ async function ingestOne(
       error instanceof RetryLater ||
       isTransientReason(`db_error:${sqlStateOf(error)}`)
     )
-      return { result: result(input.event, "rejected", { reason: "retry" }), run: null };
+      return {
+        result: result(input.event, "rejected", { reason: "retry" }),
+        run: null,
+      };
     throw error;
   }
 }
@@ -244,7 +247,10 @@ async function ingestInTransaction(
     !sameId(kit.outletId, outletId) ||
     !sameId(kit.sequenceId, event.sequenceId)
   )
-    return { result: result(event, "rejected", { reason: "kit_unknown" }), run: null };
+    return {
+      result: result(event, "rejected", { reason: "kit_unknown" }),
+      run: null,
+    };
 
   // 2. The run row lock serialises every sale of the run.
   const [run] = await tx
@@ -258,7 +264,10 @@ async function ingestInTransaction(
     )
     .for("update");
   if (!run || run.series !== "offline" || !sameId(run.deviceId, deviceId))
-    return { result: result(event, "rejected", { reason: "kit_unknown" }), run: null };
+    return {
+      result: result(event, "rejected", { reason: "kit_unknown" }),
+      run: null,
+    };
   const runOut = (lastNumber: number) => ({ sequenceId: run.id, lastNumber });
 
   // 3. Replay: one event id is one sale, whatever the resend carries.
@@ -289,7 +298,10 @@ async function ingestInTransaction(
       result: result(event, "duplicate", {
         reason: stored.reason,
         flags: stored.flags,
-        receiptNumber: formatReceiptNumber(stored.prefix, stored.sequenceNumber),
+        receiptNumber: formatReceiptNumber(
+          stored.prefix,
+          stored.sequenceNumber,
+        ),
       }),
       run: runOut(run.lastNumber),
     };
@@ -319,7 +331,10 @@ async function ingestInTransaction(
     .update(receiptSequences)
     .set({ lastNumber: number, updatedAt: now })
     .where(
-      and(eq(receiptSequences.tenantId, tenantId), eq(receiptSequences.id, run.id)),
+      and(
+        eq(receiptSequences.tenantId, tenantId),
+        eq(receiptSequences.id, run.id),
+      ),
     );
   const receiptNumber = formatReceiptNumber(run.prefix, number);
 
@@ -526,7 +541,8 @@ async function applySale(
   )
     flags.push("price_mismatch");
   const paidAt = new Date(event.paidAt);
-  if (paidAt > kit.expiresAt || paidAt < kit.issuedAt) flags.push("kit_expired");
+  if (paidAt > kit.expiresAt || paidAt < kit.issuedAt)
+    flags.push("kit_expired");
   const taxesUsable =
     event.taxes !== undefined &&
     event.taxes.reduce((sum, row) => sum + Number(row.taxIdr), 0) ===
