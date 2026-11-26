@@ -20,12 +20,41 @@ import type { PosReceipt, ReceiptSequence } from "./schemas.ts";
  * separate an outlet code from the terminal, but the prefix never starts or
  * ends with one, so `<prefix>-<ordinal>` parses back unambiguously.
  */
-export const receiptPrefixSchema = z
+export const receiptRunPrefixSchema = z
   .string()
   .regex(
     /^[A-Z0-9](?:[A-Z0-9-]{0,10}[A-Z0-9])?$/,
     "Receipt prefixes are 1-12 uppercase letters, digits or inner hyphens",
   );
+
+/**
+ * 1271 F1 (design edge-cloud-failover.md N1/N2): the numbering series of a run.
+ * `device` = numbered by the outlet edge (or the device offline), `cloud` =
+ * the cloud-owned `C` run, `failover` = `F<n>`, numbered by the cloud only
+ * while the outlet's edge is down. Each series has exactly one allocator.
+ */
+export const RECEIPT_SERIES = ["device", "cloud", "failover"] as const;
+export const receiptSeriesSchema = z.enum(RECEIPT_SERIES);
+export type ReceiptSeries = z.infer<typeof receiptSeriesSchema>;
+
+/** `F1`..`F9999`: the failover run of one device (cloud only, never edge-bound). */
+export const FAILOVER_RECEIPT_PREFIX_PATTERN = /^F[0-9]{1,4}$/;
+/** Any `F<digits>` prefix; refused as a caller-chosen or edge-bound prefix. */
+const RESERVED_FAILOVER_PREFIX = /^F[0-9]+$/;
+
+export function isFailoverReceiptPrefix(prefix: string): boolean {
+  return FAILOVER_RECEIPT_PREFIX_PATTERN.test(prefix);
+}
+
+/**
+ * A device (or edge-bound) prefix. `F<digits>` is reserved for the cloud
+ * failover series (1271 F1), so a caller or an edge can never claim it. Use
+ * `receiptRunPrefixSchema` where any series may appear (cloud DTOs, formatting).
+ */
+export const receiptPrefixSchema = receiptRunPrefixSchema.refine(
+  (prefix) => !RESERVED_FAILOVER_PREFIX.test(prefix),
+  "Receipt prefix F<number> is reserved for cloud failover sales",
+);
 export type ReceiptPrefix = z.infer<typeof receiptPrefixSchema>;
 
 /**
@@ -60,7 +89,7 @@ export function formatReceiptNumber(
   prefix: string,
   sequenceNumber: number,
 ): ReceiptNumber {
-  receiptPrefixSchema.parse(prefix);
+  receiptRunPrefixSchema.parse(prefix);
   assertOrdinal(sequenceNumber);
   return receiptNumberSchema.parse(
     `${prefix}-${String(sequenceNumber).padStart(RECEIPT_ORDINAL_DIGITS, "0")}`,
@@ -89,7 +118,7 @@ export function nextReceiptNumber(sequence: ReceiptSequence): {
   number: ReceiptNumber;
   sequence: ReceiptSequence;
 } {
-  receiptPrefixSchema.parse(sequence.prefix);
+  receiptRunPrefixSchema.parse(sequence.prefix);
   const sequenceNumber = sequence.lastNumber + 1;
   assertOrdinal(sequenceNumber);
   return {

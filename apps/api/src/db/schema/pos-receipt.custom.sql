@@ -194,3 +194,19 @@ CREATE TRIGGER "pos_receipt_links_append_only_trg"
 CREATE TRIGGER "pos_invoices_append_only_trg"
   BEFORE UPDATE OR DELETE ON "pos_invoices"
   FOR EACH ROW EXECUTE FUNCTION app.pos_receipt_records_append_only();
+--> statement-breakpoint
+
+-- 6. 1271 F1 (0529): a run's series never changes (one allocator per series).
+CREATE FUNCTION app.receipt_sequences_series_fixed() RETURNS trigger
+LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+BEGIN
+  IF NEW.series IS DISTINCT FROM OLD.series THEN
+    RAISE EXCEPTION 'POS-06: receipt sequence % cannot change its series', OLD.id
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END $$;
+--> statement-breakpoint
+CREATE TRIGGER "receipt_sequences_series_fixed_trg"
+  BEFORE UPDATE OF series ON "receipt_sequences"
+  FOR EACH ROW EXECUTE FUNCTION app.receipt_sequences_series_fixed();
