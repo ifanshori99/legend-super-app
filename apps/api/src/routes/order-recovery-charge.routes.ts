@@ -14,7 +14,10 @@
 import { Router, type RequestHandler } from "express";
 import type { PermissionCode } from "@starter/shared/access";
 import { userIdSchema, uuidSchema, z } from "@starter/shared/core";
-import { startPosIssueChargeEdc as startChargeEdc } from "@starter/shared/pos";
+import {
+  resolvePosIssueChargeAttempt as resolveChargeAttempt,
+  startPosIssueChargeEdc as startChargeEdc,
+} from "@starter/shared/pos";
 import { collectChargeAtPosInputSchema } from "@starter/shared/qr-order";
 import {
   actorOf,
@@ -42,6 +45,7 @@ import { requireTenantContext } from "../middleware/tenant.ts";
 import { collectChargeAtPos } from "../services/order-recovery-charge-pos.ts";
 import { startPosIssueChargeEdc } from "../services/order-recovery-charge-pos-edc.ts";
 import { readPosIssueCharge } from "../services/order-recovery-charge-pos-read.ts";
+import { resolvePosIssueChargeAttempt } from "../services/order-recovery-charge-pos-resolve.ts";
 import {
   approveChargeManualRefund,
   rejectChargeManualRefund,
@@ -293,6 +297,38 @@ orderRecoveryChargeRouter.post(
     const input = startChargeEdc.body.parse(req.body);
     res.set("Cache-Control", "no-store").json({
       data: await startPosIssueChargeEdc(
+        getScopedTenantContext(req),
+        {
+          userId: userIdSchema.parse(actorOf(req)),
+          deviceId: await currentDeviceIdOf(req),
+          actingOutletId: req.actingStaff?.outletId ?? null,
+        },
+        chargeId,
+        input,
+        new Date(),
+      ),
+    });
+  },
+);
+
+// A cash or card attempt of the charge without an answer, settled by a
+// supervisor's PIN (legend-f1mmf (d)). Same guards as the card start; another
+// outlet's charge is a 404 from the service.
+orderRecoveryChargeRouter.post(
+  "/order-issue-charges/:chargeId/attempts/resolve",
+  requireAuthAllowSharedDevice,
+  requireTrustedOrigin,
+  requireTenantContext,
+  resolveActingStaff,
+  requireActingStaffOnSharedDevice,
+  requireMenuPermission("pos.payment.accept"),
+  chargeOnCloud,
+  jsonBody,
+  async (req, res) => {
+    const { chargeId } = params.parse(req.params);
+    const input = resolveChargeAttempt.body.parse(req.body);
+    res.set("Cache-Control", "no-store").json({
+      data: await resolvePosIssueChargeAttempt(
         getScopedTenantContext(req),
         {
           userId: userIdSchema.parse(actorOf(req)),

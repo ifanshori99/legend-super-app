@@ -55,6 +55,7 @@ import {
   confirmChargeLinksUnpaid,
   lockChargeChain,
 } from "./order-recovery-charge.ts";
+import { assertAttemptNotClosed } from "./order-recovery-charge-attempt-key.ts";
 import {
   assertNoEdcSaleOutstanding,
   assertNoLiveChargeCode,
@@ -163,6 +164,15 @@ async function collectChargeAtPosCash(
         return { charge: toView(charge), changeIdr };
       }
     }
+    // legend-f1mmf (d): a supervisor closed this attempt; it never pays late.
+    await assertAttemptNotClosed(
+      tx,
+      tenantId,
+      charge.outletId,
+      charge.id,
+      "cash",
+      input.idempotencyKey,
+    );
     if (charge.status !== "open" && charge.status !== "routed_pos")
       throw new HttpError(
         409,

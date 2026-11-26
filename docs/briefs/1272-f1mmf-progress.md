@@ -51,3 +51,18 @@ Sisa (d):
 - Ekstrak pencatatan EDC dari `collectChargeAtPosEdc` jadi fungsi bersama.
 - Route `POST /order-issue-charges/:chargeId/attempts/resolve` (middleware sama `/edc`), audit `order_issue.charge_attempt_resolved`.
 - Test wajib (d) sesuai daftar CTO di review, typecheck api+web, prettier/eslint.
+
+### Update (d), WIP commit berikut (kuota habis, berhenti di sini)
+
+Sudah ditulis, BELUM dijalankan (test, typecheck):
+- `apps/api/src/services/order-recovery-charge-pos-resolve.ts` (service lengkap sesuai desain di atas).
+- Route `POST /order-issue-charges/:chargeId/attempts/resolve` di `order-recovery-charge.routes.ts`.
+- Cek penanda tutup dipasang di tunai, start EDC, `edcSaleChargePayable` (agent meneruskan `idempotencyKey`).
+- `recordEdcSaleOnCharge` diekstrak dari `collectChargeAtPosEdc` (nontunai.ts); field audit baru di `AUDIT_SAFE_FIELDS`.
+- Test `apps/api/src/test/order-issue-charge-pos-resolve-f1mmf.test.ts` (7 kasus: 403/PIN/404, tunai recorded/closed, EDC tanpa sale closed + start telat ditolak tanpa terminal, unknown 409 x5, slip beda 409, slip valid sekali + butuh payment.reconcile, gagal -> QRIS -> persetujuan telat terkunci, total <= amount). Lint bersih.
+
+Sisa:
+- Jalankan: `LEGEND_TEST_FILES="src/test/order-issue-charge-pos-resolve-f1mmf.test.ts src/test/order-issue-charge-pos-edc-f1mmf.test.ts src/test/order-issue-charge-collect-pos.test.ts src/test/order-charge-refund-982-pos-nontunai-gt98h.test.ts" heavy pnpm test`, perbaiki yang gagal (belum ada bukti gagal-dulu terpisah untuk (d): service dan test ditulis bersamaan; bukti gagal-dulu = jalankan test pada commit 32c4c02ef bila perlu).
+- Jalankan ulang 21 file test terkait tagihan (daftar di commit 6cabc2655) karena jalur EDC dan agent berubah.
+- Typecheck api + web lewat `heavy` (shared berubah), prettier check.
+- Review K ulang (architect) untuk (d), lalu web.

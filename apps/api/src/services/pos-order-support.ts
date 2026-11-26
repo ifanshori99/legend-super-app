@@ -94,6 +94,7 @@ import { posQrisHolds } from "../db/schema/pos-qris-hold.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { recordAudit } from "./core-audit.ts";
 import { isOrderVoidedByCorrection } from "./order-recovery-charge-void-guard.ts";
+import { assertAttemptNotClosed } from "./order-recovery-charge-attempt-key.ts";
 import { liveCodeWhere } from "./payment-live-code.ts";
 import { posOverrideUsableFromDevice } from "./device-pin-support.ts";
 import { appendOutbox } from "./core-outbox.ts";
@@ -493,6 +494,7 @@ async function edcSaleChargePayable(
     readonly outletId: OutletId;
     readonly reference: string;
     readonly amountIdr: number;
+    readonly idempotencyKey?: string;
   },
 ): Promise<boolean> {
   const tenantId = context.tenant.tenantId;
@@ -521,6 +523,17 @@ async function edcSaleChargePayable(
       ),
     )
     .limit(1);
+  if (!charge) return false;
+  // legend-f1mmf (d): an attempt a supervisor closed never starts late.
+  if (input.idempotencyKey !== undefined)
+    await assertAttemptNotClosed(
+      tx,
+      tenantId,
+      input.outletId,
+      input.reference,
+      "edc",
+      input.idempotencyKey,
+    );
   if (!charge) return false;
   if (
     (charge.status !== "open" && charge.status !== "routed_pos") ||
@@ -571,6 +584,8 @@ export async function assertEdcSaleBillPayable(
     readonly outletId: OutletId;
     readonly reference: string;
     readonly amountIdr: number;
+    /** The new sale's key (agent write-ahead): a closed charge attempt refuses. */
+    readonly idempotencyKey?: string;
   },
 ): Promise<void> {
   const tenantId = context.tenant.tenantId;

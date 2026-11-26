@@ -37,6 +37,7 @@ import { edcTransactions } from "../db/schema/edc.ts";
 import { withTenant } from "../db/tenant.ts";
 import { getEdgeEdcAgent } from "../edge/edc/runtime.ts";
 import { lockChargeChain } from "./order-recovery-charge.ts";
+import { assertAttemptNotClosed } from "./order-recovery-charge-attempt-key.ts";
 import {
   assertNoEdcSaleOutstanding,
   assertNoLiveChargeCode,
@@ -103,6 +104,15 @@ export async function startPosIssueChargeEdc(
     if (earlier)
       return { outletId, chargeId: charge.id, amountIdr: earlier.amountIdr };
 
+    // legend-f1mmf (d): a key a supervisor closed never reaches the terminal.
+    await assertAttemptNotClosed(
+      tx,
+      tenantId,
+      outletId,
+      charge.id,
+      "edc",
+      input.idempotencyKey,
+    );
     await assertCollectable(tx, tenantId, locked);
     await assertNoPaidIntentOnLink(tx, context, charge.paymentLinkId, false);
     await assertNoLiveChargeCode(tx, tenantId, charge.paymentLinkId);
