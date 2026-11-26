@@ -396,14 +396,14 @@ export async function payNotice(
   amountIdr: number,
   now: Date = new Date(),
   providerRef: string = `HOLD-PAY-${randomUUID()}`,
-  options: { deliveries?: number } = {},
+  options: { deliveries?: number; method?: "qris" | "va" | "ewallet" } = {},
 ) {
   const confirmed = await confirmPayment(
     fx.context,
     intentId,
     {
       source: "verified_webhook",
-      method: "qris",
+      method: options.method ?? "qris",
       amountIdr,
       providerRef,
       at: now.toISOString(),

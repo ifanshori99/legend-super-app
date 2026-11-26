@@ -120,31 +120,31 @@ export async function getPosPaymentOptions(
     db,
     context,
     async (tx) => {
-    await loadOutlet(tx, context, outletId);
-    return {
-      routing: await resolveRoutingRule(tx, context, outletId, "qris"),
-      vaRouting: await resolveRoutingRule(tx, context, outletId, "va"),
-      ewalletRouting: await resolveRoutingRule(
-        tx,
-        context,
-        outletId,
-        "ewallet",
-      ),
-      terminals: await tx
-        .select()
-        .from(paymentEdcTerminals)
-        .where(
-          and(
-            eq(paymentEdcTerminals.tenantId, context.tenant.tenantId),
-            eq(paymentEdcTerminals.outletId, outletId),
-            eq(paymentEdcTerminals.status, "active"),
-          ),
-        )
-        .orderBy(
-          asc(paymentEdcTerminals.bankCode),
-          asc(paymentEdcTerminals.id),
+      await loadOutlet(tx, context, outletId);
+      return {
+        routing: await resolveRoutingRule(tx, context, outletId, "qris"),
+        vaRouting: await resolveRoutingRule(tx, context, outletId, "va"),
+        ewalletRouting: await resolveRoutingRule(
+          tx,
+          context,
+          outletId,
+          "ewallet",
         ),
-    };
+        terminals: await tx
+          .select()
+          .from(paymentEdcTerminals)
+          .where(
+            and(
+              eq(paymentEdcTerminals.tenantId, context.tenant.tenantId),
+              eq(paymentEdcTerminals.outletId, outletId),
+              eq(paymentEdcTerminals.status, "active"),
+            ),
+          )
+          .orderBy(
+            asc(paymentEdcTerminals.bankCode),
+            asc(paymentEdcTerminals.id),
+          ),
+      };
     },
   );
   const edc = (method: "card" | "qris"): Reason =>

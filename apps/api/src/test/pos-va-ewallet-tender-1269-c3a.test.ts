@@ -106,7 +106,26 @@ async function fixture(label: string, provider: string): Promise<Fx> {
   const base = await captainPaymentFixture(label);
   const gateway = new OnlineGateway(provider);
   setPaymentGateway(gateway);
+  // VA defaults to the platform gateway; e-wallet has no default route.
+  if (provider === "duitku")
+    for (const method of ["va", "ewallet"])
+      await owner.query(
+        `INSERT INTO payment_routing_rules (tenant_id, outlet_id, method, provider, fallback_provider, enabled, updated_by)
+         VALUES ($1, NULL, $2, 'duitku', NULL, true, 'system:test')`,
+        [base.tenant.tenantId, method],
+      );
   return { ...base, gateway };
+}
+
+/** A verified Duitku callback for a VA / e-wallet code (method of the code). */
+function payCode(
+  intentId: string,
+  amountIdr: number,
+  method: "va" | "ewallet" = "va",
+  now: Date = new Date(),
+  providerRef: string = `DK-${randomUUID()}`,
+) {
+  return payNotice(fx, intentId, amountIdr, now, providerRef, { method });
 }
 
 beforeAll(async () => {
@@ -195,13 +214,23 @@ async function checkAt(now: Date) {
   }
 }
 
-/** A notice the money rules park (wrong amount, dead code) may answer 409. */
-async function payParked(...args: Parameters<typeof payNotice>) {
+/** A notice the money rules park (wrong amount, dead code) may answer 409;
+ * an untrusted confirmation (wrong method) is never accepted as that. */
+async function payParked(...args: Parameters<typeof payCode>) {
   try {
-    return await payNotice(...args);
+    return await payCode(...args);
   } catch (error) {
-    const e = error as { code?: unknown; status?: unknown };
-    if (e?.code === "CONFLICT" && e?.status === 409) return null;
+    const e = error as {
+      code?: unknown;
+      status?: unknown;
+      decisionCode?: unknown;
+    };
+    if (
+      e?.code === "CONFLICT" &&
+      e?.status === 409 &&
+      e?.decisionCode !== "UNTRUSTED_CONFIRMATION"
+    )
+      return null;
     throw error;
   }
 }
@@ -305,8 +334,8 @@ describe("1269 C3a cashier VA and e-wallet (Duitku, cloud)", () => {
     });
 
     const providerRef = `DK-${randomUUID()}`;
-    await payNotice(fx, va.intentId, BILL_IDR, new Date(), providerRef);
-    await payParked(fx, va.intentId, BILL_IDR, new Date(), providerRef);
+    await payCode(va.intentId, BILL_IDR, "va", new Date(), providerRef);
+    await payParked(va.intentId, BILL_IDR, "va", new Date(), providerRef);
     expect(await capturedIdr(fx, order.id)).toBe(BILL_IDR);
     expect((await tenderStatuses(fx, order.id)).map((t) => t.status)).toEqual([
       "captured",
@@ -332,12 +361,12 @@ describe("1269 C3a cashier VA and e-wallet (Duitku, cloud)", () => {
       channelName: "OVO",
       paymentUrl: "https://sandbox.duitku.com/topup/v2/pay?ref=C3A",
     });
-    await payNotice(fx, wallet.intentId, BILL_IDR);
+    await payCode(wallet.intentId, BILL_IDR, "ewallet");
     expect(await capturedIdr(fx, order.id)).toBe(BILL_IDR);
     await assertInvariants(fx, order.id);
   });
 
-  it("while the code is live every method is locked: cash, QRIS, a second VA, an e-wallet and EDC all 409", async () => {
+  it("while the code is live every method is locked: cash, QRIS, a second VA and an e-wallet all 409", async () => {
     const order = await newSubmittedOrder(fx, 0);
     await issue(order.id, "va");
     const status = await orderStatus(order.id);
@@ -407,7 +436,7 @@ describe("1269 C3a cashier VA and e-wallet (Duitku, cloud)", () => {
     });
     expect(cash.status, JSON.stringify(cash.body)).toBe(201);
     // A late callback on the dead code is never a second capture.
-    await payParked(fx, va.intentId, BILL_IDR);
+    await payParked(va.intentId, BILL_IDR);
     expect(await capturedIdr(fx, order.id)).toBe(BILL_IDR);
     const owed =
       (await unallocatedFunds(fx, va.intentId)).length +
@@ -419,7 +448,7 @@ describe("1269 C3a cashier VA and e-wallet (Duitku, cloud)", () => {
   it("a callback with another amount is parked, never captured, and the bill stays locked", async () => {
     const order = await newSubmittedOrder(fx, 0);
     const va = await issue(order.id, "va");
-    await payParked(fx, va.intentId, BILL_IDR - 1_000);
+    await payParked(va.intentId, BILL_IDR - 1_000);
     expect(await capturedIdr(fx, order.id)).toBe(0);
     const parked = await unallocatedFunds(fx, va.intentId);
     expect(parked.map((row) => row.amountIdr)).toEqual([BILL_IDR - 1_000]);
@@ -449,7 +478,7 @@ describe("1269 C3a cashier VA and e-wallet (Duitku, cloud)", () => {
     });
     expect(cash.status, JSON.stringify(cash.body)).toBe(201);
 
-    await payParked(fx, va.intentId, BILL_IDR, new Date(), va.providerRef);
+    await payParked(va.intentId, BILL_IDR, "va", new Date(), va.providerRef);
     expect(await capturedIdr(fx, order.id)).toBe(BILL_IDR);
     const parked = await unallocatedFunds(fx, va.intentId);
     expect(parked.map((row) => row.amountIdr)).toEqual([BILL_IDR]);
@@ -517,9 +546,10 @@ describe("1269 C3a cashier VA and e-wallet (Duitku, cloud)", () => {
       const locked = await getPosPaymentOptions(fx.context, outletId, {
         deviceId: null,
       });
-      expect(locked.methods.find((row) => row.method === "va")).toMatchObject(
-        { enabled: false, unavailableReason: "routing_disabled" },
-      );
+      expect(locked.methods.find((row) => row.method === "va")).toMatchObject({
+        enabled: false,
+        unavailableReason: "routing_disabled",
+      });
     } finally {
       fx.gateway.listed.add("va");
     }

@@ -390,13 +390,20 @@ describe("GET .../pos/payment-options", () => {
     expect(raw).not.toContain("7Q3Z");
   });
 
-  it("VA, e-wallet and online card stay locked", async () => {
+  // 1269 C3a: VA and e-wallet open only where their routing selects Duitku
+  // (pos-va-ewallet-tender-1269-c3a.test.ts); here VA routes to DOIT and
+  // e-wallet has no route. Online card stays locked.
+  it("VA, e-wallet and online card stay locked without a Duitku route", async () => {
     const options = await read();
-    for (const method of ["va", "ewallet", "card"])
+    for (const [method, reason] of [
+      ["va", "not_supported"],
+      ["ewallet", "routing_disabled"],
+      ["card", "not_supported"],
+    ] as const)
       expect(options.of(method)).toEqual({
         method,
         enabled: false,
-        unavailableReason: "not_supported",
+        unavailableReason: reason,
       });
   });
 
