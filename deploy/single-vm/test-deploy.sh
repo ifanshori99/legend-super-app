@@ -581,3 +581,37 @@ set_duitku 'DUITKU_ENABLED_METHODS=qris' 'DUITKU_ENABLED_METHODS=qris'
   exit 1
 }
 echo 'legend-osqou.1: Duitku setting checks passed'
+# Cloud-only release (legend-wasr7.13): an edge switch on in api.env or
+# worker.env stops the deploy before any docker work; off or absent passes.
+edge_refused() {
+  # edge_refused <file> <line>
+  cp "$tmp/api.env.orig" "$tmp/api.env"
+  cp "$tmp/worker.env.orig" "$tmp/worker.env"
+  printf '%s\n' "$2" >> "$tmp/$1"
+  : > "$TEST_LOG"
+  if "$root/deploy.sh" --env-file "$tmp/compose.env" >/dev/null 2>"$tmp/err"; then
+    echo "legend-wasr7.13: deploy accepted $2 in $1" >&2
+    exit 1
+  fi
+  # `compose config` runs first; nothing may start or migrate.
+  ! grep -E ' (up|run) ' "$TEST_LOG" >/dev/null || {
+    echo "legend-wasr7.13: docker ran despite $2 in $1" >&2
+    exit 1
+  }
+  if grep -F -e "$password" -e postgresql:// "$tmp/err" >/dev/null; then
+    echo 'legend-wasr7.13: the check printed a database URL' >&2
+    exit 1
+  fi
+}
+for flag in EDGE_MODE EDGE_NODES_ENABLED EDGE_FAILOVER_ENABLED EDC_AGENT_ENABLED; do
+  edge_refused api.env "$flag=true"
+  edge_refused worker.env "$flag=1"
+done
+cp "$tmp/api.env.orig" "$tmp/api.env"
+cp "$tmp/worker.env.orig" "$tmp/worker.env"
+printf 'EDGE_MODE=false\nEDGE_NODES_ENABLED=false\nEDC_AGENT_ENABLED=0\n' >> "$tmp/api.env"
+"$root/deploy.sh" --env-file "$tmp/compose.env" >/dev/null 2>&1 || {
+  echo 'legend-wasr7.13: deploy refused edge switches that are off' >&2
+  exit 1
+}
+echo 'legend-wasr7.13: cloud-only edge switch checks passed'
