@@ -39,9 +39,40 @@ export const edcBridgeOpSchema = z.enum(["sale", "cancel", "inquiry", "void"]);
 export type EdcBridgeOp = z.infer<typeof edcBridgeOpSchema>;
 
 /** Ops the bridge runs at most once per terminal + trace: a second command
- * replays the first result (`replayOf`) and never reaches the terminal again.
- * `cancel` and `inquiry` never charge, so they pass through. */
-export const EDC_BRIDGE_DEDUPED_OPS: readonly EdcBridgeOp[] = ["sale", "void"];
+ * with the same frame replays the first result (`replayOf`) and never reaches
+ * the terminal again. Only `sale` charges; `void`, `cancel` and `inquiry`
+ * always reach the terminal (a void that failed on the wire must be retried
+ * for real, not replayed). */
+export const EDC_BRIDGE_DEDUPED_OPS: readonly EdcBridgeOp[] = ["sale"];
+
+/** The bridge keeps a sale's dedupe record (separate from the unacked result
+ * queue, which an `ack` empties) at least this long, and also until the
+ * terminal batch holding it was settled and matched. */
+export const EDC_BRIDGE_SALE_RECORD_MIN_RETENTION_MS = 48 * 3_600_000;
+
+/** Upper bound of `command.timeoutMs`. */
+export const EDC_BRIDGE_MAX_COMMAND_TIMEOUT_MS = 300_000;
+
+/** Extra wait, on the cloud clock, before a terminal's lease may go to
+ * another tablet (see `edcBridgeLeaseReusableAt`). */
+export const EDC_BRIDGE_LEASE_HANDOVER_GRACE_MS = 30_000;
+
+/** Wrong pairing codes allowed per code, and per source IP and device, before
+ * the cloud blocks further attempts. */
+export const EDC_BRIDGE_PAIRING_MAX_ATTEMPTS = 5;
+
+const runtime = globalThis as unknown as {
+  crypto: {
+    subtle: {
+      digest(algorithm: "SHA-256", data: Uint8Array): Promise<ArrayBuffer>;
+    };
+  };
+  TextEncoder: new () => { encode(text: string): Uint8Array };
+};
+
+function utf8(text: string): Uint8Array {
+  return new runtime.TextEncoder().encode(text);
+}
 
 /** Raw ECR bytes, standard base64, non-empty. */
 const frameSchema = z
@@ -124,6 +155,9 @@ export const edcBridgeAnswerSchema = z.discriminatedUnion("outcome", [
       "terminal_busy",
       "link_down",
       "duplicate_in_flight",
+      /** Same terminal + trace as an earlier sale but another frame: the
+       * bridge never replays an old answer for a different sale. */
+      "trace_conflict",
     ]),
   }),
 ]);
@@ -155,9 +189,11 @@ export const edcBridgeLeaseGrantSchema = z.strictObject({
   /** `payment_edc_terminals.id`. */
   terminalId: uuidSchema,
   leaseId: uuidSchema,
-  /** The bridge starts no command on this lease after this instant; one in
-   * flight finishes and is journaled. The cloud renews with a new `lease`. */
-  expiresAt: isoDateTimeSchema,
+  /** Lease length, counted by the tablet from when it RECEIVED this message
+   * (monotonic clock; never compared with the cloud clock). Past it the bridge
+   * starts no command on this lease; one in flight finishes and is
+   * journaled. The cloud renews with a new `lease`. */
+  ttlMs: z.number().int().min(10_000).max(600_000),
   link: edcBridgeLinkSchema,
   framing: edcBridgeFramingSchema,
 });
@@ -195,7 +231,7 @@ export const edcBridgeCommandSchema = z.strictObject({
   frame: frameSchema,
   /** Bridge gives up waiting for the terminal after this and answers
    * `transport_error` `timeout`. */
-  timeoutMs: z.number().int().min(1_000).max(300_000),
+  timeoutMs: z.number().int().min(1_000).max(EDC_BRIDGE_MAX_COMMAND_TIMEOUT_MS),
 });
 export type EdcBridgeCommand = z.infer<typeof edcBridgeCommandSchema>;
 
@@ -228,7 +264,7 @@ export const edcBridgeDownlinkSchema = z.discriminatedUnion("type", [
 export type EdcBridgeDownlink = z.infer<typeof edcBridgeDownlinkSchema>;
 
 function parseMessage<T>(raw: string, schema: z.ZodType<T>): T {
-  if (new TextEncoder().encode(raw).length > EDC_BRIDGE_MAX_MESSAGE_BYTES)
+  if (utf8(raw).length > EDC_BRIDGE_MAX_MESSAGE_BYTES)
     throw new Error("EDC bridge message too large");
   return schema.parse(JSON.parse(raw));
 }
@@ -250,6 +286,69 @@ export function edcBridgeDedupeKey(
 ): string | null {
   if (!EDC_BRIDGE_DEDUPED_OPS.includes(command.op)) return null;
   return `${command.terminalId}:${command.op}:${command.trace}`;
+}
+
+/** SHA-256 (lowercase hex) of the frame text exactly as received (its base64
+ * ASCII). The bridge stores it in the sale's dedupe record. */
+export async function edcBridgeFrameSha256(frame: string): Promise<string> {
+  const digest = await runtime.crypto.subtle.digest("SHA-256", utf8(frame));
+  return Array.from(new Uint8Array(digest), (b) =>
+    b.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
+/** The sale dedupe record the bridge keeps per `edcBridgeDedupeKey`. */
+export type EdcBridgeSaleRecord = {
+  readonly commandId: string;
+  readonly frameSha256: string;
+  readonly state: "in_flight" | "done";
+};
+
+export type EdcBridgeDedupeDecision =
+  | { readonly action: "run" }
+  | { readonly action: "replay"; readonly replayOf: string }
+  | {
+      readonly action: "refuse";
+      readonly reason: "duplicate_in_flight" | "trace_conflict";
+    };
+
+/** What the bridge does with a command, given the dedupe record stored for
+ * its key (`null`: none) and the command frame's SHA-256. A different frame
+ * for a known sale trace is `trace_conflict` (the cloud records `unknown`),
+ * so an old approval is never replayed onto a new sale. */
+export function edcBridgeDedupeDecision(
+  command: Pick<EdcBridgeCommand, "op">,
+  record: EdcBridgeSaleRecord | null,
+  frameSha256: string,
+): EdcBridgeDedupeDecision {
+  if (!EDC_BRIDGE_DEDUPED_OPS.includes(command.op) || record === null)
+    return { action: "run" };
+  if (record.frameSha256 !== frameSha256)
+    return { action: "refuse", reason: "trace_conflict" };
+  if (record.state === "in_flight")
+    return { action: "refuse", reason: "duplicate_in_flight" };
+  return { action: "replay", replayOf: record.commandId };
+}
+
+/** Cloud clock: the earliest instant a terminal leased at `issuedAt` for
+ * `ttlMs` may be leased to ANOTHER tablet. Covers a tablet whose clock runs
+ * slow, a command started at the last moment and the result's way back. */
+export function edcBridgeLeaseReusableAt(issuedAt: Date, ttlMs: number): Date {
+  return new Date(
+    issuedAt.getTime() +
+      ttlMs +
+      EDC_BRIDGE_MAX_COMMAND_TIMEOUT_MS +
+      EDC_BRIDGE_LEASE_HANDOVER_GRACE_MS,
+  );
+}
+
+/** Bridge side: a LAN link to one of the tablet's own interface addresses is
+ * unusable (every command on it answers `refused` `lease_invalid`). */
+export function edcBridgeLinkTargetsSelf(
+  link: EdcBridgeLink,
+  ownAddresses: readonly string[],
+): boolean {
+  return link.connection === "lan" && ownAddresses.includes(link.host);
 }
 
 /** The cloud bridge provider's rule: only a raw `response` goes on to the bank

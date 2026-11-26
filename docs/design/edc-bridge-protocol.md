@@ -12,26 +12,30 @@ Dasar: `docs/design/edc-auto-cloud.md`. Kontrak kode: `packages/shared/src/edc/b
 
 1. Tablet membuka WSS ke `/api/edc-bridge` dengan `Authorization: Bearer <token>` (B2). Token tidak pernah ada di URL atau di isi pesan.
 2. Jembatan -> `hello` {protocolVersion, appVersion, unackedResults}. Versi tidak didukung: cloud -> `goodbye protocol_unsupported`, tutup.
-3. Cloud -> `lease` {grants, refused}: daftar lengkap terminal yang dipegang tablet ini. Grant = terminalId, leaseId, expiresAt, link (LAN IPv4 privat + port, atau USB + baud), framing. Satu EDC satu tablet: lease per terminal dipegang di cloud; terminal yang dipegang tablet lain -> `held_by_other_device`. Cloud memperbarui dengan `lease` baru sebelum `expiresAt`.
+3. Cloud -> `lease` {grants, refused}: daftar lengkap terminal yang dipegang tablet ini. Grant = terminalId, leaseId, `ttlMs` (10 s-10 menit), link (LAN IPv4 privat + port, atau USB + baud), framing. Satu EDC satu tablet: lease per terminal dipegang di cloud; terminal yang dipegang tablet lain -> `held_by_other_device`. Cloud memperbarui dengan `lease` baru sebelum ttl habis.
 4. Jembatan mengirim ulang semua hasil di jurnal yang belum di-ack.
 5. Cloud -> `command` {commandId, leaseId, terminalId, op sale|cancel|inquiry|void, trace, frame, timeoutMs}. Cloud menandai `dispatched` tepat sebelum mengirim.
-6. Jembatan -> `result` {commandId, terminalId, op, trace, replayOf, completedAt, answer}. `answer` = `response` (frame mentah) | `transport_error` (timeout, disconnected, protocol) | `refused` (lease_invalid, terminal_busy, link_down, duplicate_in_flight).
-7. Cloud menyimpan hasil, lalu -> `ack` {commandId}. Baru sesudah ack jembatan menghapus dari jurnal.
+6. Jembatan -> `result` {commandId, terminalId, op, trace, replayOf, completedAt, answer}. `answer` = `response` (frame mentah) | `transport_error` (timeout, disconnected, protocol) | `refused` (lease_invalid, terminal_busy, link_down, duplicate_in_flight, trace_conflict).
+7. Cloud menyimpan hasil, lalu -> `ack` {commandId}. Baru sesudah ack jembatan menghapus hasil itu dari antrean unacked. Catatan dedupe sale tidak ikut terhapus (lihat Pengaman).
 
 ## Pengaman
 
-- Hasil hilang: jurnal Room ditulis sebelum dikirim, dikirim ulang tiap sambung ulang sampai ack. Hasil yang datang terlambat dicocokkan cloud lewat terminalId + trace (jendela `EDC_LATE_RESPONSE_WINDOW_MS`).
+- Hasil hilang: antrean unacked (Room) ditulis sebelum dikirim, dikirim ulang tiap sambung ulang sampai ack.
+- Cloud menerima `result` hanya bila `commandId` pernah dikirim ke deviceId sesi itu dan terminalId, op, trace, dan replayOf sama dengan perintah yang disimpan cloud; selain itu dibuang dan dicatat. Hasil terlambat (jendela `EDC_LATE_RESPONSE_WINDOW_MS`) dicocokkan hanya dalam tenant + outlet + terminal perangkat itu, tidak pernah lintas outlet. Test wajib di B2 (legend-wasr7.21).
 - Ragu = `unknown`: selain `response`, semua jawaban menjadi `EcrTransportError` (`edcBridgeTransportErrorOf`), termasuk `refused`. Agent lalu inquiry, tidak pernah `failed`.
-- Perintah ganda: `sale` dan `void` dijalankan maks sekali per terminal + trace (`edcBridgeDedupeKey`). Perintah kedua: hasil pertama diputar ulang dengan `replayOf`; bila masih berjalan, `refused duplicate_in_flight`. `cancel` dan `inquiry` lewat (tidak menagih).
-- Lease kedaluwarsa atau bukan milik tablet: tidak ada perintah baru yang dimulai; yang sedang berjalan diselesaikan dan dijurnal.
-- Link LAN hanya ke IPv4 privat RFC 1918, jadi perintah cloud tidak bisa memakai tablet sebagai proxy TCP ke internet atau ke dirinya sendiri. Bluetooth tidak dilayani jembatan (`connection_unsupported`).
+- Perintah ganda: hanya `sale` di-dedupe, per terminal + trace (`edcBridgeDedupeKey`, `edcBridgeDedupeDecision`). `void`, `cancel`, dan `inquiry` selalu ke terminal (void yang gagal di jalur harus benar-benar diulang, bukan diputar ulang).
+- Catatan dedupe sale terpisah dari antrean unacked: {commandId, SHA-256 frame (`edcBridgeFrameSha256`, dari teks base64 apa adanya), state, hasil}. Disimpan minimal 48 jam (`EDC_BRIDGE_SALE_RECORD_MIN_RETENTION_MS`) dan sampai batch terminal yang memuatnya sudah settlement dan tercocok; ack tidak menghapusnya.
+- Sale kedua dengan trace sama: hash frame sama dan selesai -> hasil pertama diputar ulang dengan `replayOf`; hash sama dan masih berjalan -> `refused duplicate_in_flight`; hash beda -> `refused trace_conflict` (cloud: `unknown`). Jawaban "approved" lama tidak pernah dipakai untuk sale lain, walau trace terminal berputar.
+- Lease: tablet menghitung `ttlMs` dengan jam monotonik sejak pesan `lease` diterima, tidak pernah membandingkan dengan jam cloud. Habis atau bukan milik tablet: tidak ada perintah baru yang dimulai; yang sedang berjalan diselesaikan dan dijurnal.
+- Cloud tidak memberi lease terminal itu ke tablet lain sebelum `issuedAt + ttlMs + 300 s (timeout maks) + 30 s` menurut jam cloud (`edcBridgeLeaseReusableAt`), jadi jam tablet yang mundur atau lease yang pindah tidak pernah membuat dua tablet bicara ke satu EDC.
+- Link LAN hanya ke IPv4 privat RFC 1918 (bukan 0.0.0.0, loopback, link-local, CGNAT 100.64/10), jadi perintah cloud tidak bisa memakai tablet sebagai proxy TCP ke internet. Link ke alamat interface tablet sendiri ditolak di jembatan (`edcBridgeLinkTargetsSelf`): semua perintah di lease itu dijawab `refused lease_invalid`. Bluetooth tidak dilayani jembatan (`connection_unsupported`).
 - Hasil hanya membawa frame mentah, tanpa PAN hasil decode. Penyamaran PAN tetap di skema hasil cloud (`ecrResultDetailsSchema`).
 
 ## Token perangkat (per tablet)
 
 - Format: `edcb_<ULID perangkat>_<32 byte acak base64url>` (`edcBridgeDeviceTokenSchema`). Cloud hanya menyimpan SHA-256 token, dibandingkan waktu-konstan.
 - Tabel `edc_bridge_devices` (migrasi B2): id (ULID), tenant_id, outlet_id, label, token_hash, created_by, created_at, last_seen_at, revoked_at. Penugasan terminal ke perangkat di cloud; lease hanya untuk terminal di outlet perangkat itu.
-- Pemasangan: admin dengan izin pembayaran outlet membuat kode 8 karakter Crockford (`edcBridgePairingCodeSchema`), berlaku 10 menit, sekali pakai, ditolak setelah 5 kali salah. Tablet menukar kode dengan token lewat HTTPS; token hanya tampil sekali dan disimpan di Android Keystore (EncryptedSharedPreferences).
+- Pemasangan: admin dengan izin pembayaran outlet membuat kode 8 karakter Crockford (`edcBridgePairingCodeSchema`), berlaku 10 menit, sekali pakai. Maks 5 kali salah (`EDC_BRIDGE_PAIRING_MAX_ATTEMPTS`) per kode, dan juga per IP sumber dan per perangkat dalam jendela yang sama; sesudahnya kode hangus dan IP/perangkat diblokir sementara. Tablet menukar kode dengan token lewat HTTPS; token hanya tampil sekali dan disimpan di Android Keystore (EncryptedSharedPreferences).
 - Cabut: `revoked_at` diisi -> socket aktif mendapat `goodbye token_revoked`, lease dilepas, perintah pending di cloud menjadi `unknown` lewat aturan biasa. Ganti tablet = pasang ulang (token baru), tidak ada pemakaian token bersama.
 - Satu sesi per perangkat: sambungan baru dengan token sama menutup yang lama (`goodbye replaced_by_newer_session`).
 - Token, kode pasang, dan isi frame tidak pernah dicatat di log (redaksi pino).
@@ -43,4 +47,4 @@ Dasar: `docs/design/edc-auto-cloud.md`. Kontrak kode: `packages/shared/src/edc/b
 ## Belum diputuskan (B2/B5)
 
 - Framing persis per bank menunggu dokumen ECR bank (B0/B5); `stx_bcdlen_etx_lrc` adalah bentuk umum dan bisa ditambah.
-- Lama lease dan interval perpanjangan ditetapkan di B2.
+- Nilai `ttlMs` dan interval perpanjangan ditetapkan di B2 (dalam batas 10 s-10 menit).

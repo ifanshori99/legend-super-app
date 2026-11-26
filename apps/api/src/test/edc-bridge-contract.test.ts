@@ -1,9 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { EcrTransportError } from "@starter/shared/edc";
 import {
+  EDC_BRIDGE_DEDUPED_OPS,
+  EDC_BRIDGE_LEASE_HANDOVER_GRACE_MS,
+  EDC_BRIDGE_MAX_COMMAND_TIMEOUT_MS,
   EDC_BRIDGE_MAX_MESSAGE_BYTES,
+  EDC_BRIDGE_PAIRING_MAX_ATTEMPTS,
   EDC_BRIDGE_PROTOCOL_VERSION,
+  EDC_BRIDGE_SALE_RECORD_MIN_RETENTION_MS,
+  edcBridgeDedupeDecision,
   edcBridgeDedupeKey,
+  edcBridgeFrameSha256,
+  edcBridgeLeaseReusableAt,
+  edcBridgeLinkTargetsSelf,
   edcBridgeDeviceTokenSchema,
   edcBridgeLinkSchema,
   edcBridgePairingCodeSchema,
@@ -88,7 +97,7 @@ describe("EDC bridge contract: lease", () => {
   const grant = {
     terminalId: TERMINAL,
     leaseId: LEASE,
-    expiresAt: "2026-11-27T03:05:00.000Z",
+    ttlMs: 60_000,
     link: { connection: "lan", host: "192.168.1.20", port: 9000 },
     framing: "stx_bcdlen_etx_lrc",
   };
@@ -107,8 +116,36 @@ describe("EDC bridge contract: lease", () => {
     expect(parseEdcBridgeDownlink(JSON.stringify(lease))).toEqual(lease);
   });
 
+  it("a grant has a relative ttlMs, never a cloud-clock expiresAt", () => {
+    const lease = (g: Record<string, unknown>) =>
+      JSON.stringify({ type: "lease", grants: [g], refused: [] });
+    expect(() =>
+      parseEdcBridgeDownlink(
+        lease({ ...grant, expiresAt: "2026-11-27T03:05:00.000Z" }),
+      ),
+    ).toThrow();
+    for (const ttlMs of [9_999, 600_001, 1.5])
+      expect(() =>
+        parseEdcBridgeDownlink(lease({ ...grant, ttlMs })),
+      ).toThrow();
+  });
+
+  it("the cloud hands a terminal to another tablet only after ttl + max timeout + 30 s", () => {
+    const issuedAt = new Date("2026-11-27T03:00:00.000Z");
+    expect(EDC_BRIDGE_MAX_COMMAND_TIMEOUT_MS).toBe(300_000);
+    expect(EDC_BRIDGE_LEASE_HANDOVER_GRACE_MS).toBe(30_000);
+    expect(edcBridgeLeaseReusableAt(issuedAt, 60_000).toISOString()).toBe(
+      "2026-11-27T03:06:30.000Z",
+    );
+  });
+
   it("LAN link only reaches a private IPv4 address", () => {
-    for (const host of ["10.0.0.5", "172.16.3.4", "192.168.0.10"])
+    for (const host of [
+      "10.0.0.5",
+      "172.16.3.4",
+      "172.31.255.255",
+      "192.168.0.10",
+    ])
       expect(
         edcBridgeLinkSchema.safeParse({ connection: "lan", host, port: 9000 })
           .success,
@@ -116,6 +153,10 @@ describe("EDC bridge contract: lease", () => {
     for (const host of [
       "8.8.8.8",
       "172.32.0.1",
+      "172.15.255.255",
+      "192.169.0.1",
+      "0.0.0.0",
+      "100.64.0.1",
       "127.0.0.1",
       "169.254.1.1",
       "example.com",
@@ -124,6 +165,23 @@ describe("EDC bridge contract: lease", () => {
         edcBridgeLinkSchema.safeParse({ connection: "lan", host, port: 9000 })
           .success,
       ).toBe(false);
+  });
+
+  it("a LAN link to the tablet's own interface address is refused", () => {
+    const link = edcBridgeLinkSchema.parse({
+      connection: "lan",
+      host: "192.168.1.20",
+      port: 9000,
+    });
+    expect(edcBridgeLinkTargetsSelf(link, ["192.168.1.20", "10.0.0.2"])).toBe(
+      true,
+    );
+    expect(edcBridgeLinkTargetsSelf(link, ["192.168.1.21"])).toBe(false);
+    const usb = edcBridgeLinkSchema.parse({
+      connection: "usb",
+      baudRate: 9600,
+    });
+    expect(edcBridgeLinkTargetsSelf(usb, ["192.168.1.20"])).toBe(false);
   });
 
   it("USB link takes a standard baud rate; bluetooth is not a bridge link", () => {
@@ -161,7 +219,8 @@ describe("EDC bridge contract: commands", () => {
       expect(() => parseEdcBridgeDownlink(JSON.stringify(bad))).toThrow();
   });
 
-  it("dedupes sale and void per terminal+trace; cancel and inquiry pass", () => {
+  it("dedupes sale only; void, cancel and inquiry always reach the terminal", () => {
+    expect(EDC_BRIDGE_DEDUPED_OPS).toEqual(["sale"]);
     const sale = parseEdcBridgeDownlink(JSON.stringify(command("sale")));
     const again = parseEdcBridgeDownlink(
       JSON.stringify(
@@ -172,16 +231,87 @@ describe("EDC bridge contract: commands", () => {
       throw new Error("expected commands");
     expect(edcBridgeDedupeKey(sale)).toBe(`${TERMINAL}:sale:TRACE0001`);
     expect(edcBridgeDedupeKey(again)).toBe(edcBridgeDedupeKey(sale));
-    const voidCmd = parseEdcBridgeDownlink(JSON.stringify(command("void")));
-    if (voidCmd.type !== "command") throw new Error("expected command");
-    expect(edcBridgeDedupeKey(voidCmd)).toBe(`${TERMINAL}:void:TRACE0001`);
-    for (const op of ["cancel", "inquiry"]) {
+    for (const op of ["void", "cancel", "inquiry"]) {
       const cmd = parseEdcBridgeDownlink(JSON.stringify(command(op)));
       if (cmd.type !== "command") throw new Error("expected command");
       expect(edcBridgeDedupeKey(cmd)).toBeNull();
+      expect(
+        edcBridgeDedupeDecision(
+          cmd,
+          {
+            commandId: COMMAND,
+            frameSha256: "0".repeat(64),
+            state: "done",
+          },
+          "0".repeat(64),
+        ),
+      ).toEqual({ action: "run" });
     }
   });
+
+  it("frame hash is SHA-256 hex of the base64 frame text", async () => {
+    expect(await edcBridgeFrameSha256(FRAME)).toBe(
+      "131afd4cbe2f7ea4295563cbbde7bdb6120d5fd74dcec8827de0fbe23c9eb04d",
+    );
+    expect(await edcBridgeFrameSha256("AAECAwQG")).not.toBe(
+      await edcBridgeFrameSha256(FRAME),
+    );
+  });
+
+  it("a repeated sale replays only when the frame hash matches; else trace_conflict", async () => {
+    const sale = edcBridgeDedupeDecisionInput(command("sale"));
+    const hash = await edcBridgeFrameSha256(FRAME);
+    const other = await edcBridgeFrameSha256("AAECAwQG");
+    const first = "1e1f2a3b-4c5d-4e6f-8a7b-9c0d1e2f3a4b";
+    expect(edcBridgeDedupeDecision(sale, null, hash)).toEqual({
+      action: "run",
+    });
+    expect(
+      edcBridgeDedupeDecision(
+        sale,
+        {
+          commandId: first,
+          frameSha256: hash,
+          state: "done",
+        },
+        hash,
+      ),
+    ).toEqual({ action: "replay", replayOf: first });
+    expect(
+      edcBridgeDedupeDecision(
+        sale,
+        {
+          commandId: first,
+          frameSha256: hash,
+          state: "in_flight",
+        },
+        hash,
+      ),
+    ).toEqual({ action: "refuse", reason: "duplicate_in_flight" });
+    for (const state of ["done", "in_flight"] as const)
+      expect(
+        edcBridgeDedupeDecision(
+          sale,
+          {
+            commandId: first,
+            frameSha256: other,
+            state,
+          },
+          hash,
+        ),
+      ).toEqual({ action: "refuse", reason: "trace_conflict" });
+  });
+
+  it("sale records outlive the unacked queue: at least 48 hours", () => {
+    expect(EDC_BRIDGE_SALE_RECORD_MIN_RETENTION_MS).toBe(48 * 3_600_000);
+  });
 });
+
+function edcBridgeDedupeDecisionInput(raw: Record<string, unknown>) {
+  const cmd = parseEdcBridgeDownlink(JSON.stringify(raw));
+  if (cmd.type !== "command") throw new Error("expected command");
+  return cmd;
+}
 
 describe("EDC bridge contract: results and ack", () => {
   it("a response carries the raw terminal frame and is definite", () => {
@@ -213,6 +343,8 @@ describe("EDC bridge contract: results and ack", () => {
       [{ outcome: "refused", reason: "lease_invalid" }, "protocol"],
       [{ outcome: "refused", reason: "duplicate_in_flight" }, "protocol"],
       [{ outcome: "refused", reason: "link_down" }, "protocol"],
+      [{ outcome: "refused", reason: "terminal_busy" }, "protocol"],
+      [{ outcome: "refused", reason: "trace_conflict" }, "protocol"],
     ] as const) {
       const msg = parseEdcBridgeUplink(JSON.stringify(result(answer)));
       if (msg.type !== "result") throw new Error("expected result");
@@ -286,5 +418,9 @@ describe("EDC bridge contract: device token and pairing code", () => {
       false,
     );
     expect(edcBridgePairingCodeSchema.safeParse("ABC2345").success).toBe(false);
+  });
+
+  it("pairing allows at most 5 wrong attempts", () => {
+    expect(EDC_BRIDGE_PAIRING_MAX_ATTEMPTS).toBe(5);
   });
 });
