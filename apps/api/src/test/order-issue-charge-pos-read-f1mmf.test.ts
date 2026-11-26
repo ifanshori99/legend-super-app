@@ -355,7 +355,11 @@ describe("legend-f1mmf the cashier reads a swap charge before taking the money",
     expect(detail.status).toBe("open");
     expect(detail.amountIdr).toBe(AMOUNT);
     expect(detail.differenceIdr).toBe(DIFFERENCE);
-    expect(detail.orderNumber).toBe(opened.order.number);
+    const { rows } = await owner.query<{ number: string }>(
+      "SELECT number FROM orders WHERE tenant_id = $1 AND id = $2",
+      [w.tenant.tenantId, ulidToUuid(opened.order.id)],
+    );
+    expect(detail.orderNumber).toBe(rows[0]!.number);
     expect(detail.original.quantity).toBeGreaterThan(0);
     expect(detail.replacement.lineTotalIdr - detail.original.lineTotalIdr).toBe(
       DIFFERENCE,

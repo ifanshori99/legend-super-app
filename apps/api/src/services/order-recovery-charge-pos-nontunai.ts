@@ -30,6 +30,7 @@ import {
   assertOutletInScope,
   CoreError,
   outletIdSchema,
+  type OutletId,
   type ScopedTenantContext,
   type TenantId,
 } from "@starter/shared/core";
@@ -179,7 +180,7 @@ export async function assertNoPaidIntentOnLink(
 export async function assertNoEdcSaleOutstanding(
   tx: Tx,
   tenantId: TenantId,
-  charge: { id: string; outletId: string },
+  charge: { id: string; outletId: OutletId },
 ): Promise<void> {
   // The EDC agent's write-ahead lock for this reference (edge/edc/agent.ts):
   // a sale starting now waits for this transaction, and this one sees a sale
