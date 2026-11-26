@@ -172,6 +172,12 @@ export const reportExports = pgTable(
     completedAt: timestamp("completed_at", { withTimezone: true }),
     /** Outlets the generated file covers, after the TEN-03 scope check. */
     outletIds: jsonb("outlet_ids"),
+    /**
+     * Viewer the file was generated under (`full` | `aggregate`). A download
+     * needs at least that viewer now, so a `full` file never reaches a caller
+     * who may only see aggregates (SH-01).
+     */
+    viewer: varchar("viewer", { length: 10 }),
     fileContent: bytea("file_content"),
     fileSizeBytes: integer("file_size_bytes"),
     rowCount: integer("row_count"),
@@ -233,6 +239,10 @@ export const reportExports = pgTable(
     check(
       "report_exports_file_check",
       sql`(${table.status} = 'ready') = (${table.fileContent} IS NOT NULL) AND (${table.fileContent} IS NULL OR (${table.fileSizeBytes} IS NOT NULL AND ${table.rowCount} IS NOT NULL AND ${table.expiresAt} IS NOT NULL))`,
+    ),
+    check(
+      "report_exports_viewer_check",
+      sql`${table.viewer} IS NULL OR ${table.viewer} IN ('full', 'aggregate')`,
     ),
     check(
       "report_exports_error_check",

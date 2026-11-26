@@ -12,8 +12,12 @@ import type { Request, Router } from "express";
 import { outletIdsForQuery, userIdSchema } from "@starter/shared/core";
 import {
   builderQueryPermittedFor,
+  createReportExportEndpoint,
   createSavedReportEndpoint,
+  getReportExportEndpoint,
+  listReportExportsEndpoint,
   listSavedReportsEndpoint,
+  reportExportIdSchema,
   reportByCode,
   reportMetricByCode,
   updateSavedReportEndpoint,
@@ -27,11 +31,21 @@ import { getTenantContext } from "../middleware/tenant";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
 import { reportHttpError } from "../services/report-run.service";
 import {
+  createReportExport,
+  downloadReportExport,
+  gateExport,
+  getReportExport,
+  listReportExports,
+  savedExportQuery,
+  type ExportSource,
+} from "../services/report-exports.service";
+import {
   createSavedReport,
+  getOwnSavedReport,
   listSavedReports,
   updateSavedReport,
 } from "../services/report-saved.service";
-import { resolveReportViewer } from "./report-viewer";
+import { requestAccess, resolveReportViewer } from "./report-viewer";
 
 const BASE = "/api/reports";
 const route = (path: string) => path.slice(BASE.length) || "/";
@@ -105,4 +119,89 @@ export function registerReportDeliveryRoutes(router: Router): void {
       });
     },
   );
+
+  // ---- Exports (DASH-04) ------------------------------------------------------
+
+  router.get(route(listReportExportsEndpoint.path), async (req, res) => {
+    const query = listReportExportsEndpoint.query.parse(req.query);
+    res.json(
+      await listReportExports(getTenantContext(req), callerId(req), query),
+    );
+  });
+
+  router.post(
+    route(createReportExportEndpoint.path),
+    jsonBody,
+    async (req, res) => {
+      // An unknown report code is a 404, not a schema error.
+      const code = (req.body as { reportCode?: unknown } | undefined)
+        ?.reportCode;
+      if (typeof code === "string" && reportByCode(code) === undefined)
+        throw reportHttpError("REPORT_NOT_FOUND");
+      const input = createReportExportEndpoint.body.parse(req.body);
+      let source: ExportSource;
+      if (input.reportCode !== undefined) {
+        const report = reportByCode(input.reportCode);
+        if (report === undefined) throw reportHttpError("REPORT_NOT_FOUND");
+        source = { kind: "report", report };
+      } else {
+        const saved = await getOwnSavedReport(
+          tenantWide(req),
+          callerId(req),
+          input.savedReportId ?? "",
+        );
+        source = {
+          kind: "saved",
+          savedReportId: saved.id,
+          name: saved.name,
+          query: saved.query,
+        };
+        savedExportQuery(saved.query, input.query);
+      }
+      const { gate } = await gateExport(
+        await requestAccess(req),
+        source,
+        input.format,
+        input.query,
+        "none",
+      );
+      const { job } = await createReportExport(
+        getTenantContext(req),
+        callerId(req),
+        {
+          source,
+          format: input.format,
+          query: input.query,
+          ...(input.idempotencyKey === undefined
+            ? {}
+            : { idempotencyKey: input.idempotencyKey }),
+        },
+        gate,
+      );
+      res.status(202).json({ data: job });
+    },
+  );
+
+  // The download path of `reportExportFileSchema`; before "/exports/:id".
+  router.get("/exports/:reportExportId/file", async (req, res) => {
+    const id = reportExportIdSchema.parse(req.params.reportExportId);
+    const file = await downloadReportExport(await requestAccess(req), id);
+    res
+      .status(200)
+      .set("Content-Type", file.contentType)
+      .set("Content-Disposition", `attachment; filename="${file.fileName}"`)
+      .set("X-Content-Type-Options", "nosniff")
+      .send(file.content);
+  });
+
+  router.get(route(getReportExportEndpoint.path), async (req, res) => {
+    const { reportExportId } = getReportExportEndpoint.params.parse(req.params);
+    res.json({
+      data: await getReportExport(
+        getTenantContext(req),
+        callerId(req),
+        reportExportId,
+      ),
+    });
+  });
 }

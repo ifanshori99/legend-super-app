@@ -38,14 +38,15 @@ import { reportHttpError } from "../services/report-run.service";
  * Whose access a read runs under: the request's caller, or (a scheduled or
  * queued export, F12 legend-ay6e6) a user re-resolved from the database.
  */
-type ViewerAccess = {
+export type ViewerAccess = {
   readonly tenant: TenantContext;
   readonly userId: string;
   readonly snapshot: AccessSnapshot;
   readonly data: () => Promise<TenantAccessData>;
 };
 
-function requestAccess(req: Request): Promise<ViewerAccess> {
+/** The request caller's access. */
+export function requestAccess(req: Request): Promise<ViewerAccess> {
   return loadRequestAccess(req).then((snapshot) => {
     const tenant = getTenantContext(req);
     const userId = userIdSchema.parse(getAuth(req).user.id);

@@ -1,5 +1,5 @@
 {
-  "id": "8d7d808f-894e-4a31-8ca1-8de45aff48a6",
+  "id": "d2e7888b-491b-4326-9767-3e9cc534beb5",
   "prevId": "04b03df2-eadb-40b1-8788-7e682fa4e76f",
   "version": "7",
   "dialect": "postgresql",
@@ -93951,6 +93951,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "viewer": {
+          "name": "viewer",
+          "type": "varchar(10)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "file_content": {
           "name": "file_content",
           "type": "bytea",
@@ -94151,6 +94157,10 @@
         "report_exports_file_check": {
           "name": "report_exports_file_check",
           "value": "(\"report_exports\".\"status\" = 'ready') = (\"report_exports\".\"file_content\" IS NOT NULL) AND (\"report_exports\".\"file_content\" IS NULL OR (\"report_exports\".\"file_size_bytes\" IS NOT NULL AND \"report_exports\".\"row_count\" IS NOT NULL AND \"report_exports\".\"expires_at\" IS NOT NULL))"
+        },
+        "report_exports_viewer_check": {
+          "name": "report_exports_viewer_check",
+          "value": "\"report_exports\".\"viewer\" IS NULL OR \"report_exports\".\"viewer\" IN ('full', 'aggregate')"
         },
         "report_exports_error_check": {
           "name": "report_exports_error_check",

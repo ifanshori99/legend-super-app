@@ -72,6 +72,19 @@ export async function ownSavedReportRow(
   return row;
 }
 
+/** The owner's saved report (404 when it is not theirs). */
+export function getOwnSavedReport(
+  context: ScopedTenantContext,
+  ownerUserId: string,
+  savedReportId: string,
+): Promise<SavedReport> {
+  return withTenant(db, context, async (tx) =>
+    toSavedReport(
+      await ownSavedReportRow(tx, context, ownerUserId, savedReportId),
+    ),
+  );
+}
+
 /** The owner's saved query, parsed (404 when it is not theirs). */
 export function ownSavedReportQuery(
   context: ScopedTenantContext,
