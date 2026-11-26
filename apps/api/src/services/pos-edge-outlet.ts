@@ -84,11 +84,7 @@ export function edgeFailoverEnabled(): boolean {
  */
 export type PosWriteTarget = {
   readonly kind:
-    | "order"
-    | "shift"
-    | "receipt"
-    | "kitchen_ticket"
-    | "kitchen_ticket_item";
+    "order" | "shift" | "receipt" | "kitchen_ticket" | "kitchen_ticket_item";
   readonly id: string;
 };
 

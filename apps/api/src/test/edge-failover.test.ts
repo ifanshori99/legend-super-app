@@ -94,11 +94,7 @@ function context() {
 }
 
 function send(person: Person, path: string, body: object) {
-  return person.client
-    .post(path)
-    .set(headers)
-    .set(originHeader)
-    .send(body);
+  return person.client.post(path).set(headers).set(originHeader).send(body);
 }
 
 function read(person: Person, path: string) {
@@ -410,9 +406,9 @@ describe("1271 F3 failover window", () => {
     expect(notified.rows.map((row) => row.user_id)).toContain(ownerUser.userId);
     expect(await audits(cancelledId)).toEqual(["edge.failover.activated"]);
     const events = await queued(cancelledId);
-    expect(events.map((event) => [event.name, event.kind, event.sequence])).toEqual([
-      ["pos_failover_window.state", "master_data", 1],
-    ]);
+    expect(
+      events.map((event) => [event.name, event.kind, event.sequence]),
+    ).toEqual([["pos_failover_window.state", "master_data", 1]]);
   });
 
   it("cancel with no failover order or shift: cancelled, the edge is told, a retry is the same answer", async () => {
@@ -460,7 +456,10 @@ describe("1271 F3 failover window", () => {
     const replay = await send(supervisor, windows, body);
     expect(replay.status).toBe(200);
     expect(replay.body.data).toEqual(opened.body.data);
-    const other = await send(manager, windows, { ...body, idempotencyKey: key() });
+    const other = await send(manager, windows, {
+      ...body,
+      idempotencyKey: key(),
+    });
     expect(other.status).toBe(409);
     expect(other.body.error.code).toBe("FAILOVER_ACTIVE");
   });

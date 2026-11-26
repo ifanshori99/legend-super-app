@@ -33,6 +33,7 @@ import {
   outletIdSchema,
   toIsoDateTime,
   ulidToUuid,
+  userIdSchema,
   uuidToUlid,
   type OutletId,
   type ScopedTenantContext,
@@ -43,6 +44,7 @@ import {
   FAILOVER_RETURN_FRESH_HEARTBEAT_MS,
   FAILOVER_STALE_HEARTBEAT_MS,
   FAILOVER_WINDOW_AGGREGATE,
+  failoverOpenWorkSchema,
   failoverWindowClosedEvent,
   failoverWindowSchema,
   failoverWindowStateEvent,
@@ -433,7 +435,10 @@ async function openWorkOf(
     .from(posOrders)
     .innerJoin(
       orders,
-      and(eq(orders.tenantId, posOrders.tenantId), eq(orders.id, posOrders.orderId)),
+      and(
+        eq(orders.tenantId, posOrders.tenantId),
+        eq(orders.id, posOrders.orderId),
+      ),
     )
     .where(
       and(
@@ -475,11 +480,11 @@ async function openWorkOf(
     )
     .orderBy(asc(posQrisHolds.orderId))
     .limit(MAX_OPEN_WORK);
-  return {
+  return failoverOpenWorkSchema.parse({
     unpaidOrderIds: unpaid.map((row) => row.orderId),
     openShiftIds: shifts.map((row) => row.id),
     qrisHoldOrderIds: holds.map((row) => row.orderId),
-  };
+  });
 }
 
 function hasOpenWork(work: FailoverOpenWork): boolean {
@@ -563,11 +568,13 @@ export async function cancelFailoverWindow(
       .orderBy(asc(posShifts.id))
       .limit(MAX_OPEN_WORK);
     if (orderRows.length > 0 || shiftRows.length > 0)
-      throw new FailoverOpenWorkError({
-        unpaidOrderIds: orderRows.map((row) => row.orderId),
-        openShiftIds: shiftRows.map((row) => row.id),
-        qrisHoldOrderIds: [],
-      });
+      throw new FailoverOpenWorkError(
+        failoverOpenWorkSchema.parse({
+          unpaidOrderIds: orderRows.map((row) => row.orderId),
+          openShiftIds: shiftRows.map((row) => row.id),
+          qrisHoldOrderIds: [],
+        }),
+      );
     const outlet = await loadOutlet(tx, context, current.outletId);
     const closingEventId = failoverEventUlid(windowId, "closed", now);
     const [row] = await tx
@@ -744,7 +751,7 @@ export async function startFailoverReturn(
         ),
         shifts: counts.map((count) => ({
           deviceId: count.deviceId,
-          cashierId: count.cashierId,
+          cashierId: userIdSchema.parse(count.cashierId),
           countedAt: toIsoDateTime(count.countedAt),
           counts: count.counts,
           totalIdr: Number(count.totalIdr),
