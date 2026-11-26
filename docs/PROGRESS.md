@@ -17,6 +17,7 @@
 - 27 Nov sore: `int/rc2` e16ecce95 (push) = + F5 rekap hari failover (review K + re-review LULUS, gate 8 file/142 test). Jalan: F3 perbaikan 2 P2 (docs/qa/1271-f3-review.md), E6 dibangun sesuai docs/briefs/1269-e6-keputusan.md. Bead baru sxj96.1-.3.
 - 27 Nov malam: `int/rc2` f9319868c (push) = + F3 0532 window service (review K + re-review LULUS, gate 10 file). Jalan: E6 (`ws/1269-e6`), E7 selesai -> review K architect (`ws/1269-e7`), F4 mulai (`ws/1271-f4`, dari f9319868c). Bead sxj96.4 (VA release + test void).
 - 27 Nov malam 2: `int/rc2` 5573593cc (push) = + E7 route ECR lokal (review K LULUS, cek CTO, gate 8 file/143 test). Jalan: E6, F4, E9 proksi bayar (`ws/1269-e9`, saklar mati bawaan).
+- 27 Nov malam 3: E9 keputusan CTO (docs/briefs/1269-e9-keputusan.md, QRIS saja lewat proksi cloud, D-09 dihapus, plafon bawaan Rp 2 jt), agent E9 mulai E9a. E6 selesai (ad315afda/de745127c, migrasi sementara 0533), review K architect xhigh jalan. 11 test single-refund-lane-1042 gagal sesudah gabung F3 (POS_WRITE_ON_EDGE): dicek apakah sudah gagal di int/rc2 tanpa E6. F4 jalan.
 - Mockup F6a DISETUJUI CTO (d9fd9e005, docs/qa/1271-f6a-audit.md).
 - Antre: W2 WFC (QRIS saja online, cek lantai per slot), W6, E4/E5/E7/E9/E10/E11, osqou.36/.37, D1->D2->D4/D5, C2b/C4b/W-UI (mockup dulu), kartu P3.
 - Akhir gelombang: suite penuh `node scripts/test-shards.mjs --chunks 8 --lanes 2 --heavy` di rc1, session-usage, hapus worktree tergabung. Jadwal rilis dihitung ulang sesudah kartu failover (sebelumnya 11-17 Des).
