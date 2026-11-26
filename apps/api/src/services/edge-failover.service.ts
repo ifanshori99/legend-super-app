@@ -55,6 +55,7 @@ import {
 } from "@starter/shared/edge";
 import { PosError } from "@starter/shared/pos";
 import { db } from "../db/index.ts";
+import { memberTenantContext } from "../db/member-scope.ts";
 import { outletFailoverSwitchoverCounts } from "../db/schema/edge-failover-switchover.ts";
 import { outletFailoverWindows } from "../db/schema/edge-failover.ts";
 import { edgeNodes } from "../db/schema/edge-node.ts";
@@ -64,6 +65,7 @@ import { posQrisHolds } from "../db/schema/pos-qris-hold.ts";
 import { posShifts } from "../db/schema/pos-shift.ts";
 import { withTenant } from "../db/tenant.ts";
 import { recordAudit } from "./audit-writer.ts";
+import { FailoverOpenWorkError } from "./edge-failover-errors.ts";
 import { enqueueEdgeEvent, type EdgeTx } from "./edge-queue.service.ts";
 import { notifyOutletSupervisors } from "./edge-sync-conflict-alert.ts";
 import type { FailoverWindowRow } from "./edge-failover-window.ts";
@@ -73,14 +75,7 @@ import { assertOutletPermission } from "./pos-shift-support.ts";
 
 export type FailoverCaller = { readonly userId: string };
 
-/** FAILOVER_OPEN_WORK with what still blocks the return or the cancel. */
-export class FailoverOpenWorkError extends PosError {
-  readonly openWork: FailoverOpenWork;
-  constructor(openWork: FailoverOpenWork) {
-    super("FAILOVER_OPEN_WORK");
-    this.openWork = openWork;
-  }
-}
+export { FailoverOpenWorkError };
 
 const MAX_OPEN_WORK = 500;
 const MAX_WINDOW_DATES = 31;
@@ -315,7 +310,7 @@ async function auditAndNotify(
       alsoOwners: transition === "activated" && row.override,
       id: failoverEventUlid(row.id, `notice:${transition}`, at),
       eventName: `edge_failover.${transition}`,
-      aggregateType: FAILOVER_WINDOW_AGGREGATE,
+      aggregateType: "edge_failover",
       aggregateId: row.id,
       payload: { windowId: row.id, status: row.status },
       title: NOTICE[transition].title,
@@ -822,16 +817,16 @@ export async function latestFailoverWindow(
 
 /** The outlet of a window, for the route's permission check (null = none). */
 export async function failoverWindowOutletId(
-  context: ScopedTenantContext,
+  tenantId: TenantId,
   windowId: string,
 ): Promise<string | null> {
-  return withTenant(db, context, async (tx) => {
+  return withTenant(db, memberTenantContext(tenantId), async (tx) => {
     const [row] = await tx
       .select({ outletId: outletFailoverWindows.outletId })
       .from(outletFailoverWindows)
       .where(
         and(
-          eq(outletFailoverWindows.tenantId, context.tenant.tenantId),
+          eq(outletFailoverWindows.tenantId, tenantId),
           eq(outletFailoverWindows.id, windowId),
         ),
       );

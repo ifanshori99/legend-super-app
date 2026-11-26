@@ -141,6 +141,7 @@ import { operationsEquipmentRouter } from "./operations-equipment.routes";
 import { edgeRouter } from "./edge.routes.ts";
 import { edgePrintRouter } from "./edge-print.routes.ts";
 import { edgeNodesRouter } from "./edge-nodes.routes.ts";
+import { edgeFailoverRouter } from "./edge-failover.routes.ts";
 import { edgeReconciliationRouter } from "./edge-reconciliation.routes.ts";
 import { expoRouter } from "./expo.routes.ts";
 import { pickupRouter } from "./pickup.routes.ts";
@@ -517,6 +518,8 @@ apiRouter.use("/edge", edgeRouter);
 // Before the registry's session guards so edge Bearer credentials can POST.
 apiRouter.use("/edge-nodes", edgeReconciliationRouter);
 apiRouter.use("/edge-nodes", edgeNodesRouter);
+// Edge -> cloud failover windows (1271 F3): cloud only.
+apiRouter.use("/edge-failover", edgeFailoverRouter);
 // Staff PIN hash down-sync for edge nodes (legend-obh5): edge credential
 // only, deny-all until server.ts installs the registry verifier.
 apiRouter.use("/edge-sync/staff-pin-records", staffPinSyncRouter);
