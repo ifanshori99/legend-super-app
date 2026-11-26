@@ -86,7 +86,9 @@ export function windowTouchesDate(
 ): boolean {
   businessDateSchema.parse(businessDate);
   if (businessDate < window.businessDateFrom) return false;
-  return window.businessDateTo === null || businessDate <= window.businessDateTo;
+  return (
+    window.businessDateTo === null || businessDate <= window.businessDateTo
+  );
 }
 
 // ---- Request bodies (cloud routes, F3) -------------------------------------

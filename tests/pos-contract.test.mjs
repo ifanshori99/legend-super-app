@@ -1854,7 +1854,10 @@ test("1271 F1: failover window contract", () => {
   assert.equal(edge.windowTouchesDate(window, "2026-11-25"), false);
   assert.equal(edge.windowTouchesDate(window, "2026-11-30"), true);
   assert.equal(
-    edge.windowTouchesDate({ ...window, businessDateTo: "2026-11-27" }, "2026-11-28"),
+    edge.windowTouchesDate(
+      { ...window, businessDateTo: "2026-11-27" },
+      "2026-11-28",
+    ),
     false,
   );
 

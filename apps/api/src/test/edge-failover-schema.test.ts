@@ -120,7 +120,9 @@ async function insertWindow(
       values.key ?? `fo-${hex()}`,
       place.userId,
       ended ? "2026-11-26" : null,
-      status === "returning" || status === "closed" ? "2026-11-26T05:00:00Z" : null,
+      status === "returning" || status === "closed"
+        ? "2026-11-26T05:00:00Z"
+        : null,
       status === "closed" ? "2026-11-26T06:00:00Z" : null,
       status === "cancelled" ? "2026-11-26T04:00:00Z" : null,
     ],
@@ -284,11 +286,15 @@ describe("1271 F1 outlet_failover_windows", () => {
       ).toBe("23514");
       // A window that left active names its last business date.
       expect(
-        await moveTo(place, id, "status = 'returning', return_started_at = now()"),
+        await moveTo(
+          place,
+          id,
+          "status = 'returning', return_started_at = now()",
+        ),
       ).toBe("23514");
-      expect(
-        await moveTo(place, id, "business_date_to = '2026-11-25'"),
-      ).toBe("23514");
+      expect(await moveTo(place, id, "business_date_to = '2026-11-25'")).toBe(
+        "23514",
+      );
     });
   });
 
