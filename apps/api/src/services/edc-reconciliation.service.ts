@@ -186,11 +186,53 @@ function assertChargedAmount(
     const error = new EdcError("EDC_AMOUNT_MISMATCH");
     if (typeof evidence.chargedAmountIdr === "number")
       chargedMismatches.set(error, {
+        kind: "amount",
         edcTransactionId: row.id,
         outletId: row.outletId,
         amountIdr: row.amountIdr,
         chargedAmountIdr: evidence.chargedAmountIdr,
       });
+    throw error;
+  }
+}
+
+/** The slip number as the manual path compares it (no hyphens, upper case). */
+const slipNumber = (value: string) => value.replaceAll("-", "").toUpperCase();
+
+/**
+ * X1 review P2 1: a hand-keyed slip carries only what the cashier typed, so an
+ * amount alone proves nothing. It is matched only to the bank statement line
+ * that names its own reference; another reference is refused, the row stays
+ * "perlu dicek", and the outlet is alerted.
+ */
+function assertManualSlipEvidence(
+  row: EdcRow,
+  evidence: EdcReconciliationEvidence,
+): void {
+  if (evidence.source !== "bank_statement")
+    throw new CoreError(
+      "CONFLICT",
+      "Pembayaran EDC manual hanya dicocokkan dengan laporan bank yang memuat nomor referensinya.",
+    );
+  if (!evidence.rrn)
+    // A missing field of the body: 422 like the schema's own refusals.
+    throw new HttpError(
+      422,
+      "VALIDATION_ERROR",
+      "Nomor referensi (RRN) di laporan bank wajib diisi untuk pembayaran EDC manual.",
+    );
+  if (!row.rrn || slipNumber(evidence.rrn) !== slipNumber(row.rrn)) {
+    const error = new CoreError(
+      "CONFLICT",
+      "Nomor referensi di laporan bank tidak sama dengan slip yang dicatat kasir. Transaksi tetap perlu dicek.",
+    );
+    chargedMismatches.set(error, {
+      kind: "reference",
+      edcTransactionId: row.id,
+      outletId: row.outletId,
+      amountIdr: row.amountIdr,
+      chargedAmountIdr: evidence.chargedAmountIdr ?? null,
+    });
     throw error;
   }
 }
@@ -289,6 +331,7 @@ export async function resolveEdcReconciliation(
       completedAt = now;
     }
   } else if (row.status === "approved") {
+    if (row.mode === "standalone") assertManualSlipEvidence(row, evidence);
     assertChargedAmount(row, evidence);
     // Already booked as a tender (any mode): only the flag is cleared.
     if (!(await hasLiveTender(tx, context, row.id))) {

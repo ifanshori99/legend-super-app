@@ -941,6 +941,96 @@ describe("POS standalone EDC tender (legend-m4fv, EDC-04)", () => {
     });
   });
 
+  // X1 review P2 2 + P3 3: the sweep groups in SQL and skips groups already
+  // alerted, so a backlog of more than 500 old rows never hides a newer one;
+  // the alert key carries the due day, so a later day of the same shift
+  // alerts again.
+  it("X1 over 500 overdue rows of an alerted day never hide the next due day of the shift", async () => {
+    const context = establishScopedTenantContext(
+      establishTenantContext({
+        tenantId: tenantIdSchema.parse(tenant.tenantId),
+        brandId: null,
+        source: "session",
+      }),
+      { kind: "tenant" },
+    );
+    // A clean slate: earlier tests' flagged rows and alerts are not this one's.
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      await client.query(
+        `UPDATE edc_transactions SET needs_reconciliation = false
+         WHERE tenant_id = $1 AND needs_reconciliation`,
+        [tenant.tenantId],
+      );
+      await client.query(
+        `DELETE FROM notification_outbox
+         WHERE tenant_id = $1 AND event_type = 'pos_shift.edc_reconciliation_overdue'`,
+        [tenant.tenantId],
+      );
+    });
+    const template = await newOrder();
+    const paid = await payStandalone(template, {
+      terminalId,
+      bankRef: "X1RRN0000600",
+    });
+    expect(paid.status, JSON.stringify(paid.body)).toBe(201);
+    const tenderId = paid.body.data.tender.id as string;
+    // 600 hand-keyed slips of the same shift, keyed three days ago.
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      await client.query(
+        `CREATE TEMP TABLE x1_clone ON COMMIT DROP AS
+           SELECT t.* FROM pos_order_tenders t CROSS JOIN generate_series(1, 600)
+           WHERE t.id = $1`,
+        [tenderId],
+      );
+      await client.query(
+        `UPDATE x1_clone SET id = gen_random_uuid(), edc_transaction_id = gen_random_uuid()`,
+      );
+      await client.query(
+        `INSERT INTO edc_transactions
+           (id, tenant_id, outlet_id, terminal_id, bank, reference, idempotency_key,
+            request_fingerprint, amount_idr, method, status, type, mode, trace,
+            needs_reconciliation, completed_at, created_at, updated_at)
+         SELECT edc_transaction_id, tenant_id, outlet_id, $1, 'bca',
+                'X1C-' || left(edc_transaction_id::text, 8) || right(edc_transaction_id::text, 8),
+                'x1-clone:' || edc_transaction_id, 'fp', amount_idr, 'card', 'approved',
+                'sale', 'standalone', upper(left(md5(edc_transaction_id::text), 12)), true,
+                now() - interval '72 hours', now() - interval '72 hours',
+                now() - interval '72 hours'
+         FROM x1_clone`,
+        [terminalId],
+      );
+      await client.query(
+        `INSERT INTO pos_order_tenders SELECT * FROM x1_clone`,
+      );
+      // The template slip itself is the next day's: keyed 30 hours ago.
+      await client.query(
+        `UPDATE edc_transactions SET created_at = now() - interval '30 hours'
+         WHERE id = (SELECT edc_transaction_id FROM pos_order_tenders WHERE id = $1)`,
+        [tenderId],
+      );
+    });
+    const alerts = async () =>
+      (
+        await owner.query<{ payload: Record<string, string> }>(
+          `SELECT payload FROM notification_outbox
+           WHERE tenant_id = $1 AND event_type = 'pos_shift.edc_reconciliation_overdue'
+           ORDER BY payload->>'count' DESC`,
+          [tenant.tenantId],
+        )
+      ).rows;
+    for (let run = 0; run < 2; run += 1)
+      await runEdcReconciliationOverdueJob(context, new Date(), {
+        force: true,
+      });
+    const sent = await alerts();
+    expect(sent.map((alert) => alert.payload.count).sort()).toEqual([
+      "1",
+      "600",
+    ]);
+    expect(new Set(sent.map((alert) => alert.payload.shiftId)).size).toBe(1);
+    expect(new Set(sent.map((alert) => alert.payload.dueDate)).size).toBe(2);
+  });
+
   it("the override must name this bill, this action and exactly the remaining amount", async () => {
     const order = await newOrder();
     const refused = async (overrideId: string) => {

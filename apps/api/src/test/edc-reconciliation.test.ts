@@ -1237,6 +1237,7 @@ describe("EDC-03 resolving an unknown request as approved books the payment exac
       amountIdr: order.totalIdr,
       status: "approved",
       mode: "standalone",
+      rrn: "SLIPX10001",
     });
     const alerts = async () =>
       (
@@ -1249,7 +1250,14 @@ describe("EDC-03 resolving an unknown request as approved books the payment exac
       ).rows;
     const counts: number[] = [];
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      const res = await resolve(ownerUser, id, approved(order.totalIdr - 500));
+      const res = await resolve(
+        ownerUser,
+        id,
+        approved(order.totalIdr - 500, {
+          source: "bank_statement",
+          rrn: "SLIPX10001",
+        }),
+      );
       expect(res.status, JSON.stringify(res.body)).toBe(409);
       expectAmountMismatch(res);
       counts.push((await alerts()).length);
@@ -1265,9 +1273,93 @@ describe("EDC-03 resolving an unknown request as approved books the payment exac
     const sent = await alerts();
     expect(sent[0]?.payload).toMatchObject({
       edcTransactionId: id,
+      kind: "amount",
       amountIdr: String(order.totalIdr),
       chargedAmountIdr: String(order.totalIdr - 500),
     });
+  });
+
+  // X1 review P2 1: a hand-keyed slip is matched only against the bank
+  // statement line that carries its own reference, never by amount alone.
+  it("X1 a manual slip is cleared only by a bank statement naming its own RRN; another RRN stays flagged and alerts", async () => {
+    const order = await newOrder();
+    const id = await ledgerSale({
+      reference: order.number,
+      amountIdr: order.totalIdr,
+      status: "approved",
+      flagged: false,
+    });
+    expect((await payEdc(order, id)).status).toBe(201);
+    // As the manual path leaves it: hand-keyed, flagged, slip reference stored.
+    await asOwnerTenant((client) =>
+      client.query(
+        `UPDATE edc_transactions
+           SET mode = 'standalone', needs_reconciliation = true, rrn = 'SLIP-X1-0002'
+         WHERE id = $1`,
+        [id],
+      ),
+    );
+    const flagged = async () =>
+      expect(await row(id)).toMatchObject({
+        status: "approved",
+        needs_reconciliation: true,
+      });
+    const referenceAlerts = async () =>
+      (
+        await owner.query<{ payload: Record<string, unknown> }>(
+          `SELECT payload FROM notification_outbox
+           WHERE tenant_id = $1 AND event_type = 'edc_transaction.reconciliation_mismatch'
+             AND payload->>'edcTransactionId' = $2 AND payload->>'kind' = 'reference'`,
+          [tenant.tenantId, id],
+        )
+      ).rows;
+    // Amount alone (terminal inquiry or receipt) is not proof for a manual slip.
+    for (const source of ["inquiry", "terminal_receipt"] as const) {
+      const res = await resolve(
+        ownerUser,
+        id,
+        approved(order.totalIdr, { source, rrn: "SLIPX10002" }),
+      );
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      await flagged();
+    }
+    const noRef = await resolve(
+      ownerUser,
+      id,
+      approved(order.totalIdr, { source: "bank_statement" }),
+    );
+    expect(noRef.status, JSON.stringify(noRef.body)).toBe(422);
+    await flagged();
+    expect(await referenceAlerts()).toHaveLength(0);
+    // A bank line with another reference: refused, stays "perlu dicek", alerts.
+    const other = await resolve(
+      ownerUser,
+      id,
+      approved(order.totalIdr, { source: "bank_statement", rrn: "SLIPX19999" }),
+    );
+    expect(other.status, JSON.stringify(other.body)).toBe(409);
+    await flagged();
+    expect(await auditRows(id)).toHaveLength(0);
+    const sent = await referenceAlerts();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.payload).toMatchObject({
+      edcTransactionId: id,
+      kind: "reference",
+      amountIdr: String(order.totalIdr),
+    });
+    // Its own reference (typed without hyphens, any case) clears it once.
+    const own = await resolve(
+      ownerUser,
+      id,
+      approved(order.totalIdr, { source: "bank_statement", rrn: "slipx10002" }),
+    );
+    expect(own.status, JSON.stringify(own.body)).toBe(200);
+    expect(own.body.data).toMatchObject({
+      status: "approved",
+      needsReconciliation: false,
+    });
+    expect(await tendersOfRow(id)).toBe(1);
+    expect(await auditRows(id)).toHaveLength(1);
   });
 
   it("a declined answer does not need (and ignores) the charged amount", async () => {
