@@ -1,7 +1,9 @@
 -- 1269 E3 (legend-8yqik, legend-k0i8): the ledger of edge shifts and business
 -- days mirrored by the cloud, and the late-adjustment dates of an edge sale or
 -- void whose own business day was already closed. New table and nullable
--- columns only: no existing row changes.
+-- columns only: no existing row changes. Foreign keys of the new table are
+-- inline in CREATE TABLE (contracts.md legend-m007 pattern 1: no validation
+-- scan, so a plain-owner migrator passes FORCE RLS on tenants and outlets).
 CREATE TABLE "edge_pos_ingests" (
 	"tenant_id" uuid NOT NULL,
 	"kind" varchar(10) NOT NULL,
@@ -16,6 +18,8 @@ CREATE TABLE "edge_pos_ingests" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "edge_pos_ingests_tenant_id_kind_aggregate_id_pk" PRIMARY KEY("tenant_id","kind","aggregate_id"),
+	CONSTRAINT "edge_pos_ingests_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "edge_pos_ingests_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action,
 	CONSTRAINT "edge_pos_ingests_kind_check" CHECK ("edge_pos_ingests"."kind" IN ('shift', 'day', 'movement')),
 	CONSTRAINT "edge_pos_ingests_state_check" CHECK ("edge_pos_ingests"."state" IN ('pending', 'ingested', 'refused')),
 	CONSTRAINT "edge_pos_ingests_late_check" CHECK ("edge_pos_ingests"."late_business_date" IS NULL OR "edge_pos_ingests"."late_business_date" > "edge_pos_ingests"."business_date")
@@ -24,8 +28,6 @@ CREATE TABLE "edge_pos_ingests" (
 ALTER TABLE "edge_order_ingests" ADD COLUMN "original_business_date" date;--> statement-breakpoint
 ALTER TABLE "edge_order_ingests" ADD COLUMN "late_business_date" date;--> statement-breakpoint
 ALTER TABLE "edge_order_ingests" ADD COLUMN "late_void_business_date" date;--> statement-breakpoint
-ALTER TABLE "edge_pos_ingests" ADD CONSTRAINT "edge_pos_ingests_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "edge_pos_ingests" ADD CONSTRAINT "edge_pos_ingests_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "edge_pos_ingests_state_idx" ON "edge_pos_ingests" USING btree ("tenant_id","state","updated_at");--> statement-breakpoint
 ALTER TABLE "edge_order_ingests" ADD CONSTRAINT "edge_order_ingests_late_check" CHECK (("edge_order_ingests"."late_business_date" IS NULL) = ("edge_order_ingests"."original_business_date" IS NULL)
         AND ("edge_order_ingests"."late_business_date" IS NULL OR "edge_order_ingests"."late_business_date" > "edge_order_ingests"."original_business_date")) NOT VALID;--> statement-breakpoint
