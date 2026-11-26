@@ -55,6 +55,12 @@ import { setDeviceOutletResolver } from "../services/device-pin.service.ts";
 import { submitPosOfflineBatch } from "../services/pos-offline-batch.service.ts";
 import { issuePosOfflineKit } from "../services/pos-offline-kit.service.ts";
 import { refundPosOrder } from "../services/pos-order-corrections.ts";
+import {
+  receiptGapsForDevice,
+  receiptGapsForOutlet,
+  receiptGapsForOutletFast,
+} from "../services/pos-receipt.service.ts";
+import { shiftCapturedTenders } from "../services/pos-shift-print.ts";
 import { openPosShift } from "../services/pos-shift.service.ts";
 import { liveExpectedCashIdr } from "../services/pos-shift-support.ts";
 import { deliverRecipeDeductionEvent } from "../services/recipe-deduction.service.ts";
@@ -497,7 +503,7 @@ describe("O2 ingest", () => {
     expect(await expectedCash(a.shiftId)).toBe(before + menu.priceIdr * 2);
   });
 
-  it("refuses a second sale under a number the cloud already holds (number_taken)", async () => {
+  it("review O2 P3 1: holds a second sale under a number the cloud already holds (number_taken)", async () => {
     const kit = await kitFor(a);
     const menu = menuOf(kit);
     const n = kit.receiptRun.lastNumber + 1;
@@ -506,17 +512,28 @@ describe("O2 ingest", () => {
     const result = await submit(a, [twin]);
     expect(result.results[0]).toMatchObject({
       eventId: twin.eventId,
-      status: "rejected",
+      status: "held",
       reason: "number_taken",
       receiptNumber: null,
     });
+    expect(result.runs).toEqual([
+      { sequenceId: kit.receiptRun.sequenceId, lastNumber: n },
+    ]);
     expect(await ordersOf(twin.eventId)).toBe(0);
-    expect(
-      await countOf(
-        "SELECT count(*) AS n FROM pos_offline_sales WHERE tenant_id = $1 AND event_id = $2",
-        [seededTenantId, ulidToUuid(twin.eventId)],
-      ),
-    ).toBe(0);
+    // Stored for finance (the money was taken), so the tablet stops resending.
+    const { rows } = await owner.query(
+      "SELECT state, reason FROM pos_offline_sales WHERE tenant_id = $1 AND event_id = $2",
+      [seededTenantId, ulidToUuid(twin.eventId)],
+    );
+    expect(rows).toEqual([{ state: "held", reason: "number_taken" }]);
+    expect((await submit(a, [twin])).results[0]).toMatchObject({
+      status: "duplicate",
+      reason: "number_taken",
+      receiptNumber: null,
+    });
+    expect((await submit(a, [sale(kit, menu, n + 1)])).results[0]!.status).toBe(
+      "ingested",
+    );
   });
 
   it("refuses a gap in the run, stores nothing, then takes the run once the gap is filled", async () => {
@@ -768,5 +785,168 @@ describe("O2 ingest", () => {
       else process.env.EDGE_MODE = previous;
     }
     expect(await ordersOf(event.eventId)).toBe(0);
+  });
+});
+
+describe("Review O2 fixes", () => {
+  let c: Till;
+  beforeAll(async () => {
+    await outletSupervisor(app, "Offline Review Supervisor");
+    c = await newTill(app);
+  });
+
+  const alertsWith = (text: string) =>
+    countOf(
+      "SELECT count(*) AS n FROM notifications WHERE tenant_id = $1 AND body LIKE $2",
+      [seededTenantId, `%${text}%`],
+    );
+
+  it("P1: ingests a rounding the snapshot never allows with amount_mismatch, and alerts", async () => {
+    const kit = await kitFor(c);
+    const menu = menuOf(kit);
+    const quantity = Math.ceil(60_000 / menu.priceIdr);
+    const base = sale(kit, menu, kit.receiptRun.lastNumber + 1, { quantity });
+    const totalIdr = Number(base.subtotalIdr) - 50_000;
+    const event = offlineSaleEventSchema.parse({
+      ...base,
+      roundingIdr: -50_000,
+      totalIdr,
+      tenders: [
+        { method: "cash", amountIdr: totalIdr, receivedIdr: totalIdr },
+      ],
+    });
+    const result = await submit(c, [event]);
+    expect(result.results[0]).toMatchObject({
+      status: "ingested",
+      flags: ["amount_mismatch"],
+    });
+    expect(await alertsWith(result.results[0]!.receiptNumber!)).toBeGreaterThan(
+      0,
+    );
+  });
+
+  it("P1: flags a service charge or tax the snapshot does not compute", async () => {
+    const kit = await kitFor(c);
+    const menu = menuOf(kit);
+    const base = sale(kit, menu, kit.receiptRun.lastNumber + 1);
+    const totalIdr = Number(base.subtotalIdr) + 3_000;
+    const event = offlineSaleEventSchema.parse({
+      ...base,
+      serviceChargeIdr: 3_000,
+      totalIdr,
+      tenders: [
+        { method: "cash", amountIdr: totalIdr, receivedIdr: totalIdr },
+      ],
+    });
+    expect((await submit(c, [event])).results[0]).toMatchObject({
+      status: "ingested",
+      flags: ["amount_mismatch"],
+    });
+  });
+
+  it("P2 1: a held sale's number counts as present in every gap check (Tutup Hari)", async () => {
+    const kit = await kitFor(c);
+    const menu = menuOf(kit);
+    const n = kit.receiptRun.lastNumber + 1;
+    const held = sale(kit, menu, n, { tenderIdr: menu.priceIdr - 1000 });
+    expect((await submit(c, [held])).results[0]!.status).toBe("held");
+    const run = kit.receiptRun.sequenceId;
+    await withTenant(db, scope, async (tx) => {
+      for (const gaps of [
+        await receiptGapsForOutlet(tx, scope, outletId),
+        await receiptGapsForOutletFast(tx, scope, outletId),
+      ])
+        expect(gaps.filter((gap) => gap.sequenceId === run)).toEqual([]);
+      const device = await receiptGapsForDevice(tx, scope, {
+        outletId,
+        deviceId: c.deviceId,
+      });
+      expect(
+        device.filter(
+          (gap) =>
+            gap.prefix === kit.receiptRun.prefix && gap.missing.length > 0,
+        ),
+      ).toEqual([]);
+    });
+  });
+
+  it("P2 2 + P3 4: a sale after the shift closed names shift, L number and amount; the closed shift's report leaves it out", async () => {
+    const till = await newTill(app);
+    const kit = await kitFor(till);
+    const menu = menuOf(kit);
+    await closeShiftExactly({
+      scope,
+      cashierId: till.cashier.userId,
+      deviceId: till.deviceId,
+      shiftId: till.shiftId,
+      supervisorId: await outletSupervisor(app, "Offline Review Close"),
+      drawerIdr: 500_000,
+    });
+    const event = sale(kit, menu, kit.receiptRun.lastNumber + 1);
+    const result = await submit(till, [event]);
+    expect(result.results[0]).toMatchObject({
+      status: "ingested",
+      flags: ["shift_closed"],
+    });
+    const receiptNumber = result.results[0]!.receiptNumber!;
+    const { rows } = await owner.query<{ body: string }>(
+      "SELECT body FROM notifications WHERE tenant_id = $1 AND body LIKE $2",
+      [seededTenantId, `%${receiptNumber}%`],
+    );
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows[0]!.body).toContain("shift");
+    expect(rows[0]!.body).toContain(
+      new Intl.NumberFormat("id-ID").format(menu.priceIdr),
+    );
+    // P3 4: the closed drawer's report keeps its own sales only.
+    const captured = await withTenant(db, scope, async (tx) => {
+      const [shift] = await tx
+        .select()
+        .from(posShifts)
+        .where(
+          and(
+            eq(posShifts.tenantId, scope.tenant.tenantId),
+            eq(posShifts.id, till.shiftId),
+          ),
+        );
+      return shiftCapturedTenders(tx, shift!);
+    });
+    expect(captured).toEqual([]);
+  });
+
+  it("P3 2: flags a paidAt in the future and books it on today's business date", async () => {
+    const kit = await kitFor(c);
+    const menu = menuOf(kit);
+    const n = kit.receiptRun.lastNumber + 1;
+    const today = sale(kit, menu, n);
+    const future = offlineSaleEventSchema.parse({
+      ...sale(kit, menu, n + 1),
+      paidAt: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
+    });
+    const result = await submit(c, [today, future]);
+    expect(result.results[0]!.flags).toEqual([]);
+    expect(result.results[1]).toMatchObject({ status: "ingested" });
+    expect(result.results[1]!.flags).toContain("paid_in_future");
+    const { rows } = await owner.query<{ id: string; business_date: string }>(
+      "SELECT id, business_date::text FROM orders WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+      [seededTenantId, [ulidToUuid(today.eventId), ulidToUuid(future.eventId)]],
+    );
+    expect(new Set(rows.map((row) => row.business_date)).size).toBe(1);
+  });
+
+  it("P3 3: the same event id under another kit is a conflict (409), nothing stored", async () => {
+    const kit = await kitFor(c);
+    const menu = menuOf(kit);
+    const event = sale(kit, menu, kit.receiptRun.lastNumber + 1);
+    expect((await submit(c, [event])).results[0]!.status).toBe("ingested");
+    const other = await kitFor(b);
+    const twin = sale(other, menuOf(other), other.receiptRun.lastNumber + 1, {
+      eventId: event.eventId,
+    });
+    await expect(submit(b, [twin])).rejects.toMatchObject({
+      code: "CONFLICT",
+    });
+    const next = await kitFor(b);
+    expect(next.receiptRun.lastNumber).toBe(other.receiptRun.lastNumber);
   });
 });
