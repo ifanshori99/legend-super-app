@@ -58,6 +58,7 @@ import {
 } from "../middleware/acting-staff.ts";
 import { requireAuthAllowSharedDevice } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
+import { requirePosWriteOnCloud } from "../middleware/pos-on-cloud.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
   getAccessSnapshot,
@@ -255,20 +256,26 @@ posOrderRouter.get("/orders", view, async (req, res) => {
   );
 });
 
-posOrderRouter.post("/orders", sellOrCaptain, jsonBody, async (req, res) => {
-  const { outletId } = createPosOrder.params.parse(req.params);
-  const body = createPosOrder.body.parse(req.body);
-  const order = await pos.createPosOrder(
-    getScopedTenantContext(req),
-    await caller(req),
-    outletId,
-    body,
-  );
-  res.location(
-    `/api/outlets/${encodeURIComponent(outletId)}/pos/orders/${encodeURIComponent(order.id)}`,
-  );
-  await sendOrder(req, res, outletId, order.id, order, 201);
-});
+posOrderRouter.post(
+  "/orders",
+  sellOrCaptain,
+  requirePosWriteOnCloud,
+  jsonBody,
+  async (req, res) => {
+    const { outletId } = createPosOrder.params.parse(req.params);
+    const body = createPosOrder.body.parse(req.body);
+    const order = await pos.createPosOrder(
+      getScopedTenantContext(req),
+      await caller(req),
+      outletId,
+      body,
+    );
+    res.location(
+      `/api/outlets/${encodeURIComponent(outletId)}/pos/orders/${encodeURIComponent(order.id)}`,
+    );
+    await sendOrder(req, res, outletId, order.id, order, 201);
+  },
+);
 
 posOrderRouter.get("/orders/:orderId", view, async (req, res) => {
   const { outletId, orderId } = getPosOrder.params.parse(req.params);
@@ -283,6 +290,7 @@ posOrderRouter.get("/orders/:orderId", view, async (req, res) => {
 posOrderRouter.post(
   "/orders/:orderId/submit",
   sellOrCaptain,
+  requirePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId } = submitPosOrder.params.parse(req.params);
@@ -301,6 +309,7 @@ posOrderRouter.post(
 posOrderRouter.post(
   "/orders/:orderId/fire",
   sellOrCaptain,
+  requirePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId } = firePosOrderItems.params.parse(req.params);
@@ -319,6 +328,7 @@ posOrderRouter.post(
 posOrderRouter.post(
   "/orders/:orderId/complete",
   sell,
+  requirePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId } = completePosOrder.params.parse(req.params);
@@ -355,6 +365,7 @@ posOrderRouter.post(
 posOrderRouter.post(
   "/orders/:orderId/items/:itemId/void",
   voids,
+  requirePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId, itemId } = voidPosOrderItem.params.parse(
@@ -404,6 +415,7 @@ posOrderRouter.get("/orders/:orderId/actions", view, async (req, res) => {
 posOrderRouter.post(
   "/orders/:orderId/tenders",
   pay,
+  requirePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId } = addPosTender.params.parse(req.params);
@@ -556,6 +568,7 @@ posOrderRouter.post(
 posOrderRouter.post(
   "/orders/:orderId/discounts",
   discount,
+  requirePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId } = applyPosDiscount.params.parse(req.params);
@@ -574,6 +587,7 @@ posOrderRouter.post(
 posOrderRouter.delete(
   "/orders/:orderId/discounts/:discountId",
   discount,
+  requirePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId, discountId } = removePosDiscount.params.parse(

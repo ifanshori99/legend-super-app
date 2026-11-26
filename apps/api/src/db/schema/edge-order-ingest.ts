@@ -17,7 +17,12 @@ import {
   timestamp,
   varchar,
 } from "drizzle-orm/pg-core";
-import { outletIdColumn, tenantIdColumn, ulidInUuid } from "../columns.ts";
+import {
+  businessDate,
+  outletIdColumn,
+  tenantIdColumn,
+  ulidInUuid,
+} from "../columns.ts";
 import { outlets, tenants } from "./platform-org.ts";
 
 export type EdgeOrderIngestState =
@@ -47,6 +52,15 @@ export const edgeOrderIngests = pgTable(
     taxFlag: varchar("tax_flag", {
       length: 20,
     }).$type<EdgeOrderIngestTaxFlag>(),
+    /** legend-k0i8: business date of a late sale as the edge recorded it. */
+    originalBusinessDate: businessDate("original_business_date"),
+    /**
+     * legend-k0i8: the open business date a late sale was posted to, because
+     * its own day was already closed in the cloud. NULL when not late.
+     */
+    lateBusinessDate: businessDate("late_business_date"),
+    /** legend-k0i8: the same for the void of the sale. */
+    lateVoidBusinessDate: businessDate("late_void_business_date"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -63,6 +77,11 @@ export const edgeOrderIngests = pgTable(
     check(
       "edge_order_ingests_tax_flag_check",
       sql`${table.taxFlag} IS NULL OR ${table.taxFlag} IN ('tax_missing', 'tax_mismatch')`,
+    ),
+    check(
+      "edge_order_ingests_late_check",
+      sql`(${table.lateBusinessDate} IS NULL) = (${table.originalBusinessDate} IS NULL)
+        AND (${table.lateBusinessDate} IS NULL OR ${table.lateBusinessDate} > ${table.originalBusinessDate})`,
     ),
     index("edge_order_ingests_outlet_idx").on(
       table.tenantId,

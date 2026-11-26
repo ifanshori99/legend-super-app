@@ -85,6 +85,7 @@ import {
   type WifiQuotaWorkerHandle,
 } from "./wifi-quota-queue-worker.ts";
 import { registerOrderEdgeApplier } from "./order-edge-applier.ts";
+import { registerShiftDayEdgeApplier } from "./shift-day-applier.ts";
 import { registerReceiptRunEdgeApplier } from "./receipt-run-applier.ts";
 import {
   registerEdgeLinkDeadLetterApplier,
@@ -1684,6 +1685,8 @@ export async function registerEdgeLink(
   registerPosDeferredEdgeApplier();
   // legend-pd9t: order.paid cost snapshot from the order's edge stock rows.
   registerOrderEdgeApplier();
+  // 1269 E3: edge shifts, cash movements and Tutup Hari mirrored in the cloud.
+  registerShiftDayEdgeApplier();
   // legend-zy43: receipt_run.reported merged with mergeDeviceReceiptRun. Its
   // aggregate is excluded from posDeferredAggregates (one handler per event).
   registerReceiptRunEdgeApplier();

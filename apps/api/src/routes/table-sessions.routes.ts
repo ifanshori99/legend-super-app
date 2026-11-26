@@ -38,6 +38,10 @@ import {
   moveTableSessionOperation,
 } from "../services/table-session-operations.service";
 import { openWalkInSession } from "../services/staff-open-session.service";
+import {
+  assertOutletNotOnEdge,
+  assertTableSessionNotOnEdge,
+} from "../services/pos-edge-outlet";
 import { resolveFloorContext, resolveOutletContext } from "./floor-access";
 
 const sessionParams = z.strictObject({ sessionId: tableSessionIdSchema });
@@ -59,6 +63,8 @@ tableSessionsRouter.post(
   async (req, res) => {
     const { sessionId } = sessionParams.parse(req.params);
     const { context } = await resolveFloorContext(req, "floor.table.operate");
+    // 1269 E3: after the permission check, so only staff learn the outlet.
+    await assertTableSessionNotOnEdge(context, sessionId);
     res.json({
       data: await confirmOpenBillSession(context, sessionId, actorOf(req)),
     });
@@ -71,8 +77,10 @@ tableSessionsRouter.post(
   jsonBody,
   async (req, res) => {
     const { sessionId } = sessionParams.parse(req.params);
-    const input = closeTableSessionInputSchema.parse(req.body);
     const { context } = await resolveFloorContext(req, "floor.table.operate");
+    // 1269 E3: after the permission check, so only staff learn the outlet.
+    await assertTableSessionNotOnEdge(context, sessionId);
+    const input = closeTableSessionInputSchema.parse(req.body);
     res.json({
       data: await closeTableSession(context, sessionId, input, actorOf(req)),
     });
@@ -87,8 +95,10 @@ tableSessionsRouter.post(
   jsonBody,
   async (req, res) => {
     const { sessionId } = sessionParams.parse(req.params);
-    const input = moveTableSessionInputSchema.parse(req.body);
     const { context } = await resolveFloorContext(req, "floor.table.operate");
+    // 1269 E3: after the permission check, so only staff learn the outlet.
+    await assertTableSessionNotOnEdge(context, sessionId);
+    const input = moveTableSessionInputSchema.parse(req.body);
     res.json({
       data: await moveTableSessionOperation(
         context,
@@ -106,8 +116,10 @@ tableSessionsRouter.post(
   jsonBody,
   async (req, res) => {
     const { sessionId } = sessionParams.parse(req.params);
-    const input = mergeTableSessionsInputSchema.parse(req.body);
     const { context } = await resolveFloorContext(req, "floor.table.operate");
+    // 1269 E3: after the permission check, so only staff learn the outlet.
+    await assertTableSessionNotOnEdge(context, sessionId);
+    const input = mergeTableSessionsInputSchema.parse(req.body);
     res.json({
       data: await mergeTableSessionsOperation(
         context,
@@ -125,8 +137,10 @@ tableSessionsRouter.post(
   jsonBody,
   async (req, res) => {
     const { sessionId } = sessionParams.parse(req.params);
-    const input = moveSessionItemsInputSchema.parse(req.body);
     const { context } = await resolveFloorContext(req, "floor.table.operate");
+    // 1269 E3: after the permission check, so only staff learn the outlet.
+    await assertTableSessionNotOnEdge(context, sessionId);
+    const input = moveSessionItemsInputSchema.parse(req.body);
     res.json({
       data: await moveSessionItemsOperation(
         context,
@@ -153,12 +167,14 @@ staffSessionRouter.post(
     const { outletId, tableId } = z
       .strictObject({ outletId: outletIdSchema, tableId: tableIdSchema })
       .parse(req.params);
-    const input = openStaffSessionInputSchema.parse(req.body);
     const context = await resolveOutletContext(
       req,
       "floor.table.operate",
       outletId,
     );
+    // 1269 E3: after the permission check, so only staff learn the outlet.
+    await assertOutletNotOnEdge(context, outletId);
+    const input = openStaffSessionInputSchema.parse(req.body);
     res.json({
       data: await openWalkInSession(
         context,

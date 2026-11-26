@@ -69,6 +69,8 @@ export const posErrorHttpStatus = {
   BUSINESS_DAY_ALREADY_CLOSED: 409,
   /** legend-k0i8: the outlet closes its business day on its edge, not in the cloud. */
   DAY_CLOSE_ON_EDGE: 409,
+  /** 1269 E3: the outlet sells and runs its drawers on its edge, not in the cloud. */
+  POS_WRITE_ON_EDGE: 409,
   /** legend-yhia9: a QRIS can still be paid; the bill's money is frozen. */
   QRIS_HOLD_ACTIVE: 409,
   /** legend-yhia9 D-09: an edge without gateway credentials cannot issue QRIS. */
@@ -127,6 +129,8 @@ const defaultMessages: Record<PosErrorCode, string> = {
   BUSINESS_DAY_ALREADY_CLOSED: "Hari kerja ini sudah ditutup.",
   DAY_CLOSE_ON_EDGE:
     "Outlet ini menutup hari lewat server lokal. Lakukan Tutup Hari di server lokal outlet.",
+  POS_WRITE_ON_EDGE:
+    "Kasir outlet ini berjalan lewat server lokal. Lakukan transaksi di server lokal outlet.",
   QRIS_HOLD_ACTIVE:
     "Pembayaran QR sedang dikonfirmasi penyedia. Tunggu konfirmasi sebelum menerima pembayaran lain.",
   QRIS_NEEDS_CLOUD:

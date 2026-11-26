@@ -191,17 +191,24 @@ async function freshOutlet(): Promise<string> {
   return outletId;
 }
 
+/**
+ * A draft sale to number. Created as the edge would (1269 E3: the cloud
+ * refuses a sale on an outlet an active edge serves, POS_WRITE_ON_EDGE); the
+ * numbering under test is still allocated by the cloud or the edge as stated.
+ */
 async function draftOrder(outletId: string): Promise<string> {
-  const created = await cashier.client
-    .post(`/api/outlets/${encodeURIComponent(outletId)}/pos/orders`)
-    .set(headers)
-    .set(originHeader)
-    .send({
-      idempotencyKey: randomUUID(),
-      channel: "pos",
-      serviceType: "takeaway",
-      items: [{ menuItemId: ids.kopi, quantity: 1, modifierIds: [] }],
-    });
+  const created = await inEdgeMode(() =>
+    cashier.client
+      .post(`/api/outlets/${encodeURIComponent(outletId)}/pos/orders`)
+      .set(headers)
+      .set(originHeader)
+      .send({
+        idempotencyKey: randomUUID(),
+        channel: "pos",
+        serviceType: "takeaway",
+        items: [{ menuItemId: ids.kopi, quantity: 1, modifierIds: [] }],
+      }),
+  );
   expect(created.status, JSON.stringify(created.body)).toBe(201);
   return created.body.data.id as string;
 }

@@ -40,6 +40,10 @@ import {
   TRANSIENT_REFUSAL_REASONS,
 } from "../edge/order-ingest.ts";
 import type { EdgeApplyMeta } from "../edge/ports.ts";
+import {
+  pendingEdgePosIngests,
+  redriveEdgePosIngest,
+} from "../edge/shift-day-applier.ts";
 import { sourceIdToDb } from "../services/inventory.service.ts";
 
 type Database = NodePgDatabase<typeof schema>;
@@ -329,6 +333,43 @@ async function redriveVoided(
   return result;
 }
 
+/** Waiting edge shifts and Tutup Hari (1269 E3) per run, oldest first. */
+export const EDGE_POS_REDRIVE_BATCH = 50;
+
+/** 1269 E3: one more try of each waiting edge shift and Tutup Hari. */
+async function redrivePosIngests(
+  database: Database,
+  context: ScopedTenantContext,
+  lockTimeoutMs: number,
+  log: Pick<Console, "error">,
+): Promise<EdgeOrderRedriveResult> {
+  const tenantId = context.tenant.tenantId;
+  const result = emptyResult();
+  const rows = await withTenant(database, context, (tx) =>
+    pendingEdgePosIngests(tx, context, {
+      before: new Date(),
+      limit: EDGE_POS_REDRIVE_BATCH,
+    }),
+  );
+  for (const row of rows) {
+    result.attempted += 1;
+    try {
+      const done = await inOrderTx(database, context, lockTimeoutMs, (tx) =>
+        redriveEdgePosIngest(tx, context, row),
+      );
+      if (done) result.recovered += 1;
+    } catch (error) {
+      result.failed += 1;
+      log.error(
+        `Edge POS redrive failed for a ${row.kind} of tenant ${tenantId}: ${
+          error instanceof Error ? error.message : "unknown error"
+        }`,
+      );
+    }
+  }
+  return result;
+}
+
 /** Redrives the transient-refused edge orders and voids of one tenant. */
 export async function redriveEdgeOrderRefusalsForTenant(
   context: ScopedTenantContext,
@@ -342,6 +383,8 @@ export async function redriveEdgeOrderRefusalsForTenant(
   const total = emptyResult();
   addTo(total, await redrivePaid(database, context, lockTimeoutMs, log));
   addTo(total, await redriveVoided(database, context, lockTimeoutMs, log));
+  // After the orders: a waiting Tutup Hari compares against them.
+  addTo(total, await redrivePosIngests(database, context, lockTimeoutMs, log));
   return total;
 }
 

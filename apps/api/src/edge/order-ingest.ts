@@ -23,6 +23,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { hasParkedEdgeRefund } from "../services/payment-refund-edge-history.ts";
 import {
+  businessDateOf,
   createUlid,
   idr,
   toIsoDateTime,
@@ -54,6 +55,7 @@ import {
   posOrders,
 } from "../db/schema/pos-order.ts";
 import { orderIssues } from "../db/schema/kds-issues.ts";
+import { outlets } from "../db/schema/platform-org.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { logger } from "../lib/logger.ts";
 import type { EdgeTx } from "../services/edge-queue.service.ts";
@@ -62,11 +64,16 @@ import { closedShowerMenuItemIds } from "../services/facility-shower-gate.ts";
 import { deliverAutoJournalEvent } from "../services/accounting-auto-journal-consumer.ts";
 import { sourceIdToDb } from "../services/inventory.service.ts";
 import { liveRouteManualRefundWhere } from "../services/order-issue-route-refund.ts";
+import { outletBusinessDayClock } from "../services/outlet-clock.ts";
 import { ord09RefundExistsOf } from "../services/order-refund-lane.ts";
 import { settleOrderVouchersForVoid } from "../services/order-voucher-void.ts";
 import { lockLoyaltyJournalEntity } from "../services/accounting-auto-journal-amounts.ts";
 import { deliverLoyaltyEarnEvent } from "../services/loyalty-earn-consumer.ts";
 import { recordTaxSnapshotsFromPayload } from "../services/tax.service.ts";
+import {
+  openBusinessDateFrom,
+  recordLateAdjustment,
+} from "./late-adjustment.ts";
 import type { EdgeApplyMeta } from "./ports.ts";
 
 /** Source type of the order advisory lock (shared with the cost recompute). */
@@ -108,7 +115,7 @@ class IngestRefusal extends Error {
 }
 
 /** SQLSTATE of a driver error (direct or wrapped as `cause`), else null. */
-function sqlStateOf(error: unknown): string | null {
+export function sqlStateOf(error: unknown): string | null {
   const err = error as { code?: unknown; cause?: { code?: unknown } } | null;
   const code = typeof err?.code === "string" ? err.code : err?.cause?.code;
   return typeof code === "string" && /^[0-9A-Z]{5}$/.test(code) ? code : null;
@@ -167,6 +174,27 @@ export const TRANSIENT_REFUSAL_REASONS: readonly string[] = [
 
 export function isTransientReason(reason: string | null): boolean {
   return reason !== null && TRANSIENT_REFUSAL_REASONS.includes(reason);
+}
+
+/**
+ * The open business date of a fact of `businessDate` (late-adjustment.ts). The
+ * day lock is only waited for inside the savepoint: lock trouble is a transient
+ * refusal.
+ */
+async function openDateOrThrow(
+  tx: EdgeTx,
+  meta: EdgeApplyMeta,
+  outletId: NonNullable<EventEnvelope["outletId"]>,
+  businessDate: string,
+): Promise<string> {
+  const open = await openBusinessDateFrom(
+    tx,
+    meta.context,
+    outletId,
+    businessDate,
+  );
+  if (open === null) throw new IngestRefusal("no_open_day");
+  return open;
 }
 
 /** Inserts the ledger row; false when a row for the order already exists. */
@@ -458,6 +486,38 @@ async function applyPaid(
       ? payload.customerAttachedBy
       : null;
 
+  // legend-k0i8: a sale of a day the cloud already closed goes to the next open
+  // business day; the frozen recap never changes. The day locks are held, so
+  // the day cannot close underneath the write.
+  const businessDate = await openDateOrThrow(
+    tx,
+    meta,
+    outletId,
+    payload.businessDate,
+  );
+  if (businessDate !== payload.businessDate) {
+    await tx
+      .update(edgeOrderIngests)
+      .set({
+        originalBusinessDate: payload.businessDate,
+        lateBusinessDate: businessDate,
+      })
+      .where(
+        and(
+          eq(edgeOrderIngests.tenantId, tenantId),
+          eq(edgeOrderIngests.orderId, payload.orderId),
+        ),
+      );
+    await recordLateAdjustment(tx, meta.context, {
+      outletId,
+      action: "order.late_adjusted",
+      objectType: "order",
+      objectId: payload.orderId,
+      originalBusinessDate: payload.businessDate,
+      lateBusinessDate: businessDate,
+    });
+  }
+
   // 4. Writes.
   const paidAt = new Date(payload.paidAt);
   await tx.insert(orders).values({
@@ -479,7 +539,7 @@ async function applyPaid(
     customerAttachedBy,
     depositAppliedIdr: payload.paidDepositIdr,
     status: "completed",
-    businessDate: payload.businessDate,
+    businessDate,
     placedAt: paidAt,
   });
   await tx.insert(posOrders).values({
@@ -555,7 +615,7 @@ async function applyPaid(
       sourceType: "order",
       sourceId: ulidToUuid(payload.orderId),
       outletId,
-      businessDate: payload.businessDate,
+      businessDate,
       taxes: payload.taxes,
     });
   await deliverSaleEffects(tx, meta, event);
@@ -900,9 +960,38 @@ async function applyVoided(
   });
   // `pos_orders.void_*` (trigger-blocked) and `orders.status` stay as they
   // are, like a cloud-native correction void.
+  // legend-k0i8: a void dated on a closed day belongs to the next open one too.
+  const [outlet] = await tx
+    .select({
+      timezone: outlets.timezone,
+      businessDayCutoff: outlets.businessDayCutoff,
+    })
+    .from(outlets)
+    .where(and(eq(outlets.tenantId, tenantId), eq(outlets.id, outletId)));
+  if (!outlet) throw new IngestRefusal("outlet_missing");
+  const voidDate = businessDateOf(
+    new Date(payload.voidedAt),
+    outletBusinessDayClock(outlet),
+  );
+  const openVoidDate = await openDateOrThrow(tx, meta, outletId, voidDate);
+  const lateVoidBusinessDate = openVoidDate === voidDate ? null : openVoidDate;
+  if (lateVoidBusinessDate !== null)
+    await recordLateAdjustment(tx, meta.context, {
+      outletId,
+      action: "order.void_late_adjusted",
+      objectType: "order",
+      objectId: payload.orderId,
+      originalBusinessDate: voidDate,
+      lateBusinessDate: lateVoidBusinessDate,
+    });
   await tx
     .update(edgeOrderIngests)
-    .set({ state: "voided", voidEventId: event.id, updatedAt: new Date() })
+    .set({
+      state: "voided",
+      voidEventId: event.id,
+      lateVoidBusinessDate,
+      updatedAt: new Date(),
+    })
     .where(
       and(
         eq(edgeOrderIngests.tenantId, tenantId),

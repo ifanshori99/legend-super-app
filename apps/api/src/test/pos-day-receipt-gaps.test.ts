@@ -440,9 +440,12 @@ describe("receipt gaps at Tutup Hari (legend-ain0, POS-06)", () => {
       { device_id: fresh.deviceId, last_number: 0 },
     ]);
 
-    // One edge sale on the fresh run, then Tutup Hari on the edge.
-    const orderId = await draftOrder(outletId);
-    const businessDate = await completeAsDevice(orderId, fresh.deviceId);
+    // One edge sale on the fresh run, then Tutup Hari on the edge (the sale is
+    // made on the edge too: 1269 E3 refuses it in the cloud, POS_WRITE_ON_EDGE).
+    const orderId = await inEdgeMode(() => draftOrder(outletId));
+    const businessDate = await inEdgeMode(() =>
+      completeAsDevice(orderId, fresh.deviceId),
+    );
     const receipt = await inEdgeMode(() =>
       withTenant(db, edgeContext(outletId), (tx) =>
         allocateReceipt(tx as never, edgeContext(outletId), {

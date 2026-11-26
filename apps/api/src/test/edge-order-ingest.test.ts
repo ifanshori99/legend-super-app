@@ -1678,8 +1678,9 @@ describe("legend-771dl an ingested order has no payment ledger rows", () => {
 // down; edge orders that arrive afterwards must not vanish or edit that frozen
 // day. Observed behaviour: the order is ingested as a normal completed cloud
 // order on its own business date, the stored day close (totals + recap) stays
-// byte-for-byte what it was, and no second close row appears. There is no late
-// flag, audit row or manager notification yet (bead legend-b3k failover).
+// byte-for-byte what it was, and no second close row appears. 1269 E3
+// (legend-k0i8): the sale is posted to the next open business day, flagged on
+// its ingest ledger row (edge-shift-day-applier.test.ts covers the audit).
 describe("legend-k0i8 edge order ingested after the cloud closed its day", () => {
   it("is kept as a cloud order and leaves the frozen day close untouched", async () => {
     const closeId = randomUUID();
@@ -1710,15 +1711,21 @@ describe("legend-k0i8 edge order ingested after the cloud closed its day", () =>
     const event = paidEvent(orderId);
     await deliver([event]);
 
-    // Not lost: one completed cloud order on its own business date, ledgered
-    // as ingested, and the raw event is parked.
+    // Not lost: one completed cloud order on the next open business date,
+    // ledgered as ingested and flagged late, and the raw event is parked.
     const rows = await orderRows(orderId);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       status: "completed",
-      business_date: BUSINESS_DATE,
+      business_date: "2034-01-03",
       outlet_id: outletA,
     });
+    const [late] = await q<{ original: string; late: string }>(
+      `SELECT original_business_date::text AS original, late_business_date::text AS late
+         FROM edge_order_ingests WHERE tenant_id = $1 AND order_id = $2`,
+      [tenantId, dbId(orderId)],
+    );
+    expect(late).toEqual({ original: BUSINESS_DATE, late: "2034-01-03" });
     expect((await ingestOf(orderId))?.state).toBe("ingested");
     expect(await parkedRowsOf(event)).toBe(1);
 

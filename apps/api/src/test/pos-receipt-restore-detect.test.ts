@@ -216,18 +216,34 @@ async function freshOutlet(): Promise<string> {
 }
 
 async function draftOrder(outletId: string): Promise<string> {
-  const created = await cashier.client
-    .post(`/api/outlets/${encodeURIComponent(outletId)}/pos/orders`)
-    .set(headers)
-    .set(originHeader)
-    .send({
-      idempotencyKey: randomUUID(),
-      channel: "pos",
-      serviceType: "takeaway",
-      items: [{ menuItemId: ids.kopi, quantity: 1, modifierIds: [] }],
-    });
+  const created = await asEdgeProcess(() =>
+    cashier.client
+      .post(`/api/outlets/${encodeURIComponent(outletId)}/pos/orders`)
+      .set(headers)
+      .set(originHeader)
+      .send({
+        idempotencyKey: randomUUID(),
+        channel: "pos",
+        serviceType: "takeaway",
+        items: [{ menuItemId: ids.kopi, quantity: 1, modifierIds: [] }],
+      }),
+  );
   expect(created.status, JSON.stringify(created.body)).toBe(201);
   return created.body.data.id as string;
+}
+
+/**
+ * 1269 E3: the cloud refuses a sale on an outlet an active edge serves
+ * (POS_WRITE_ON_EDGE), so a draft sale to number is created as the edge would.
+ */
+async function asEdgeProcess<T>(run: () => Promise<T>): Promise<T> {
+  const previous = getEdgeRuntimeState();
+  setEdgeRuntimeStateForTests({ ...previous, edgeMode: true });
+  try {
+    return await run();
+  } finally {
+    setEdgeRuntimeStateForTests(previous);
+  }
 }
 
 type ServiceTx = Parameters<typeof allocateReceipt>[0];
