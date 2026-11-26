@@ -73,12 +73,15 @@ export const TABLET_PRINT_DESTINATION = "printer tablet";
 export function receiptPrintPayload(
   document: ReceiptDocument,
   paperWidth: PrintPaperWidth,
+  /** A replay of an earlier print key is never the original. */
+  forceReprint = false,
 ): PrintPayload {
+  const reprint = document.reprint || forceReprint;
   const bytes = renderReceipt(receiptData(document), paperWidth);
   return toPrintPayload(
-    document.reprint ? markReprint(bytes) : bytes,
+    reprint ? markReprint(bytes) : bytes,
     paperWidth,
-    document.reprint,
+    reprint,
   );
 }
 

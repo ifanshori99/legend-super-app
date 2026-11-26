@@ -409,6 +409,7 @@ export async function issueReceiptDeliveries(
       throw new CoreError("CONFLICT", "Struk pesanan ini belum diterbitkan.");
     let printDocument: ReceiptDocument | undefined;
     let tabletPrint: PrintPayload | undefined;
+    let printCreated = false;
     const tabletWidth = getEdgeRuntimeState().edgeMode
       ? undefined
       : input.paperWidth;
@@ -437,6 +438,7 @@ export async function issueReceiptDeliveries(
         now,
         tablet: tabletWidth !== undefined,
       });
+      printCreated = created;
       // POS-06: a print after the first one is a reprint.
       if (created && hadPrint && receipt.reprintCount < MAX_REPRINT_COUNT)
         receipt = await markReceiptReprinted(tx, context, receipt.id);
@@ -453,7 +455,11 @@ export async function issueReceiptDeliveries(
       // The bytes are rendered on every call, also on a replay (P1).
       if (tabletWidth !== undefined) {
         printDocument ??= await buildReceiptDocument(tx, context, receipt);
-        tabletPrint = receiptPrintPayload(printDocument, tabletWidth);
+        tabletPrint = receiptPrintPayload(
+          printDocument,
+          tabletWidth,
+          !printCreated,
+        );
       }
     }
     if (channels.includes("link")) {

@@ -46,7 +46,11 @@ import {
 import { agent, originHeader, signUp } from "./helpers.ts";
 import { pinOverrideFixtureFingerprint } from "./pos-override-fixture.ts";
 
-const roleIds = { cashier: randomUUID(), supervisor: randomUUID() };
+const roleIds = {
+  cashier: randomUUID(),
+  supervisor: randomUUID(),
+  dual: randomUUID(),
+};
 const printerId = randomUUID();
 const registeredDevices = new Map<string, string>();
 const initialRuntime = getEdgeRuntimeState();
@@ -97,9 +101,9 @@ function shiftsPath() {
   return `/api/outlets/${encodeURIComponent(tenant.outletId)}/pos/shifts`;
 }
 
-async function openShift() {
+async function openShift(existing?: Awaited<ReturnType<typeof member>>) {
   const cashier: Cashier = {
-    ...(await member(roleIds.cashier, "Kasir Cetak Shift")),
+    ...(existing ?? (await member(roleIds.cashier, "Kasir Cetak Shift"))),
     deviceId: randomUUID(),
   };
   registeredDevices.set(
@@ -243,6 +247,11 @@ beforeAll(async () => {
       roleIds.supervisor,
       "Supervisor Cetak Shift",
       ["shift.cash.approve_close"],
+    ],
+    [
+      roleIds.dual,
+      "Supervisor Kasir Cetak Shift",
+      ["shift.cash.operate", "shift.cash.approve_close"],
     ],
   ]) {
     await owner.query(
@@ -585,5 +594,14 @@ describe("P1 cloud shift report bytes (legend-wasr7.2)", () => {
       printPath(fixture.shiftId, "paperWidth=40"),
     );
     expect(bad.status).toBe(422);
+  });
+
+  it("refuses a supervisor who is also the cashier of that shift (blind count)", async () => {
+    const dual = await member(roleIds.dual, "Supervisor Kasir Bytes");
+    const fixture = await openShift(dual);
+    const closed = await closeShift(fixture);
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+    const res = await get(dual.client, printPath(fixture.shiftId));
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
   });
 });

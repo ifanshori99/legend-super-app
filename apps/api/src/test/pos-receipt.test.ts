@@ -1815,6 +1815,32 @@ describe("POS-07 receipt document (legend-93a)", () => {
     expect(text(again.body.data.print)).toContain("CETAK ULANG");
   });
 
+  it("P1 a replay of the first print key returns marked reprint bytes, with no new delivery and the same reprint count", async () => {
+    const outletId = await freshOutlet();
+    const { orderId } = await completedSale(outletId);
+    const key = randomUUID();
+    const body = { deliveries: ["print"], paperWidth: 32, idempotencyKey: key };
+    const first = await api(outletId).post(`/orders/${orderId}/receipts`, body);
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    expect(first.body.data.print.reprint).toBe(false);
+
+    const replay = await api(outletId).post(
+      `/orders/${orderId}/receipts`,
+      body,
+    );
+    expect(replay.status, JSON.stringify(replay.body)).toBe(200);
+    expect(replay.body.data.print.reprint).toBe(true);
+    expect(
+      Buffer.from(replay.body.data.print.escposBase64, "base64").toString(
+        "latin1",
+      ),
+    ).toContain("CETAK ULANG");
+    expect(replay.body.data.deliveries).toHaveLength(1);
+    expect(replay.body.data.receipt.reprintCount).toBe(
+      first.body.data.receipt.reprintCount,
+    );
+  });
+
   it("P1 without paperWidth the cloud still answers not printed and sends no bytes", async () => {
     const outletId = await freshOutlet();
     const { orderId } = await completedSale(outletId);
