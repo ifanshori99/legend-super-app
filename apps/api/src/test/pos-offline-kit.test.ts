@@ -620,6 +620,31 @@ describe("Review O1 fixes", () => {
     expect(alerts.rows.length).toBeGreaterThan(0);
   });
 
+  it("re-review O3 P3: a kit on another device of the shift needs the force close", async () => {
+    const till = await newTill(app);
+    await issuePosOfflineKit(scope, callerOf(till), outletId, till.shiftId, {
+      resumeSequenceId: null,
+    });
+    // A second kit holder: its queue count never reaches this close.
+    await owner.query(
+      `INSERT INTO pos_offline_kits (tenant_id, outlet_id, device_id, shift_id, sequence_id, issued_by, catalog_version, snapshot, issued_at, expires_at)
+       SELECT tenant_id, outlet_id, gen_random_uuid(), shift_id, sequence_id, issued_by, catalog_version, snapshot, issued_at, expires_at
+         FROM pos_offline_kits WHERE shift_id = $1 LIMIT 1`,
+      [till.shiftId],
+    );
+    await expect(
+      closeShiftExactly({
+        scope,
+        cashierId: till.cashier.userId,
+        deviceId: till.deviceId,
+        shiftId: till.shiftId,
+        supervisorId: await outletSupervisor(app, "Offline Two Kits Close"),
+        drawerIdr: 500_000,
+        offlineQueuePending: 0,
+      }),
+    ).rejects.toMatchObject({ code: "OFFLINE_QUEUE_UNVERIFIED", status: 409 });
+  });
+
   it("review O3 P2 1: a shift without a kit closes as before, count or not", async () => {
     const till = await newTill(app);
     await closeShiftExactly({

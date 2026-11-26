@@ -1415,13 +1415,14 @@ export async function closePosShift(
     // O3 (CTO O2 (a)): offline sales still on the tablet hold cash that is
     // in the drawer but not yet in these figures; they sync first. Review O3
     // P2 1: a shift with an offline kit closes only with the queue count of
-    // the kit's own device; otherwise a supervisor force closes it.
+    // the kit's own device; otherwise a supervisor force closes it. Re-review
+    // P3: every kit holder must be this device (another one's count is unknown).
     const kitDevices = await offlineKitDevicesOf(tx, context, shift.id);
     if (
       kitDevices.length > 0 &&
       (offlineQueuePending === undefined ||
         caller.deviceId === null ||
-        !kitDevices.some((deviceId) => sameUser(deviceId, caller.deviceId!)))
+        !kitDevices.every((deviceId) => sameUser(deviceId, caller.deviceId!)))
     )
       throw new PosError("OFFLINE_QUEUE_UNVERIFIED");
     if ((offlineQueuePending ?? 0) > 0)
