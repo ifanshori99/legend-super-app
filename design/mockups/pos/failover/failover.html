@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Legend · Mode cloud saat edge mati (mockup F6a)</title>
+<style>
+@font-face{font-family:Jakarta;src:url('../../assets/plus-jakarta-sans-latin.woff2');font-weight:200 800;font-display:swap}
+*{box-sizing:border-box}
+/* Nilai token: tokens.css, light + data-density="kontras". */
+:root{--background:#fff;--foreground:#000;--card:#fff;--shell:#fbfaf9;--surface-2:#f7f6f4;--surface-3:#f1efec;--muted-foreground:#3d3a35;--border:#8a857d;--input:#3d3a35;--primary:#0f5e68;--success:#147a41;--success-subtle:#e4f5eb;--warning:#8f5800;--warning-subtle:#fcf1dc;--danger:#c02c31;--danger-subtle:#fdebeb;--info:#245bd1;--info-subtle:#e9f0fd;--scrim:rgb(28 27 25/.48)}
+body{margin:0;background:var(--background);color:var(--foreground);font:18px/1.5 Jakarta,sans-serif;font-variant-numeric:tabular-nums}
+h1,h2,h3,p,ul,ol,dl,dd{margin:0;padding:0}ul,ol{list-style:none}
+h1{font-size:26px;line-height:32px;letter-spacing:-.02em}
+h2{font-size:21px;line-height:28px;letter-spacing:-.015em}
+h3{font-size:18px;line-height:26px}
+svg{width:24px;height:24px;flex:none;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.muted{color:var(--muted-foreground)}.base{font-size:16px;line-height:24px}.strong{font-weight:600}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+header.ops{display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:64px;padding:8px 16px;background:var(--shell);border-bottom:2px solid var(--border)}
+header.ops strong{display:block;font-size:21px;line-height:28px}
+header.ops small{font-size:14px;line-height:20px;color:var(--muted-foreground)}
+header.ops .right{display:flex;align-items:center;gap:12px}
+header.ops time{font-size:20px;font-weight:700}
+main{padding:16px;display:grid;gap:16px;min-width:0;max-width:1280px;margin:0 auto}
+.heading{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:12px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:60px;padding:8px 24px;border:2px solid var(--border);border-radius:8px;background:var(--card);color:var(--foreground);font:600 18px/24px Jakarta,sans-serif;text-decoration:none;text-align:center;cursor:pointer}
+.btn:hover{background:var(--surface-2)}
+.btn.primary{min-height:64px;background:var(--primary);border-color:var(--primary);color:#fff}
+.btn.primary:hover{background:#0b4b53}
+.btn.danger{border-color:var(--danger);background:var(--danger);color:#fff}
+.btn:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid var(--primary);outline-offset:2px}
+.btn[aria-disabled=true]{background:var(--surface-3);color:var(--muted-foreground);border-color:var(--border);pointer-events:none}
+.full{width:100%}
+.pill{display:inline-flex;align-items:center;gap:6px;width:fit-content;padding:4px 12px;border-radius:999px;background:var(--surface-3);color:var(--muted-foreground);font-size:14px;line-height:20px;font-weight:600;white-space:nowrap}
+.pill svg{width:16px;height:16px}
+.pill.success{background:var(--success-subtle);color:var(--success)}
+.pill.warning{background:var(--warning-subtle);color:var(--warning)}
+.pill.danger{background:var(--danger-subtle);color:var(--danger)}
+.pill.info{background:var(--info-subtle);color:var(--info)}
+.notice{border:2px solid;border-radius:8px;padding:12px 16px}
+.notice b{display:flex;align-items:center;gap:8px;font-weight:600;line-height:24px}
+.notice b svg{width:20px;height:20px}
+.notice div{margin-top:4px;color:var(--foreground);font-size:16px;line-height:24px}
+.notice .btn{margin-top:12px}
+.notice.warning{color:var(--warning);background:var(--warning-subtle)}
+.notice.info{color:var(--info);background:var(--info-subtle)}
+.notice.success{color:var(--success);background:var(--success-subtle)}
+.notice.danger{color:var(--danger);background:var(--danger-subtle)}
+.notice.alert-row{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px}
+.notice.alert-row .btn{margin-top:0}
+.panel{display:flex;flex-direction:column;gap:16px;padding:20px;border:2px solid var(--border);border-radius:12px;background:var(--card);min-width:0}
+.panel>header{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px}
+.two{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,400px);gap:16px;align-items:start}
+.steps{display:grid;gap:12px;counter-reset:s}
+.steps li{display:grid;grid-template-columns:32px minmax(0,1fr);gap:12px;align-items:start;counter-increment:s}
+.steps li::before{content:counter(s);display:grid;place-items:center;width:32px;height:32px;border:2px solid var(--border);border-radius:999px;background:var(--shell);font-size:16px;font-weight:700}
+.lines{border-top:1px solid var(--border)}
+.lines li{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:12px 0;border-bottom:1px solid var(--border)}
+.lines li>div{display:grid;gap:2px;min-width:0}.lines .amt{font-weight:600;white-space:nowrap}
+.bill div{display:flex;justify-content:space-between;gap:12px;padding:6px 0}
+.bill dd{font-weight:600;white-space:nowrap}
+.bill .total{margin-top:8px;padding-top:12px;border-top:2px solid var(--border);font-size:20px;font-weight:600}
+.actions{display:grid;gap:12px}
+.field{display:grid;gap:8px}
+.field label{font-weight:600}
+.field .hint{font-size:14px;line-height:20px;color:var(--muted-foreground)}
+.field .err{display:flex;align-items:center;gap:6px;font-size:16px;line-height:24px;color:var(--danger);font-weight:600}
+.field .err svg{width:18px;height:18px}
+input,select,textarea{width:100%;min-height:60px;padding:12px 16px;border:2px solid var(--input);border-radius:8px;background:var(--card);color:var(--foreground);font:600 18px/24px Jakarta,sans-serif;font-variant-numeric:tabular-nums}
+textarea{min-height:88px;resize:none;font-weight:500}
+input[aria-invalid=true]{border-color:var(--danger);background:var(--danger-subtle)}
+dialog{width:calc(100% - 32px);max-width:512px;max-height:90dvh;padding:20px;border:1px solid var(--border);border-radius:18px;background:var(--card);color:inherit;box-shadow:0 16px 48px rgb(28 27 25/.22);overflow:auto}
+dialog::backdrop{background:var(--scrim)}
+dialog:focus{outline:none}
+dialog .in{display:grid;gap:16px}
+dialog .foot{display:flex;justify-content:flex-end;gap:12px}
+.count{display:grid;gap:8px}
+.count .r{display:grid;grid-template-columns:minmax(0,1fr) 112px 128px;gap:12px;align-items:center}
+.count .r label{font-weight:600;white-space:nowrap}
+.count .r .sub{text-align:right;font-weight:600;white-space:nowrap}
+.count .r input{text-align:right}
+.count .head{font-size:14px;line-height:20px;color:var(--muted-foreground);font-weight:600}
+.count .head span:not(:first-child){text-align:right}
+.count .sum{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:8px;padding-top:16px;border-top:2px solid var(--border);font-size:20px;font-weight:600}
+.count .sum b{font-size:30px;line-height:36px;letter-spacing:-.02em}
+.chk{display:grid;gap:12px}
+.chk li{display:grid;grid-template-columns:28px minmax(0,1fr) auto;gap:12px;align-items:start;padding:16px;border:2px solid var(--border);border-radius:12px}
+.chk li>svg{width:28px;height:28px}
+.chk li.ok>svg{color:var(--success)}.chk li.wait>svg{color:var(--danger)}.chk li.run>svg{color:var(--info)}
+.chk h3{font-weight:700}
+.nodes{display:grid;gap:12px}
+.node{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:16px;align-items:center;padding:16px 20px;border:2px solid var(--border);border-radius:12px}
+.node .pills{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}
+.qr{display:grid;justify-items:center;gap:12px;padding:16px;border:2px solid var(--border);border-radius:12px;background:#fff}
+.qr svg{width:200px;height:200px;stroke:none;fill:#000}
+.qr .no{font-size:20px;font-weight:700}
+.meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 24px}
+.meta div{display:grid;gap:2px}.meta dt{font-size:14px;line-height:20px;color:var(--muted-foreground)}.meta dd{font-weight:600}
+.foot-note{font-size:14px;line-height:20px;color:var(--muted-foreground);padding:0 16px 16px;max-width:1280px;margin:0 auto}
+.foot-note a{color:var(--primary)}.foot-note a[aria-current]{font-weight:700;color:var(--foreground)}
+.bar{display:none}
+.dim{opacity:.55;pointer-events:none}
+@media(max-width:767px){
+ header.ops{min-height:56px;padding:4px 16px}header.ops time,header.ops .who{display:none}
+ .two{grid-template-columns:minmax(0,1fr)}
+ .heading .btn{width:100%}.heading>div:last-child:not(:first-child){width:100%}
+ .notice.alert-row .btn{width:100%}
+ .node{grid-template-columns:minmax(0,1fr)}.node .pills{justify-content:flex-start}.node .btn{width:100%}
+ .meta{grid-template-columns:minmax(0,1fr)}
+ .count .r{grid-template-columns:minmax(0,1fr) 96px 104px;gap:8px}
+ .chk li{grid-template-columns:28px minmax(0,1fr)}.chk li .pill{grid-column:2}
+ .bar{display:grid;position:sticky;bottom:0;margin:0 -16px -16px;padding:12px 16px;gap:12px;background:var(--card);border-top:2px solid var(--border)}
+ .inline-act{display:none}
+ dialog{position:fixed;inset:auto 0 0 0;width:100%;max-width:none;margin:0;border-radius:24px 24px 0 0}
+ dialog .foot{flex-direction:column-reverse}
+}
+@media(prefers-contrast:more){.notice,.panel,.node,.chk li{border-color:#000}}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<p class="foot-note" id="note"></p>
+<script>
+// Mockup statis kartu F6a. Keadaan dipilih lewat ?screen=. Semua angka dan nama adalah contoh.
+const screen = new URLSearchParams(location.search).get('screen') || 'banner';
+const P = {
+  cloud: '<path d="M17.5 19H9a7 7 0 1 1 6.7-9h1.8a4.5 4.5 0 1 1 0 9Z"/>',
+  wifioff: '<path d="M12 20h.01M8.5 16.4a5 5 0 0 1 7 0M2 8.8a15 15 0 0 1 4.2-2.7M22 8.8a15 15 0 0 0-8-3.7M5 12.9a10 10 0 0 1 5-2.6M19 12.9a10 10 0 0 0-2-1.4M2 2l20 20"/>',
+  wifi: '<path d="M12 20h.01M2 8.8a15 15 0 0 1 20 0M5 12.9a10 10 0 0 1 14 0M8.5 16.4a5 5 0 0 1 7 0"/>',
+  warn: '<path d="m21.7 18-8-14a2 2 0 0 0-3.5 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3M12 9v4M12 17h.01"/>',
+  info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/>',
+  ok: '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>',
+  clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
+  x: '<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/>',
+  back: '<path d="m12 19-7-7 7-7M19 12H5"/>',
+  arrow: '<path d="M5 12h14M12 5l7 7-7 7"/>',
+  print: '<path d="M6 9V3h12v6M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/>',
+  lock: '<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+  server: '<rect x="2" y="3" width="20" height="8" rx="2"/><rect x="2" y="13" width="20" height="8" rx="2"/><path d="M6 7h.01M6 17h.01"/>',
+  plus: '<path d="M5 12h14M12 5v14"/>',
+};
+const ic = (n) => `<svg viewBox="0 0 24 24" aria-hidden="true">${P[n]}</svg>`;
+const rp = (n) => 'Rp ' + n.toLocaleString('id-ID');
+const pill = (tone, icon, text) => `<span class="pill ${tone}">${ic(icon)}${text}</span>`;
+const notice = (tone, icon, title, body = '') => `<div class="notice ${tone}" role="${tone === 'danger' || tone === 'warning' ? 'alert' : 'status'}"><b>${ic(icon)}${title}</b>${body ? `<div>${body}</div>` : ''}</div>`;
+const link = (to, text, cls = '') => `<a class="btn ${cls}" href="${to ? '?screen=' + to : '#'}">${text}</a>`;
+const off = (text, cls = '') => `<a class="btn ${cls}" aria-disabled="true" role="link">${text}</a>`;
+
+const terminalHeader = (status) => `<header class="ops"><div><strong>Kasir</strong><small>Cafe Legend Bandung · Contoh data</small></div><div class="right">${status}<time>14.32</time></div></header>`;
+const officeHeader = () => `<header class="ops"><div><strong>Back office</strong><small>Cafe Legend Bandung · Contoh data</small></div><div class="right"><span class="who base muted">Rina · Manajer</span></div></header>`;
+const sPill = {
+  down: pill('danger', 'wifioff', 'Edge terputus'),
+  cloud: pill('info', 'cloud', 'Mode cloud'),
+  ok: pill('success', 'wifi', 'Edge terhubung'),
+};
+
+// ---------- Terminal ----------
+function bannerView() {
+  return `
+  <div class="notice danger alert-row" role="alert"><div style="margin:0"><b>${ic('wifioff')}Edge outlet tidak terjangkau sejak 14.31</b><div>Kasir belum bisa menjual. Penjualan sebelumnya tersimpan di edge.</div></div>
+   ${link('pin', ic('cloud') + 'Pindah ke mode cloud', 'primary')}</div>
+  <div class="heading"><div><h1>Penjualan dihentikan sementara</h1><p class="muted">Menunggu edge menyala lagi atau manajer memindahkan outlet ke mode cloud</p></div></div>
+  <div class="two">
+   <section class="panel"><header><h2>Bila pindah ke mode cloud</h2></header>
+    <ol class="steps">
+     <li><div><p class="strong">Manajer atau supervisor memasukkan PIN</p><p class="base muted">Hanya satu kali untuk seluruh outlet.</p></div></li>
+     <li><div><p class="strong">Setiap kasir menghitung uang di laci</p><p class="base muted">Hasil hitungan jadi modal awal shift mode cloud.</p></div></li>
+     <li><div><p class="strong">Penjualan jalan lewat internet</p><p class="base muted">Nomor struk berawalan F, misalnya F1-000001.</p></div></li>
+    </ol></section>
+   <section class="panel"><header><h2>Sambil menunggu</h2></header>
+    <p class="base">Cek listrik dan kabel perangkat edge. Bila edge menyala lagi, kasir bisa menjual seperti biasa dan tidak perlu pindah.</p>
+    <p class="base muted">Bila internet outlet juga mati, catat penjualan di buku dan masukkan nanti.</p></section>
+  </div>`;
+}
+const reasons = ['Edge mati listrik', 'Edge rusak atau tidak bisa dibuka', 'Jaringan outlet bermasalah', 'Lainnya (tulis di catatan)'];
+function reasonFields(invalid) {
+  return `<div class="field"><label for="pin">PIN manajer atau supervisor</label>
+   <input id="pin" type="password" inputmode="numeric" autocomplete="off" maxlength="6" value="••••" ${invalid ? 'aria-invalid="true" aria-describedby="pin-e"' : ''}>
+   ${invalid ? `<p class="err" id="pin-e" role="alert">${ic('warn')}PIN salah. Sisa 2 percobaan sebelum terkunci 5 menit.</p>` : ''}</div>
+  <div class="field"><label for="why">Alasan pindah</label><select id="why">${reasons.map((r, i) => `<option ${i === 0 ? 'selected' : ''}>${r}</option>`).join('')}</select></div>
+  <div class="field"><label for="memo">Catatan (boleh kosong)</label><textarea id="memo" placeholder="Contoh: listrik padam sejak 14.30"></textarea><p class="hint">Alasan dan nama penanggung jawab tercatat di riwayat outlet.</p></div>`;
+}
+function pinDialog(invalid) {
+  return `<dialog id="dlg" aria-labelledby="dt" aria-describedby="dd"><div class="in">
+   <div><h2 id="dt">Pindah ke mode cloud?</h2><p id="dd" class="base muted">Edge baru terputus 1 menit, jadi alasan wajib diisi. Setelah pindah, edge tidak menerima penjualan sampai outlet kembali.</p></div>
+   ${reasonFields(invalid)}
+   <div class="foot">${link('banner', 'Batal')}${link('hitung-laci', ic('cloud') + 'Pindah ke mode cloud', 'primary')}</div></div></dialog>`;
+}
+function noNetDialog() {
+  return `<dialog id="dlg" aria-labelledby="dt" aria-describedby="dd"><div class="in">
+   ${notice('danger', 'wifioff', 'Mode cloud belum bisa dibuka')}
+   <div><h2 id="dt">Internet outlet juga tidak tersambung</h2><p id="dd" class="base muted">Cloud tidak terjangkau dari kasir ini, jadi penjualan belum bisa pindah. Penjualan belum diubah.</p></div>
+   <ol class="steps"><li><p class="base">Catat penjualan di buku, lengkap dengan jam dan cara bayar.</p></li><li><p class="base">Cek router atau paket data, lalu coba lagi.</p></li></ol>
+   <div class="foot">${link('banner', 'Tutup')}${link('pin', ic('arrow') + 'Coba lagi', 'primary')}</div></div></dialog>`;
+}
+
+const denoms = [[100000, 5], [50000, 8], [20000, 10], [10000, 12], [5000, 10], [2000, 15], [1000, 20]];
+const coins = 25000;
+function countView() {
+  const total = denoms.reduce((a, [d, n]) => a + d * n, 0) + coins;
+  const rows = denoms.map(([d, n]) => `<div class="r"><label for="d${d}">${rp(d)}</label><input id="d${d}" inputmode="numeric" autocomplete="off" value="${n}" aria-describedby="u"><span class="sub">${rp(d * n)}</span></div>`).join('');
+  const btn = link('kasir-cloud', ic('cloud') + 'Buka shift mode cloud', 'primary full');
+  return `<div class="notice info" role="status"><b>${ic('cloud')}Mode cloud aktif sejak 14.35</b><div>Dibuka oleh Rina (Manajer). Alasan: Edge mati listrik.</div></div>
+  <div class="heading"><div><h1>Hitung uang di laci</h1><p class="muted">Kasir 1 · Dewi · Kasir utama</p></div></div>
+  <div class="two">
+   <section class="panel"><header><h2>Jumlah lembar</h2>${pill('warning', 'lock', 'Hitung tanpa melihat saldo')}</header>
+    <p class="base muted" id="u">Isi jumlah lembar tiap pecahan. Sistem tidak menampilkan saldo yang seharusnya, supaya hitungan jujur.</p>
+    <div class="count"><div class="r head"><span>Pecahan</span><span>Lembar</span><span>Jumlah</span></div>${rows}
+     <div class="r"><label for="coin">Koin (Rp)</label><input id="coin" inputmode="numeric" autocomplete="off" value="${coins.toLocaleString('id-ID')}"><span class="sub">${rp(coins)}</span></div>
+     <div class="sum"><span>Total laci</span><b>${rp(total)}</b></div></div></section>
+   <section class="panel"><header><h2>Setelah ini</h2></header>
+    <p class="base">Total ${rp(total)} jadi modal awal shift mode cloud Dewi. Shift edge yang terputus ditutup dengan hitungan yang sama.</p>
+    <p class="base muted">Satu kasir, satu laci, satu hitungan. Kasir lain menghitung laci masing-masing di terminalnya.</p>
+    <div class="actions inline-act">${btn}${link('banner', 'Kembali')}</div></section>
+  </div>
+  <div class="bar">${btn}</div>`;
+}
+
+function qrSvg() {
+  const n = 25, cells = [];
+  let seed = 20261126;
+  const rnd = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296;
+  const finder = (x, y) => {
+    if (x < 8 && y < 8 || x > n - 9 && y < 8 || x < 8 && y > n - 9) {
+      const lx = x > n - 9 ? x - (n - 7) : x, ly = y > n - 9 ? y - (n - 7) : y;
+      if (lx < 0 || ly < 0 || lx > 6 || ly > 6) return 0;
+      return (lx === 0 || lx === 6 || ly === 0 || ly === 6 || (lx > 1 && lx < 5 && ly > 1 && ly < 5)) ? 1 : 0;
+    }
+    return null;
+  };
+  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+    const f = finder(x, y);
+    if ((f === null ? rnd() > 0.5 : f)) cells.push(`<rect x="${x + 1}" y="${y + 1}" width="1" height="1"/>`);
+  }
+  return `<svg viewBox="0 0 ${n + 2} ${n + 2}" role="img" aria-label="Kode QR struk F1-000001 (contoh)" shape-rendering="crispEdges">${cells.join('')}</svg>`;
+}
+function cloudSaleView() {
+  const lines = [['Nasi goreng kampung', 2, 38000], ['Es teh manis', 2, 12000]];
+  return `<div class="notice info alert-row" role="status"><div style="margin:0"><b>${ic('cloud')}Mode cloud aktif sejak 14.35</b><div>Penjualan lewat internet. Nomor struk berawalan F. Printer outlet belum tersambung.</div></div>${pill('info', 'cloud', 'Shift mode cloud')}</div>
+  <div class="heading"><div><h1>Pembayaran berhasil</h1><p class="muted">Takeaway · Dewi · 14.41</p></div></div>
+  <div class="two">
+   <section class="panel"><header><h2>Struk F1-000001</h2>${pill('success', 'ok', 'Lunas · Tunai')}</header>
+    <ul class="lines">${lines.map(([n, q, p]) => `<li><div><span class="strong">${n}</span><span class="base muted">${q} × ${rp(p)}</span></div><span class="amt">${rp(q * p)}</span></li>`).join('')}</ul>
+    <dl class="bill"><div><dt>Subtotal</dt><dd>${rp(100000)}</dd></div><div><dt>Pajak</dt><dd>${rp(10000)}</dd></div><div class="total"><dt>Total</dt><dd>${rp(110000)}</dd></div><div><dt>Tunai</dt><dd>${rp(150000)}</dd></div><div><dt>Kembalian</dt><dd>${rp(40000)}</dd></div></dl></section>
+   <section class="panel"><header><h2>Struk di layar</h2></header>
+    <div class="qr">${qrSvg()}<span class="no">F1-000001</span></div>
+    <p class="base muted">Minta pelanggan memindai kode ini untuk menyimpan struk. Struk kertas tidak bisa dicetak sekarang.</p>
+    <div class="actions">${link('', ic('plus') + 'Pesanan baru', 'primary full')}${off(ic('print') + 'Cetak struk', 'full')}<p class="base muted">Cetak mati karena printer terhubung ke edge. Kartu: pakai EDC mandiri dan catat nomor referensi.</p></div></section>
+  </div>`;
+}
+function closeDayView() {
+  return `<div class="heading"><div><h1>Tutup hari</h1><p class="muted">Rabu, 26 November 2026 · Penjualan di edge</p></div></div>
+  <div class="notice info" role="status"><b>${ic('cloud')}Penjualan mode cloud ada di back office</b><div>14 pesanan dengan nomor F1-000001 sampai F1-000014 dicatat di cloud saat edge mati. Angka di layar ini hanya penjualan edge. Rekap lengkap ada di back office.</div></div>
+  <div class="two">
+   <section class="panel"><header><h2>Ringkasan edge</h2>${pill('success', 'wifi', 'Edge terhubung')}</header>
+    <dl class="bill"><div><dt>Jumlah pesanan</dt><dd>38</dd></div><div><dt>Tunai</dt><dd>${rp(2145000)}</dd></div><div><dt>QRIS dan kartu</dt><dd>${rp(2070000)}</dd></div><div class="total"><dt>Penjualan edge</dt><dd>${rp(4215000)}</dd></div></dl></section>
+   <section class="panel"><header><h2>Sebelum menutup</h2></header>
+    <p class="base">Pastikan semua shift edge sudah ditutup dan tidak ada pesanan terbuka.</p>
+    <div class="actions inline-act">${link('', 'Tutup hari', 'primary full')}</div></section>
+  </div>
+  <div class="bar">${link('', 'Tutup hari', 'primary full')}</div>`;
+}
+
+// ---------- Back office ----------
+function nodeRow(status, extra) {
+  return `<li class="node"><div><h3>Edge utama · Cafe Legend Bandung</h3><p class="base muted">${extra}</p></div><div class="pills">${status}</div></li>`;
+}
+function officeDown() {
+  return `<div class="heading"><div><h1>Perangkat edge</h1><p class="muted">Status server kasir di outlet</p></div></div>
+  <ul class="nodes">${nodeRow(pill('danger', 'wifioff', 'Terputus'), 'Terakhir terlihat 14.31 · 4 menit lalu · Versi 2.4.1')}</ul>
+  <section class="panel"><header><h2>Pindah ke mode cloud</h2></header>
+   <p class="base">Gunakan bila edge tidak bisa dipulihkan dengan cepat. Kasir menghitung laci, lalu menjual lewat internet.</p>
+   <p class="base muted">Pesanan mode cloud tidak masuk ke layar edge. Void atau refund pesanan berawalan F dilakukan dari back office.</p>
+   <div class="actions">${link('bo-konfirmasi', ic('cloud') + 'Pindah ke mode cloud', 'primary')}</div></section>`;
+}
+function officeConfirm() {
+  return `<dialog id="dlg" aria-labelledby="dt" aria-describedby="dd"><div class="in">
+   <div><h2 id="dt">Pindah ke mode cloud?</h2><p id="dd" class="base muted">Edge tidak menerima penjualan sampai outlet kembali ke edge. Semua kasir di outlet akan diminta menghitung laci.</p></div>
+   <div class="field"><label for="why">Alasan pindah</label><select id="why">${reasons.map((r, i) => `<option ${i === 0 ? 'selected' : ''}>${r}</option>`).join('')}</select></div>
+   <div class="field"><label for="memo">Catatan (boleh kosong)</label><textarea id="memo"></textarea></div>
+   <div class="foot">${link('bo-edge', 'Batal')}${link('bo-aktif', ic('cloud') + 'Pindah ke mode cloud', 'primary')}</div></div></dialog>`;
+}
+function officeActive() {
+  return `<div class="heading"><div><h1>Perangkat edge</h1><p class="muted">Status server kasir di outlet</p></div></div>
+  <ul class="nodes">${nodeRow(pill('success', 'wifi', 'Terhubung kembali') + pill('info', 'cloud', 'Mode cloud aktif'), 'Terlihat lagi 15.02 · Versi 2.4.1')}</ul>
+  <div class="two">
+   <section class="panel"><header><h2>Mode cloud sejak 14.35</h2></header>
+    <dl class="meta"><div><dt>Dibuka oleh</dt><dd>Rina (Manajer)</dd></div><div><dt>Alasan</dt><dd>Edge mati listrik</dd></div><div><dt>Pesanan mode cloud</dt><dd>14 pesanan</dd></div><div><dt>Penjualan</dt><dd>${rp(1482000)}</dd></div><div><dt>Shift mode cloud</dt><dd>2 shift · 1 sudah ditutup</dd></div><div><dt>Nomor struk</dt><dd>F1-000001 sampai F1-000014</dd></div></dl>
+    ${notice('info', 'info', 'Void dan refund pesanan F', 'Setelah kembali ke edge, void atau refund pesanan berawalan F tetap dilakukan dari back office.')}</section>
+   <section class="panel"><header><h2>Langkah berikut</h2></header>
+    <div class="actions">${link('kembali', ic('arrow') + 'Kembali ke edge', 'primary')}${off(ic('x') + 'Batalkan mode cloud')}<p class="base muted">Tidak bisa dibatalkan karena sudah ada 14 pesanan mode cloud.</p></div></section>
+  </div>`;
+}
+function chk(kind, title, body, pillHtml) {
+  const icon = kind === 'ok' ? 'ok' : kind === 'wait' ? 'clock' : 'server';
+  return `<li class="${kind}">${ic(icon)}<div><h3>${title}</h3><p class="base muted">${body}</p></div>${pillHtml}</li>`;
+}
+function returnView(ready) {
+  const items = [
+    chk('ok', 'Edge tersambung lagi', 'Terlihat 15.02, 12 detik lalu.', pill('success', 'ok', 'Siap')),
+    ready ? chk('ok', 'Semua pesanan sudah dibayar', '14 dari 14 pesanan mode cloud lunas.', pill('success', 'ok', 'Siap')) : chk('wait', 'Semua pesanan sudah dibayar', '1 pesanan belum dibayar: Meja 5 · ' + rp(71500) + '. Bayar atau batalkan pesanan itu.', pill('warning', 'clock', 'Belum')),
+    ready ? chk('ok', 'Semua shift mode cloud ditutup dengan hitung laci', 'Dewi dan Agus sudah menutup shift.', pill('success', 'ok', 'Siap')) : chk('wait', 'Semua shift mode cloud ditutup dengan hitung laci', 'Dewi selesai. Agus belum menghitung laci di Kasir 2.', pill('warning', 'clock', 'Belum')),
+  ];
+  const btn = ready ? link('kembali-selesai', ic('arrow') + 'Kembali ke edge', 'primary full') : off('Kembali ke edge', 'full');
+  return `<div class="heading"><div><h1>Kembali ke edge</h1><p class="muted">Periksa tiga hal ini sebelum outlet memakai edge lagi</p></div><div>${link('bo-aktif', ic('back') + 'Perangkat edge')}</div></div>
+  <ul class="chk">${items.join('')}</ul>
+  ${notice('info', 'info', 'Setelah kembali', 'Kasir membuka shift baru di edge. Modal awalnya sama dengan hitungan saat menutup shift mode cloud.')}
+  <div class="actions inline-act">${btn}${ready ? '' : '<p class="base muted">Selesaikan 2 hal di atas dulu.</p>'}</div>
+  <div class="bar">${btn}</div>`;
+}
+function doneView() {
+  return `<div class="heading"><div><h1>Kembali ke edge</h1><p class="muted">Cafe Legend Bandung</p></div></div>
+  ${notice('success', 'ok', 'Outlet kembali ke edge', 'Terminal akan memakai edge lagi. Kasir membuka shift baru dengan modal dari hitungan penutupan.')}
+  <section class="panel"><header><h2>Yang sedang berjalan</h2></header>
+   <ul class="chk">
+    ${chk('ok', 'Mode cloud ditutup', '14 pesanan, ' + rp(1482000) + ' tercatat di cloud.', pill('success', 'ok', 'Selesai'))}
+    ${chk('run', 'Edge menutup shift lama', 'Shift yang terputus ditutup dengan hitungan laci saat pindah.', pill('info', 'clock', 'Berjalan'))}
+   </ul></section>`;
+}
+
+const views = {
+  banner: () => terminalHeader(sPill.down) + '<main>' + bannerView() + '</main>',
+  pin: () => terminalHeader(sPill.down) + '<main class="dim">' + bannerView() + '</main>' + pinDialog(false),
+  'pin-salah': () => terminalHeader(sPill.down) + '<main class="dim">' + bannerView() + '</main>' + pinDialog(true),
+  'tanpa-internet': () => terminalHeader(pill('danger', 'wifioff', 'Tanpa internet')) + '<main class="dim">' + bannerView() + '</main>' + noNetDialog(),
+  'hitung-laci': () => terminalHeader(sPill.cloud) + '<main>' + countView() + '</main>',
+  'kasir-cloud': () => terminalHeader(sPill.cloud) + '<main>' + cloudSaleView() + '</main>',
+  'tutup-hari': () => terminalHeader(sPill.ok) + '<main>' + closeDayView() + '</main>',
+  'bo-edge': () => officeHeader() + '<main>' + officeDown() + '</main>',
+  'bo-konfirmasi': () => officeHeader() + '<main class="dim">' + officeDown() + '</main>' + officeConfirm(),
+  'bo-aktif': () => officeHeader() + '<main>' + officeActive() + '</main>',
+  kembali: () => officeHeader() + '<main>' + returnView(false) + '</main>',
+  'kembali-siap': () => officeHeader() + '<main>' + returnView(true) + '</main>',
+  'kembali-selesai': () => officeHeader() + '<main>' + doneView() + '</main>',
+};
+const app = document.getElementById('app');
+app.innerHTML = (views[screen] || views.banner)();
+const dlg = app.querySelector('dialog');
+if (dlg) dlg.showModal();
+document.getElementById('note').innerHTML = 'Hanya untuk review F6a, semua nama dan angka adalah contoh. Layar: ' + Object.keys(views).map((k) => `<a href="?screen=${k}" ${k === screen ? 'aria-current="page"' : ''}>${k}</a>`).join(' · ');
+document.body.dataset.ready = screen;
+</script>
+</body>
+</html>
