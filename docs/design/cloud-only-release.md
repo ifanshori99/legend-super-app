@@ -95,3 +95,8 @@ Sisanya diputuskan CTO: tanpa plafon untuk tunai offline, bekal offline berlaku 
 - Offline = browser offline ATAU ping API gagal 2x (~10 detik, gagal jaringan); online lagi sesudah ping sukses. Keranjang yang permintaan cloud-nya belum pasti tidak boleh dijual ulang offline (pengaman dobel); jual offline hanya keranjang baru.
 - Antrean = sheet di layar kasir. Tutup shift menampilkan tunai belum terkirim dari tablet; tutup paksa supervisor masuk O4 supaya kafe tidak terkunci.
 - Cetak struk offline lewat jalur cetak tablet bila tanpa server; selain itu nomor L + cetak ulang sesudah online (O5).
+
+## Keputusan founder no. 32 (27 Nov): EDC otomatis wajib di rilis 1
+- Founder: "edc wajib otomatis". Menggantikan §6 no. 1 (ECR mundur). EDC manual tetap ada sebagai jalan keluar saat EDC/jaringan gagal dan saat offline (kafe tidak boleh terkunci), tetapi jalur normal kasir = nominal dikirim otomatis ke mesin EDC dan hasil (approved/declined, RRN, approval code) kembali otomatis.
+- Tantangan cloud-only: tanpa mini PC, tidak ada proses lokal yang bicara ke EDC. Pilihan dikaji architect (lihat `docs/design/edc-auto-cloud.md`): ECR cloud dari bank/acquirer, aplikasi jembatan Android di tablet (LAN/USB ke EDC), atau EDC Android dengan integrasi app-to-app. Mesin agent EDC yang sudah ada (E1-E7: write-ahead, idempotensi, `unknown` -> rekonsiliasi, PAN disamarkan) dipakai ulang.
+- Butuh dari founder: bank dan merek/model EDC per outlet (contoh BCA Verifone, Mandiri Ingenico, BRI Android), dan apakah bank sudah memberi dokumen ECR.
