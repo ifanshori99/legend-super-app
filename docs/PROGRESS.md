@@ -8,7 +8,10 @@
 - E3 a1e67703b perbaikan review (gerbang tiket/poin/meja, movement_unlisted bug uang) -> re-review `a50c1e4b09e27215d` jalan.
 - W3 2e2ac5473 review uang GAGAL (retry tutup shift) -> perbaikan jalan; keputusan CTO di docs/qa/1268-w3-review.md.
 - WFC W1b jalan (lanjut dari batas giliran).
-- Berikut: gabung E3 -> F1 (Opus) -> F2/F3/F5 paralel; W3 gabung -> W5/W6; W1b review K -> W2 WFC.
+- Malam: `int/rc2` db8f4b391 (push) = + W3 (b268e4c24) + E3 0528 (4f4354c2b) + WFC W1b. Gate tiap gabung lulus.
+- Jalan: W5 `ws/1268-w5` (Opus), EDC slip unik+nominal kunci `ws/1268-edc` (.15 naik P1, .17), E3b gerbang cloud `ws/1269-e3b` (osqou.48, serah terima di side-session-notes/e3b-handoff.md).
+- Antre slot: F1 failover (Opus K, migrasi 0529 bila EDC tanpa migrasi), perbaikan mockup F6a (docs/qa/1271-f6a-audit.md), W2 WFC (syarat: QRIS saja online, cek lantai per slot), W6.
+- Menunggu founder: tetap mini PC atau hitung opsi cloud saja (tablet tetap dipakai).
 
 ## CTO 26 Nov (kuota pulih, lanjut)
 
