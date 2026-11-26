@@ -6,7 +6,7 @@ import type { AreaNavEntry } from "@/lib/areas/nav";
 const nav: AreaNavEntry[] = [
   {
     area: "ops",
-    labelKey: "posOpenOrders.nav",
+    labelKey: "nav.ops.openOrders",
     to: "/pos/pesanan",
     icon: ClipboardList,
     order: 29.2,

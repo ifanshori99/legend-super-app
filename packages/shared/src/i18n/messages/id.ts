@@ -1127,6 +1127,7 @@ export const id = {
       equipmentHandover: "Serah terima shift",
       kasirTicket: "Tiket fasilitas",
       orderKasir: "Kasir",
+      openOrders: "Pesanan terbuka",
     },
     platform: {
       paket: "Paket & modul",
