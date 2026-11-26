@@ -28,3 +28,9 @@ Prinsip: uang tunai offline tidak boleh hilang dari catatan, dan kafe tidak bole
 2. **P2 #1**: bila ada `pos_offline_kits` untuk shift, tutup shift wajib membawa jumlah antrean dari perangkat pemegang bekal; selain itu 409 `OFFLINE_QUEUE_UNVERIFIED`. Jalan keluar tablet rusak: tutup paksa supervisor (izin + alasan wajib) menandai shift `offline_queue_unverified` dan alert Finance; batch yang datang belakangan masuk jalur `shift_closed`.
 3. **P2 #2, #3, #4, P3**: dibetulkan sesuai saran reviewer (cache hanya shell `/pos/kasir` tanpa data sesi, `caches.delete` langsung; logout ditolak saat antrean/disisihkan belum kosong; bekal dibuang sesudah tutup shift dan `recordSale` menolak bekal shift tertutup; `try` terpisah; berhenti kirim sesudah `rejected`; hook sinkron juga di `/pos/shift/tutup`).
 4. Migrasi baru (bila perlu) dinomori sesudah 0537 int/rc2.
+
+## Re-review 27 Nov (222161c91): GAGAL ringan
+- Tertutup: P1 lama (kode `OFFLINE_EVENT_CONFLICT`, laporan konflik isi nomor + 1205 + alert, ganda = `duplicate`), P2 #1-#4, P3 lama. Laporan konflik hanya dari perangkat outlet + `shift.cash.operate` + kit/perangkat/run sah + nomor L = high-water+1. Tutup paksa: `shift.cash.approve_close`, alasan >= 10 huruf, penyetuju bukan pemanggil/kasir, alert Finance.
+- **P1 baru (bukan uang)**: shell `/pos/kasir` tidak pernah ter-cache: fetch tanpa cookie di-redirect guard `_ops` ke `/sign-in` (`lib/areas/route.ts:16`), dan `start.ts:50-59` memasang `no-store`. Reload saat offline = tidak bisa jualan. Fix: route shell publik tanpa data/sesi di luar `_ops`, Cache-Control sendiri; SW cache route itu; test 200 tanpa cookie + HTML tanpa sesi.
+- P3: `pos-shift.service.ts` ~:1420 `some` -> semua pemegang bekal harus pemanggil (selain itu tutup paksa supervisor). P3: teks penolakan logout masuk katalog Indonesia.
+- Re-review berikut: diff shell + test saja.
