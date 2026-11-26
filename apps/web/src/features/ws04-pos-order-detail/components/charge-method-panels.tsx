@@ -24,6 +24,7 @@ import {
   StatusPill,
   type StatusPillTone,
 } from "@/features/ws04-pos-kasir/components/shared";
+import type { ChargeTerminal } from "../charge-api";
 import type { ChargeEdcSale, IssueChargeDetail } from "../charge-endpoints";
 import { edcSaleMatches, type ChargeMethod } from "../charge-method-logic";
 
@@ -107,8 +108,6 @@ export function MethodPicker({
     </fieldset>
   );
 }
-
-export type ChargeTerminal = { id: string; label: string; detail: string };
 
 /**
  * The outlet's card terminals (payment options). A stored card start holds

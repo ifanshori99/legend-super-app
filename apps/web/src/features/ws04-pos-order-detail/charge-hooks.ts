@@ -46,7 +46,11 @@ import {
   withDeadline,
   type EdcStartFacts,
 } from "./charge-method-logic";
-import { issueChargeKeys, issueChargeQuery } from "./charge-queries";
+import {
+  chargeTerminalsQuery,
+  issueChargeKeys,
+  issueChargeQuery,
+} from "./charge-queries";
 
 /** What the cashier chose to collect with; the hook adds the idempotency key. */
 export type ChargeCollectRequest = CollectChargeAtPosInput extends infer Input
@@ -96,6 +100,15 @@ export function useIssueCharge(chargeId: string) {
   return useQuery({
     ...issueChargeQuery(outletId, chargeId),
     enabled: (API_MOCK || outletId !== "") && chargeId !== "",
+  });
+}
+
+/** The card terminals the charge may be sent to. */
+export function useChargeTerminals(enabled: boolean) {
+  const outletId = useOutletId();
+  return useQuery({
+    ...chargeTerminalsQuery(outletId),
+    enabled: enabled && (API_MOCK || outletId !== ""),
   });
 }
 

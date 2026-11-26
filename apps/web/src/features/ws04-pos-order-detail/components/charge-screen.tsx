@@ -23,8 +23,11 @@ import {
   PosTwoPane,
   StatusPill,
 } from "@/features/ws04-pos-kasir/components/shared";
-import { useEdcTerminals } from "@/features/ws04-pos-kasir/hooks";
-import { useChargeAttempts, useIssueCharge } from "../charge-hooks";
+import {
+  useChargeAttempts,
+  useChargeTerminals,
+  useIssueCharge,
+} from "../charge-hooks";
 import type { IssueChargeDetail } from "../charge-endpoints";
 import { chargeSurchargeIdr } from "../charge-logic";
 import {
@@ -39,7 +42,6 @@ import {
   GatewayWaiting,
   MethodPicker,
   TerminalPicker,
-  type ChargeTerminal,
 } from "./charge-method-panels";
 import {
   ChargeResolveDialog,
@@ -207,7 +209,9 @@ function ChargeBody({ chargeId }: { chargeId: string }) {
   const query = useIssueCharge(chargeId);
   const charge = query.data;
   const attempts = useChargeAttempts(chargeId, charge);
-  const terminalsQuery = useEdcTerminals();
+  const terminalsQuery = useChargeTerminals(
+    picked === "edc_card" || attempts.lock !== null,
+  );
   const [checking, setChecking] = useState(false);
   const [notRecorded, setNotRecorded] = useState(false);
   const [picked, setPicked] = useState<ChargeMethod>("cash");
@@ -273,13 +277,7 @@ function ChargeBody({ chargeId }: { chargeId: string }) {
   const only = lock ? methodOfSignature(lock.signature) : null;
   const method: ChargeMethod = only ?? picked;
   const lockedTerminal = lock ? terminalOfSignature(lock.signature) : null;
-  const terminals: ChargeTerminal[] = (terminalsQuery.data ?? [])
-    .filter((item) => !item.modes || item.modes.includes("card"))
-    .map((item) => ({
-      id: item.id,
-      label: item.label,
-      detail: item.assignedTo,
-    }));
+  const terminals = terminalsQuery.data ?? [];
   const terminalId =
     lockedTerminal ??
     terminals.find((item) => item.id === pickedTerminal)?.id ??

@@ -4,6 +4,8 @@
 // server compares, never a figure it books).
 import type { z } from "@starter/shared/core";
 import { callEndpoint } from "@/lib/api/endpoint";
+import { API_MOCK } from "@/lib/api/mock-flag";
+import { fetchEdcTerminals } from "@/features/ws04-pos-kasir/api";
 import type { EdcTransaction } from "@starter/shared/edc";
 import type {
   CollectChargeAtPosInput,
@@ -81,4 +83,32 @@ export async function resolveChargeAttempt(
     body: input,
   });
   return data;
+}
+
+/** A card terminal the charge can be sent to (the outlet's payment options). */
+export type ChargeTerminal = { id: string; label: string; detail: string };
+
+// Mock mode: the demo terminal the charge mock answers for (an id the start
+// contract accepts).
+const MOCK_TERMINALS: ChargeTerminal[] = [
+  {
+    id: "7e9a4b12-6c38-4d5f-8b20-1f3c5d7e9a02",
+    label: "BCA · EDC 01",
+    detail: "•••• 4021",
+  },
+];
+
+/** The outlet's terminals that take cards; a QRIS-only one is left out. */
+export async function fetchChargeTerminals(
+  outletId: string,
+): Promise<ChargeTerminal[]> {
+  if (API_MOCK) return MOCK_TERMINALS;
+  const terminals = await fetchEdcTerminals(outletId);
+  return terminals
+    .filter((item) => !item.modes || item.modes.includes("card"))
+    .map((item) => ({
+      id: item.id,
+      label: item.label,
+      detail: item.assignedTo,
+    }));
 }
