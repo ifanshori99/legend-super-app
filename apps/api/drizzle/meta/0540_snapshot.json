@@ -1,5 +1,5 @@
 {
-  "id": "5fd646f2-dc32-40d2-a7d3-37aed5babbb0",
+  "id": "57cb9f02-bf80-412f-8c89-cf590ed3d4ed",
   "prevId": "2b019ec7-1895-40e4-aab5-e7569f44da3b",
   "version": "7",
   "dialect": "postgresql",
@@ -93945,6 +93945,13 @@
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
+        },
+        "attempts": {
+          "name": "attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
         },
         "completed_at": {
           "name": "completed_at",

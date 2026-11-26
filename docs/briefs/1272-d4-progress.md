@@ -4,7 +4,7 @@ Bead legend-ay6e6, branch `ws/1272-d4`. State on 27 Nov 2026.
 
 ## Done (pushed)
 
-- Migration `0539_report_delivery`: `saved_reports`, `report_schedules`, `report_exports` (tenant RLS, inline FKs, file kept in `file_content` bytea, `viewer` column). `pnpm db:generate` is empty.
+- Migration `0540_report_delivery` (after int/rc2 0539_edc_settlement_csv): `saved_reports`, `report_schedules`, `report_exports` (tenant RLS, inline FKs, file kept in `file_content` bytea, `viewer` column). `pnpm db:generate` is empty.
 - Saved reports: GET/POST/PATCH `/api/reports/saved`, owner only (`report-saved.service.ts`).
 - Exports: GET/POST `/api/reports/exports`, GET `/:id`, GET `/:id/file` (`report-exports.service.ts`, `report-export-files.ts`).
   - CSV, XLSX and PDF. CSV is formula-safe: cells starting `= + - @ \t \r` get a leading `'`.

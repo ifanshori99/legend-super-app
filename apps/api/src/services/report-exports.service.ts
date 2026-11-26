@@ -21,7 +21,16 @@
 // Audit: request, generation and download are audited; `sensitiveAccess` is
 // the job's personal-data flag. Snapshots carry ids, codes and counts only,
 // never row values.
-import { and, desc, eq, getTableColumns, inArray, lt, sql } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  getTableColumns,
+  gte,
+  inArray,
+  lt,
+  sql,
+} from "drizzle-orm";
 import {
   createUlid,
   decodeCursor,
@@ -87,8 +96,22 @@ export const REPORT_EXPORT_SOURCE_MODULE = "report";
 export const REPORT_EXPORT_OBJECT_TYPE = "report_export";
 /** Jobs one sweep generates per tenant; the rest wait for the next tick. */
 export const REPORT_EXPORT_BATCH = 10;
+/** A job `generating` longer than this lost its worker (a render takes seconds). */
+export const REPORT_EXPORT_GENERATING_TIMEOUT_MS = 15 * 60 * 1000;
+/** Generation claims one job gets before a timeout fails it instead. */
+export const REPORT_EXPORT_MAX_ATTEMPTS = 3;
 
 type Row = typeof reportExports.$inferSelect;
+
+/**
+ * Every column except the file bytes, which are swapped for a one-byte marker
+ * (non-null means "has a file"). A read that does not serve the file never
+ * pulls it from the database.
+ */
+const metadataColumns = {
+  ...getTableColumns(reportExports),
+  fileContent: sql<Buffer | null>`CASE WHEN ${reportExports.fileContent} IS NULL THEN NULL ELSE '\\x00'::bytea END`,
+};
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 /** What one export reads: a catalog report, or a saved builder query. */
@@ -360,7 +383,7 @@ async function ownRow(
   id: string,
 ): Promise<Row> {
   const [row] = await tx
-    .select()
+    .select(metadataColumns)
     .from(reportExports)
     .where(
       and(
@@ -407,9 +430,7 @@ export async function listReportExports(
   const rows = await withTenant(db, context, (tx) =>
     tx
       .select({
-        ...getTableColumns(reportExports),
-        // File bytes stay in the database on a list.
-        fileContent: sql<Buffer | null>`CASE WHEN ${reportExports.fileContent} IS NULL THEN NULL ELSE '\\x00'::bytea END`,
+        ...metadataColumns,
         cursorAt: sql<string>`${reportExports.requestedAt}::text`,
       })
       .from(reportExports)
@@ -537,19 +558,31 @@ export async function downloadReportExport(
     throw hidden();
   // A file made for a full viewer never reaches an aggregate-only caller.
   if (row.viewer !== "aggregate" && viewer !== "full") throw hidden();
-  await withTenant(db, context, (tx) =>
-    auditExport(
+  // The bytes are read only now, after every access check passed.
+  const content = await withTenant(db, context, async (tx) => {
+    const [file] = await tx
+      .select({ fileContent: reportExports.fileContent })
+      .from(reportExports)
+      .where(
+        and(
+          eq(reportExports.tenantId, context.tenant.tenantId),
+          eq(reportExports.id, row.id),
+        ),
+      );
+    if (file?.fileContent == null) throw reportHttpError("EXPORT_NOT_READY");
+    await auditExport(
       tx,
       context,
       row,
       "report_export.downloaded",
       { type: "user", id: access.userId },
       { rowCount: row.rowCount },
-    ),
-  );
+    );
+    return file.fileContent;
+  });
   const format = row.format as keyof typeof EXPORT_CONTENT_TYPES;
   return {
-    content: row.fileContent,
+    content,
     contentType: EXPORT_CONTENT_TYPES[format],
     fileName: `laporan-${row.id.slice(0, 8)}.${format}`,
   };
@@ -599,13 +632,16 @@ async function generate(
   const access = await userViewerAccess(tenant, row.requestedBy);
   const query = reportExportQuerySchema.parse(row.query);
   const format = row.format as ReportExportFormat;
-  const { context, viewer } = await gateExport(
+  const { gate, context, viewer } = await gateExport(
     access,
     source,
     format,
     query,
     row.containsPersonalData ? "approved" : "none",
   );
+  // The job was admitted with its own personal-data flag; if the source now
+  // says otherwise (a saved query edited since), no file is made.
+  if (gate.action !== "queue") throw reportHttpError("EXPORT_PII_APPROVAL_REQUIRED");
   const result =
     source.kind === "report"
       ? await runReport(
@@ -660,7 +696,11 @@ export async function generateReportExport(
   const claimed = await withTenant(db, context, async (tx) => {
     const [row] = await tx
       .update(reportExports)
-      .set({ status: "generating", startedAt: now })
+      .set({
+        status: "generating",
+        startedAt: now,
+        attempts: sql`${reportExports.attempts} + 1`,
+      })
       .where(
         and(
           eq(reportExports.tenantId, tenant.tenantId),
@@ -801,6 +841,65 @@ export type ExportSweepResult = {
 };
 
 /**
+ * A worker that died mid-render leaves its job `generating` for good. After
+ * the timeout the job goes back to `queued` (the sweep then claims it again),
+ * or to `failed` once it has used its attempts. Returns the jobs failed.
+ */
+async function recoverStuckExports(
+  context: ScopedTenantContext,
+  now: Date,
+): Promise<number> {
+  const stale = and(
+    eq(reportExports.tenantId, context.tenant.tenantId),
+    eq(reportExports.status, "generating"),
+    lt(
+      reportExports.startedAt,
+      new Date(now.getTime() - REPORT_EXPORT_GENERATING_TIMEOUT_MS),
+    ),
+  );
+  return withTenant(db, context, async (tx) => {
+    const requeued = await tx
+      .update(reportExports)
+      .set({ status: "queued", startedAt: null })
+      .where(
+        and(stale, lt(reportExports.attempts, REPORT_EXPORT_MAX_ATTEMPTS)),
+      )
+      .returning();
+    for (const row of requeued)
+      await auditExport(
+        tx,
+        context,
+        row,
+        "report_export.requeued",
+        { type: "system" },
+        { attempts: row.attempts },
+      );
+    const failed = await tx
+      .update(reportExports)
+      .set({
+        status: "failed",
+        completedAt: now,
+        // The shared error list has no "timed out"; this is the generic one.
+        errorCode: "REPORT_QUERY_INVALID",
+      })
+      .where(
+        and(stale, gte(reportExports.attempts, REPORT_EXPORT_MAX_ATTEMPTS)),
+      )
+      .returning();
+    for (const row of failed)
+      await auditExport(
+        tx,
+        context,
+        row,
+        "report_export.failed",
+        { type: "system" },
+        { errorCode: "REPORT_QUERY_INVALID", attempts: row.attempts },
+      );
+    return failed.length;
+  });
+}
+
+/**
  * One sweep for one tenant: settle approvals, generate up to
  * `REPORT_EXPORT_BATCH` queued jobs, expire old files.
  */
@@ -868,6 +967,7 @@ export async function sweepReportExports(
       );
     });
   }
+  result.failed += await recoverStuckExports(wide, now);
   const queued = await withTenant(db, wide, (tx) =>
     tx
       .select({ id: reportExports.id })

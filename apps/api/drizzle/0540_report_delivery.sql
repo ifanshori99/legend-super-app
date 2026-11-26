@@ -68,6 +68,7 @@ CREATE TABLE "report_exports" (
 	"idempotency_key" varchar(128),
 	"requested_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"started_at" timestamp with time zone,
+	"attempts" integer DEFAULT 0 NOT NULL,
 	"completed_at" timestamp with time zone,
 	"outlet_ids" jsonb,
 	"viewer" varchar(10),

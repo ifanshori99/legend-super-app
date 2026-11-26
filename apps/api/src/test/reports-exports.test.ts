@@ -276,6 +276,55 @@ describe("generation and download", () => {
   });
 });
 
+describe("jobs stuck in generating (worker died)", () => {
+  const state = (id: string) =>
+    owner
+      .query(
+        "SELECT status, attempts, error_code, started_at FROM report_exports WHERE id = $1",
+        [id],
+      )
+      .then((r) => r.rows[0]);
+  const strand = (id: string, attempts: number, age: string) =>
+    owner.query(
+      `UPDATE report_exports SET status = 'generating', attempts = $2,
+              started_at = now() - $3::interval WHERE id = $1`,
+      [id, attempts, age],
+    );
+
+  it("puts a timed-out job back in the queue and finishes it", async () => {
+    const created = await requested(a.full, incomeCsv());
+    await strand(created.id, 1, "1 hour");
+    await sweep(a);
+    expect(await state(created.id)).toMatchObject({
+      status: "ready",
+      attempts: 2,
+    });
+  });
+
+  it("fails a job whose attempts are used up, with no file", async () => {
+    const created = await requested(a.full, incomeCsv());
+    await strand(created.id, 3, "1 hour");
+    await sweep(a);
+    expect(await state(created.id)).toMatchObject({
+      status: "failed",
+      attempts: 3,
+      error_code: "REPORT_QUERY_INVALID",
+    });
+    expect((await download(a.full, created)).status).toBe(409);
+  });
+
+  it("leaves a job a live worker just started alone", async () => {
+    const created = await requested(a.full, incomeCsv());
+    await strand(created.id, 1, "1 minute");
+    await sweep(a);
+    expect(await state(created.id)).toMatchObject({
+      status: "generating",
+      attempts: 1,
+    });
+    await owner.query("UPDATE report_exports SET status = 'cancelled' WHERE id = $1", [created.id]);
+  });
+});
+
 describe("saved-report exports", () => {
   it("exports the owner's saved query; another user gets 404", async () => {
     const saved = await a.full.client

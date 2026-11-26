@@ -169,6 +169,11 @@ export const reportExports = pgTable(
       .notNull()
       .defaultNow(),
     startedAt: timestamp("started_at", { withTimezone: true }),
+    /**
+     * Generation claims so far. A job left `generating` by a dead worker goes
+     * back to `queued` until the cap, then `failed`.
+     */
+    attempts: integer("attempts").notNull().default(0),
     completedAt: timestamp("completed_at", { withTimezone: true }),
     /** Outlets the generated file covers, after the TEN-03 scope check. */
     outletIds: jsonb("outlet_ids"),
