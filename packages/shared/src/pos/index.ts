@@ -16,3 +16,4 @@ export * from "./parked.ts";
 export * from "./payment-intent.ts";
 export * from "./errors.ts";
 export * from "./fixtures.ts";
+export * from "./issue-charge.ts";

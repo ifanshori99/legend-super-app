@@ -39,6 +39,7 @@ import {
 } from "../middleware/permissions.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
 import { collectChargeAtPos } from "../services/order-recovery-charge-pos.ts";
+import { readPosIssueCharge } from "../services/order-recovery-charge-pos-read.ts";
 import {
   approveChargeManualRefund,
   rejectChargeManualRefund,
@@ -239,6 +240,33 @@ orderRecoveryChargeRouter.post(
         userIdSchema.parse(getAuth(req).user.id),
         id,
         input,
+        new Date(),
+      ),
+    });
+  },
+);
+
+// The cashier reads the charge before taking it (legend-f1mmf): amount, swap
+// lines, its code and its EDC sales. A read: no origin check, no edge gate.
+// Another outlet's charge (scope, acting cashier, payment permission) is a
+// 404 from the service, like a missing one.
+orderRecoveryChargeRouter.get(
+  "/order-issue-charges/:chargeId",
+  requireAuthAllowSharedDevice,
+  requireTenantContext,
+  resolveActingStaff,
+  requireActingStaffOnSharedDevice,
+  requireMenuPermission("pos.payment.accept"),
+  async (req, res) => {
+    const { chargeId } = params.parse(req.params);
+    res.set("Cache-Control", "no-store").json({
+      data: await readPosIssueCharge(
+        getScopedTenantContext(req),
+        {
+          userId: userIdSchema.parse(actorOf(req)),
+          actingOutletId: req.actingStaff?.outletId ?? null,
+        },
+        chargeId,
         new Date(),
       ),
     });

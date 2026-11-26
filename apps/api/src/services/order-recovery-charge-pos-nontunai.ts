@@ -24,7 +24,7 @@
 //   refuses the EDC with 409 (a human refunds one of the two).
 
 import { createHash } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, gt, sql } from "drizzle-orm";
 import { AccessError } from "@starter/shared/access";
 import {
   assertOutletInScope,
@@ -64,7 +64,10 @@ import {
   readIntentView,
 } from "./payment.service.ts";
 import { lockCashierShiftForCash } from "./pos-cash-guard.ts";
-import { assertNoActiveQrisHold } from "./pos-qris-hold.ts";
+import {
+  assertNoActiveQrisHold,
+  HOLD_CLOSE_MARGIN_MS,
+} from "./pos-qris-hold.ts";
 import { chargeLinkSealAad, guestPaymentDto } from "./qr-order-payment.ts";
 import { notifyQrOrderChange } from "./qr-order-realtime-signal.ts";
 
@@ -254,6 +257,31 @@ export async function collectChargeAtPosQris(
           changeIdr: 0,
           payment: guestPaymentDto(current, target),
         };
+    }
+    // legend-f1mmf: one live code per charge. A code of the link past its
+    // expiry may still take money until its margin passed: no new code yet.
+    if (charge.paymentLinkId !== null) {
+      const [lapsing] = await tx
+        .select({ id: paymentIntents.id })
+        .from(paymentIntents)
+        .where(
+          and(
+            eq(paymentIntents.tenantId, tenantId),
+            eq(paymentIntents.paymentLinkId, charge.paymentLinkId),
+            eq(paymentIntents.status, "pending"),
+            gt(
+              paymentIntents.expiresAt,
+              new Date(now.getTime() - HOLD_CLOSE_MARGIN_MS),
+            ),
+          ),
+        )
+        .limit(1);
+      if (lapsing)
+        throw new HttpError(
+          409,
+          "CONFLICT",
+          "Kode QRIS sebelumnya baru saja kedaluwarsa; tunggu sebentar lalu cek status.",
+        );
     }
     // legend-ek1wt: while a QR of the order's bill can still be paid, no new code.
     await assertNoActiveQrisHold(tx, context, charge.orderId);
