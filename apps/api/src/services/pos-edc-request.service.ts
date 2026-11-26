@@ -67,6 +67,7 @@ export async function startPosEdcSale(
       .where(
         and(
           eq(edcTransactions.tenantId, context.tenant.tenantId),
+          eq(edcTransactions.outletId, outletId),
           eq(edcTransactions.idempotencyKey, input.idempotencyKey),
         ),
       )

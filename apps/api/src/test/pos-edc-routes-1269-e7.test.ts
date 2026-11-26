@@ -304,3 +304,117 @@ describe("1269 E7 ECR sale through the edge route", () => {
     expect(missing.status).toBe(404);
   });
 });
+
+describe("1269 E7 route guards and races", () => {
+  it("e7-7 without pos.payment.accept every ECR route is 403 and no ledger row exists", async () => {
+    setEdgeEdcAgentForTests(simAgent);
+    const order = await newSubmittedOrder(fx, 0);
+    const number = await numberOf(order.id);
+    const before = sim.calls.sale;
+    const { rows } = await owner.query<{ permissions: string[] }>(
+      "SELECT permissions FROM roles WHERE id = $1",
+      [fx.tenant.roleId],
+    );
+    const full = rows[0]!.permissions;
+    const setRole = (permissions: string[]) =>
+      owner.query("UPDATE roles SET permissions = $2 WHERE id = $1", [
+        fx.tenant.roleId,
+        JSON.stringify(permissions),
+      ]);
+    await setRole(full.filter((name) => name !== "pos.payment.accept"));
+    try {
+      const some = randomUUID();
+      const sale = await startSale(order.id);
+      const read = await fx.get(`${outletBase()}/edc/${some}`);
+      const inquire = await fx.post(`${outletBase()}/edc/${some}/inquire`, {});
+      const cancel = await fx.post(`${outletBase()}/edc/${some}/cancel`, {});
+      expect(sale.status, JSON.stringify(sale.body)).toBe(403);
+      expect(read.status, JSON.stringify(read.body)).toBe(403);
+      expect(inquire.status, JSON.stringify(inquire.body)).toBe(403);
+      expect(cancel.status, JSON.stringify(cancel.body)).toBe(403);
+    } finally {
+      await setRole(full);
+    }
+    expect(await ledgerOf(number)).toEqual([]);
+    expect(sim.calls.sale).toBe(before);
+  });
+
+  it("e7-8 a transaction of outlet A through the path of outlet B is 404 on read, inquire and cancel", async () => {
+    setEdgeEdcAgentForTests(simAgent);
+    const outletB = randomUUID();
+    await asOwnerTenant((c) =>
+      c.query(
+        `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
+         SELECT $1, tenant_id, brand_id, legal_entity_id, $2, 'Outlet B E7', 'Jl. B', timezone, opening_hours, 'active'
+           FROM outlets WHERE id = $3`,
+        [outletB, `B-${outletB.slice(0, 8)}`.toUpperCase(), fx.tenant.outletId],
+      ),
+    );
+    // The agent of this node owns outlet B too, so the refusal is the
+    // outlet check of the ledger read, not "agent not ready".
+    const ctxB = establishScopedTenantContext(
+      establishTenantContext({
+        tenantId: tenantIdSchema.parse(fx.tenant.tenantId),
+        brandId: null,
+        source: "session",
+      }),
+      { kind: "outlets", outletIds: [outletIdSchema.parse(outletB)] },
+    );
+    await simAgent.start(ctxB);
+    const order = await newSubmittedOrder(fx, 0);
+    const sale = await startSale(order.id);
+    expect(sale.status, JSON.stringify(sale.body)).toBe(200);
+    const id = sale.body.data.id as string;
+    const viaB = `/api/outlets/${outletB}/pos/edc/${id}`;
+    const read = await fx.get(viaB);
+    expect(read.status, JSON.stringify(read.body)).toBe(404);
+    const inquire = await fx.post(`${viaB}/inquire`, {});
+    expect(inquire.status, JSON.stringify(inquire.body)).toBe(404);
+    const cancel = await fx.post(`${viaB}/cancel`, {});
+    expect(cancel.status, JSON.stringify(cancel.body)).toBe(404);
+    const own = await fx.get(`${outletBase()}/edc/${id}`);
+    expect(own.body.data.status).toBe("approved");
+    await simAgent.stop(ctxB);
+  });
+
+  it("e7-9 cancel route: a finished sale is refused, an unknown id is 404", async () => {
+    setEdgeEdcAgentForTests(simAgent);
+    const order = await newSubmittedOrder(fx, 0);
+    const sale = await startSale(order.id);
+    expect(sale.body.data.status).toBe("approved");
+    const done = await fx.post(
+      `${outletBase()}/edc/${sale.body.data.id}/cancel`,
+      {},
+    );
+    expect(done.status, JSON.stringify(done.body)).toBe(409);
+    const read = await fx.get(`${outletBase()}/edc/${sale.body.data.id}`);
+    expect(read.body.data.status).toBe("approved");
+    const missing = await fx.post(
+      `${outletBase()}/edc/${randomUUID()}/cancel`,
+      {},
+    );
+    expect(missing.status, JSON.stringify(missing.body)).toBe(404);
+  });
+
+  it("e7-10 two keys for one bill at once: one sale, the other 409, one terminal call", async () => {
+    setEdgeEdcAgentForTests(simAgent);
+    const order = await newSubmittedOrder(fx, 0);
+    const number = await numberOf(order.id);
+    const before = sim.calls.sale;
+    const [a, b] = await Promise.all([
+      startSale(order.id),
+      startSale(order.id),
+    ]);
+    const statuses = [a.status, b.status].sort();
+    expect(statuses, JSON.stringify([a.body, b.body])).toEqual([200, 409]);
+    expect(sim.calls.sale - before).toBe(1);
+    const rows = await ledgerOf(number);
+    expect(rows).toHaveLength(1);
+    const winner = a.status === 200 ? a : b;
+    expect(winner.body.data.status).toBe("approved");
+    expect(
+      (await bookCard(order.id, winner.body.data.id as string)).status,
+    ).toBe(201);
+    expect(await capturedIdr(fx, order.id)).toBe(BILL);
+  });
+});

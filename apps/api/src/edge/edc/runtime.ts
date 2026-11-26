@@ -67,6 +67,8 @@ export function getEdgeEdcAgent(): EdcAgent | null {
 
 /** Tests only: the agent the POS ECR routes see (1269 E7). */
 export function setEdgeEdcAgentForTests(agent: EdcAgent | null): void {
+  if (process.env.NODE_ENV !== "test")
+    throw new Error("setEdgeEdcAgentForTests is for tests only");
   current = agent;
 }
 
