@@ -17,3 +17,12 @@ QRIS, tunai, mulai EDC mengunci tagihan lalu advisory lock yang sama dengan agen
 - Menyatakan lunas lewat slip (EDC unknown) butuh `payment.reconcile` selain PIN supervisor. Dinyatakan gagal cukup PIN supervisor.
 - Test wajib (d): penyetuju = pemanggil 403; PIN salah dihitung; outlet lain 404; permintaan telat dengan kunci tertutup ditolak tanpa tanya terminal; unknown tanpa slip / dalam jendela / terminal memproses = 409; slip nominal beda 409; slip valid dibayar sekali; dinyatakan gagal -> QRIS boleh, persetujuan telat sesudahnya ditandai dan semua jalur terkunci; total diterima tidak pernah > `amount_idr`.
 - Sesudah backend lulus re-review: web (hapus CONTRACT_PENDING, tombol EDC, blocker a/b/c/e 25 Nov, screenshot 390/1280).
+
+## Review K (d) 27 Nov (6cabc2655..681ed30e0): LULUS dengan 1 P2
+Aman: bayar ganda tertutup (penanda tutup di bawah kunci tagihan + advisory lock agent), referensi dibuat server, settle slip butuh `payment.reconcile` + PIN + jendela telat lewat + terminal diam + nominal sama, unknown tidak tertutup diam-diam, outlet lain 404 sebelum PIN.
+Wajib sebelum web:
+- P2 `order-recovery-charge-pos-resolve.ts:208` `record()`: sale approved tanpa tanda rekonsiliasi tidak cek nominal. Fix: `sale.mode !== "ecr" || sale.method !== "card" || sale.amountIdr !== charge.amountIdr` -> 409. Test gagal-dulu: nominal lain 409, tagihan tetap open.
+- P3 `:250`: nominal slip beda -> panggil `alertEdcReconciliationMismatch` sebelum 409.
+- P3 `pos-order-support.ts:537`: hapus `if (!charge) return false;` ganda.
+- P3 test: approved tanpa tanda (jawaban tidak sampai kasir) = `recorded` sekali, ulang tetap sekali; 404 outlet lain untuk `method: "edc"`.
+Cek fix: satu reviewer sonnet atas diff fix.
