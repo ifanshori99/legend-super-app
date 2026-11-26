@@ -42,3 +42,7 @@ Balasan hilang tiap hop/retry/crash worker = satu intent satu capture; rilis vs 
 
 ## Risiko diterima
 Selama putus, tamu yang sudah bayar menunggu sampai cloud tersambung (lebih aman daripada lunas tanpa bukti).
+
+## Keputusan CTO tambahan 27 Nov
+- §5: baris proksi `requested` sendiri menjadi antrean worker (tanpa event outbox baru). Diterima: tahan crash sama, worker mengambil `requested` dengan kunci baris (`FOR UPDATE SKIP LOCKED`), kunci idempoten provider `edge-proxy:<proxyId>` tetap.
+- Plafon: tabel plafon per outlet baru, bawaan Rp 2.000.000. Saklar `EDGE_PAYMENT_PROXY_ENABLED` mati bawaan. Migrasi sementara 0534.
