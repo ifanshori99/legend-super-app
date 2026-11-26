@@ -24,3 +24,9 @@ Test batas IP (172.15.x, 172.31.255.255, 192.169.x, 0.0.0.0, 100.64.x), refusal 
 4. Ganti `expiresAt` ke `ttlMs` relatif (dihitung tablet dari saat terima). Cloud tidak memberi lease terminal itu ke tablet lain sebelum `issuedAt + ttlMs + timeoutMs maks + 30 s` menurut jam cloud.
 5. Tulis aturan: `result` diterima hanya bila `commandId` dikirim ke deviceId itu dan terminalId/op/trace/replayOf sama dengan perintah tersimpan; hasil terlambat dicocokkan dalam tenant+outlet+terminal saja. Test wajib di B2 (dicatat di bead wasr7.21).
 6. P3 dibetulkan semua di B1.
+
+## Re-review 27 Nov (4c9021c55): GAGAL ringan
+Keputusan 1, 3, 4, 5, 6 terpenuhi. Sisa:
+- P2 keputusan 2: jembatan tidak tahu kapan settlement tercocok. CTO: downlink `sale_record_release` {terminalId, traces[]} dikirim cloud sesudah pencocokan settlement; jembatan hapus catatan bila (lewat 48 jam DAN sudah menerima release) ATAU lewat 30 hari (batas keras penyimpanan, hello melaporkan jumlah catatan tertahan). Test parse.
+- P3 `bridge.ts:301`: `EdcBridgeSaleRecord.answer: EdcBridgeAnswer | null`.
+- P3 doc:30: `issuedAt` = lease/perpanjangan terakhir untuk terminal itu; cloud tidak mengirim perintah bila sisa lease < 30 s.
