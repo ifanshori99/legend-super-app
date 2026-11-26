@@ -10,6 +10,7 @@ const allBanks = [
   "mandiri",
   "bni",
   "bjb",
+  "bri",
 ] as const satisfies readonly EdcBank[];
 
 export class EdcProviderRegistry {

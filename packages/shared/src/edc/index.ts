@@ -35,7 +35,7 @@ import type { CoreErrorCode, Idr } from "../core/index.ts";
 
 const scope = { tenantId: tenantIdSchema, outletId: outletIdSchema };
 
-export const edcBankSchema = z.enum(["bca", "mandiri", "bni", "bjb"]);
+export const edcBankSchema = z.enum(["bca", "mandiri", "bni", "bjb", "bri"]);
 export const edcMethodSchema = z.enum(["card", "qris"]);
 export const edcConnectionSchema = z.enum(["lan", "usb", "bluetooth"]);
 
