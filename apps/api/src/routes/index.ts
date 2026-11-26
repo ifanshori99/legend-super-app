@@ -150,6 +150,7 @@ import { orderIssuesRouter } from "./order-issues.routes.ts";
 import { orderRecoveryChargeRouter } from "./order-recovery-charge.routes.ts";
 import { customerDisplayRouter } from "./customer-display.routes.ts";
 import { posOrderRouter } from "./pos-order.routes.ts";
+import { posEdcRouter } from "./pos-edc.routes.ts";
 import { posParkedOrderRouter } from "./pos-parked-order.routes.ts";
 import { posReceiptRouter, publicReceiptRouter } from "./pos-receipt.routes.ts";
 import { posReceiptWriteoffRouter } from "./pos-receipt-writeoff.routes.ts";
@@ -286,6 +287,7 @@ apiRouter.use("/floor", floorRouter);
 // router whose requireAuth would refuse a display without a session.
 apiRouter.use("/outlets/:outletId/pos", customerDisplayRouter);
 apiRouter.use("/outlets/:outletId/pos", posOrderRouter);
+apiRouter.use("/outlets/:outletId/pos", posEdcRouter); // 1269 E7 ECR
 apiRouter.use("/outlets/:outletId/pos", posParkedOrderRouter);
 // WS-04 receipts, kuitansi and invoices (legend-93a): same prefix, own routes;
 // the order router passes unmatched paths through.
