@@ -154,6 +154,7 @@ describe("EDG-01 edge registry", () => {
       "edge_printer_delete_versions",
       "edge_receipt_skips",
       "edge_sync_conflicts",
+      "outlet_failover_windows",
       "sync_cursors",
     ];
     const result = await owner.query(

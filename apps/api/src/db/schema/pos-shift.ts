@@ -42,6 +42,7 @@ import {
   outletIdColumn,
   tenantIdColumn,
 } from "../columns";
+import { outletFailoverWindows } from "./edge-failover";
 import { outlets, tenants } from "./platform-org";
 import { user } from "./user";
 
@@ -121,6 +122,12 @@ export const posShifts = pgTable(
     openFingerprint: varchar("open_fingerprint", { length: 64 }).notNull(),
     closeKey: varchar("close_key", { length: 100 }),
     closeFingerprint: varchar("close_fingerprint", { length: 64 }),
+    /**
+     * 1271 F1: the failover window this cloud shift belongs to (opened with
+     * the switchover count as float). Set at open, never changed; null for
+     * every normal and edge shift.
+     */
+    failoverWindowId: uuid("failover_window_id"),
     version: integer("version").notNull().default(1),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -130,6 +137,18 @@ export const posShifts = pgTable(
       .defaultNow(),
   },
   (table): PgTableExtraConfigValue[] => [
+    foreignKey({
+      name: "pos_shifts_failover_window_fk",
+      columns: [table.tenantId, table.outletId, table.failoverWindowId],
+      foreignColumns: [
+        outletFailoverWindows.tenantId,
+        outletFailoverWindows.outletId,
+        outletFailoverWindows.id,
+      ],
+    }),
+    index("pos_shifts_failover_window_idx")
+      .on(table.tenantId, table.failoverWindowId)
+      .where(sql`${table.failoverWindowId} IS NOT NULL`),
     unique("pos_shifts_tenant_id_id_key").on(table.tenantId, table.id),
     unique("pos_shifts_open_key").on(
       table.tenantId,

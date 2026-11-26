@@ -44,6 +44,7 @@ import {
   tenantIdColumn,
   ulidInUuid,
 } from "../columns";
+import type { ReceiptSeries } from "@starter/shared/pos";
 import { posOrders } from "./pos-order";
 import { outlets, tenants } from "./platform-org";
 
@@ -68,6 +69,16 @@ export const receiptSequences = pgTable(
     /** The terminal; the outlet id stands in for a sale without a device. */
     deviceId: uuid("device_id").notNull(),
     prefix: varchar("prefix", { length: 12 }).notNull(),
+    /**
+     * 1271 F1: who numbers this run. `device` = the outlet edge (or the device
+     * offline), `cloud` = the cloud-owned `C` run, `failover` = the `F<n>` run
+     * the cloud numbers while the edge is down (never edge-bound). Fixed for
+     * the life of the row.
+     */
+    series: varchar("series", { length: 10 })
+      .$type<ReceiptSeries>()
+      .notNull()
+      .default("device"),
     lastNumber: integer("last_number").notNull().default(0),
     /**
      * legend-zsdd: the edge database that holds this counter. Both NULL = the
@@ -99,9 +110,10 @@ export const receiptSequences = pgTable(
   },
   (table) => [
     unique("receipt_sequences_tenant_id_id_key").on(table.tenantId, table.id),
-    // One CURRENT run per device (legend-zsdd); retired runs stay as history.
+    // One CURRENT run per device and series (legend-zsdd, 1271 F1); retired
+    // runs stay as history. A device has its P-run and its F-run side by side.
     uniqueIndex("receipt_sequences_device_current_key")
-      .on(table.tenantId, table.outletId, table.deviceId)
+      .on(table.tenantId, table.outletId, table.deviceId, table.series)
       .where(sql`${table.retiredAt} IS NULL`),
     // Two terminals of one outlet never print the same number.
     unique("receipt_sequences_prefix_key").on(
@@ -117,6 +129,20 @@ export const receiptSequences = pgTable(
     check(
       "receipt_sequences_prefix_check",
       sql`${table.prefix} ~ '^[A-Z0-9]([A-Z0-9-]{0,10}[A-Z0-9])?$'`,
+    ),
+    check(
+      "receipt_sequences_series_check",
+      sql`${table.series} IN ('device', 'cloud', 'failover')`,
+    ),
+    // 1271 F1 (N2): `F1`..`F9999` belongs to the failover series and only to it.
+    check(
+      "receipt_sequences_failover_prefix_check",
+      sql`(${table.series} = 'failover') = (${table.prefix} ~ '^F[0-9]{1,4}$')`,
+    ),
+    // 1271 F1 (N1): the cloud alone numbers a failover run; it is never edge-bound.
+    check(
+      "receipt_sequences_failover_cloud_check",
+      sql`${table.series} <> 'failover' OR ${table.edgeNodeId} IS NULL`,
     ),
     check(
       "receipt_sequences_last_number_check",

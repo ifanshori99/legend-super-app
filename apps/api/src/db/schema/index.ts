@@ -85,6 +85,7 @@ export * from "./edge-deferred-event";
 export * from "./edge-link-dead-letter";
 export * from "./edge-order-ingest";
 export * from "./edge-pos-ingest";
+export * from "./edge-failover";
 export * from "./edge-receipt-skip";
 export * from "./edge-reconciliation";
 export * from "./edge-txn-ledger";

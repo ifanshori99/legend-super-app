@@ -248,6 +248,12 @@ async function insertSequence(
       outletId: input.outletId,
       deviceId: input.deviceId,
       prefix: input.prefix,
+      // 1271 F1: the outlet-keyed `C` run is the cloud series.
+      series:
+        input.deviceId === input.outletId &&
+        input.prefix === CLOUD_RECEIPT_PREFIX
+          ? "cloud"
+          : "device",
       lastNumber: 0,
       edgeNodeId: input.binding?.edgeNodeId ?? null,
       edgeInstanceId: input.binding?.edgeInstanceId ?? null,
