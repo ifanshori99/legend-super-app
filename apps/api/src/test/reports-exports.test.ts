@@ -321,7 +321,10 @@ describe("jobs stuck in generating (worker died)", () => {
       status: "generating",
       attempts: 1,
     });
-    await owner.query("UPDATE report_exports SET status = 'cancelled' WHERE id = $1", [created.id]);
+    await owner.query(
+      "UPDATE report_exports SET status = 'cancelled' WHERE id = $1",
+      [created.id],
+    );
   });
 });
 
@@ -354,6 +357,37 @@ describe("saved-report exports", () => {
       query: { period: JUNE },
     });
     expect(peer.status).toBe(404);
+  });
+
+  it("makes no file when the job turns into a person split after it was queued (flag stale)", async () => {
+    const saved = await a.full.client
+      .post("/api/reports/saved")
+      .set(originHeader)
+      .set("Host", a.host)
+      .send({
+        name: "Berubah jadi data pribadi",
+        query: { metricCodes: ["net_sales"], period: JUNE },
+      });
+    expect(saved.status, JSON.stringify(saved.body)).toBe(201);
+    const created = await requested(a.full, {
+      savedReportId: saved.body.data.id,
+      format: "csv",
+      query: { period: JUNE },
+    });
+    await owner.query(
+      "UPDATE report_exports SET query = jsonb_set(query, '{groupBy}', '[\"employee\"]') WHERE id = $1",
+      [created.id],
+    );
+    await sweep(a);
+    const row = await owner.query(
+      "SELECT status, error_code, file_content FROM report_exports WHERE id = $1",
+      [created.id],
+    );
+    expect(row.rows[0]).toMatchObject({
+      status: "failed",
+      error_code: "EXPORT_PII_APPROVAL_REQUIRED",
+      file_content: null,
+    });
   });
 });
 

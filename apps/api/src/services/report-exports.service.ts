@@ -641,7 +641,8 @@ async function generate(
   );
   // The job was admitted with its own personal-data flag; if the source now
   // says otherwise (a saved query edited since), no file is made.
-  if (gate.action !== "queue") throw reportHttpError("EXPORT_PII_APPROVAL_REQUIRED");
+  if (gate.action !== "queue")
+    throw reportHttpError("EXPORT_PII_APPROVAL_REQUIRED");
   const result =
     source.kind === "report"
       ? await runReport(
@@ -861,9 +862,7 @@ async function recoverStuckExports(
     const requeued = await tx
       .update(reportExports)
       .set({ status: "queued", startedAt: null })
-      .where(
-        and(stale, lt(reportExports.attempts, REPORT_EXPORT_MAX_ATTEMPTS)),
-      )
+      .where(and(stale, lt(reportExports.attempts, REPORT_EXPORT_MAX_ATTEMPTS)))
       .returning();
     for (const row of requeued)
       await auditExport(

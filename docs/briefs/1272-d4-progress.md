@@ -38,3 +38,10 @@ Bead legend-ay6e6, branch `ws/1272-d4`. State on 27 Nov 2026.
 - Files live in Postgres bytea. Move them to object storage if they grow.
 - FE screens: legend-x73li.
 - Close legend-rmvu, legend-mqds and legend-atcu once the review passes.
+
+## Review K fixes (27 Nov, docs/qa/1272-d4-review.md)
+
+- P1: merged origin/int/rc2; migration is `0540_report_delivery` (regenerated, journal `when` after 0539, `db:generate` empty; the RLS block is re-appended by hand from `report-delivery.custom.sql`).
+- P2: `generating` jobs older than 15 min go back to `queued` (new column `attempts`, max 3), then `failed` (`REPORT_QUERY_INVALID`, no dedicated "timed out" code yet).
+- P3: generate refuses unless the gate says `queue`; owner reads select metadata columns only (file bytes read at download after the checks); no schedule on an archived saved report; a schedule whose owner is blocked or has no active role is paused and tenant admins (`org.settings.manage`) get notification `report_schedule.paused`.
+- Delivery is at most once per slot: the slot advances before jobs are made, a failed slot is skipped and not backfilled (comment on `runDueReportSchedules`).

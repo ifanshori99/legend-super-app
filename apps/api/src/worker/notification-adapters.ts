@@ -105,7 +105,11 @@ import { roleAssignments, roles } from "../db/schema/platform-access.ts";
 import { approvalRequests } from "../db/schema/platform-approval.ts";
 import { outlets, tenants } from "../db/schema/platform-org.ts";
 import { user } from "../db/schema/user.ts";
-import { reportExports, savedReports } from "../db/schema/report-delivery.ts";
+import {
+  reportExports,
+  reportSchedules,
+  savedReports,
+} from "../db/schema/report-delivery.ts";
 import { withTenant } from "../db/tenant.ts";
 import { logger } from "../lib/logger.ts";
 import { isReservedAddress } from "../services/identity-email-login.service.ts";
@@ -1484,6 +1488,50 @@ async function reportExportDeliveredRule(input: RuleInput): Promise<Rule> {
   };
 }
 
+/** A schedule was paused because its owner is blocked or lost access: the
+ * tenant admins hear of it once. Names the report only, never a figure. */
+async function reportSchedulePausedRule(input: RuleInput): Promise<Rule> {
+  const payload = z
+    .strictObject({ scheduleId: z.uuid() })
+    .parse(input.event.payload);
+  if (input.event.aggregateId !== payload.scheduleId)
+    throw new Error("Report schedule aggregate mismatch");
+  const [schedule] = await input.tx
+    .select({ name: savedReports.name })
+    .from(reportSchedules)
+    .innerJoin(
+      savedReports,
+      and(
+        eq(savedReports.tenantId, reportSchedules.tenantId),
+        eq(savedReports.id, reportSchedules.savedReportId),
+      ),
+    )
+    .where(
+      and(
+        eq(reportSchedules.tenantId, input.tenantId),
+        eq(reportSchedules.id, payload.scheduleId),
+      ),
+    );
+  const admins = await activeAssignees(
+    input.tx,
+    input.tenantId,
+    sql`${roles.permissions} @> ${JSON.stringify([SETTINGS_MANAGE_PERMISSION])}::jsonb`,
+    { kind: "tenant" },
+  );
+  return {
+    userIds: admins,
+    content: {
+      category: "report_delivery",
+      title: `Jadwal laporan dijeda: ${schedule?.name ?? "Laporan"}`.slice(
+        0,
+        120,
+      ),
+      body: "Pemilik jadwal diblokir atau tidak lagi punya akses di bisnis ini, jadi pengiriman laporan dihentikan. Buka menu Laporan > Jadwal untuk menghapusnya atau memindahkannya ke pemilik lain.",
+      link: null,
+    },
+  };
+}
+
 async function ruleFor(input: RuleInput): Promise<Rule> {
   switch (input.event.name) {
     case "tenant.created":
@@ -1531,6 +1579,8 @@ async function ruleFor(input: RuleInput): Promise<Rule> {
       return payoutBatchFreezeRule(input, "unfrozen");
     case "report_export.delivered":
       return reportExportDeliveredRule(input);
+    case "report_schedule.paused":
+      return reportSchedulePausedRule(input);
     default:
       throw new Error(`No notification recipient rule for ${input.event.name}`);
   }

@@ -193,6 +193,24 @@ describe("POST/PATCH /api/reports/schedules", () => {
     expect(response.status).toBe(404);
   });
 
+  it("refuses a schedule on an archived saved report", async () => {
+    const saved = await savedFor(a.full, { groupBy: ["outlet"] });
+    await owner.query(
+      "UPDATE saved_reports SET status = 'archived' WHERE id = $1",
+      [saved.id],
+    );
+    const response = await send(
+      a.full,
+      "post",
+      "/api/reports/schedules",
+      daily(saved.id, [a.full.userId]),
+    );
+    expect(response.status).toBe(400);
+    expect(response.body.error?.code ?? response.body.code).toBe(
+      "REPORT_SCHEDULE_INVALID",
+    );
+  });
+
   it("refuses a saved query split by a person (DASH-04)", async () => {
     const saved = await savedFor(a.full, { groupBy: ["employee"] });
     const response = await send(
@@ -336,6 +354,84 @@ describe("a due schedule delivers files and notifications", () => {
     expect(run.skippedRecipients).toBe(1);
     const jobs = await jobsOf(schedule.id);
     expect(jobs.map((j) => j.requested_by)).toEqual([a.peer.userId]);
+  });
+
+  it("pauses a schedule whose owner is blocked and tells the tenant admins", async () => {
+    const schedule = await scheduleFor(a.peer, [a.full.userId]);
+    await makeDue(schedule.id);
+    await owner.query('UPDATE "user" SET banned = true WHERE id = $1', [
+      a.peer.userId,
+    ]);
+    await owner.query(
+      "UPDATE roles SET permissions = permissions || '[\"org.settings.manage\"]'::jsonb WHERE id = $1",
+      [a.roles.full],
+    );
+    const ctx = tenantContext(a.tenantId);
+    try {
+      const run = await runDueReportSchedules(ctx);
+      expect(run.jobs).toBe(0);
+      expect(await jobsOf(schedule.id)).toHaveLength(0);
+      const row = await owner.query(
+        "SELECT is_enabled, next_run_at FROM report_schedules WHERE id = $1",
+        [schedule.id],
+      );
+      expect(row.rows[0]).toMatchObject({
+        is_enabled: false,
+        next_run_at: null,
+      });
+      const events = await owner.query<{ event: Record<string, unknown> }>(
+        `SELECT event FROM domain_event_outbox
+          WHERE tenant_id = $1 AND destination = 'notification'
+            AND event ->> 'name' = 'report_schedule.paused'
+            AND aggregate_id = $2::uuid`,
+        [a.tenantId, schedule.id],
+      );
+      expect(events.rows).toHaveLength(1);
+      const deliver = createNotificationConsumer(
+        ctx,
+        createNotificationRecipientResolver({ email: false, push: false }),
+      );
+      const { event } = events.rows[0]!;
+      await withTenant(db, ctx, (tx) =>
+        deliver(event as never, String(event.idempotencyKey), tx as never),
+      );
+      const notes = await owner.query<{ user_id: string; title: string }>(
+        `SELECT user_id::text, title FROM notifications
+          WHERE tenant_id = $1 AND category = 'report_delivery'
+            AND title LIKE 'Jadwal laporan dijeda%'`,
+        [a.tenantId],
+      );
+      const users = notes.rows.map((n) => n.user_id);
+      expect(users).toContain(a.full.userId);
+      expect(users).not.toContain(a.peer.userId);
+    } finally {
+      await owner.query('UPDATE "user" SET banned = false WHERE id = $1', [
+        a.peer.userId,
+      ]);
+      await owner.query(
+        "UPDATE roles SET permissions = permissions - 'org.settings.manage' WHERE id = $1",
+        [a.roles.full],
+      );
+    }
+  });
+
+  it("does not repeat a slot when job creation fails (at most once)", async () => {
+    const schedule = await scheduleFor(a.full, [a.full.userId]);
+    await makeDue(schedule.id);
+    const before = await owner.query<{ last_run_at: Date | null }>(
+      "SELECT last_run_at FROM report_schedules WHERE id = $1",
+      [schedule.id],
+    );
+    expect(before.rows[0]?.last_run_at).toBeNull();
+    await runDueReportSchedules(tenantContext(a.tenantId));
+    const after = await owner.query<{
+      last_run_at: Date | null;
+      next_run_at: Date;
+    }>("SELECT last_run_at, next_run_at FROM report_schedules WHERE id = $1", [
+      schedule.id,
+    ]);
+    expect(after.rows[0]?.last_run_at).not.toBeNull();
+    expect(after.rows[0]?.next_run_at.getTime()).toBeGreaterThan(Date.now());
   });
 
   it("never runs another tenant's schedule", async () => {
