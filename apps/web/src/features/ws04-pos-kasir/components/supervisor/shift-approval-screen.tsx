@@ -27,6 +27,7 @@ import {
   useSupervisorOptions,
 } from "../../shift-hooks";
 import { CloudPrintButton } from "../../print/cloud-print-button";
+import { offersForceClose } from "../../shift-extra-logic";
 import type { ShiftReview } from "../../types";
 import { HeldCashOutGate } from "./held-cash-out-gate";
 import { ShiftForceClose } from "./shift-force-close";
@@ -674,8 +675,9 @@ export function ShiftApprovalScreen({ shiftId }: { shiftId: string }) {
               {t("posKasirSupervisor.back")}
             </Button>
             {/* O4: the review is not on the server yet, the force close is. A
-                tablet that is lost or offline never locks the cafe. */}
-            {isContractPending(query.error) && (
+                tablet that is lost or offline never locks the cafe; nor does
+                a cashier who never sent a count (review K P3). */}
+            {offersForceClose(query.error) && (
               <Button type="button" onClick={() => setForceClosing(true)}>
                 {t("posKasirSupervisor.force.closeForce")}
               </Button>

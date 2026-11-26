@@ -15,6 +15,7 @@ import {
   fetchActiveShift,
   fetchCashMovements,
   fetchDayCloseRecap,
+  fetchOpenShiftsOfDay,
   fetchRegisteredTerminals,
   fetchShiftReview,
   fetchSupervisors,
@@ -63,6 +64,8 @@ export const posKasirKeys = {
     ["pos-kasir", outletId, "witnesses"] as const,
   day: (outletId: string, businessDate: string) =>
     ["pos-kasir", outletId, "day", businessDate] as const,
+  openShifts: (outletId: string, businessDate: string) =>
+    ["pos-kasir", outletId, "day", businessDate, "open-shifts"] as const,
 };
 
 /** Poll gaps while a payment waits: EDC answers fast, gateways slower. */
@@ -210,5 +213,14 @@ export const dayCloseRecapQuery = (
     queryKey: posKasirKeys.day(outletId, businessDate),
     queryFn: ({ signal }) =>
       fetchDayCloseRecap(outletId, businessDate, cutoff, signal),
+    retry: false,
+  });
+
+/** Review K P1: the day's open shifts, each a link to its force close. */
+export const openShiftsOfDayQuery = (outletId: string, businessDate: string) =>
+  queryOptions({
+    queryKey: posKasirKeys.openShifts(outletId, businessDate),
+    queryFn: ({ signal }) =>
+      fetchOpenShiftsOfDay(outletId, businessDate, signal),
     retry: false,
   });

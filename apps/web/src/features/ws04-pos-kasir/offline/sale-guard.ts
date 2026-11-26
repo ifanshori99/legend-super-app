@@ -11,6 +11,8 @@ import type {
 } from "@/features/ws04-pos-order/types";
 
 export type OfflineSaleBlock =
+  /** Review K P2 2: this cashier may not take payment. */
+  | "noPermission"
   /** The cart is the one whose cloud request is unclear. */
   | "uncertain_order"
   /** An order request is in flight right now. */
@@ -21,18 +23,25 @@ export type OfflineSaleBlock =
   | "channel"
   | "empty";
 
-/** The lines as the kitchen sees them: item, variant, options, quantity. */
-function linesKey(lines: readonly CartLine[]): string {
-  return JSON.stringify(
-    lines
-      .map((line) => [
-        line.menuItemId,
-        line.variantId,
-        line.modifiers.map((modifier) => modifier.optionId).sort(),
-        line.quantity,
-      ])
-      .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
-  );
+/** One line as the kitchen makes it: item, variant, options (not quantity). */
+function lineKey(line: CartLine): string {
+  return JSON.stringify([
+    line.menuItemId,
+    line.variantId,
+    line.modifiers.map((modifier) => modifier.optionId).sort(),
+  ]);
+}
+
+/**
+ * Review K P2 1: a cart that shares any line with the unclear order (pending
+ * plus one more item, or another quantity) may still be that order: held.
+ */
+function sharesLine(
+  lines: readonly CartLine[],
+  pending: readonly CartLine[],
+): boolean {
+  const keys = new Set(pending.map(lineKey));
+  return lines.some((line) => keys.has(lineKey(line)));
 }
 
 export function offlineSaleBlock(input: {
@@ -43,10 +52,13 @@ export function offlineSaleBlock(input: {
   submitting: boolean;
   /** The cloud order this cart continues (`?draft=`), if any. */
   cloudOrderId: string | null | undefined;
+  /** `pos.payment.accept`: an offline sale is taken payment. */
+  canAcceptPayment: boolean;
 }): OfflineSaleBlock | null {
+  if (!input.canAcceptPayment) return "noPermission";
   if (input.submitting) return "sending";
   // Compared by lines only: a changed table or channel is still the same food.
-  if (input.pending && linesKey(input.pending.lines) === linesKey(input.lines))
+  if (input.pending && sharesLine(input.lines, input.pending.lines))
     return "uncertain_order";
   if (input.cloudOrderId) return "cloud_order";
   if (input.lines.length === 0) return "empty";

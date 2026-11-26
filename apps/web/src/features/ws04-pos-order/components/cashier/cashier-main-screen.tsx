@@ -212,6 +212,7 @@ export function CashierMainScreen() {
     pending: pendingOrder.pending,
     submitting: submit.isPending,
     cloudOrderId: draft,
+    canAcceptPayment,
   });
 
   useEffect(() => {

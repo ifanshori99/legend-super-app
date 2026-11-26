@@ -213,6 +213,26 @@ export async function fetchActiveShift(
   };
 }
 
+/**
+ * Review K P1: the shifts of a business day that are still open (a supervisor
+ * sees every cashier's), for the links to their force close on the day close.
+ */
+export async function fetchOpenShiftsOfDay(
+  outletId: string,
+  businessDate: string,
+  signal?: AbortSignal,
+): Promise<ActiveShift[]> {
+  if (API_MOCK) return runPosKasirMock((engine) => engine.openShiftsOfDay());
+  const page = await callEndpoint(
+    listPosShifts,
+    { params: { outletId }, query: { businessDate } },
+    { signal },
+  );
+  return page.data
+    .filter((shift) => shift.status === "open")
+    .map(activeShiftFrom);
+}
+
 export async function openShift(
   outletId: string,
   input: OpenShiftInput,
@@ -415,6 +435,12 @@ export const isCloseSettled = (error: unknown): boolean =>
     error.code === "IDEMPOTENCY_KEY_REUSED");
 export const isQrisHoldBlock = (error: unknown): boolean =>
   error instanceof ApiError && error.code === "QRIS_HOLD_ACTIVE";
+/**
+ * Review K P1: the server refuses a close from a device that is not the
+ * offline kit holder (or without its queue count): a supervisor force closes.
+ */
+export const isOfflineQueueUnverified = (error: unknown): boolean =>
+  error instanceof ApiError && error.code === "OFFLINE_QUEUE_UNVERIFIED";
 
 /**
  * Close from the cashier's device (1268 W3): the supervisor's PIN decision is

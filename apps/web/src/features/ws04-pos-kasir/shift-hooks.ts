@@ -33,6 +33,7 @@ import {
   dayCloseRecapQuery,
   forceCloseViewQuery,
   heldCashOutsQuery,
+  openShiftsOfDayQuery,
   ownCountSummaryQuery,
   posKasirKeys,
   registeredTerminalsQuery,
@@ -385,6 +386,17 @@ export function useDayCloseRecap() {
   return useQuery({
     ...dayCloseRecapQuery(outletId, businessDate, cutoff),
     enabled: ready,
+  });
+}
+
+/** Review K P1: the shifts of the business day still open (supervisor view). */
+export function useOpenShiftsOfDay(enabled: boolean) {
+  const outletId = useOutletId();
+  const ready = useReady();
+  const { businessDate } = useBusinessDay();
+  return useQuery({
+    ...openShiftsOfDayQuery(outletId, businessDate),
+    enabled: ready && enabled,
   });
 }
 

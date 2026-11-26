@@ -11,6 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { useOutletClock } from "@/lib/tenant-context";
 import { forceCloseNoteValid } from "../../shift-extra-api";
+import { thirdPersons } from "../../shift-extra-logic";
 import {
   useForceCloseShift,
   useForceCloseView,
@@ -280,9 +281,9 @@ function WitnessStage({
   const [pinError, setPinError] = useState<string>();
   const [failure, setFailure] = useState<unknown>(null);
   // The witness is a third person: never the counter or the shift's cashier.
-  const options = (witnesses.data ?? []).filter(
-    (option) =>
-      option.userId !== viewer.userId && option.userId !== view.cashierId,
+  const options = thirdPersons(
+    witnesses.data ?? [],
+    [viewer.userId, view.cashierId].filter((id): id is string => Boolean(id)),
   );
   const approverUserId = chosen || options[0]?.userId || "";
   const pending = witness.isPending;

@@ -39,6 +39,12 @@ vi.mock("@/components/ui/dialog", () => {
   };
 });
 
+// The router is not mounted in server rendering: Link is a plain anchor.
+vi.mock("@tanstack/react-router", () => ({
+  Link: ({ children }: { children?: ReactNode }) =>
+    createElement("a", null, children),
+}));
+
 import { useT } from "@/components/i18n";
 import { OfflineBanner } from "@/features/ws04-pos-kasir/offline/offline-banner";
 import { OfflineCloseBlockBody } from "@/features/ws04-pos-kasir/offline/offline-close-block";
@@ -289,6 +295,7 @@ describe("refusals while sales are queued", () => {
   test("the shift close is refused with the count, the cash and the way on", () => {
     const html = render(() =>
       createElement(OfflineCloseBlockBody, {
+        shiftId: "0a1b2c3d-0000-4000-8000-0000000000b1",
         pending: 3,
         parked: 1,
         cashIdr: 133_600,

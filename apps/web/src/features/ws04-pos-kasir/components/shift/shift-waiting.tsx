@@ -6,7 +6,13 @@ import { Money } from "@/components/ui/money";
 import { useOutletClock } from "@/lib/tenant-context";
 import { ApiError } from "@/lib/api/errors";
 import { ApprovalDialog } from "../../../ws04-pos-correction/components/approval-dialog";
-import { isCloseSettled, isCloseStale, isQrisHoldBlock } from "../../shift-api";
+import { OfflineUnverifiedNotice } from "../../offline/offline-close-block";
+import {
+  isCloseSettled,
+  isCloseStale,
+  isOfflineQueueUnverified,
+  isQrisHoldBlock,
+} from "../../shift-api";
 import {
   useActiveShift,
   useCloseShiftWithApproval,
@@ -139,8 +145,10 @@ export function ShiftWaiting({ shift }: { shift: WaitingShift }) {
     : null;
   const stale = isCloseStale(close.error);
   const holdBlocked = isQrisHoldBlock(close.error);
+  // Review K P1: this device cannot close a shift with an offline kit.
+  const offlineUnverified = isOfflineQueueUnverified(close.error);
   const dialogError =
-    close.isError && !stale && !holdBlocked
+    close.isError && !stale && !holdBlocked && !offlineUnverified
       ? close.error instanceof ApiError &&
         close.error.status >= 400 &&
         close.error.status < 500
@@ -317,6 +325,9 @@ export function ShiftWaiting({ shift }: { shift: WaitingShift }) {
                 title={t("posKasirShift.close.retryHint")}
               />
             )}
+            {offlineUnverified && (
+              <OfflineUnverifiedNotice shiftId={shift.id} />
+            )}
             {holdBlocked && (
               <Notice tone="warning" title={t("posKasirShift.close.holdTitle")}>
                 {t("posKasirShift.close.holdBody")}
@@ -347,7 +358,12 @@ export function ShiftWaiting({ shift }: { shift: WaitingShift }) {
               },
               {
                 onSettled: (_data, error) => {
-                  if (!error || isCloseStale(error) || isQrisHoldBlock(error))
+                  if (
+                    !error ||
+                    isCloseStale(error) ||
+                    isQrisHoldBlock(error) ||
+                    isOfflineQueueUnverified(error)
+                  )
                     setClosing(false);
                 },
               },

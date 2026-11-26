@@ -52,3 +52,30 @@ export function forceCloseStage(input: {
   if (!input.hasCount || input.stale) return "count";
   return input.witnessed ? "ready" : "witness";
 }
+
+/** User IDs compare without letter case (the server may answer either). */
+export const sameUser = (a: string, b: string): boolean =>
+  a.toLowerCase() === b.toLowerCase();
+
+/** The options minus the named people: a witness is a third person. */
+export function thirdPersons<T extends { userId: string }>(
+  options: readonly T[],
+  exclude: readonly string[],
+): T[] {
+  return options.filter(
+    (option) => !exclude.some((userId) => sameUser(userId, option.userId)),
+  );
+}
+
+/**
+ * Review K P3: the review read failed in a way a supervisor resolves by force
+ * closing: the review is not wired yet, or the cashier never sent a count.
+ */
+const FORCE_CLOSE_ENTRY_CODES: readonly string[] = [
+  "CONTRACT_PENDING",
+  "COUNT_NOT_SUBMITTED",
+];
+export function offersForceClose(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === "string" && FORCE_CLOSE_ENTRY_CODES.includes(code);
+}

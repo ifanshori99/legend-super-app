@@ -26,6 +26,8 @@ export const posKasirOfflineMessages = {
     pay: "Bayar {amount}",
     payPlain: "Bayar",
     blocked: {
+      noPermission:
+        "Akun ini tidak bisa menerima pembayaran. Minta kasir yang bertugas.",
       uncertain_order: "Pesanan tadi belum pasti, cek sesudah online.",
       sending: "Pesanan sedang dikirim. Tunggu jawabannya.",
       cloud_order:
@@ -118,7 +120,15 @@ export const posKasirOfflineMessages = {
     parked: "{count} di antaranya disisihkan, perlu dicek.",
     cash: "Tunai offline belum terkirim: {amount}",
     openQueue: "Lihat antrean",
+    forceClose: "Tutup paksa oleh supervisor",
+    unverifiedTitle: "Shift ini memakai bekal offline",
+    unverifiedBody:
+      "Tutup shift dari tablet kasir pemegang bekal, atau minta supervisor menutup paksa. Finance mendapat pemberitahuan.",
     forceHint:
       "Tablet rusak atau tidak bisa tersambung? Minta supervisor tutup paksa dari layar persetujuan shift. Finance mendapat pemberitahuan, dan penjualan yang datang belakangan tetap dicatat.",
+  },
+  dayClose: {
+    openShiftsLabel: "Shift yang masih buka",
+    openShift: "Shift {shiftNo} · buka {time}",
   },
 };

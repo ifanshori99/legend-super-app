@@ -207,6 +207,7 @@ export function BlindCountScreen() {
   const block =
     shift.data.status === "open" && offline.pending > 0 ? (
       <OfflineCloseBlock
+        shiftId={shift.data.id}
         pending={offline.pending}
         parked={offline.parked}
         queue={offline.queue}

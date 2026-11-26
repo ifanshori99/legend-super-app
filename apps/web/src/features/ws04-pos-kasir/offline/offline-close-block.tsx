@@ -4,6 +4,7 @@
 // figure is the tablet's own (Keputusan CTO O4 no. 4). A broken tablet is
 // not a dead end: a supervisor force-closes from the shift approval screen.
 import { useEffect, useState } from "react";
+import { Link } from "@tanstack/react-router";
 import { formatRupiah } from "@starter/shared/i18n";
 import type { PosOfflineKit } from "@starter/shared/pos";
 import { useT } from "@/components/i18n";
@@ -14,6 +15,7 @@ import type { OfflineQueue } from "./queue";
 import { cashOf } from "./sale-view";
 
 export function OfflineCloseBlock({
+  shiftId,
   pending,
   parked,
   queue,
@@ -21,6 +23,7 @@ export function OfflineCloseBlock({
   online,
   syncNow,
 }: {
+  shiftId: string;
   pending: number;
   parked: number;
   queue: Pick<OfflineQueue, "pending" | "parked"> | null;
@@ -47,6 +50,7 @@ export function OfflineCloseBlock({
   return (
     <>
       <OfflineCloseBlockBody
+        shiftId={shiftId}
         pending={pending}
         parked={parked}
         cashIdr={cashIdr}
@@ -64,12 +68,43 @@ export function OfflineCloseBlock({
   );
 }
 
+/** Review K P1: the way to the force close screen of this shift. */
+export function ForceCloseLink({ shiftId }: { shiftId: string }) {
+  const t = useT();
+  return (
+    <Button asChild variant="outline" className="justify-self-start font-bold">
+      <Link to="/pos/supervisor/shift/$shiftId" params={{ shiftId }}>
+        {t("posKasirOffline.close.forceClose")}
+      </Link>
+    </Button>
+  );
+}
+
+/** The server refused the close: this device does not hold the offline kit. */
+export function OfflineUnverifiedNotice({ shiftId }: { shiftId: string }) {
+  const t = useT();
+  return (
+    <Notice
+      tone="warning"
+      title={t("posKasirOffline.close.unverifiedTitle")}
+      data-slot="pos-offline-close-unverified"
+    >
+      <div className="grid gap-2">
+        <p>{t("posKasirOffline.close.unverifiedBody")}</p>
+        <ForceCloseLink shiftId={shiftId} />
+      </div>
+    </Notice>
+  );
+}
+
 export function OfflineCloseBlockBody({
+  shiftId,
   pending,
   parked,
   cashIdr,
   onOpenQueue,
 }: {
+  shiftId: string;
   pending: number;
   parked: number;
   cashIdr: number | null;
@@ -100,6 +135,7 @@ export function OfflineCloseBlockBody({
           {t("posKasirOffline.close.openQueue")}
         </Button>
         <p className="text-sm">{t("posKasirOffline.close.forceHint")}</p>
+        <ForceCloseLink shiftId={shiftId} />
       </div>
     </Notice>
   );

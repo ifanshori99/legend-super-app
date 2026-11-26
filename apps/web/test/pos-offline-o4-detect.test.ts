@@ -75,7 +75,7 @@ describe("offline detection", () => {
       }, "https://api.test"),
     ).toBe("failed");
     const hang = (_url: string, init: { signal: AbortSignal }) =>
-      new Promise((_resolve, reject) =>
+      new Promise<never>((_resolve, reject) =>
         init.signal.addEventListener("abort", () =>
           reject(new DOMException("aborted", "AbortError")),
         ),

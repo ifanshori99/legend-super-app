@@ -2,9 +2,11 @@
 // cafe's wifi can be up while the internet is down, so the browser's own
 // signal is not enough:
 // - offline at once when the browser says so;
-// - offline after FAILURES_TO_OFFLINE pings of the API in a row fail at the
-//   network (timeout, refused, DNS). Any HTTP answer, 4xx and 5xx included,
-//   proves the network reaches the API: that is online;
+// - offline after FAILURES_TO_OFFLINE pings of the API in a row fail: at the
+//   network (timeout, refused, DNS, CORS) or with an HTTP 5xx. Review K P2 3
+//   (Keputusan CTO 27 Nov): a dead API behind the proxy answers 502, so the
+//   status is read cross-origin (WEB_URL + TRUSTED_ORIGINS may, no cookie).
+//   A 4xx answer proves the API itself answers: that is online;
 // - back online only after a ping succeeds, also when the browser says it is
 //   online again.
 // The reducer and the ping are pure over injected fetch: Node tests load them.
@@ -55,11 +57,11 @@ type FetchLike = (
     signal: AbortSignal;
     cache: "no-store";
     credentials: "omit";
-    mode: "no-cors";
+    mode: "cors";
   },
-) => Promise<unknown>;
+) => Promise<{ status: number }>;
 
-/** "ok" on any HTTP answer; "failed" when the network gave none in time. */
+/** "ok" on a 2xx-4xx answer; "failed" on a 5xx or no answer in time. */
 export async function pingApi(
   fetchImpl: FetchLike,
   baseUrl: string,
@@ -68,15 +70,13 @@ export async function pingApi(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    await fetchImpl(`${baseUrl}${PING_PATH}`, {
+    const response = await fetchImpl(`${baseUrl}${PING_PATH}`, {
       signal: controller.signal,
       cache: "no-store",
       credentials: "omit",
-      // Only reachability counts: an opaque answer is enough, and a CORS
-      // refusal must not read as a network failure.
-      mode: "no-cors",
+      mode: "cors",
     });
-    return "ok";
+    return response.status >= 500 ? "failed" : "ok";
   } catch {
     return "failed";
   } finally {

@@ -22,7 +22,12 @@ import {
 import { runPosKasirMock } from "./mock-engine";
 import { fetchSupervisors, isCloseStale, requestOverride } from "./shift-api";
 import { readStoredCount } from "./shift-count-store";
-import { bookVarianceIdr, countLimitReached } from "./shift-extra-logic";
+import {
+  bookVarianceIdr,
+  countLimitReached,
+  sameUser,
+  thirdPersons,
+} from "./shift-extra-logic";
 import {
   FORCE_CLOSE_NOTE_MIN,
   type ApproveForcedCountInput,
@@ -146,12 +151,8 @@ export async function fetchWitnesses(
 ): Promise<SupervisorOption[]> {
   if (API_MOCK) return runPosKasirMock((engine) => engine.witnesses());
   const options = await fetchSupervisors(outletId, "cash_shift_close");
-  return options.filter(
-    (option) => !exclude.some((userId) => sameUser(userId, option.userId)),
-  );
+  return thirdPersons(options, exclude);
 }
-
-const sameUser = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 /** The trimmed reason reaches the API's floor (`note` >= 10). */
 export const forceCloseNoteValid = (note: string): boolean =>

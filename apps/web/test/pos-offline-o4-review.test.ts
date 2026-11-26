@@ -10,6 +10,10 @@
 // - P3: the supervisor may force close also when the cashier has not sent a
 //   count (COUNT_NOT_SUBMITTED); a witness is never the counter or the
 //   cashier, whatever the letter case of the ID.
+vi.hoisted(() => {
+  (globalThis as { __WEB_DEV_SERVER__?: boolean }).__WEB_DEV_SERVER__ = false;
+});
+
 import { createElement, type ReactNode } from "react";
 import { renderToString } from "react-dom/server";
 import { ApiError } from "@/lib/api/errors";
@@ -138,10 +142,16 @@ describe("P3 force close entry and witnesses", () => {
     const options = [
       { userId: counter.toLowerCase(), name: "Supervisor Satu" },
       { userId: cashier.toUpperCase(), name: "Kasir" },
-      { userId: "0a1b2c3d-0000-4000-8000-0000000000d2", name: "Supervisor Dua" },
+      {
+        userId: "0a1b2c3d-0000-4000-8000-0000000000d2",
+        name: "Supervisor Dua",
+      },
     ];
     expect(thirdPersons(options, [counter, cashier])).toEqual([
-      { userId: "0a1b2c3d-0000-4000-8000-0000000000d2", name: "Supervisor Dua" },
+      {
+        userId: "0a1b2c3d-0000-4000-8000-0000000000d2",
+        name: "Supervisor Dua",
+      },
     ]);
   });
 });
