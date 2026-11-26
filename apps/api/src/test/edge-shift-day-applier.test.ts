@@ -734,6 +734,48 @@ describe("1269 E3 edge shift mirrored in the cloud", () => {
     });
   });
 
+  it("a parked cash movement of the shift that its close does not list is refused as movement_unlisted", async () => {
+    const s = shiftEvents({ date: freshDate(), movements: true });
+    const extra = randomUUID();
+    const stray = envelope("cash_movement.recorded", extra, 1, {
+      movementId: extra,
+      shiftId: s.shiftId,
+      outletId: outletA,
+      deviceId: s.deviceId,
+      type: "cash_out",
+      amountIdr: 15000,
+      reasonNote: "Tidak tercatat di close",
+      recordedBy: cashierId,
+      recordedAt: at(String(s.closedPayload.businessDate), "04:00"),
+    });
+    await deliver([s.opened, ...s.recorded, stray, ...s.approved, s.closed]);
+    expect(await drawerCounts(s.shiftId)).toEqual(NO_DRAWER);
+    expect(await ledger("shift", s.shiftId)).toMatchObject({
+      state: "refused",
+      reason: "movement_unlisted",
+    });
+  });
+
+  it("a close listing one movement twice is refused as movement_listed_twice", async () => {
+    const s = shiftEvents({ date: freshDate(), movements: true });
+    const payload = s.closedPayload as Payload & {
+      close: { movements: Payload[] };
+    };
+    const twice = envelope("cashier_shift.closed", s.shiftId, 2, {
+      ...payload,
+      close: {
+        ...payload.close,
+        movements: [...payload.close.movements, payload.close.movements[0]!],
+      },
+    });
+    await deliver([s.opened, ...s.recorded, ...s.approved, twice]);
+    expect(await drawerCounts(s.shiftId)).toEqual(NO_DRAWER);
+    expect(await ledger("shift", s.shiftId)).toMatchObject({
+      state: "refused",
+      reason: "movement_listed_twice",
+    });
+  });
+
   it("a shift id the cloud already has is refused, never merged", async () => {
     const s = shiftEvents({ date: freshDate() });
     await q(
@@ -761,6 +803,52 @@ describe("1269 E3 edge shift mirrored in the cloud", () => {
     expect((await drawerCounts(s.shiftId)).counts).toBe(0);
   });
 });
+
+/** A cash-only edge sale of 50000 (no tax), new contract with lines. */
+function cashSale(orderId: string, date: string, number: string): Payload {
+  return {
+    orderId,
+    outletId: outletA,
+    businessDate: date,
+    channel: "pos",
+    serviceType: "takeaway",
+    orderNumber: number,
+    subtotalIdr: 50000,
+    pricesIncludeTax: false,
+    paymentMode: "pay_first",
+    isTraining: false,
+    grossSalesIdr: 50000,
+    discountIdr: 0,
+    serviceChargeIdr: 0,
+    pbjtIdr: 0,
+    taxes: [],
+    roundingIdr: 0,
+    totalIdr: 50000,
+    paidCashIdr: 50000,
+    paidGatewayIdr: 0,
+    paidEdcIdr: 0,
+    paidPointsIdr: 0,
+    paidDepositIdr: 0,
+    tenders: [{ method: "cash", amountIdr: 50000, receivedIdr: 50000 }],
+    shiftId: null,
+    cashierId,
+    deviceId: randomUUID(),
+    paidAt: at(date, "05:00"),
+    lines: [
+      {
+        menuItemId,
+        name: "Kopi Susu",
+        quantity: 2,
+        unitPriceIdr: 25000,
+        modifiersTotalIdr: 0,
+        lineTotalIdr: 50000,
+        fireStatus: "fired",
+        reservedBusinessDate: date,
+        status: "served",
+      },
+    ],
+  };
+}
 
 describe("1269 E3 late adjustment (legend-k0i8)", () => {
   it("a shift of a day the cloud already closed is posted to the next open day, flagged and audited", async () => {
@@ -868,8 +956,68 @@ describe("1269 E3 late adjustment (legend-k0i8)", () => {
   });
 });
 
+describe("1269 E3 late void (legend-k0i8)", () => {
+  it("a void dated on a closed day is kept, posted to the next open day, and the frozen close is untouched", async () => {
+    const date = freshDate();
+    const orderId = createUlid(++clock);
+    const number = `LV-${dateSeq}`;
+    await deliver([
+      envelope("order.paid", orderId, 1, cashSale(orderId, date, number)),
+    ]);
+    await closeDayInCloud(date);
+    const frozenSql = `SELECT recap::text, total_voids_idr::text FROM pos_daily_closes
+      WHERE tenant_id = $1 AND outlet_id = $2 AND business_date = $3`;
+    const before = await q(frozenSql, [tenantId, outletA, date]);
+    await deliver([
+      envelope("order.voided", orderId, 2, {
+        orderId,
+        outletId: outletA,
+        businessDate: date,
+        amountIdr: 50000,
+        reason: "customer_cancelled",
+        reasonNote: "Pelanggan batal",
+        requestedBy: cashierId,
+        approvedBy: supervisorId,
+        overrideId: createUlid(++clock),
+        approvalRequestId: null,
+        voidedFinalOrder: true,
+        voidId: randomUUID(),
+        receiptNumber: "POS1-000099",
+        voidedAt: at(date, "06:00"),
+      }),
+    ]);
+    const [row] = await q<{ state: string; late: string | null }>(
+      `SELECT state, late_void_business_date::text AS late FROM edge_order_ingests
+        WHERE tenant_id = $1 AND order_id = $2::uuid`,
+      [tenantId, ulidToUuid(orderId)],
+    );
+    expect(row?.state).toBe("voided");
+    expect(row?.late).not.toBeNull();
+    expect(row!.late! > date).toBe(true);
+    expect(
+      await n(
+        `SELECT count(*)::int AS n FROM pos_order_voids WHERE tenant_id = $1 AND order_id = $2::uuid`,
+        [tenantId, ulidToUuid(orderId)],
+      ),
+    ).toBe(1);
+    expect(
+      await n(
+        `SELECT count(*)::int AS n FROM audit_logs
+          WHERE tenant_id = $1 AND event->>'action' = 'order.void_late_adjusted'`,
+        [tenantId],
+      ),
+    ).toBeGreaterThanOrEqual(1);
+    expect(await q(frozenSql, [tenantId, outletA, date])).toEqual(before);
+  });
+});
+
 describe("1269 E3 day.closed mirrored into pos_daily_closes (legend-8yqik)", () => {
-  async function dayEvent(date: string, over: (recap: Payload) => Payload) {
+  async function dayEvent(
+    date: string,
+    over: (recap: Payload) => Payload,
+    /** The day whose cloud figures the edge recap copies (same shape). */
+    sourceDate: string = date,
+  ) {
     const id = randomUUID();
     const closedAt = at(date, "15:00");
     const [outlet] = await q<Record<string, unknown>>(
@@ -889,13 +1037,14 @@ describe("1269 E3 day.closed mirrored into pos_daily_closes (legend-8yqik)", () 
         jobScope(),
         row!,
         outletIdSchema.parse(outletA),
-        date,
+        sourceDate,
         new Date(closedAt),
       );
     });
     const recap = over({
       ...(cloud as unknown as Payload),
       id,
+      businessDate: date,
       status: "closed",
       closedAt,
       closedBy: supervisorId,
@@ -943,6 +1092,32 @@ describe("1269 E3 day.closed mirrored into pos_daily_closes (legend-8yqik)", () 
         [tenantId],
       ),
     ).toBe(0);
+  });
+
+  it("a close that arrives before its shift waits, then is mirrored by the redrive once the shift is in", async () => {
+    // The edge recap of `date` holds one closed shift with no variance: the
+    // same figures as an identical shift of `twin` in the cloud.
+    const twin = freshDate();
+    const first = shiftEvents({ date: twin });
+    await deliver([first.opened, first.closed]);
+    const date = freshDate();
+    const event = await dayEvent(date, (recap) => recap, twin);
+    await deliver([event]);
+    expect(await closesOf(date)).toHaveLength(0);
+    expect(await ledger("day", event.aggregateId)).toMatchObject({
+      state: "pending",
+      reason: "recap_differs",
+    });
+    const s = shiftEvents({ date });
+    await deliver([s.opened, s.closed]);
+    expect(await closesOf(date)).toHaveLength(0);
+    await redriveEdgeOrderRefusalsForTenant(jobScope());
+    expect((await closesOf(date)).map((row) => row.id)).toEqual([
+      event.aggregateId,
+    ]);
+    expect(await ledger("day", event.aggregateId)).toMatchObject({
+      state: "ingested",
+    });
   });
 
   it("a recap the cloud cannot match yet waits, and closes nothing", async () => {

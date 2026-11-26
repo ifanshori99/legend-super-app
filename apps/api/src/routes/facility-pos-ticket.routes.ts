@@ -37,6 +37,7 @@ import {
 import { requireAuthAllowSharedDevice } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
+import { requirePosWriteOnCloudFor } from "../middleware/pos-on-cloud";
 import { rejectRateLimited } from "../middleware/public-rate-limit";
 import {
   getScopedTenantContext,
@@ -71,6 +72,8 @@ const outletOfRequest = (req: Request) => {
   return outletId;
 };
 const sell = requireOutletPermission("pos.sale.create", outletOfRequest);
+// 1269 E3: a ticket of an outlet its edge serves is sold on that edge.
+const onCloud = requirePosWriteOnCloudFor(outletOfRequest);
 const view = requireOutletPermission("order.view", outletOfRequest);
 // The door check names a credential, not an outlet: the door staff reach comes
 // from the permission and the service only sees tickets inside that reach.
@@ -203,6 +206,7 @@ facilityPosTicketRouter.post(
   jsonBody,
   resolveFacilityOutlet,
   sell,
+  onCloud,
   async (req, res) => {
     const body = sellAccessTicketAtPos.body.parse(req.body);
     const data = await sellPosTicket(
@@ -241,6 +245,7 @@ facilityPosTicketRouter.post(
   jsonBody,
   resolveOrderOutlet,
   sell,
+  onCloud,
   async (req, res) => {
     const { orderId, ticketId } = issuePosTicketCredential.params.parse(
       req.params,

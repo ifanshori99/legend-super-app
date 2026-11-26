@@ -326,6 +326,33 @@ async function parkedOf(
   }));
 }
 
+/** Every parked `cash_movement.recorded` naming this shift at the outlet. */
+async function parkedOfShift(
+  tx: EdgeTx,
+  context: ScopedTenantContext,
+  outletId: string,
+  shiftId: string,
+): Promise<Parked[]> {
+  const rows = await tx
+    .select({
+      envelope: edgeDeferredEvents.envelope,
+      edgeNodeId: edgeDeferredEvents.edgeNodeId,
+    })
+    .from(edgeDeferredEvents)
+    .where(
+      and(
+        eq(edgeDeferredEvents.tenantId, context.tenant.tenantId),
+        eq(edgeDeferredEvents.outletId, outletId as OutletId),
+        eq(edgeDeferredEvents.eventName, CASH_RECORDED_EVENT),
+        sql`lower(${edgeDeferredEvents.envelope} -> 'payload' ->> 'shiftId') = ${shiftId.toLowerCase()}`,
+      ),
+    );
+  return rows.map((row) => ({
+    event: row.envelope as unknown as EventEnvelope,
+    edgeNodeId: row.edgeNodeId,
+  }));
+}
+
 // ---- cashier_shift.closed -------------------------------------------------
 
 type Movement = {
@@ -346,7 +373,14 @@ async function movementsOfClose(
   const listed = payload.close?.movements ?? [];
   const ids = listed.map((row) => row.movementId);
   if (new Set(ids.map((id) => id.toLowerCase())).size !== ids.length)
-    throw new Refusal("movements_mismatch");
+    throw new Refusal("movement_listed_twice");
+  // Cash the edge recorded on this drawer but the close does not list would
+  // be lost from the count: never mirror a drawer without it.
+  const listedIds = new Set(ids.map((id) => id.toLowerCase()));
+  const unlisted = (
+    await parkedOfShift(tx, context, payload.outletId, payload.shiftId)
+  ).some((p) => !listedIds.has(p.event.aggregateId.toLowerCase()));
+  if (unlisted) throw new Refusal("movement_unlisted");
   const recorded = await parkedOf(
     tx,
     context,

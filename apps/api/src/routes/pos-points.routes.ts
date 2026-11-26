@@ -20,6 +20,7 @@ import {
 import { requireAuthAllowSharedDevice } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
+import { requirePosWriteOnCloudFor } from "../middleware/pos-on-cloud";
 import {
   getScopedTenantContext,
   requireOutletPermission,
@@ -72,6 +73,8 @@ async function resolveOutlet(
 }
 
 const outletOf = (req: Request) => outletIdSchema.parse(outlets.get(req));
+// 1269 E3: points of a sale at an outlet its edge serves are used on that edge.
+const onCloud = requirePosWriteOnCloudFor((req) => outlets.get(req));
 
 posPointsRouter.get(
   "/pos/orders/:orderId/points",
@@ -96,6 +99,7 @@ posPointsRouter.post(
   jsonBody,
   resolveOutlet,
   pay,
+  onCloud,
   async (req, res) => {
     const { orderId } = quotePosOrderPoints.params.parse(req.params);
     const body = quotePosOrderPoints.body.parse(req.body);
@@ -116,6 +120,7 @@ posPointsRouter.post(
   jsonBody,
   resolveOutlet,
   pay,
+  onCloud,
   async (req, res) => {
     const { orderId } = redeemPosOrderPoints.params.parse(req.params);
     const body = redeemPosOrderPoints.body.parse(req.body);

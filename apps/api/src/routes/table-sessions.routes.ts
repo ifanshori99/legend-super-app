@@ -27,6 +27,10 @@ import {
 import { requireAuthAllowSharedDevice } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
+import {
+  requirePosWriteOnCloud,
+  requirePosWriteOnCloudForTableSession,
+} from "../middleware/pos-on-cloud";
 import { requireTenantContext } from "../middleware/tenant";
 import {
   closeTableSession,
@@ -56,6 +60,7 @@ const staffGuard = [
 tableSessionsRouter.post(
   "/:sessionId/confirm",
   ...staffGuard,
+  requirePosWriteOnCloudForTableSession,
   async (req, res) => {
     const { sessionId } = sessionParams.parse(req.params);
     const { context } = await resolveFloorContext(req, "floor.table.operate");
@@ -68,6 +73,7 @@ tableSessionsRouter.post(
 tableSessionsRouter.post(
   "/:sessionId/close",
   ...staffGuard,
+  requirePosWriteOnCloudForTableSession,
   jsonBody,
   async (req, res) => {
     const { sessionId } = sessionParams.parse(req.params);
@@ -84,6 +90,7 @@ tableSessionsRouter.post(
 tableSessionsRouter.post(
   "/:sessionId/move",
   ...staffGuard,
+  requirePosWriteOnCloudForTableSession,
   jsonBody,
   async (req, res) => {
     const { sessionId } = sessionParams.parse(req.params);
@@ -103,6 +110,7 @@ tableSessionsRouter.post(
 tableSessionsRouter.post(
   "/:sessionId/merge",
   ...staffGuard,
+  requirePosWriteOnCloudForTableSession,
   jsonBody,
   async (req, res) => {
     const { sessionId } = sessionParams.parse(req.params);
@@ -122,6 +130,7 @@ tableSessionsRouter.post(
 tableSessionsRouter.post(
   "/:sessionId/move-items",
   ...staffGuard,
+  requirePosWriteOnCloudForTableSession,
   jsonBody,
   async (req, res) => {
     const { sessionId } = sessionParams.parse(req.params);
@@ -148,6 +157,7 @@ export const staffSessionRouter = Router();
 staffSessionRouter.post(
   "/outlets/:outletId/tables/:tableId/staff-session",
   ...staffGuard,
+  requirePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, tableId } = z
