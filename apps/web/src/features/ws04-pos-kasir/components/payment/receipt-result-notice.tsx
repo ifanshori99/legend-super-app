@@ -1,6 +1,7 @@
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { useReceiptPdf } from "../../hooks";
+import { TabletPrinterSettings } from "../../print/tablet-printer-settings";
 import type { ReceiptResult } from "../../types";
 import { Notice } from "../shared";
 
@@ -36,6 +37,7 @@ export function ReceiptNotPrinted({
             {t("posKasirGateway.receipt.pdf")}
           </Button>
         )}
+        <TabletPrinterSettings variant="button" />
         {onSkip && (
           <Button type="button" variant="outline" onClick={onSkip}>
             {t("posKasirGateway.receipt.skipPrint")}

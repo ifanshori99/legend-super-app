@@ -6,7 +6,10 @@
 // Plain TypeScript with no runtime imports (type imports only): Node tests load
 // it directly.
 import type { VoucherRejectionReason } from "@starter/shared/crm";
-import type { PosPaymentUnavailableReason } from "@starter/shared/pos";
+import type {
+  PosPaymentUnavailableReason,
+  PrintPayload,
+} from "@starter/shared/pos";
 
 /**
  * One EDC request of a bill as `getPosOrder` lists it (`edcAttempts`, newest
@@ -247,6 +250,8 @@ export type ReceiptResult = {
   receiptId?: string;
   /** What the server did with the print; only `queued_to_printer` may print. */
   printResult: "queued_to_printer" | "not_printed" | null;
+  /** P2: the bytes for this tablet's printer; absent on the edge and in mock. */
+  print?: PrintPayload | null;
 };
 
 // ---- Cashier code ("Bayar di kasir") ---------------------------------------

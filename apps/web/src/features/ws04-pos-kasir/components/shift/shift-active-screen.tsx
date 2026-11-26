@@ -6,6 +6,7 @@ import { ErrorState } from "@/components/ui/feedback-state";
 import { Money } from "@/components/ui/money";
 import { useOutletClock } from "@/lib/tenant-context";
 import { useActiveShift } from "../../shift-hooks";
+import { TabletPrinterSettings } from "../../print/tablet-printer-settings";
 import type { ActiveShift } from "../../types";
 import { PosPageHeading, PosPanel, PosTwoPane, StatusPill } from "../shared";
 import { CashMovementPanel } from "./cash-movement-panel";
@@ -84,6 +85,7 @@ function ActiveShiftView({ shift }: { shift: ActiveShift }) {
                     : "–"}
                 </span>
               </ContextBlock>
+              <TabletPrinterSettings />
             </div>
           </PosPanel>
         }

@@ -21,6 +21,8 @@ import { useTenantContext } from "@/lib/tenant-context";
 import { useActiveStaff } from "@/features/ws01-device-pin/storage";
 import { noteCatalogSalesBlocked } from "@/features/ws02-edge/hooks";
 import { MOCK_SUPERVISOR_ID } from "./fixtures";
+import { paperWidthOf, readTabletPrinter } from "./print/printer-settings";
+import { sendToPrinter } from "./print/send-to-printer";
 import {
   applyVoucherCode,
   cancelAttempt,
@@ -365,7 +367,19 @@ export function usePrintReceipt() {
     ApiError,
     { orderId: string }
   >({
-    mutationFn: ({ orderId }) => printReceipt(outletId, orderId, actorId),
+    mutationFn: async ({ orderId }) => {
+      // P2: the tablet's own printer. The cloud answers with the bytes, which
+      // go to RawBT or the print dialog: "sent to printer", never "printed".
+      const printer = readTabletPrinter();
+      const result = await printReceipt(
+        outletId,
+        orderId,
+        actorId,
+        paperWidthOf(printer),
+      );
+      if (result.print) sendToPrinter(result.print, printer.method);
+      return result;
+    },
     onSettled: (_result, _error, { orderId }) => {
       void queryClient.invalidateQueries({
         queryKey: posKasirKeys.session(outletId, orderId),

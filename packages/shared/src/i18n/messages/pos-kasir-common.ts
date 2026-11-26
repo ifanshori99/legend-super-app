@@ -39,4 +39,36 @@ export const posKasirCommonMessages = {
     cancel: "Batal",
     checking: "Memeriksa PIN…",
   },
+  // P2 (legend-wasr7.3): the printer of this tablet. Status is "dikirim ke
+  // printer": the page never learns whether paper came out.
+  printer: {
+    label: "Printer tablet",
+    open: "Ubah printer",
+    title: "Printer tablet ini",
+    description:
+      "Hanya berlaku di tablet ini. Struk dan laporan dikirim ke printer yang dipilih di sini.",
+    methodLabel: "Cara cetak",
+    paperLabel: "Lebar kertas",
+    method: {
+      rawbt: "RawBT",
+      browser: "Browser",
+      none: "Tanpa printer",
+    },
+    methodHint: {
+      rawbt:
+        "Untuk tablet Android dengan aplikasi RawBT. Printer Bluetooth, USB atau LAN dipasangkan di RawBT.",
+      browser:
+        "Membuka dialog cetak browser. Cocok untuk laptop, atau selama RawBT belum terpasang.",
+      none: "Struk tidak dikirim ke printer. Simpan PDF struk untuk pelanggan.",
+    },
+    paper: {
+      w32: "58 mm",
+      w48: "80 mm",
+    },
+    summary: "{method} · {paper}",
+    sentNote:
+      "Struk dikirim ke printer. Bila kertas tidak keluar, periksa printer lalu cetak ulang.",
+    save: "Simpan printer",
+    cancel: "Batal",
+  },
 };
