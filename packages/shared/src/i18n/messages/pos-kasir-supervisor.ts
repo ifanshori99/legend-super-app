@@ -124,7 +124,9 @@ export const posKasirSupervisorMessages = {
     countTitle: "Hitung ulang uang di laci",
     countedLabel: "Hasil hitungan supervisor",
     reasonLabel: "Alasan penutupan paksa",
-    reasonValue: "Kasir telah mencapai batas hitungan.",
+    notePlaceholder:
+      "Contoh: tablet kasir rusak, antrean offline belum terkirim",
+    noteTooShort: "Tulis alasan minimal 10 huruf.",
     thirdTitle: "Persetujuan orang ketiga diperlukan",
     thirdBody:
       "Minta supervisor lain yang berwenang menyetujui hitungan ini. Penyetuju tidak boleh menjadi kasir shift atau supervisor yang menghitung.",

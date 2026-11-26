@@ -226,7 +226,10 @@ describe("O4 force close on the real wire", () => {
       },
     });
     const view = await fetchForceCloseView(OUTLET, SHIFT, viewer);
-    expect(view).toMatchObject({ stage: "ready", witnessName: "Supervisor Dua" });
+    expect(view).toMatchObject({
+      stage: "ready",
+      witnessName: "Supervisor Dua",
+    });
   });
 
   it("refuses the counter or the cashier as witness before any PIN is sent", async () => {

@@ -61,10 +61,7 @@ import {
   submitBlindCount,
 } from "@/features/ws04-pos-kasir/shift-api";
 import { createCloseFlow } from "@/features/ws04-pos-kasir/shift-close-flow";
-import {
-  fetchOwnCountSummary,
-  forceCloseShift,
-} from "@/features/ws04-pos-kasir/shift-extra-api";
+import { fetchOwnCountSummary } from "@/features/ws04-pos-kasir/shift-extra-api";
 import {
   createMemoryOfflineBackend,
   setDefaultOfflineBackend,
@@ -458,13 +455,7 @@ describe("the count is kept per device and shift", () => {
   });
 });
 
-describe("force close", () => {
-  it("stays locked on the real wire (no contract yet)", async () => {
-    await expect(
-      forceCloseShift({ shiftId: SHIFT, note: "x".repeat(12) } as never),
-    ).rejects.toMatchObject({ status: 501 });
-  });
-});
+// The force close on the real wire: ./pos-force-close-wire.test.ts (O4).
 
 describe("O3: the close waits for the offline queue", () => {
   afterEach(() => setDefaultOfflineBackend(undefined));

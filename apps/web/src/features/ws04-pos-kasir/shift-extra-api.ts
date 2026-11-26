@@ -338,9 +338,7 @@ export async function forceCloseShift(
       "Tulis alasan penutupan paksa minimal 10 huruf.",
     );
   if (API_MOCK)
-    return runPosKasirMock((engine) =>
-      engine.forceClose({ ...input, note }),
-    );
+    return runPosKasirMock((engine) => engine.forceClose({ ...input, note }));
   const approval = readForceCloseApproval(outletId, input.shiftId);
   if (!approval || approval.stale)
     throw new ApiError(409, "COUNT_NOT_APPROVED", "Hitungan belum disetujui.");

@@ -669,9 +669,18 @@ export function ShiftApprovalScreen({ shiftId }: { shiftId: string }) {
             error={query.error}
             onRetry={() => void query.refetch()}
           />
-          <Button type="button" variant="outline" onClick={goBack}>
-            {t("posKasirSupervisor.back")}
-          </Button>
+          <div className="flex flex-wrap justify-center gap-2">
+            <Button type="button" variant="outline" onClick={goBack}>
+              {t("posKasirSupervisor.back")}
+            </Button>
+            {/* O4: the review is not on the server yet, the force close is. A
+                tablet that is lost or offline never locks the cafe. */}
+            {isContractPending(query.error) && (
+              <Button type="button" onClick={() => setForceClosing(true)}>
+                {t("posKasirSupervisor.force.closeForce")}
+              </Button>
+            )}
+          </div>
         </div>
       ) : (
         <PosTwoPane

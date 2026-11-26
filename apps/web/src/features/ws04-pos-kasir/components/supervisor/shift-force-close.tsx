@@ -8,12 +8,14 @@ import { FormField } from "@/components/ui/form-field";
 import { fieldClass, Input } from "@/components/ui/input";
 import { Money } from "@/components/ui/money";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Textarea } from "@/components/ui/textarea";
 import { useOutletClock } from "@/lib/tenant-context";
+import { forceCloseNoteValid } from "../../shift-extra-api";
 import {
   useForceCloseShift,
   useForceCloseView,
+  useForceCloseViewer,
   useForceCloseWitnesses,
-  useRequestOverride,
   useSubmitForcedCount,
   useWitnessForcedCount,
 } from "../../shift-hooks";
@@ -238,14 +240,9 @@ function CountStage({
           setOtherIdr(value);
         }}
       />
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Fact label={t("posKasirSupervisor.force.countedLabel")}>
-          <Money amount={counted} className="font-bold" aria-live="polite" />
-        </Fact>
-        <Fact label={t("posKasirSupervisor.force.reasonLabel")}>
-          {t("posKasirSupervisor.force.reasonValue")}
-        </Fact>
-      </div>
+      <Fact label={t("posKasirSupervisor.force.countedLabel")}>
+        <Money amount={counted} className="font-bold" aria-live="polite" />
+      </Fact>
       {confirmingZero && (
         <p role="status" className="text-base text-muted-foreground">
           {t("posKasirSupervisor.force.zeroConfirm")}
@@ -275,16 +272,20 @@ function WitnessStage({
   const t = useT();
   const pinId = useId();
   const witnessId = useId();
+  const viewer = useForceCloseViewer();
   const witnesses = useForceCloseWitnesses();
-  const requestOverride = useRequestOverride();
-  const witness = useWitnessForcedCount();
+  const witness = useWitnessForcedCount(view.cashierId);
   const [chosen, setChosen] = useState("");
   const [pin, setPin] = useState("");
   const [pinError, setPinError] = useState<string>();
   const [failure, setFailure] = useState<unknown>(null);
-  const options = witnesses.data ?? [];
+  // The witness is a third person: never the counter or the shift's cashier.
+  const options = (witnesses.data ?? []).filter(
+    (option) =>
+      option.userId !== viewer.userId && option.userId !== view.cashierId,
+  );
   const approverUserId = chosen || options[0]?.userId || "";
-  const pending = requestOverride.isPending || witness.isPending;
+  const pending = witness.isPending;
   const count = view.count;
 
   // A second Enter must not send a second override while one is in flight.
@@ -302,21 +303,19 @@ function WitnessStage({
     if (approverUserId === "" || !count) return;
     inFlight.current = true;
     try {
-      const override = await requestOverride.mutateAsync({
-        action: "cash_shift_close",
+      await witness.mutateAsync({
+        shiftId: view.shiftId,
+        countId: count.id,
         // Same value the server checks (pos-shift.service.ts, verifyCloseApproval
         // in close and force-close): |counted - expected|, the physical variance.
         // Held refund and void cash only change the booked difference, not this.
         valueIdr: Math.abs(count.varianceIdr),
-        reason: t("posKasirSupervisor.force.witnessReason"),
-        objectType: "cash_shift",
-        objectId: view.shiftId,
         approverUserId,
+        approverName:
+          options.find((option) => option.userId === approverUserId)?.name ??
+          "",
         pin,
-      });
-      await witness.mutateAsync({
-        shiftId: view.shiftId,
-        overrideId: override.overrideId,
+        reason: t("posKasirSupervisor.force.witnessReason"),
       });
     } catch (error) {
       setPin("");
@@ -438,16 +437,21 @@ function ReadyStage({
   onBack: () => void;
 }) {
   const t = useT();
+  const noteId = useId();
   const close = useForceCloseShift();
   const count = view.count;
   const variance = count?.varianceIdr ?? 0;
+  const [note, setNote] = useState("");
+  const [noteError, setNoteError] = useState<string>();
 
   function closeNow() {
     if (close.isPending) return;
-    close.mutate({
-      shiftId: view.shiftId,
-      note: t("posKasirSupervisor.force.reasonValue"),
-    });
+    // The supervisor writes why (O4: e.g. the tablet is lost); the API needs 10.
+    if (!forceCloseNoteValid(note)) {
+      setNoteError(t("posKasirSupervisor.force.noteTooShort"));
+      return;
+    }
+    close.mutate({ shiftId: view.shiftId, note });
   }
 
   return (
@@ -506,6 +510,22 @@ function ReadyStage({
           {view.witnessName}
         </Fact>
       </div>
+      <FormField
+        label={t("posKasirSupervisor.force.reasonLabel")}
+        id={noteId}
+        required
+        error={noteError}
+      >
+        <Textarea
+          value={note}
+          placeholder={t("posKasirSupervisor.force.notePlaceholder")}
+          onChange={(event) => {
+            setNote(event.target.value);
+            if (noteError) setNoteError(undefined);
+          }}
+          rows={3}
+        />
+      </FormField>
       {close.isError && (
         <ActionError
           title={t("posKasirSupervisor.force.closeFailed")}

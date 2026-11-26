@@ -25,6 +25,7 @@ import {
   fetchOwnCountSummary,
   fetchWitnesses,
 } from "./shift-extra-api";
+import type { ForceCloseViewer } from "./shift-extra-types";
 import type { OverrideAction } from "./types";
 
 // Every key carries the outlet: a cashier who switches outlet must never see
@@ -181,17 +182,22 @@ export const ownCountSummaryQuery = (outletId: string, shiftId: string) =>
     retry: false,
   });
 
-export const forceCloseViewQuery = (outletId: string, shiftId: string) =>
+export const forceCloseViewQuery = (
+  outletId: string,
+  shiftId: string,
+  viewer: ForceCloseViewer,
+) =>
   queryOptions({
     queryKey: posKasirKeys.forceClose(outletId, shiftId),
-    queryFn: () => fetchForceCloseView(shiftId),
+    queryFn: ({ signal }) =>
+      fetchForceCloseView(outletId, shiftId, viewer, signal),
     retry: false,
   });
 
 export const witnessesQuery = (outletId: string) =>
   queryOptions({
     queryKey: posKasirKeys.witnesses(outletId),
-    queryFn: () => fetchWitnesses(),
+    queryFn: () => fetchWitnesses(outletId),
     retry: false,
   });
 
