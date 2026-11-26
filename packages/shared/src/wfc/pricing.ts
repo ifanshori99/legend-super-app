@@ -11,10 +11,11 @@
 //   B1 = M / (S × H × o)                 B2 = A × (1 − c) / d
 //   peak floor / hour = max(B1, B2)      off-peak floor / hour = max(B1, B2 × o)
 //   contribution = seat fee net of tax + credit left − gateway fee
-//   credit left = credit − credit × c − credit × t / (1 + t)
+//   credit left = credit − credit × c − credit × r / (1 + r), r = t + s + t × s
 //
-// t is the tax inside the order the credit pays for (`WFC_FLOOR_SEAT_TAX_BP`)
-// plus the outlet's food and drink service charge when one is active: an order
+// t is the tax inside the order the credit pays for (`WFC_FLOOR_SEAT_TAX_BP`),
+// s the outlet's food and drink service charge when one is active (tax is
+// levied on base + service charge, so they compound): an order
 // paid with `wfc_credit` is taxed at full price, so that tax and service charge
 // leave the outlet out of the credit money (review K W1b no. 1).
 //
@@ -163,8 +164,11 @@ export function wfcContributionIdr(
   const seat = BigInt(split.seatFeeIdr);
   const credit = BigInt(split.creditIdr);
   const seatNet = (seat * BP) / (BP + BigInt(seatTaxBp));
-  // The credit's orders carry at least the seat's tax rate, plus service charge.
-  const creditTax = BigInt(seatTaxBp + rates.serviceChargeBp);
+  // The credit's orders carry at least the seat's tax rate, levied on the base
+  // plus service charge (compounded: t + s + t × s, rounded up).
+  const tax = BigInt(seatTaxBp);
+  const service = BigInt(rates.serviceChargeBp);
+  const creditTax = tax + service + ceilDiv(tax * service, BP);
   const creditLeft =
     credit -
     ceilDiv(credit * BigInt(settings.cogsBp), BP) -

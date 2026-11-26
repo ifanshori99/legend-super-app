@@ -102,8 +102,9 @@ describe("WFC price floor", () => {
       // add back the gateway fee to isolate the credit part
       Math.ceil((50_000 * 100) / 10_000);
     expect(creditOnly(0)).toBe(27_142);
-    // 5% service charge: 50.000 × 1.700 / 11.700 = 7.264,9 → 7.265.
-    expect(creditOnly(500)).toBe(50_000 - 17_500 - 7_265);
+    // 5% service charge, tax on top: r = 12% + 5% + 0,6% = 17,6%;
+    // 50.000 × 1.760 / 11.760 = 7.482,99 → 7.483.
+    expect(creditOnly(500)).toBe(50_000 - 17_500 - 7_483);
   });
 
   it("one rupiah under the floor is refused, at the floor is accepted", () => {
@@ -111,7 +112,7 @@ describe("WFC price floor", () => {
     const offPeakHour = { peakMinutes: 0, offPeakMinutes: 60 };
     expect(smallestSeatFee(EXAMPLE, 20_000, peakHour)).toBe(32_105);
     expect(smallestSeatFee(EXAMPLE, 20_000, offPeakHour)).toBe(10_583);
-    expect(smallestSeatFee(EXAMPLE, 20_000, peakHour, 500)).toBe(32_969);
+    expect(smallestSeatFee(EXAMPLE, 20_000, peakHour, 500)).toBe(33_068);
     // A large credit on a small seat fee: the credit's tax still counts.
     expect(smallestSeatFee(EXAMPLE, 60_000, peakHour)).toBe(7_963);
     const at = checkWfcSlotFloor(
@@ -123,7 +124,7 @@ describe("WFC price floor", () => {
     expect(at).toEqual({ floorIdr: 39_000, contributionIdr: 39_000, ok: true });
     for (const [seatFeeIdr, creditIdr, serviceChargeBp] of [
       [32_104, 20_000, 0],
-      [32_968, 20_000, 500],
+      [33_067, 20_000, 500],
       [7_962, 60_000, 0],
     ] as const)
       expect(

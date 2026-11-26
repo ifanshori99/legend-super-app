@@ -577,11 +577,11 @@ describe("review K W1b", () => {
     );
     const productId = await seedProduct(s);
     // Enough without service charge, Rp1 short with 5%.
-    expect(await failure(saveProduct(s, productId, 32_968))).toMatchObject({
+    expect(await failure(saveProduct(s, productId, 33_067))).toMatchObject({
       status: 422,
       code: "WFC_PRICE_BELOW_FLOOR",
     });
-    await saveProduct(s, productId, 32_969);
+    await saveProduct(s, productId, 33_068);
     expect((await switchOn(s, productId)).isActive).toBe(true);
   });
 
