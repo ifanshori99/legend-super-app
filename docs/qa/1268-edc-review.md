@@ -25,3 +25,17 @@ Terpenuhi: kunci advisory slip setelah kunci tagihan (urutan aman, tanpa deadloc
 
 ## Keputusan CTO 26 Nov
 Perbaiki P2 no. 1 (cek bankRef sebelum override + server tolak alasan berisi deret 13-19 digit) dan no. 2 (slip unik se-tenant, tanpa filter bank). Dari P3: kunci field slip selama kirim. P3 lain dicatat di bead .15 (indeks = kartu 0529 lanjutan).
+
+## Re-review 26 Nov (93476ba6b): LULUS, 0 P1, 0 P2
+
+Delta a42f230fd..93476ba6b (6 berkas). Test tidak dijalankan oleh reviewer.
+
+1. P2 no. 1 terpenuhi. `edcSlipRefProblem` (`payment-helpers.ts`, memakai `posStandaloneEdcSchema.shape.bankRef`) menutup `canSubmit` dan dicek ulang di awal `submit()`, sebelum `override.mutateAsync`: PAN tidak pernah masuk alasan override. Server: `createPosOverrideSchema` diberi refine (khusus `edc_standalone`, buang spasi dan `-`, tolak `\d{13,19}`). Route `device-pin.routes.ts:167` mem-parse skema yang sama, jadi 400 sebelum service; berlaku juga untuk `supervisor_phone`. Zod 4.6.6: `.refine` mempertahankan tipe, `defineEndpoint` tidak terganggu, dan tidak ada pemakaian `.shape` pada skema ini.
+2. P2 no. 2 terpenuhi. Filter `bank` dihapus, kunci menjadi `edc-slip:${slip}` se-tenant. Test baru membuktikan slip yang dibukukan lewat terminal BCA ditolak 409 di terminal Mandiri, tanpa tender.
+3. Keputusan CTO (P3 kunci field selama kirim) terpenuhi. `slipLocked` kini juga berlaku saat `record.isPending`; nominal, referensi, dan kode persetujuan read-only. Terminal adalah prop, bukan field.
+
+P3 baru (tidak menahan):
+- `refProblem` langsung tampil sejak karakter pertama (di bawah 6 karakter muncul "tidak valid"). Usul: tampilkan setelah panjang >= 6 atau saat blur.
+- Penolakan server hanya diuji di tingkat skema. Test HTTP 400 tanpa baris `pos_overrides` akan lebih kuat, tetapi route memakai skema yang sama.
+
+Bukti yang masih harus dijalankan sebelum gate: test terarah API `pos-edc-standalone`, `pos-payment-intent-resolve`, dan test override/device-pin yang memakai `createPosOverrideSchema`; web `pos-payment-intent.test.ts`; typecheck `@starter/api` dan `@starter/web` (shared berubah).
