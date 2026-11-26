@@ -49,3 +49,25 @@ Reviewer: architect (Opus), 26 Nov. Test tidak dijalankan reviewer. Hasil: **GAG
 4. KDS-07 `orders/:orderId/issues` boleh terbuka di cloud: hanya catatan cloud, tidak menulis baris milik edge.
 5. Risiko voucher lalu refund offline di edge: dicatat di kartu 567 (deteksi sekarang, cegah kemudian).
 6. Charge recovery/refund manual `requested` yang macet sesudah enroll dan `pos-session/end`: dicatat sebagai P3; runbook enroll F7 wajib menyelesaikan refund `requested` sebelum enroll.
+
+## Re-review 26 Nov (687f074d8)
+
+Reviewer: architect (Opus). Delta 89ac8f635..687f074d8. Isi merge int/rc2 090ea0a4e diabaikan; merge itu tidak mengubah route yang digerbang dan tidak menambah route tulis POS (hanya admin WFC). Test tidak dijalankan reviewer. Hasil: **LULUS** untuk merge.
+
+### Temuan lama
+1. W1 voucher: **tertutup**, sesuai Keputusan CTO no. 1.
+   - Test baru di `test/pos-write-on-edge-gate-recovery.test.ts`. Outletnya punya edge aktif dan request memakai Idempotency-Key.
+   - Approval dulu, lalu 201. Kirim ulang menghasilkan id dan kode yang sama, dan `apology_vouchers` hanya +1.
+   - Snapshot md5 tabel `orders`, `order_items`, `pos_orders`, `kitchen_tickets`, `pos_shifts`, dan `cash_movements` tidak berubah.
+2. W2 webhook delivery: **tertutup**, sesuai Keputusan CTO no. 2.
+   - Di `services/delivery-ingest.service.ts`, outlet beredge melewati jalur `storeWithoutInjection`: pesanan disimpan berstatus `received` dengan `orderId` null, tanpa `orders`/`pos_orders`/KDS, dan tanpa accept.
+   - Log hanya memuat id. Alert ke supervisor dan owner dikirim sekali per pesanan (hanya bila `!existing`).
+   - Kirim ulang pesanan yang sudah di-inject sebelum enroll tidak mencoba accept lagi.
+   - Tidak ada jalur lain yang meng-inject atau meng-accept: `autoAccept` tidak menjadwalkan retry, dan map-lines serta manual sudah 409.
+   - Cek memakai `posWritesOnEdge`, yang juga dipakai `assertPosWriteNotOnEdge`, jadi F3 tetap diubah di satu tempat.
+   - Test ada di `test/delivery-webhook-db.test.ts`: pesanan baru dan replay pesanan dari sebelum enroll.
+3. W3: kartu dicatat di commit (legend-8ltyz, legend-fzsru, legend-ojq20, legend-erfme). Keberadaannya di bd belum dicek reviewer.
+
+### Temuan baru (RENDAH, tidak menahan merge)
+- R4: test W1 memakai voucher mandiri. Varian `orderIssueId`, yang menyelesaikan issue dan menautkan voucher ke order, tidak diuji di outlet beredge. Keputusan CTO tidak memintanya; cukup dicatat di kartu 567 bersama risiko voucher lalu refund offline.
+- R5: pesanan yang di-inject di menit-menit sekitar enroll tetap ada di KDS cloud. Bump dan status di cloud sudah ditolak, jadi pesanan itu buntu sampai platform membatalkannya. Masuk runbook enroll F7: tutup channel delivery dan selesaikan pesanan terbuka sebelum enroll.

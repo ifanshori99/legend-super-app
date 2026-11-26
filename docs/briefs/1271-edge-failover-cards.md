@@ -154,3 +154,4 @@ high: F3 access). Second opinion Codex once for the whole area (xhigh), before t
 - F3: isi `failover_window_id` di semua jalur insert order/shift, termasuk split, merge, pindah bill. Pakai konstanta event `pos_failover_window.state` / `.closed`.
 - F4: salinan window di edge memakai `idempotency_key` = id window; tabel window masuk `EDGE_REQUIRED_TABLES`.
 - F5: write-off menolak run F; celah nomor F dilaporkan, tidak dihapuskan.
+- F7 runbook enroll (dari review E3b): sebelum enroll edge, tutup channel delivery dan selesaikan refund/charge recovery `requested`; fitur table-links, order-customer, delivery, recovery belum tersedia di outlet beredge (legend-8ltyz, legend-fzsru, legend-ojq20, legend-y0qg5).
