@@ -75,6 +75,15 @@ function primitiveQuery(value: unknown): TransportRequest["query"] {
   const query: NonNullable<TransportRequest["query"]> = {};
   for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
     if (item === undefined || item === null) continue;
+    // A query schema that splits a comma list (`status=a,b`) parses to an
+    // array; it goes out again as the same comma list (brief 1268 W5).
+    if (
+      Array.isArray(item) &&
+      item.every((entry) => typeof entry === "string")
+    ) {
+      query[key] = item.join(",");
+      continue;
+    }
     if (
       typeof item !== "string" &&
       typeof item !== "number" &&

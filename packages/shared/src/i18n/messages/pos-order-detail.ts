@@ -28,6 +28,8 @@ export const posOrderDetailMessages = {
     title: "Rincian pesanan",
     count: "{count} item",
     noItems: "Pesanan ini belum punya item.",
+    countHeld: "{count} item · {held} ditahan",
+    countAllSent: "{count} item · Semua sudah dikirim",
   },
   notice: {
     title: "Item dibatalkan di dapur",
@@ -48,6 +50,34 @@ export const posOrderDetailMessages = {
     sent: "Dikirim ke dapur",
     kitchenVoided: "Dibatalkan di dapur",
     voided: "Dibatalkan",
+    held: "Ditahan",
+  },
+  fire: {
+    action: "Kirim ke dapur",
+    confirmTitle: "Kirim {count} item ke dapur?",
+    confirmHint:
+      "Pesanan #{number}. Setelah dikirim, item tidak bisa ditahan lagi.",
+    confirm: "Kirim {count} item",
+    back: "Kembali",
+    sentTitle: "{count} item dikirim ke dapur",
+    unclearTitle: "Belum pasti terkirim",
+    unclearHint:
+      "Jawaban server tidak diterima. Tekan Periksa lagi; permintaan yang sama diulang, jadi item tidak terkirim dua kali.",
+    retry: "Periksa lagi",
+    errorTitle: "Item belum terkirim",
+    completeHint: "Pesanan baru bisa diselesaikan setelah semua item dikirim.",
+  },
+  pay: {
+    action: "Lanjut ke pembayaran",
+    finish: "Selesaikan dan cetak struk",
+    continueAtCashier: "Lanjutkan di kasir",
+    unpaid: "Belum lunas",
+    paid: "Lunas",
+  },
+  oldLink: {
+    pill: "Tautan lama",
+    title: "Sebagian dibayar lewat tautan lama",
+    hint: "Daftar pesanan sudah menghitung pembayaran tautan ini: sisa tagihan {amount}. Periksa pembayaran tautan sebelum menagih lagi.",
   },
   summary: {
     title: "Ringkasan tagihan",
