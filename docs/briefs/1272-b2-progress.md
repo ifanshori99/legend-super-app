@@ -17,5 +17,6 @@ Brief: `legend/docs/briefs/1272-b2-brief.md`. Cabang `ws/1272-b2`, migrasi 0541 
 7. Test gagal-dulu: `src/test/edc-bridge-cloud.test.ts` + emulator `src/test/helpers/edc-bridge-emulator.ts`.
 
 ## Status
-- Sudah (WIP): skema `db/schema/edc-bridge-devices.ts` (perangkat) dan `edc-bridge.ts` (lease, command; dipisah supaya tidak ada impor melingkar dengan payment-admin), kolom terminal `connection_kind`/`bridge_device_id`/`link_port`/`link_baud_rate` + CHECK, `bri` di CHECK terminal, edc_transactions, edc_settlement_files, ekspor `schema/index.ts`.
-- Sisa: SQL migrasi 0541 (+ RLS, fungsi `app.edc_bridge_resolve_token`, custom.sql), BRI di enum shared, langkah 3-7 rencana.
+- Sudah (7942a1552): migrasi 0541 (tabel perangkat/lease/command, kolom terminal, BRI, RLS, `app.edc_bridge_resolve_token`), `registry.get(bank, terminal)` + `edcNotSentError` di agent, `bridge-codec.ts`, `bridge-provider.ts`, `cloud-runtime.ts`, `resolver.ts`, services request/payment-options pakai resolver, release sesudah impor X2, `routes/edc-bridge.routes.ts` (HTTP perangkat + WSS), wiring server.ts dengan flag baru `EDC_BRIDGE_ENABLED` (EDC_AGENT_ENABLED dijaga mati di single-vm oleh check-refund-flag.sh, jadi tidak dipakai ulang).
+- Sedang: typecheck api, lalu test `src/test/edc-bridge-cloud.test.ts` + emulator `src/test/helpers/edc-bridge-emulator.ts`.
+- Sisa: test syarat wajib, catatan "Provider cloud" di `docs/design/edc-bridge-protocol.md`, pra-gate (prettier/eslint/typecheck web), kode pasang 8 karakter (belum; token diterbitkan langsung).
