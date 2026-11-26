@@ -49,6 +49,7 @@ import {
   businessDateOf,
   businessDayRange,
   CoreError,
+  type BusinessDayClock,
   createUlid,
   idr,
   toIsoDateTime,
@@ -336,12 +337,33 @@ type RecapMode = "cloud" | "edgeComparable" | "edgeMirror";
 type OutletReceiptGap = { prefix: string; deviceId: string; missing: number[] };
 
 /**
+ * 1271 F5 (re-review P3): the business date a missing F number belongs to:
+ * the nearest issued receipt above it (the number was taken before that
+ * sale), else the date the run last moved (an end gap: never a date the
+ * receipt below it may already have closed), else the nearest issued receipt
+ * below it. Null when the run has nothing to date it by.
+ */
+export function failoverGapBusinessDate(
+  missing: number,
+  issued: readonly { sequenceNumber: number; businessDate: string }[],
+  movedAt: Date | null,
+  clock: BusinessDayClock,
+): string | null {
+  const sorted = [...issued].sort(
+    (a, b) => a.sequenceNumber - b.sequenceNumber,
+  );
+  const above = sorted.find((row) => row.sequenceNumber > missing);
+  if (above) return String(above.businessDate);
+  if (movedAt) return businessDateOf(movedAt, clock);
+  const below = sorted.filter((row) => row.sequenceNumber < missing).at(-1);
+  return below ? String(below.businessDate) : null;
+}
+
+/**
  * 1271 F5 (CTO 27 Nov): the missing numbers of F (failover) runs that belong
  * to `businessDate`. An F number is issued in the sale's own transaction, so a
  * gap cannot hide a paid sale: it never blocks Tutup Hari and is never written
- * off, it is counted on its own date only. A missing number takes the date of
- * the run's nearest issued receipt below it, else above it, else the date the
- * run last moved.
+ * off, it is counted on its own date only (see failoverGapBusinessDate).
  */
 async function failoverGapsOnDate(
   tx: Tx,
@@ -401,18 +423,13 @@ async function failoverGapsOnDate(
   const clock = outletBusinessDayClock(outlet);
   const result: OutletReceiptGap[] = [];
   for (const run of runs) {
-    const own = issued
-      .filter((row) => row.prefix === run.prefix)
-      .sort((a, b) => a.sequenceNumber - b.sequenceNumber);
+    const own = issued.filter((row) => row.prefix === run.prefix);
     const movedAt = moved.find((row) => row.prefix === run.prefix)?.updatedAt;
-    const dateOf = (n: number): string | null => {
-      const below = own.filter((row) => row.sequenceNumber < n).at(-1);
-      const above = own.find((row) => row.sequenceNumber > n);
-      const date = below?.businessDate ?? above?.businessDate;
-      if (date) return String(date);
-      return movedAt ? businessDateOf(movedAt, clock) : null;
-    };
-    const missing = run.missing.filter((n) => dateOf(n) === businessDate);
+    const missing = run.missing.filter(
+      (n) =>
+        failoverGapBusinessDate(n, own, movedAt ?? null, clock) ===
+        businessDate,
+    );
     if (missing.length > 0) result.push({ ...run, missing });
   }
   return result;

@@ -65,6 +65,7 @@ import {
 import {
   closePosDay,
   computeEdgeComparableRecap,
+  failoverGapBusinessDate,
 } from "../services/pos-day.service.ts";
 import { receiptGapsForOutletFast } from "../services/pos-receipt.service.ts";
 import { writeOffReceiptNumber } from "../services/pos-receipt-writeoff.service.ts";
@@ -930,14 +931,31 @@ describe("1271 F5 failover sales after the cloud closed a date (review F5 #5)", 
   });
 });
 
-/** An F run of outletB with receipts 1 and 3 on `date` and number 2 missing. */
-async function seedFailoverGap(date: string): Promise<void> {
+/**
+ * An F run with receipts 1 and 3 on `date`; 2 (and 4 when `lastNumber` is 4)
+ * missing. The run last moved on `movedDate` (default `date`).
+ */
+async function seedFailoverGap(input: {
+  outlet: string;
+  prefix: string;
+  date: string;
+  lastNumber: 3 | 4;
+  movedDate?: string;
+}): Promise<void> {
+  const { outlet, prefix, date } = input;
   const deviceId = randomUUID();
   const [sequence] = await q<{ id: string }>(
     `INSERT INTO receipt_sequences
-       (tenant_id, outlet_id, device_id, prefix, series, last_number)
-     VALUES ($1, $2, $3, 'F1', 'failover', 3) RETURNING id`,
-    [tenantId, outletB, deviceId],
+       (tenant_id, outlet_id, device_id, prefix, series, last_number, updated_at)
+     VALUES ($1, $2, $3, $4, 'failover', $5, $6) RETURNING id`,
+    [
+      tenantId,
+      outlet,
+      deviceId,
+      prefix,
+      input.lastNumber,
+      at(input.movedDate ?? date, "05:00"),
+    ],
     { replica: true },
   );
   for (const ordinal of [1, 3]) {
@@ -952,7 +970,7 @@ async function seedFailoverGap(date: string): Promise<void> {
       [
         orderId,
         tenantId,
-        outletB,
+        outlet,
         `FG-${orderId.slice(0, 8)}`,
         date,
         at(date, "05:00"),
@@ -966,11 +984,11 @@ async function seedFailoverGap(date: string): Promise<void> {
        VALUES ($1, $2, $3, $4, $5, $6, $7, 'issued', $8, '{}'::jsonb)`,
       [
         tenantId,
-        outletB,
+        outlet,
         orderId,
         sequence!.id,
         deviceId,
-        `F1-00000${ordinal}`,
+        `${prefix}-00000${ordinal}`,
         ordinal,
         at(date, "05:00"),
       ],
@@ -990,7 +1008,15 @@ const closeB = (businessDate: string) =>
 describe("1271 F5 F-run numbers (review K F1, CTO 27 Nov)", () => {
   it("an F number is never written off; its gap counts on its own date only, alerts the owner and blocks no Tutup Hari", async () => {
     const gapDate = freshDate();
-    await seedFailoverGap(gapDate);
+    const laterDate = freshDate();
+    // 2 sits below receipt 3 (its date); 4 is the run's end (the date it moved).
+    await seedFailoverGap({
+      outlet: outletB,
+      prefix: "F1",
+      date: gapDate,
+      lastNumber: 4,
+      movedDate: laterDate,
+    });
     await expect(
       writeOffReceiptNumber(
         scopeOf([outletB]),
@@ -1023,7 +1049,7 @@ describe("1271 F5 F-run numbers (review K F1, CTO 27 Nov)", () => {
         receiptGapsForOutletFast(tx, scopeOf([outletB]), outletB),
       );
       expect(gaps).toEqual([
-        expect.objectContaining({ prefix: "F1", missing: [2] }),
+        expect.objectContaining({ prefix: "F1", missing: [2, 4] }),
       ]);
 
       // The gap's own date: closed, the gap counted, the owner alerted.
@@ -1035,13 +1061,85 @@ describe("1271 F5 F-run numbers (review K F1, CTO 27 Nov)", () => {
       );
       expect(alerts.map((row) => row.user_id)).toContain(ownerUserId);
 
-      // Another date: the old F gap is not counted again.
-      const later = await closeB(freshDate());
-      expect(later.unsyncedReceiptCount).toBe(0);
+      // The end gap belongs to the date the run last moved, never to the
+      // already closed date of the receipt below it.
+      const later = await closeB(laterDate);
+      expect(later.unsyncedReceiptCount).toBe(1);
 
-      // Review F5 #2: the edge's Tutup Hari is not blocked by an F gap either.
+      // Review F5 #2: the edge's Tutup Hari is not blocked by an F gap either,
+      // and an old F gap is not counted again on another date.
       const onEdge = await asEdge(() => closeB(freshDate()));
       expect(onEdge.status).toBe("closed");
+      expect(onEdge.unsyncedReceiptCount).toBe(0);
+    } finally {
+      setPosOutletReceiptGapsPort(null);
+    }
+  });
+});
+
+describe("1271 F5 date of a missing F number (re-review P3)", () => {
+  const issued = [
+    { sequenceNumber: 1, businessDate: "2025-02-01" },
+    { sequenceNumber: 3, businessDate: "2025-02-02" },
+  ];
+  const clock = { timeZone: "Asia/Jakarta", cutoff: "04:00" };
+  it("takes the nearest issued receipt above first", () => {
+    expect(
+      failoverGapBusinessDate(
+        2,
+        issued,
+        new Date("2025-02-09T05:00:00Z"),
+        clock,
+      ),
+    ).toBe("2025-02-02");
+  });
+  it("then the date the run last moved (an end gap)", () => {
+    expect(
+      failoverGapBusinessDate(
+        4,
+        issued,
+        new Date("2025-02-09T05:00:00Z"),
+        clock,
+      ),
+    ).toBe("2025-02-09");
+  });
+  it("then the nearest issued receipt below", () => {
+    expect(failoverGapBusinessDate(4, issued, null, clock)).toBe("2025-02-02");
+    expect(failoverGapBusinessDate(1, [], null, clock)).toBeNull();
+  });
+});
+
+describe("1271 F5 F-gap alert from the edge mirror", () => {
+  it("alerts the owner once, however often the edge redelivers its close", async () => {
+    const date = freshDate();
+    const deviceId = randomUUID();
+    await deliver([...edgeShift(date, deviceId), edgeSale(date, deviceId)]);
+    const frozen = await edgeRecap(date);
+    await seedFailoverGap({
+      outlet: outletA,
+      prefix: "F7",
+      date,
+      lastNumber: 3,
+    });
+    setPosOutletReceiptGapsPort((tx, context, { outletId }) =>
+      receiptGapsForOutletFast(tx, context, outletId),
+    );
+    try {
+      const event = dayClosed(date, frozen);
+      await deliver([event]);
+      expect(await ledger("day", event.aggregateId)).toMatchObject({
+        state: "ingested",
+      });
+      expect((await closesOf(date))[0]?.recap.unsyncedReceiptCount).toBe(1);
+      await redeliver([event]);
+      await redeliver([event]);
+      expect(await closesOf(date)).toHaveLength(1);
+      const alerts = await q<{ n: number }>(
+        `SELECT count(*)::int AS n FROM notifications
+          WHERE tenant_id = $1 AND outlet_id = $2 AND user_id = $3 AND title LIKE '%mode cloud%'`,
+        [tenantId, outletA, ownerUserId],
+      );
+      expect(alerts[0]!.n).toBe(1);
     } finally {
       setPosOutletReceiptGapsPort(null);
     }
