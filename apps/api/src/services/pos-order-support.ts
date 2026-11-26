@@ -1354,7 +1354,14 @@ async function tenderVoidReasonsOf(
   tenders: readonly TenderRow[],
 ): Promise<Map<string, PosTenderVoidReason>> {
   const reasons = new Map<string, PosTenderVoidReason>();
-  if (!tenders.some((t) => t.status === "voided" && t.method === "qris"))
+  // 1269 C3a: a cashier VA / e-wallet code is voided like the QR.
+  if (
+    !tenders.some(
+      (t) =>
+        t.status === "voided" &&
+        (t.method === "qris" || t.method === "va" || t.method === "ewallet"),
+    )
+  )
     return reasons;
   const events = await tx
     .select({ payload: orderEvents.payload })
