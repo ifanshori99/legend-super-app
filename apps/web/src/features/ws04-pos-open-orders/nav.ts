@@ -10,7 +10,11 @@ const nav: AreaNavEntry[] = [
     to: "/pos/pesanan",
     icon: ClipboardList,
     order: 29.2,
-    anyPermission: ["pos.sale.create", "pos.payment.accept", "pos.void.request"],
+    anyPermission: [
+      "pos.sale.create",
+      "pos.payment.accept",
+      "pos.void.request",
+    ],
   },
 ];
 

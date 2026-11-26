@@ -351,6 +351,7 @@ import { Route as OpsPosBayarOrderIdRouteImport } from './routes/_ops/pos.bayar.
 import { Route as OpsPosCaptainIndexRouteImport } from './routes/_ops/pos.captain.index'
 import { Route as OpsPosCaptainPanggilanRouteImport } from './routes/_ops/pos.captain.panggilan'
 import { Route as OpsPosMejaIndexRouteImport } from './routes/_ops/pos.meja.index'
+import { Route as OpsPosPesananIndexRouteImport } from './routes/_ops/pos.pesanan.index'
 import { Route as OpsPosShiftIndexRouteImport } from './routes/_ops/pos.shift.index'
 import { Route as OpsPosShiftTutupRouteImport } from './routes/_ops/pos.shift.tutup'
 import { Route as OpsPosTagihSelisihChargeIdRouteImport } from './routes/_ops/pos.tagih-selisih.$chargeId'
@@ -2309,6 +2310,11 @@ const OpsPosMejaIndexRoute = OpsPosMejaIndexRouteImport.update({
   path: '/pos/meja/',
   getParentRoute: () => OpsRoute,
 } as any)
+const OpsPosPesananIndexRoute = OpsPosPesananIndexRouteImport.update({
+  id: '/pos/pesanan/',
+  path: '/pos/pesanan/',
+  getParentRoute: () => OpsRoute,
+} as any)
 const OpsPosShiftIndexRoute = OpsPosShiftIndexRouteImport.update({
   id: '/pos/shift/',
   path: '/pos/shift/',
@@ -2948,6 +2954,7 @@ export interface FileRoutesByFullPath {
   '/operasional/peralatan/': typeof OpsOperasionalPeralatanIndexRoute
   '/pos/captain/': typeof OpsPosCaptainIndexRoute
   '/pos/meja/': typeof OpsPosMejaIndexRoute
+  '/pos/pesanan/': typeof OpsPosPesananIndexRoute
   '/pos/shift/': typeof OpsPosShiftIndexRoute
   '/platform/tenant/': typeof PlatformPlatformTenantIndexRoute
   '/t/$token/bayar/$orderId': typeof CustomerTTokenBayarOrderIdRoute
@@ -3328,6 +3335,7 @@ export interface FileRoutesByTo {
   '/operasional/peralatan': typeof OpsOperasionalPeralatanIndexRoute
   '/pos/captain': typeof OpsPosCaptainIndexRoute
   '/pos/meja': typeof OpsPosMejaIndexRoute
+  '/pos/pesanan': typeof OpsPosPesananIndexRoute
   '/pos/shift': typeof OpsPosShiftIndexRoute
   '/platform/tenant': typeof PlatformPlatformTenantIndexRoute
   '/t/$token/bayar/$orderId': typeof CustomerTTokenBayarOrderIdRoute
@@ -3723,6 +3731,7 @@ export interface FileRoutesById {
   '/_ops/operasional/peralatan/': typeof OpsOperasionalPeralatanIndexRoute
   '/_ops/pos/captain/': typeof OpsPosCaptainIndexRoute
   '/_ops/pos/meja/': typeof OpsPosMejaIndexRoute
+  '/_ops/pos/pesanan/': typeof OpsPosPesananIndexRoute
   '/_ops/pos/shift/': typeof OpsPosShiftIndexRoute
   '/_platform/platform/tenant/': typeof PlatformPlatformTenantIndexRoute
   '/_customer/t/$token/bayar/$orderId': typeof CustomerTTokenBayarOrderIdRoute
@@ -4109,6 +4118,7 @@ export interface FileRouteTypes {
     | '/operasional/peralatan/'
     | '/pos/captain/'
     | '/pos/meja/'
+    | '/pos/pesanan/'
     | '/pos/shift/'
     | '/platform/tenant/'
     | '/t/$token/bayar/$orderId'
@@ -4489,6 +4499,7 @@ export interface FileRouteTypes {
     | '/operasional/peralatan'
     | '/pos/captain'
     | '/pos/meja'
+    | '/pos/pesanan'
     | '/pos/shift'
     | '/platform/tenant'
     | '/t/$token/bayar/$orderId'
@@ -4883,6 +4894,7 @@ export interface FileRouteTypes {
     | '/_ops/operasional/peralatan/'
     | '/_ops/pos/captain/'
     | '/_ops/pos/meja/'
+    | '/_ops/pos/pesanan/'
     | '/_ops/pos/shift/'
     | '/_platform/platform/tenant/'
     | '/_customer/t/$token/bayar/$orderId'
@@ -7345,6 +7357,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof OpsPosMejaIndexRouteImport
       parentRoute: typeof OpsRoute
     }
+    '/_ops/pos/pesanan/': {
+      id: '/_ops/pos/pesanan/'
+      path: '/pos/pesanan'
+      fullPath: '/pos/pesanan/'
+      preLoaderRoute: typeof OpsPosPesananIndexRouteImport
+      parentRoute: typeof OpsRoute
+    }
     '/_ops/pos/shift/': {
       id: '/_ops/pos/shift/'
       path: '/pos/shift'
@@ -8493,6 +8512,7 @@ interface OpsRouteChildren {
   OpsOperasionalPeralatanIndexRoute: typeof OpsOperasionalPeralatanIndexRoute
   OpsPosCaptainIndexRoute: typeof OpsPosCaptainIndexRoute
   OpsPosMejaIndexRoute: typeof OpsPosMejaIndexRoute
+  OpsPosPesananIndexRoute: typeof OpsPosPesananIndexRoute
   OpsPosShiftIndexRoute: typeof OpsPosShiftIndexRoute
   OpsOperasionalChecklistTemplateTemplateIdRoute: typeof OpsOperasionalChecklistTemplateTemplateIdRoute
   OpsPosPesananOrderIdKoreksiRoute: typeof OpsPosPesananOrderIdKoreksiRoute
@@ -8530,6 +8550,7 @@ const OpsRouteChildren: OpsRouteChildren = {
   OpsOperasionalPeralatanIndexRoute: OpsOperasionalPeralatanIndexRoute,
   OpsPosCaptainIndexRoute: OpsPosCaptainIndexRoute,
   OpsPosMejaIndexRoute: OpsPosMejaIndexRoute,
+  OpsPosPesananIndexRoute: OpsPosPesananIndexRoute,
   OpsPosShiftIndexRoute: OpsPosShiftIndexRoute,
   OpsOperasionalChecklistTemplateTemplateIdRoute:
     OpsOperasionalChecklistTemplateTemplateIdRoute,

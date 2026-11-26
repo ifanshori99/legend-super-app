@@ -95,7 +95,7 @@ export function CashierMainScreen() {
     ojolRef: "",
   });
   // The phone view lives in the URL (`?v=keranjang`), so Back returns to the menu.
-  const { v } = useSearch({ from: "/_ops/pos/kasir" });
+  const { v, ditahan } = useSearch({ from: "/_ops/pos/kasir" });
   const view = v === "keranjang" ? "cart" : "menu";
   // Whether the cart view was opened by a push from this screen: then "back to
   // menu" is a real history Back; a cart opened directly (deep link) is replaced.
@@ -121,6 +121,17 @@ export function CashierMainScreen() {
   };
   const [pickedItem, setPickedItem] = useState<MenuItem | null>(null);
   const [parkedOpen, setParkedOpen] = useState(false);
+  // "Lanjutkan" on the open orders list (`?ditahan=1`) opens the parked sheet
+  // once; the flag leaves the URL so a refresh does not open it again.
+  useEffect(() => {
+    if (ditahan !== "1") return;
+    setParkedOpen(true);
+    void navigate({
+      to: "/pos/kasir",
+      search: (prev) => ({ ...prev, ditahan: undefined }),
+      replace: true,
+    });
+  }, [ditahan, navigate]);
   const [fieldError, setFieldError] = useState<ChannelDetailError>(null);
   const [fieldErrorToken, setFieldErrorToken] = useState(0);
   // The lines the cashier just removed (newest last), kept briefly so "Urungkan"
