@@ -20,7 +20,15 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+} from "vitest";
 import {
   createUlid,
   outletIdSchema,
@@ -396,7 +404,15 @@ async function openWindow(date: string): Promise<string> {
        (id, tenant_id, outlet_id, edge_node_id, status, reason, idempotency_key,
         activated_by, business_date_from)
      VALUES ($1, $2, $3, $4, 'active', 'Mini PC mati', $5, $6, $7)`,
-    [id, tenantId, outletA, node.scope.edgeNodeId, `fo-${id}`, supervisorId, date],
+    [
+      id,
+      tenantId,
+      outletA,
+      node.scope.edgeNodeId,
+      `fo-${id}`,
+      supervisorId,
+      date,
+    ],
   );
   return id;
 }
@@ -463,7 +479,14 @@ async function failoverSale(
         status, business_date, placed_at)
      VALUES ($1, $2, $3, $4, 'pos', 'takeaway', 'pay_first', 30000, 0, 0, 0, 0, 30000,
              'completed', $5, $6)`,
-    [orderId, tenantId, outletA, `F-${orderId.slice(0, 8)}`, date, at(date, "05:00")],
+    [
+      orderId,
+      tenantId,
+      outletA,
+      `F-${orderId.slice(0, 8)}`,
+      date,
+      at(date, "05:00"),
+    ],
     { replica: true },
   );
   await q(
@@ -517,7 +540,7 @@ async function edgeRecap(date: string): Promise<Payload> {
 function dayClosed(date: string, frozen: Payload): EventEnvelope {
   const id = randomUUID();
   const closedAt = at(date, "15:00");
-  const recap = {
+  const recap: Payload = {
     ...frozen,
     id,
     businessDate: date,
@@ -575,6 +598,19 @@ beforeAll(async () => {
   const authenticated = await authenticateEdgeCredential(registered.credential);
   if (!authenticated) throw new Error("Edge node did not authenticate");
   node = authenticated;
+});
+
+afterEach(async () => {
+  // A failed test must not leave the outlet's one open window behind.
+  await q(
+    `UPDATE outlet_failover_windows
+        SET status = 'closed', business_date_to = coalesce(business_date_to, business_date_from),
+            return_started_at = coalesce(return_started_at, now()),
+            return_started_by = coalesce(return_started_by, activated_by), closed_at = now()
+      WHERE tenant_id = $1 AND status IN ('active', 'returning')`,
+    [tenantId],
+    { replica: true },
+  );
 });
 
 beforeEach(() => {
@@ -800,10 +836,8 @@ describe("1271 F5 cloud close during the window", () => {
     expect(ingest!.late_business_date! > date).toBe(true);
 
     await closeWindow(windowId, date);
-    const event = dayClosed(date, {
-      ...(await edgeRecap(date)),
-      totalSalesIdr: 50000,
-    });
+    // The edge's own close of that day (a valid recap; refused before any compare).
+    const event = dayClosed(date, await edgeRecap(date));
     await deliver([event]);
     expect(await ledger("day", event.aggregateId)).toMatchObject({
       state: "refused",
@@ -833,7 +867,10 @@ describe("1271 F5 F-run numbers (review K F1)", () => {
           reason: "Struk hilang saat mode cloud",
         },
       ),
-    ).rejects.toMatchObject({ code: "CONFLICT" });
+    ).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: expect.stringContaining("(F)"),
+    });
     expect(
       (
         await q<{ n: number }>(

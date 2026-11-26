@@ -95,6 +95,7 @@ import { withTenant } from "../db/tenant.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { outletTarget } from "./device-pin-support.ts";
+import { activeFailoverWindow } from "./edge-failover-window.ts";
 import { revokeActingStaffForOutlet } from "./pos-acting-staff-revoke.ts";
 import { reportablePosOrders } from "./device-training.ts";
 import { orderRevenueSplit } from "./order-revenue.ts";
@@ -316,6 +317,19 @@ function newDevice(deviceId: string): DeviceAcc {
   };
 }
 
+/**
+ * Which rows a recap reads. `cloud`: every row (live view, cloud Tutup Hari).
+ * `edgeComparable` (1269 E3): what the edge froze, so no late adjustments, no
+ * failover rows (1271 F5, D1: the edge never had them) and no receipt gaps.
+ * `edgeMirror` (1271 F5, D5): the stored recap of an edge close whose date has
+ * failover rows: the comparable rows plus the failover rows; only F-run gaps
+ * (the edge reported its own).
+ */
+type RecapMode = "cloud" | "edgeComparable" | "edgeMirror";
+
+/** 1271 D3: the prefix of a failover (F) run, reserved both ways. */
+const FAILOVER_PREFIX = /^F[0-9]{1,4}$/;
+
 /** The recap of one business date, computed live from the rows (status open). */
 async function computeRecap(
   tx: Tx,
@@ -324,17 +338,24 @@ async function computeRecap(
   outletId: OutletId,
   businessDate: string,
   now: Date,
-  options: { edgeComparable?: boolean } = {},
+  mode: RecapMode = "cloud",
 ): Promise<EndOfDayRecap> {
   const tenantId = context.tenant.tenantId;
+  const edgeRows = mode !== "cloud";
   // 1269 E3: late adjustments (legend-k0i8) belong to this open day in the
   // cloud but are not in the recap the edge froze for it.
-  const notLateOrder = options.edgeComparable
+  const notLateOrder = edgeRows
     ? sql`NOT EXISTS (SELECT 1 FROM ${edgeOrderIngests} WHERE ${edgeOrderIngests.tenantId} = ${orders.tenantId} AND ${edgeOrderIngests.orderId} = ${orders.id} AND ${edgeOrderIngests.lateBusinessDate} IS NOT NULL)`
     : undefined;
-  const notLateShift = options.edgeComparable
+  const notLateShift = edgeRows
     ? sql`NOT EXISTS (SELECT 1 FROM ${edgePosIngests} WHERE ${edgePosIngests.tenantId} = ${posShifts.tenantId} AND ${edgePosIngests.kind} = 'shift' AND ${edgePosIngests.aggregateId} = ${posShifts.id} AND ${edgePosIngests.lateBusinessDate} IS NOT NULL)`
     : undefined;
+  // 1271 F5: failover orders (and their voids and refunds) and failover shifts
+  // are cloud-only; the edge recap never holds them.
+  const notFailoverOrder =
+    mode === "edgeComparable" ? isNull(posOrders.failoverWindowId) : undefined;
+  const notFailoverShift =
+    mode === "edgeComparable" ? isNull(posShifts.failoverWindowId) : undefined;
   const range = businessDayRange(
     businessDate as never,
     outletBusinessDayClock(outlet),
@@ -391,6 +412,7 @@ async function computeRecap(
         eq(orders.status, "completed"),
         reportablePosOrders(),
         notLateOrder,
+        notFailoverOrder,
       ),
     );
   const channels = new Map<string, { orderCount: number; totalIdr: number }>();
@@ -457,6 +479,7 @@ async function computeRecap(
         eq(orders.status, "completed"),
         reportablePosOrders(),
         notLateOrder,
+        notFailoverOrder,
       ),
     )
     .groupBy(posOrderTenders.method);
@@ -526,11 +549,12 @@ async function computeRecap(
             lt(posOrderVoids.voidedAt, range.end),
             isNull(edgeOrderIngests.lateVoidBusinessDate),
           ),
-          options.edgeComparable
+          edgeRows
             ? undefined
             : eq(edgeOrderIngests.lateVoidBusinessDate, businessDate),
         ),
         reportablePosOrders(),
+        notFailoverOrder,
       ),
     );
   // legend-vet9d: a DP order is never voided (voidPosOrder refuses it); a void
@@ -620,6 +644,7 @@ async function computeRecap(
         gte(posOrderRefunds.refundedAt, range.start),
         lt(posOrderRefunds.refundedAt, range.end),
         reportablePosOrders(),
+        notFailoverOrder,
       ),
     );
   for (const row of refunds) {
@@ -692,6 +717,7 @@ async function computeRecap(
         gte(posOrderRefunds.refundedAt, range.start),
         lt(posOrderRefunds.refundedAt, range.end),
         reportablePosOrders(),
+        notFailoverOrder,
       ),
     );
   for (const row of depositRows) {
@@ -775,6 +801,7 @@ async function computeRecap(
         eq(posShifts.outletId, outletId),
         eq(posShifts.businessDate, businessDate),
         notLateShift,
+        notFailoverShift,
       ),
     );
   for (const row of shifts) {
@@ -822,6 +849,7 @@ async function computeRecap(
         eq(cashMovementOutcomes.outcome, "expired"),
         eq(posShifts.businessDate, businessDate),
         notLateShift,
+        notFailoverShift,
       ),
     )
     .groupBy(posShifts.deviceId);
@@ -858,9 +886,13 @@ async function computeRecap(
   const sum = (pick: (device: DeviceAcc) => number) =>
     deviceRows.reduce((total, device) => total + pick(device), 0);
   // legend-21c8n: the same outlet-wide numbers RECEIPT_SEQUENCE_GAP names.
-  const receiptGaps = options.edgeComparable
-    ? []
-    : await posOutletReceiptGapsPort()(tx, context, { outletId });
+  const receiptGaps =
+    mode === "edgeComparable"
+      ? []
+      : (await posOutletReceiptGapsPort()(tx, context, { outletId })).filter(
+          // Review K F1: an F-run gap is reported, never written off.
+          (run) => mode === "cloud" || FAILOVER_PREFIX.test(run.prefix),
+        );
   const unsyncedReceiptCount = receiptGaps.reduce(
     (total, run) => total + run.missing.length,
     0,
@@ -892,7 +924,8 @@ async function computeRecap(
 
 /**
  * 1269 E3: the cloud's figures of one business day of an edge outlet, to compare
- * with the recap its edge froze: without late adjustments and receipt gaps.
+ * with the recap its edge froze: without late adjustments, receipt gaps and
+ * (1271 F5) failover rows.
  */
 export function computeEdgeComparableRecap(
   tx: Tx,
@@ -902,9 +935,40 @@ export function computeEdgeComparableRecap(
   businessDate: string,
   now: Date,
 ): Promise<EndOfDayRecap> {
-  return computeRecap(tx, context, outlet, outletId, businessDate, now, {
-    edgeComparable: true,
-  });
+  return computeRecap(
+    tx,
+    context,
+    outlet,
+    outletId,
+    businessDate,
+    now,
+    "edgeComparable",
+  );
+}
+
+/**
+ * 1271 F5 (D5): the cloud's recap of an edge-closed day with failover rows:
+ * the edge's rows (as compared) plus the failover rows. Late adjustments stay
+ * out, as in the comparable recap; `unsyncedReceiptCount` counts F-run gaps
+ * only (the caller adds the edge's own count).
+ */
+export function computeEdgeMirrorRecap(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outlet: typeof outlets.$inferSelect,
+  outletId: OutletId,
+  businessDate: string,
+  now: Date,
+): Promise<EndOfDayRecap> {
+  return computeRecap(
+    tx,
+    context,
+    outlet,
+    outletId,
+    businessDate,
+    now,
+    "edgeMirror",
+  );
 }
 
 // ---- Public API -------------------------------------------------------------
@@ -956,7 +1020,8 @@ export async function getEndOfDayRecap(
  * cloud may close it (Q24); edge data that arrives later is a late adjustment
  * (full flow with the failover bead legend-b3k). Returns true for that stale
  * case so the caller audits it. Same edge-process rule as pos-receipt (static
- * EDGE_MODE counts in the boot window): the edge itself never refuses.
+ * EDGE_MODE counts in the boot window): the edge itself refuses only while its
+ * failover window copy is open (1271 D5, FAILOVER_ACTIVE).
  */
 async function assertDayClosesOnCloud(
   tx: Tx,
@@ -964,7 +1029,13 @@ async function assertDayClosesOnCloud(
   outletId: OutletId,
   now: Date,
 ): Promise<{ staleEdge: boolean }> {
-  if (isEdgeProcess()) return { staleEdge: false };
+  if (isEdgeProcess()) {
+    // 1271 D5: the cloud sells for this outlet until the window is closed and
+    // its closing event applied here; the edge's day would miss those sales.
+    if (await activeFailoverWindow(tx, context.tenant.tenantId, outletId))
+      throw new PosError("FAILOVER_ACTIVE");
+    return { staleEdge: false };
+  }
   const [edge] = await tx
     .select({ lastHeartbeatAt: edgeNodes.lastHeartbeatAt })
     .from(edgeNodes)
