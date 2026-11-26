@@ -27,3 +27,9 @@ Cabang `ws/1272-f1mmf`. Bead: legend-f1mmf (backend tukar menu QRIS/EDC, lalu bu
 1. Batal QRIS tagihan: gateway tidak punya cancel. Usulan: tidak ada batal sebelum kode lewat waktu + 60 detik dan provider menjawab final. Kasir menunggu, server menutup kode basi sendiri. Tidak ada endpoint batal.
 2. Percobaan tunai atau EDC tanpa jawaban di browser lain: usulan memakai pola supervisor PIN 1268 W2 (`payment-intents/resolve`) untuk tagihan, dengan kunci `cash:`/`edc:` per tagihan. Ini desain baru, butuh architect. Sampai itu ada, layar tetap dikunci pada metode yang belum pasti.
 3. Layar dibuka sebelum (d) selesai? Usulan: tidak. CONTRACT_PENDING tetap sampai (d) dan review K lulus.
+
+## Keputusan CTO 27 Nov
+
+1. Batal QRIS: usulan diterima. Tidak ada endpoint batal; kode basi ditutup server sesudah lewat waktu + 60 detik dan jawaban final provider.
+2. Tunai/EDC tanpa jawaban: pakai pola supervisor PIN 1268 W2 (`payment-intents/resolve`) untuk tagihan, kunci `cash:`/`edc:` per tagihan, alasan wajib, penyetuju bukan pemanggil, audit. EDC `unknown` hanya boleh diselesaikan dengan bukti slip (RRN + kode approval) atau dinyatakan gagal sesudah cek terminal; tidak pernah dianggap lunas tanpa bukti. Desain dicek architect di review K.
+3. Layar tetap terkunci (CONTRACT_PENDING) sampai (d) dibangun dan review K lulus.
