@@ -17,8 +17,10 @@ import { eventEnvelopeSchema } from "@starter/shared/events";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { deliverOrderPaymentEvent } from "../services/order-payment-consumers.ts";
+import type { PaymentChannel } from "@starter/shared/payment";
 import {
   setPaymentGateway,
+  type GatewayIntent,
   type GatewayIntentRequest,
   type GatewayPaymentStatus,
   type PaymentGatewayPort,
@@ -119,7 +121,7 @@ export class ScriptedGateway implements PaymentGatewayPort {
   async health() {
     return { status: "available" as const };
   }
-  async createIntent(input: GatewayIntentRequest) {
+  async createIntent(input: GatewayIntentRequest): Promise<GatewayIntent> {
     if (this.failCreates > 0) {
       this.failCreates -= 1;
       throw new CoreError(
@@ -191,7 +193,7 @@ export class ScriptedGateway implements PaymentGatewayPort {
           : null,
     };
   }
-  async channels() {
+  async channels(): Promise<PaymentChannel[]> {
     return [];
   }
 }

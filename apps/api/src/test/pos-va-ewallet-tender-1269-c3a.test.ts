@@ -13,6 +13,7 @@ import {
   type OutletId,
 } from "@starter/shared/core";
 import { establishTenantContext } from "@starter/shared/core/server";
+import type { PaymentChannel } from "@starter/shared/payment";
 import { setStaffPin } from "../services/device-pin.service.ts";
 import {
   setPaymentGateway,
@@ -90,7 +91,10 @@ class OnlineGateway extends ScriptedGateway {
           : [],
     }));
   }
-  override async channels(_context?: unknown, method?: string) {
+  override async channels(
+    _context?: unknown,
+    method?: string,
+  ): Promise<PaymentChannel[]> {
     return method === "va" || method === "ewallet"
       ? this.listed.has(method)
         ? [...CHANNELS[method]]
