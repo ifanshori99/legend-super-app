@@ -165,6 +165,7 @@ import { runPayoutApprovalReceiptSweep } from "./worker/payout-approval-receipt.
 import { runPayoutTrustedReconSweep } from "./worker/payout-trusted-recon.job.ts";
 import { runPaymentGatewayPollJob } from "./worker/payment-gateway-poll.job.ts";
 import { runPosQrisHoldCheckJob } from "./worker/pos-qris-hold-check.job.ts";
+import { runEdcReconciliationOverdueJob } from "./worker/edc-reconciliation-overdue.job.ts";
 import { runPosQrisReleaseReconJob } from "./worker/pos-qris-release-recon.job.ts";
 import { runPaymentVaReleaseReconJob } from "./worker/payment-va-release-recon.job.ts";
 import { expireDueIntents } from "./services/payment.service.ts";
@@ -724,6 +725,13 @@ const relay = createRelayRuntime({
       await runPosQrisHoldCheckJob(context, new Date());
     } catch {
       console.error("QRIS hold check sweep failed");
+    }
+    // X1 (legend-wasr7.10): a manual EDC slip unmatched with the bank for more
+    // than a day warns its shift once; self-throttled.
+    try {
+      await runEdcReconciliationOverdueJob(context, new Date());
+    } catch {
+      console.error("EDC reconciliation overdue sweep failed");
     }
     // legend-adiov (so-879): keep asking the provider about every force
     // released QRIS until it answers for good; found money is parked once.

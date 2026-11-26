@@ -73,6 +73,10 @@ import {
 } from "../edge/edc/late-response.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
+import {
+  alertEdcReconciliationMismatch,
+  type EdcReconciliationMismatch,
+} from "./edc-reconciliation-alert.ts";
 import { assertPaymentPermission } from "./payment-support.ts";
 import {
   loadTenantAccessInTransaction,
@@ -167,14 +171,28 @@ async function hasLiveTender(
   return live !== undefined;
 }
 
+/** X1: the refusals whose evidence states another amount than the row; the
+ * HTTP entry alerts on them after the transaction rolled back. */
+const chargedMismatches = new WeakMap<Error, EdcReconciliationMismatch>();
+
 /** The amount on the terminal/bank evidence must be exactly what the request
- * was for; otherwise the real charge is not what the books would record. */
+ * was for; otherwise the real charge is not what the books would record. The
+ * row stays flagged ("perlu dicek") and the outlet is alerted (X1). */
 function assertChargedAmount(
   row: EdcRow,
   evidence: EdcReconciliationEvidence,
 ): void {
-  if (evidence.chargedAmountIdr !== row.amountIdr)
-    throw new EdcError("EDC_AMOUNT_MISMATCH");
+  if (evidence.chargedAmountIdr !== row.amountIdr) {
+    const error = new EdcError("EDC_AMOUNT_MISMATCH");
+    if (typeof evidence.chargedAmountIdr === "number")
+      chargedMismatches.set(error, {
+        edcTransactionId: row.id,
+        outletId: row.outletId,
+        amountIdr: row.amountIdr,
+        chargedAmountIdr: evidence.chargedAmountIdr,
+      });
+    throw error;
+  }
 }
 
 /**
@@ -405,6 +423,24 @@ export async function resolveEdcReconciliationForActor(
   assertTrustedScopedContext(context);
   const { id } = resolveEdcReconciliationParamsSchema.parse(params);
   const input = resolveEdcReconciliationBodySchema.parse(body);
+  try {
+    return await resolveAsActor(context, actorUserId, id, input, options, now);
+  } catch (error) {
+    const mismatch =
+      error instanceof Error ? chargedMismatches.get(error) : undefined;
+    if (mismatch) await alertEdcReconciliationMismatch(context, mismatch, now);
+    throw error;
+  }
+}
+
+async function resolveAsActor(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  id: string,
+  input: ReturnType<typeof resolveEdcReconciliationBodySchema.parse>,
+  options: ResolveEdcReconciliationOptions,
+  now: Date,
+): Promise<EdcTransaction> {
   return withTenant(db, context, async (tx) => {
     const [row] = await tx
       .select({ outletId: edcTransactions.outletId })

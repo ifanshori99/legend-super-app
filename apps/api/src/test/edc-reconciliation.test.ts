@@ -1242,7 +1242,7 @@ describe("EDC-03 resolving an unknown request as approved books the payment exac
       (
         await owner.query<{ payload: Record<string, unknown> }>(
           `SELECT payload FROM notification_outbox
-           WHERE tenant_id = $1 AND event_type = 'edc_reconciliation.amount_mismatch'
+           WHERE tenant_id = $1 AND event_type = 'edc_transaction.reconciliation_mismatch'
              AND payload->>'edcTransactionId' = $2`,
           [tenant.tenantId, id],
         )

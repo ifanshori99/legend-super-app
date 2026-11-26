@@ -597,8 +597,9 @@ export async function addPosTender(
               "VALIDATION_ERROR",
               "Pembayaran poin mencantumkan jumlah poin.",
             );
-          // EDC-04: a hand-keyed terminal payment takes the supervisor-approved
-          // standalone path; everything else settles through its port.
+          // EDC-04/X1: a hand-keyed terminal payment takes the standalone path
+          // (slip reference required, supervisor override optional);
+          // everything else settles through its port.
           const settled =
             input.standalone &&
             (input.method === "edc_card" || input.method === "edc_qris")
@@ -611,7 +612,7 @@ export async function addPosTender(
                   terminalId: input.standalone.terminalId,
                   bankRef: input.standalone.bankRef,
                   approvalCode: input.standalone.approvalCode ?? null,
-                  overrideId: input.standalone.overrideId,
+                  overrideId: input.standalone.overrideId ?? null,
                   cashierId: caller.userId,
                   deviceId: caller.deviceId,
                   at: now,

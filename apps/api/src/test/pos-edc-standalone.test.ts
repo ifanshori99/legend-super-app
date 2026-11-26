@@ -899,7 +899,11 @@ describe("POS standalone EDC tender (legend-m4fv, EDC-04)", () => {
     expect(paid.status, JSON.stringify(paid.body)).toBe(201);
     const [tender] = (
       await owner.query<{ shift_id: string | null }>(
-        `SELECT shift_id FROM pos_order_tenders WHERE order_id = $1`,
+        `SELECT coalesce(t.shift_id, o.shift_id) AS shift_id
+         FROM pos_order_tenders t
+         LEFT JOIN pos_orders o
+           ON o.tenant_id = t.tenant_id AND o.order_id = t.order_id
+         WHERE t.order_id = $1`,
         [ulidToUuid(order.orderId)],
       )
     ).rows;
@@ -908,7 +912,7 @@ describe("POS standalone EDC tender (legend-m4fv, EDC-04)", () => {
       (
         await owner.query<{ payload: Record<string, string> }>(
           `SELECT payload FROM notification_outbox
-           WHERE tenant_id = $1 AND event_type = 'edc_reconciliation.overdue'`,
+           WHERE tenant_id = $1 AND event_type = 'pos_shift.edc_reconciliation_overdue'`,
           [tenant.tenantId],
         )
       ).rows;
