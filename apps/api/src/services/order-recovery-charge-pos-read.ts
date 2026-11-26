@@ -8,17 +8,18 @@
 //   replacement line is the original line plus the charge's difference, so
 //   the screen never shows a gap the charge does not hold.
 // - The code shown is the one that can still take money: a `paid` intent of
-//   the charge's link first, then a `pending` one, else the last code the
-//   charge pointed at. A code past its expiry is read as `expired` only once
-//   its margin (`HOLD_CLOSE_MARGIN_MS`) passed AND the provider holds no money
-//   for it (`confirmLinkUnpaidAtProvider`); until then it stays `pending`, so
-//   the till keeps the method locked. Money the provider already holds is
-//   applied once there, and the charge is read again.
+//   the charge's link first, then a live code, else the last code the charge
+//   pointed at. "Live" is `liveCodeWhere`, the same rule `createIntent`
+//   refuses a new code on (ORDER_CODE_ACTIVE), so the till's lock and the
+//   server's one-live-code rule never disagree: a live code reads `pending`.
+//   A lapsed live code is asked of the provider first
+//   (`settleGatewayIntentNowDetailed`, the poll's path): money is applied
+//   once, a final answer past the margin ends it, an unclear one keeps it.
 // - EDC: every sale of the outlet whose reference is this charge, newest
 //   first (a charge has at most one unresolved and one approved sale: the EDC
 //   agent refuses a new one for the reference until the earlier is final).
 
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, or, sql } from "drizzle-orm";
 import {
   isOutletInScope,
   CoreError,
@@ -45,13 +46,14 @@ import { paymentEdcTerminals } from "../db/schema/payment-admin.ts";
 import { paymentIntents } from "../db/schema/payment.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
-import { HttpError } from "../lib/http-error.ts";
 import { openSecret } from "../lib/secrets.ts";
 import type { Tx } from "./menu-internals.ts";
 import { accessSnapshotInTransaction } from "./permission-resolver.ts";
-import { readIntentView } from "./payment.service.ts";
-import { confirmLinkUnpaidAtProvider } from "./payment-provider-proof.ts";
-import { HOLD_CLOSE_MARGIN_MS } from "./pos-qris-hold.ts";
+import { liveCodeWhere } from "./payment-live-code.ts";
+import {
+  readIntentView,
+  settleGatewayIntentNowDetailed,
+} from "./payment.service.ts";
 import { chargeLinkSealAad, guestPaymentDto } from "./qr-order-payment.ts";
 
 const PAY = "pos.payment.accept";
@@ -69,11 +71,6 @@ const notFound = () =>
   new CoreError("NOT_FOUND", "Tagihan selisih tidak ditemukan.");
 
 const iso = (at: Date | null) => (at ? at.toISOString() : null);
-
-/** True while a lapsed code may still take money (expiry + margin not passed). */
-export function codeInMargin(expiresAt: Date, now: Date): boolean {
-  return expiresAt.getTime() + HOLD_CLOSE_MARGIN_MS > now.getTime();
-}
 
 async function chargeInReach(
   tx: Tx,
@@ -110,34 +107,46 @@ async function chargeInReach(
   return charge;
 }
 
-/** The intent that can still take money, else the charge's last code. */
+type ShownIntent = {
+  id: string;
+  status: string;
+  expiresAt: Date;
+  /** May still take money (`liveCodeWhere`, the rule `createIntent` refuses on). */
+  live: boolean;
+};
+
+/**
+ * The intents of the charge's link that may still take money (a paid one, or
+ * a live code), newest first, then the charge's last code.
+ */
 async function shownIntentOf(
   tx: Tx,
   context: ScopedTenantContext,
   charge: ChargeRow,
-): Promise<{ id: string; status: string; expiresAt: Date } | null> {
+): Promise<ShownIntent | null> {
   const tenantId = context.tenant.tenantId;
   const columns = {
     id: paymentIntents.id,
     status: paymentIntents.status,
     expiresAt: paymentIntents.expiresAt,
+    live: sql<boolean>`(${liveCodeWhere()})`,
   };
   if (charge.paymentLinkId !== null) {
-    const live = await tx
+    const open = await tx
       .select(columns)
       .from(paymentIntents)
       .where(
         and(
           eq(paymentIntents.tenantId, tenantId),
           eq(paymentIntents.paymentLinkId, charge.paymentLinkId),
-          inArray(paymentIntents.status, ["paid", "pending"]),
+          or(eq(paymentIntents.status, "paid"), liveCodeWhere()),
         ),
       )
       .orderBy(desc(paymentIntents.createdAt), desc(paymentIntents.id));
     const shown =
-      live.find((row) => row.status === "paid") ??
-      live.find((row) => row.id === charge.paymentIntentId) ??
-      live[0];
+      open.find((row) => row.status === "paid") ??
+      open.find((row) => row.id === charge.paymentIntentId) ??
+      open[0];
     if (shown) return shown;
   }
   if (charge.paymentIntentId === null) return null;
@@ -304,52 +313,24 @@ async function orderOf(
   return order;
 }
 
-/** Whether the provider says a lapsed code holds nothing (an unclear answer: no). */
-async function providerSaysUnpaid(
-  context: ScopedTenantContext,
-  linkId: string,
-  now: Date,
-): Promise<"unpaid" | "settled" | "unsure"> {
-  try {
-    return await confirmLinkUnpaidAtProvider(context, linkId, now);
-  } catch (error) {
-    if (
-      error instanceof HttpError &&
-      error.code === "PAYMENT_PROVIDER_UNCONFIRMED"
-    )
-      return "unsure";
-    throw error;
-  }
-}
-
 export async function readPosIssueCharge(
   context: ScopedTenantContext,
   reader: PosChargeReader,
   chargeId: string,
   now = new Date(),
 ): Promise<PosIssueChargeDetail> {
-  // A lapsed code of a still-open charge: the provider is asked first, outside
-  // any transaction (network I/O), and only then is the charge read.
-  let lapsedVerdict: "unpaid" | "settled" | "unsure" | null = null;
+  // Penutup kode basi: a lapsed code that may still take money is asked of
+  // the provider first, outside any transaction (network I/O), through the
+  // poll's own path: money is applied once, a final answer past the margin
+  // ends the code, anything unclear leaves it live.
   const probe = await withTenant(db, context, async (tx) => {
     const charge = await chargeInReach(tx, context, reader, chargeId, now);
-    const shown =
-      charge.status === "open" || charge.status === "routed_pos"
-        ? await shownIntentOf(tx, context, charge)
-        : null;
-    return { charge, shown };
+    return charge.status === "open" || charge.status === "routed_pos"
+      ? await shownIntentOf(tx, context, charge)
+      : null;
   });
-  if (
-    probe.shown?.status === "pending" &&
-    probe.shown.expiresAt <= now &&
-    !codeInMargin(probe.shown.expiresAt, now) &&
-    probe.charge.paymentLinkId !== null
-  )
-    lapsedVerdict = await providerSaysUnpaid(
-      context,
-      probe.charge.paymentLinkId,
-      now,
-    );
+  if (probe?.live && probe.expiresAt <= now)
+    await settleGatewayIntentNowDetailed(context, probe.id, now);
 
   const read = await withTenant(db, context, async (tx) => {
     const charge = await chargeInReach(tx, context, reader, chargeId, now);
@@ -369,13 +350,9 @@ export async function readPosIssueCharge(
     );
     const view = await readIntentView(context, token, shown.id, now);
     payment = guestPaymentDto(view, { kind: "issue_charge", chargeId });
-    // A lapsed code is dead only after its margin and the provider's word.
-    const stillPayable =
-      shown.status === "pending" &&
-      (codeInMargin(shown.expiresAt, now) ||
-        lapsedVerdict !== "unpaid" ||
-        probe.shown?.id !== shown.id);
-    if (stillPayable && payment.status === "expired")
+    // A code the server still counts as live reads `pending`: the till keeps
+    // the method locked exactly as long as `createIntent` refuses a new one.
+    if (shown.live && payment.status !== "paid")
       payment = { ...payment, status: "pending" };
   }
 
