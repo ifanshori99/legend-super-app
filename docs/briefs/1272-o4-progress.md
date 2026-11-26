@@ -11,6 +11,12 @@
 5. **Cetak: SELESAI (tanpa cetak).** Cetak tablet butuh job ESC/POS dari cloud, jadi dialog tersimpan menampilkan nomor `L1-000043` + "Cetak ulang sesudah online". **Catat ke O5:** cetak struk penjualan offline sesudah sinkron (nomor `receiptNumber` dari hasil batch).
 6. **Dialog keluar: SELESAI.** `offline/sign-out-blocked-dialog.tsx` ("Belum bisa keluar", Tetap di sini / Buka kasir).
 
+## Review K (docs/qa/1272-o4-review.md), 27 Nov: DIBETULKAN (`da86a337a` test gagal-dulu, `0876109d7` fix)
+- P1: link "Tutup paksa oleh supervisor" ke `/pos/supervisor/shift/$shiftId` di `OfflineCloseBlock` (shiftId dari `blind-count-screen`), di 409 `OFFLINE_QUEUE_UNVERIFIED` (`OfflineUnverifiedNotice` di `shift-waiting`), dan tiap shift terbuka di tutup hari (`day-close/open-shift-links.tsx`, `fetchOpenShiftsOfDay` lewat `listPosShifts?businessDate`).
+- P2 1: `sale-guard` tahan bila satu baris (item, varian, opsi) sama dengan pesanan belum pasti. P2 2: `noPermission` tanpa `pos.payment.accept`. P2 3: ping `mode: "cors"`, status >= 500 = gagal (API sudah CORS untuk trusted origins; test `apps/api/src/test/health-cors.test.ts`).
+- P3: tombol tutup paksa juga untuk `COUNT_NOT_SUBMITTED` (`offersForceClose`); saksi lewat `thirdPersons`/`sameUser` (`shift-extra-logic.ts`).
+- Test: `apps/web/test/pos-offline-o4-review.test.ts` (5), detect (+4). Pra-gate lulus: prettier, eslint, text-contract + i18n-area-split, typecheck api + web.
+
 ## Lain-lain
 - Teks: namespace baru `posKasirOffline` (chunk `ops`), tambahan `posOffline.signOut*` (core).
 - Test UI: `apps/web/test/pos-offline-o4-ui.test.ts` (8): simpan masuk antrean dengan nomor L, metode online tidak ditawarkan, tutup shift/keluar ditolak, tampilan disisihkan, banner.
