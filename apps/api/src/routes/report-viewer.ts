@@ -15,6 +15,7 @@ import {
   userIdSchema,
   type OutletScopeData,
   type ScopedTenantContext,
+  type TenantContext,
 } from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
 import {
@@ -24,29 +25,77 @@ import {
 import { getAuth } from "../middleware/auth";
 import { loadRequestAccess } from "../middleware/permissions";
 import { getTenantContext } from "../middleware/tenant";
-import { loadTenantAccess } from "../services/permission-resolver";
+import {
+  loadTenantAccess,
+  resolveAccessSnapshot,
+  type AccessSnapshot,
+  type TenantAccessData,
+} from "../services/permission-resolver";
 import type { MetricViewer } from "../services/metrics-query.service";
 import { reportHttpError } from "../services/report-run.service";
 
-/** The caller's outlet reach for `permission`, null when it grants none. */
-async function scopeOf(
-  req: Request,
-  permission: string,
-): Promise<OutletScopeData | null> {
-  const snapshot = await loadRequestAccess(req);
-  if (!snapshot.permissions.includes(permission as PermissionCode)) return null;
-  if (snapshot.contextFor(permission as PermissionCode, { type: "tenant" }))
-    return { kind: "tenant" };
-  const tenant = getTenantContext(req);
-  const userId = userIdSchema.parse(getAuth(req).user.id);
+/**
+ * Whose access a read runs under: the request's caller, or (a scheduled or
+ * queued export, F12 legend-ay6e6) a user re-resolved from the database.
+ */
+export type ViewerAccess = {
+  readonly tenant: TenantContext;
+  readonly userId: string;
+  readonly snapshot: AccessSnapshot;
+  readonly data: () => Promise<TenantAccessData>;
+};
+
+/** The request caller's access. */
+export function requestAccess(req: Request): Promise<ViewerAccess> {
+  return loadRequestAccess(req).then((snapshot) => {
+    const tenant = getTenantContext(req);
+    const userId = userIdSchema.parse(getAuth(req).user.id);
+    return {
+      tenant,
+      userId,
+      snapshot,
+      data: () =>
+        loadTenantAccess(
+          establishScopedTenantContext(tenant, { kind: "tenant" }),
+          userId,
+        ),
+    };
+  });
+}
+
+/** The access of `userId` in `tenant` as the database holds it now. */
+export async function userViewerAccess(
+  tenant: TenantContext,
+  userId: string,
+): Promise<ViewerAccess> {
   const data = await loadTenantAccess(
     establishScopedTenantContext(tenant, { kind: "tenant" }),
     userId,
   );
+  const snapshot = resolveAccessSnapshot({
+    tenant,
+    userId,
+    ...data,
+    mfaVerified: false,
+    now: data.clock ?? new Date(),
+  });
+  return { tenant, userId, snapshot, data: async () => data };
+}
+
+/** The caller's outlet reach for `permission`, null when it grants none. */
+async function scopeOf(
+  access: ViewerAccess,
+  permission: string,
+): Promise<OutletScopeData | null> {
+  const snapshot = access.snapshot;
+  if (!snapshot.permissions.includes(permission as PermissionCode)) return null;
+  if (snapshot.contextFor(permission as PermissionCode, { type: "tenant" }))
+    return { kind: "tenant" };
+  const data = await access.data();
   return outletReachOf({
     principal: {
-      tenantId: tenant.tenantId,
-      userId,
+      tenantId: access.tenant.tenantId,
+      userId: userIdSchema.parse(access.userId),
       assignments: data.assignments,
     },
     roles: data.roles,
@@ -74,12 +123,12 @@ function intersectScopes(
  * reached by all (never widened to the tenant).
  */
 async function commonScope(
-  req: Request,
+  access: ViewerAccess,
   permissions: readonly string[],
 ): Promise<OutletScopeData | "missing" | "empty"> {
   let common: OutletScopeData = { kind: "tenant" };
   for (const permission of permissions) {
-    const scope = await scopeOf(req, permission);
+    const scope = await scopeOf(access, permission);
     if (scope === null) return "missing";
     const next = intersectScopes(common, scope);
     if (next === null) return "empty";
@@ -121,6 +170,14 @@ export async function resolveViewer(
   req: Request,
   sources: readonly ViewerSource[],
 ): Promise<{ context: ScopedTenantContext; viewer: MetricViewer }> {
+  return resolveViewerFor(await requestAccess(req), sources);
+}
+
+/** `resolveViewer` for an access that is not the request's caller. */
+export async function resolveViewerFor(
+  access: ViewerAccess,
+  sources: readonly ViewerSource[],
+): Promise<{ context: ScopedTenantContext; viewer: MetricViewer }> {
   if (sources.length === 0) throw reportHttpError("REPORT_NOT_PERMITTED");
   let scope: OutletScopeData | null = { kind: "tenant" };
   let viewer: MetricViewer = "full";
@@ -129,18 +186,18 @@ export async function resolveViewer(
     let reach: OutletScopeData | null = null;
     if (source.kind === "permission") {
       for (const permission of source.anyOf) {
-        reach = await scopeOf(req, permission);
+        reach = await scopeOf(access, permission);
         if (reach) break;
       }
     } else {
-      const full = await commonScope(req, source.report.requiredPermissions);
+      const full = await commonScope(access, source.report.requiredPermissions);
       if (typeof full === "object") reach = full;
       else if (
         full === "missing" &&
         (source.aggregateTotal === true ||
           reportAcceptsAggregateView(source.report))
       ) {
-        aggregate ??= await scopeOf(req, "report.aggregate.view");
+        aggregate ??= await scopeOf(access, "report.aggregate.view");
         reach = aggregate;
         viewer = "aggregate";
       }
@@ -150,7 +207,7 @@ export async function resolveViewer(
     if (scope === null) throw reportHttpError("REPORT_NOT_PERMITTED");
   }
   return {
-    context: establishScopedTenantContext(getTenantContext(req), scope),
+    context: establishScopedTenantContext(access.tenant, scope),
     viewer,
   };
 }

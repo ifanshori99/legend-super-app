@@ -44,6 +44,7 @@ import {
   reportHttpError,
   runReport,
 } from "../services/report-run.service";
+import { registerReportDeliveryRoutes } from "./report-delivery.routes";
 import { resolveReportViewer } from "./report-viewer";
 
 const BASE = "/api/reports";
@@ -121,6 +122,10 @@ export function createReportsRouter() {
       res.json({ data: await previewReport(context, query, { viewer }) });
     },
   );
+
+  // Saved reports, exports and schedules (F12): fixed paths, so before
+  // "/:reportCode".
+  registerReportDeliveryRoutes(router);
 
   // Registered last so "/:reportCode" never shadows a fixed path.
   router.get(route(getReportEndpoint.path), async (req, res) => {

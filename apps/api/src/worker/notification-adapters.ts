@@ -105,6 +105,11 @@ import { roleAssignments, roles } from "../db/schema/platform-access.ts";
 import { approvalRequests } from "../db/schema/platform-approval.ts";
 import { outlets, tenants } from "../db/schema/platform-org.ts";
 import { user } from "../db/schema/user.ts";
+import {
+  reportExports,
+  reportSchedules,
+  savedReports,
+} from "../db/schema/report-delivery.ts";
 import { withTenant } from "../db/tenant.ts";
 import { logger } from "../lib/logger.ts";
 import { isReservedAddress } from "../services/identity-email-login.service.ts";
@@ -1418,6 +1423,115 @@ async function tenantCreatedInvitationRule(input: RuleInput): Promise<Rule> {
   };
 }
 
+// ---- Scheduled reports (WS-11 F12, legend-ay6e6) ----------------------------
+
+const REPORT_FORMAT_LABELS: Record<string, string> = {
+  csv: "CSV",
+  xlsx: "Excel",
+  pdf: "PDF",
+};
+
+/** A scheduled export is ready: its one recipient hears of it, in-app and by
+ * email. The job is re-read here; a job no longer ready notifies nobody. The
+ * message names the report and period only, never a figure: the file sits
+ * behind the download, which re-checks the reader's permission. */
+async function reportExportDeliveredRule(input: RuleInput): Promise<Rule> {
+  const payload = z
+    .strictObject({ exportId: z.uuid() })
+    .parse(input.event.payload);
+  if (input.event.aggregateId !== payload.exportId)
+    throw new Error("Report delivery aggregate mismatch");
+  const [job] = await input.tx
+    .select({
+      requestedBy: reportExports.requestedBy,
+      status: reportExports.status,
+      format: reportExports.format,
+      query: reportExports.query,
+      scheduleId: reportExports.scheduleId,
+      name: savedReports.name,
+    })
+    .from(reportExports)
+    .innerJoin(
+      savedReports,
+      and(
+        eq(savedReports.tenantId, reportExports.tenantId),
+        eq(savedReports.id, reportExports.savedReportId),
+      ),
+    )
+    .where(
+      and(
+        eq(reportExports.tenantId, input.tenantId),
+        eq(reportExports.id, payload.exportId),
+      ),
+    );
+  const period = (
+    job?.query as
+      { period?: { startDate?: string; endDate?: string } } | undefined
+  )?.period;
+  const name = job?.name ?? "Laporan";
+  return {
+    userIds:
+      job !== undefined && job.status === "ready" && job.scheduleId !== null
+        ? [job.requestedBy]
+        : [],
+    content: {
+      category: "report_delivery",
+      title: `Laporan terjadwal siap: ${name}`.slice(0, 120),
+      body:
+        `File ${REPORT_FORMAT_LABELS[job?.format ?? ""] ?? "laporan"} "${name}"` +
+        (period?.startDate && period.endDate
+          ? ` periode ${period.startDate} s.d. ${period.endDate}`
+          : "") +
+        " sudah siap. Buka menu Laporan > Ekspor di aplikasi untuk mengunduhnya; file tersedia 7 hari.",
+      link: null,
+    },
+  };
+}
+
+/** A schedule was paused because its owner is blocked or lost access: the
+ * tenant admins hear of it once. Names the report only, never a figure. */
+async function reportSchedulePausedRule(input: RuleInput): Promise<Rule> {
+  const payload = z
+    .strictObject({ scheduleId: z.uuid() })
+    .parse(input.event.payload);
+  if (input.event.aggregateId !== payload.scheduleId)
+    throw new Error("Report schedule aggregate mismatch");
+  const [schedule] = await input.tx
+    .select({ name: savedReports.name })
+    .from(reportSchedules)
+    .innerJoin(
+      savedReports,
+      and(
+        eq(savedReports.tenantId, reportSchedules.tenantId),
+        eq(savedReports.id, reportSchedules.savedReportId),
+      ),
+    )
+    .where(
+      and(
+        eq(reportSchedules.tenantId, input.tenantId),
+        eq(reportSchedules.id, payload.scheduleId),
+      ),
+    );
+  const admins = await activeAssignees(
+    input.tx,
+    input.tenantId,
+    sql`${roles.permissions} @> ${JSON.stringify([SETTINGS_MANAGE_PERMISSION])}::jsonb`,
+    { kind: "tenant" },
+  );
+  return {
+    userIds: admins,
+    content: {
+      category: "report_delivery",
+      title: `Jadwal laporan dijeda: ${schedule?.name ?? "Laporan"}`.slice(
+        0,
+        120,
+      ),
+      body: "Pemilik jadwal diblokir atau tidak lagi punya akses di bisnis ini, jadi pengiriman laporan dihentikan. Jadwal tetap dijeda. Buat jadwal baru dengan pemilik yang masih aktif bila laporan ini masih dibutuhkan.",
+      link: null,
+    },
+  };
+}
+
 async function ruleFor(input: RuleInput): Promise<Rule> {
   switch (input.event.name) {
     case "tenant.created":
@@ -1463,6 +1577,10 @@ async function ruleFor(input: RuleInput): Promise<Rule> {
       return payoutBatchFreezeRule(input, "disputed");
     case "payout.batch_unfrozen":
       return payoutBatchFreezeRule(input, "unfrozen");
+    case "report_export.delivered":
+      return reportExportDeliveredRule(input);
+    case "report_schedule.paused":
+      return reportSchedulePausedRule(input);
     default:
       throw new Error(`No notification recipient rule for ${input.event.name}`);
   }
