@@ -15,6 +15,13 @@
 //   a standalone entry cannot interleave with a sale the agent is starting. A
 //   card-terminal row for the bill that is approved, pending, unknown or
 //   flagged blocks it (the same set `writeAhead` refuses to start over).
+// - One slip is one charge on the machine (legend-9yw78.15): the bank reference
+//   (no hyphens, upper case, as the resolve flow compares it) of an approved,
+//   pending or unknown sale of the tenant, whatever the bank or terminal, never
+//   pays a second bill (a look-alike across banks only costs a supervisor). The
+//   check runs under an advisory lock on that reference, so two bills sent
+//   together with one slip cannot both pass. Doubt refuses: the cashier asks
+//   the supervisor, who can see the slip.
 
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq, inArray, or, sql } from "drizzle-orm";
@@ -35,6 +42,9 @@ import type { Tx } from "./menu-internals.ts";
 import { consumeApproval } from "./pos-order-support.ts";
 
 const METHOD_OF_TENDER = { edc_card: "card", edc_qris: "qris" } as const;
+
+/** The slip number as the resolve flow compares it. */
+const slipNumber = (value: string) => value.replaceAll("-", "").toUpperCase();
 
 export type PosStandaloneEdcInput = {
   readonly orderId: string;
@@ -112,6 +122,29 @@ export async function settlePosEdcStandalone(
     throw new CoreError(
       "CONFLICT",
       "Tagihan ini sudah punya transaksi EDC yang disetujui, menunggu hasil atau menunggu rekonsiliasi.",
+    );
+  // One slip, one bill: the lock comes after the bill's own, and the check
+  // sees every charge of this bank, whichever bill or path wrote it.
+  const slip = slipNumber(input.bankRef);
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtext(${tenantId}), hashtext(${`edc-slip:${slip}`}))`,
+  );
+  const sameSlip = await tx
+    .select({ id: edcTransactions.id })
+    .from(edcTransactions)
+    .where(
+      and(
+        eq(edcTransactions.tenantId, tenantId),
+        eq(edcTransactions.type, "sale"),
+        inArray(edcTransactions.status, ["approved", "pending", "unknown"]),
+        sql`upper(replace(${edcTransactions.rrn}, '-', '')) = ${slip}`,
+      ),
+    )
+    .limit(1);
+  if (sameSlip.length > 0)
+    throw new CoreError(
+      "CONFLICT",
+      "Slip EDC ini sudah dipakai untuk tagihan lain. Periksa nomor referensi di slip.",
     );
   // The approver comes from the override row, never from the client; the
   // shared check below still requires it to be someone other than the cashier.

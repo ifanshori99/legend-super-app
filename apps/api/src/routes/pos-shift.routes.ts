@@ -181,6 +181,7 @@ posShiftRouter.get("/shifts/:shiftId", readShift, async (req, res) => {
 posShiftRouter.post(
   "/shifts/:shiftId/counts",
   operateOrApproveClose,
+  requirePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, shiftId } = submitPosShiftCount.params.parse(req.params);
@@ -212,6 +213,7 @@ posShiftRouter.get("/shifts/:shiftId/counts", readShift, async (req, res) => {
 posShiftRouter.post(
   "/shifts/:shiftId/close",
   operate,
+  requirePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, shiftId } = closePosShift.params.parse(req.params);
@@ -231,6 +233,7 @@ posShiftRouter.post(
 posShiftRouter.post(
   "/shifts/:shiftId/force-close",
   approveClose,
+  requirePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, shiftId } = forceClosePosShift.params.parse(req.params);
@@ -292,6 +295,7 @@ posShiftRouter.get(
 posShiftRouter.post(
   "/shifts/:shiftId/cash-movements/:movementId/decision",
   decideHeldCash,
+  requirePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, shiftId, movementId } =

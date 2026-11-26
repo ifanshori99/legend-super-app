@@ -729,6 +729,12 @@ type PaymentAsk = {
   amountIdr?: number;
   /** Reads the bill and builds the body; skipped when a request is stored. */
   prepare: () => Promise<(key: string) => Record<string, unknown>>;
+  /**
+   * A refusal found while preparing that must not come before the note: the
+   * card may already be charged, so the request is stored first and this is
+   * thrown right after, with the bill locked. Read after the request is stored.
+   */
+  refusal?: () => unknown;
 };
 
 async function pay(
@@ -769,6 +775,8 @@ async function payScoped(
     makeBody,
     now: () => new Date(),
   });
+  const refusal = begun.replay ? undefined : ask.refusal?.();
+  if (refusal !== undefined) throw refusal;
   return sendPayment(scope, begun);
 }
 
@@ -1127,28 +1135,43 @@ export async function recordEdcStandalone(
   if (API_MOCK)
     return runPosKasirMock((engine) => engine.recordEdcStandalone(input));
   const { orderId, terminalId, bankRef, approvalCode, overrideId } = input;
+  // The card was charged on the machine before this call: nothing below may
+  // refuse before the note is stored (legend-9yw78.17). What is wrong is kept
+  // here and thrown once the note is in place; the bill then stays locked.
+  let problem: unknown;
+  // A reference the contract refuses may be a card number: not even the
+  // signature of the note keeps it.
+  const keptRef = posStandaloneEdcSchema.shape.bankRef.safeParse(bankRef)
+    .success
+    ? bankRef
+    : "refused";
   const order = await pay(outletId, orderId, actorId, {
     kind: "edc_standalone",
     signature: [
       "edc",
       input.edcMode,
       terminalId,
-      bankRef,
+      keptRef,
       approvalCode ?? "",
       overrideId,
     ].join(":"),
     amountIdr: input.amountIdr,
     prepare: async () => {
-      const before = await fetchPosOrder(outletId, orderId);
-      // The supervisor approved one amount: refuse to record a different one.
-      if (input.amountIdr !== sessionFromOrder(before).bill.remainingIdr)
-        throw new ApiError(
-          403,
-          "OVERRIDE_INVALID",
-          "Sisa tagihan berubah sejak persetujuan. Minta persetujuan ulang.",
-        );
-      return (idempotencyKey) =>
-        tenderBody({
+      let before: PosOrderDetail | undefined;
+      try {
+        before = await fetchPosOrder(outletId, orderId);
+        // The supervisor approved one amount: refuse to record a different one.
+        if (input.amountIdr !== sessionFromOrder(before).bill.remainingIdr)
+          problem = new ApiError(
+            403,
+            "OVERRIDE_INVALID",
+            "Sisa tagihan berubah sejak persetujuan. Minta persetujuan ulang.",
+          );
+      } catch (error) {
+        problem = error;
+      }
+      return (idempotencyKey) => {
+        const body: TenderBody = {
           method: edcTenderMethod(input.edcMode),
           standalone: {
             terminalId,
@@ -1156,11 +1179,23 @@ export async function recordEdcStandalone(
             ...(approvalCode ? { approvalCode } : {}),
             overrideId,
           },
-          expectedStatus: before.status,
-          expectedVersion: before.version,
+          // Unread bill: a guess that the server answers 412 and keeps locked.
+          expectedStatus: before?.status ?? "awaiting_payment",
+          ...(before ? { expectedVersion: before.version } : {}),
           idempotencyKey,
-        });
+        };
+        const parsed = addPosTender.body.safeParse(body);
+        if (parsed.success) return body;
+        problem ??= new ApiError(
+          400,
+          "VALIDATION_ERROR",
+          parsed.error.issues[0]?.message ?? "Data pembayaran tidak valid.",
+        );
+        // What the contract refuses (a card number) is never stored.
+        return { ...body, standalone: { terminalId, overrideId } };
+      };
     },
+    refusal: () => problem,
   });
   return sessionAfterWrite(outletId, order);
 }

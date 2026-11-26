@@ -8,7 +8,10 @@ import { randomBytes, randomUUID } from "node:crypto";
 import type { Express } from "express";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createUlid, ulidToUuid } from "@starter/shared/core";
+import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
+import { signDeviceToken } from "../lib/device-token.ts";
+import { setDeviceOutletResolver } from "../services/device-pin.service.ts";
 import {
   getEdgeRuntimeState,
   setEdgeRuntimeStateForTests,
@@ -32,6 +35,10 @@ let viewer: ReturnType<typeof agent>;
 const orderUlid = createUlid();
 const facilityId = randomUUID();
 const sessionId = randomUUID();
+const stationId = randomUUID();
+const tableIds = [randomUUID(), randomUUID()];
+const linkGroupId = randomUUID();
+const deviceId = randomUUID();
 
 const base = () => `/api/outlets/${encodeURIComponent(tenant.outletId)}`;
 const order = () => `/api/pos/orders/${encodeURIComponent(orderUlid)}`;
@@ -39,7 +46,14 @@ const session = (action: string) =>
   `/api/table-sessions/${encodeURIComponent(sessionId)}/${action}`;
 const key = () => ({ idempotencyKey: randomUUID() });
 
-type Write = [name: string, path: () => string, body: () => object];
+type Write = [
+  name: string,
+  path: () => string,
+  body: () => object,
+  method?: "post" | "put" | "patch",
+  /** The signed device token: the credential of the PIN session routes. */
+  device?: true,
+];
 
 /**
  * Every gated cloud write (R2: a route that loses its gate fails here), with a
@@ -83,14 +97,136 @@ const writes: Write[] = [
   ["session move", () => session("move"), key],
   ["session merge", () => session("merge"), key],
   ["session move items", () => session("move-items"), key],
+  // E3b: the rest of the POS, KDS, floor and delivery writes.
+  ["void order", () => `${base()}/pos/orders/${orderUlid}/void`, () => ({})],
+  ["qris cancel", () => `${base()}/pos/orders/${orderUlid}/qris/cancel`, key],
+  ["qris release", () => `${base()}/pos/orders/${orderUlid}/qris/release`, key],
+  [
+    "payment intent resolve",
+    () => `${base()}/pos/orders/${orderUlid}/payment-intents/resolve`,
+    key,
+  ],
+  ["va release", () => `${base()}/pos/orders/${orderUlid}/va/release`, key],
+  [
+    "correction void",
+    () => `${base()}/pos/orders/${orderUlid}/corrections/void`,
+    key,
+  ],
+  [
+    "correction refund",
+    () => `${base()}/pos/orders/${orderUlid}/corrections/refund`,
+    key,
+  ],
+  ["shift count", () => `${base()}/pos/shifts/${randomUUID()}/counts`, key],
+  ["shift close", () => `${base()}/pos/shifts/${randomUUID()}/close`, key],
+  [
+    "shift force close",
+    () => `${base()}/pos/shifts/${randomUUID()}/force-close`,
+    key,
+  ],
+  [
+    "held cash decision",
+    () =>
+      `${base()}/pos/shifts/${randomUUID()}/cash-movements/${randomUUID()}/decision`,
+    key,
+  ],
+  ["order customer", () => `${order()}/customer`, () => ({}), "put"],
+  ["issue receipt", () => `${base()}/pos/orders/${orderUlid}/receipts`, key],
+  ["receipt link", () => `${base()}/pos/receipts/${randomUUID()}/link`, key],
+  ["invoice", () => `${base()}/pos/orders/${orderUlid}/invoices`, key],
+  [
+    "pin session",
+    () => "/api/staff-pins/pos-session",
+    () => ({}),
+    "post",
+    true,
+  ],
+  [
+    "pin session end",
+    () => "/api/staff-pins/pos-session/end",
+    () => ({}),
+    "post",
+    true,
+  ],
+  [
+    "kds heartbeat",
+    () => `${base()}/kitchen/stations/${stationId}/heartbeat`,
+    () => ({}),
+  ],
+  ["kds start", () => kitchenTicket("start"), () => ({})],
+  ["kds bump", () => kitchenTicket("bump"), () => ({})],
+  ["kds recall", () => kitchenTicket("recall"), () => ({})],
+  ["kds void", () => kitchenTicket("void"), () => ({})],
+  ["kds priority", () => kitchenTicket("priority"), () => ({}), "patch"],
+  [
+    "kds item status",
+    () => `${base()}/kitchen/ticket-items/${randomUUID()}/status`,
+    () => ({}),
+  ],
+  ["table link", () => "/api/table-links", () => ({ tableIds })],
+  ["table unlink", () => `/api/table-links/${linkGroupId}/unlink`, () => ({})],
+  ["delivery manual", () => `${base()}/delivery-orders/manual`, () => ({})],
+  [
+    "delivery status",
+    () => `${base()}/delivery-orders/${randomUUID()}/status`,
+    () => ({}),
+  ],
+  [
+    "delivery map lines",
+    () => `${base()}/delivery-orders/${randomUUID()}/map-lines`,
+    () => ({}),
+  ],
 ];
 
+/**
+ * E3b: cloud writes that stay open on an outlet its edge serves. Day close has
+ * its own DAY_CLOSE_ON_EDGE (Q24 failover); the receipt write-off is the
+ * owner's cloud action for that day close (the service refuses on an edge);
+ * the delivery platform sync touches only the platform's sync state; an
+ * apology voucher is a cloud CRM record (one per issue or idempotency key).
+ */
+const cloudWrites: Write[] = [
+  ["day close", () => `${base()}/pos/day/close`, () => ({})],
+  ["receipt write-off", () => `${base()}/pos/receipt-writeoffs`, () => ({})],
+  [
+    "delivery sync resend",
+    () => `${base()}/delivery-orders/${randomUUID()}/platform-sync/resend`,
+    () => ({}),
+  ],
+  [
+    "delivery sync resolve",
+    () => `${base()}/delivery-orders/${randomUUID()}/platform-sync/resolve`,
+    () => ({}),
+  ],
+  [
+    "apology voucher",
+    () => "/api/apology-vouchers",
+    () => ({ valueIdr: 5000, reason: "Pesanan terlambat lama" }),
+  ],
+];
+
+function kitchenTicket(action: string) {
+  return `${base()}/kitchen/tickets/${randomUUID()}/${action}`;
+}
+
+function deviceToken() {
+  return signDeviceToken({
+    version: 1,
+    issuedAt: Math.floor(Date.now() / 1000),
+    tenantId: tenant.tenantId,
+    brandId: null,
+    deviceId,
+  });
+}
+
 function post(write: Write, client = cashier) {
-  return client
-    .post(write[1]())
+  const request = client[write[3] ?? "post"](write[1]())
     .set(headers)
-    .set(originHeader)
-    .send(write[2]());
+    .set(originHeader);
+  // Only the outlet's own device carries its token (R1 callers have none).
+  if (write[4] && client === cashier)
+    request.set(DEVICE_TOKEN_HEADER, deviceToken());
+  return request.send(write[2]());
 }
 
 async function seedOutletRows(): Promise<void> {
@@ -146,10 +282,25 @@ async function seedOutletRows(): Promise<void> {
      VALUES ($1, $2, $3, 'Zona Gerbang', 'pay_first', '[]')`,
     [zoneId, t, o],
   );
+  for (const [index, id] of [tableId, ...tableIds].entries())
+    await owner.query(
+      `INSERT INTO tables (id, tenant_id, outlet_id, zone_id, code, capacity, type, layout)
+       VALUES ($1, $2, $3, $4, $5, 4, 'regular', '{}')`,
+      [id, t, o, zoneId, `G${index + 1}`],
+    );
   await owner.query(
-    `INSERT INTO tables (id, tenant_id, outlet_id, zone_id, code, capacity, type, layout)
-     VALUES ($1, $2, $3, $4, 'G1', 4, 'regular', '{}')`,
-    [tableId, t, o, zoneId],
+    `INSERT INTO table_link_groups (id, tenant_id, outlet_id) VALUES ($1, $2, $3)`,
+    [linkGroupId, t, o],
+  );
+  await owner.query(
+    `INSERT INTO stations (id, tenant_id, outlet_id, name, type)
+     VALUES ($1, $2, $3, 'Dapur Gerbang', 'hot_kitchen')`,
+    [stationId, t, o],
+  );
+  await owner.query(
+    `INSERT INTO devices (id, tenant_id, outlet_id, type, label, token_issued_at, shared_mode)
+     VALUES ($1, $2, $3, 'pos', 'Kasir Gerbang', now() - interval '1 minute', false)`,
+    [deviceId, t, o],
   );
   await owner.query(
     `INSERT INTO table_sessions (id, tenant_id, outlet_id, table_id, pax, payment_mode, status,
@@ -191,6 +342,14 @@ beforeAll(async () => {
         "shift.cash.operate",
         "floor.table.operate",
         "pos.payment.accept",
+        "pos.void.request",
+        "pos.refund.request",
+        "shift.cash.approve_close",
+        "pos.day.close",
+        "pos.receipt.writeoff",
+        "kds.ticket.process",
+        "delivery.order.handle",
+        "order.apology_voucher.issue",
       ]),
     ],
   );
@@ -222,9 +381,15 @@ beforeAll(async () => {
     [tenant.tenantId, viewerSession.body.user.id as string, viewerRoleId],
   );
   await seedOutletRows();
+  setDeviceOutletResolver(async (input) =>
+    input.tenantId === tenant.tenantId && input.deviceId === deviceId
+      ? tenant.outletId
+      : null,
+  );
 }, 120_000);
 
 afterAll(async () => {
+  setDeviceOutletResolver(null);
   await owner.query("UPDATE tenants SET created_by = $2 WHERE id = $1", [
     tenant.tenantId,
     randomUUID(),
@@ -289,6 +454,20 @@ describe("1269 E3 POS_WRITE_ON_EDGE over HTTP", () => {
             "POS_WRITE_ON_EDGE",
           );
         }
+      }
+    } finally {
+      await revoke(id);
+    }
+  });
+
+  it("E3b cloud-owned writes stay open on an outlet its edge serves", async () => {
+    const id = await addEdge("primary");
+    try {
+      for (const write of cloudWrites) {
+        const response = await post(write);
+        expect(response.body.error?.code, write[0]).not.toBe(
+          "POS_WRITE_ON_EDGE",
+        );
       }
     } finally {
       await revoke(id);

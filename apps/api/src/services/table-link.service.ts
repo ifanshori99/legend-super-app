@@ -31,6 +31,7 @@ import { db } from "../db";
 import { tableSessions, tables } from "../db/schema";
 import { tableLinkGroups, tableLinkMembers } from "../db/schema/table-links";
 import { withTenant } from "../db/tenant";
+import { assertPosWriteNotOnEdge } from "./pos-edge-outlet";
 import {
   activeSessionForTable,
   appendSessionEvent,
@@ -326,6 +327,8 @@ export async function linkTablesOperation(
         "CONFLICT",
         "Meja dari outlet yang berbeda tidak dapat dihubungkan.",
       );
+    // E3b: an outlet its edge serves links its tables on the edge.
+    await assertPosWriteNotOnEdge(tx, tenantId, outletIdSchema.parse(outletId));
 
     let existing: GroupRow | undefined;
     if (input.groupId) {
@@ -511,6 +514,11 @@ export async function unlinkTablesOperation(
     if (!located)
       throw new CoreError("NOT_FOUND", "Grup meja tidak ditemukan.");
     assertOutletInScope(context.outletScope, located.outletId);
+    await assertPosWriteNotOnEdge(
+      tx,
+      tenantId,
+      outletIdSchema.parse(located.outletId),
+    );
     const before = await liveMembers(tx, tenantId, located.id);
     for (const id of [
       ...new Set(before.map((member) => member.tableId)),

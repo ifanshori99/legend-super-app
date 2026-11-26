@@ -15,9 +15,11 @@ import { CoreError } from "@starter/shared/core";
 import { posSessionRequestSchema } from "@starter/shared/pos/acting-staff";
 import { getAuth, requireAuthAllowSharedDevice } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
+import { assertPosWriteOnCloud } from "../middleware/pos-on-cloud";
 import { requireTrustedOrigin } from "../middleware/origin";
 import { getTenantContext, requireTenantContext } from "../middleware/tenant";
 import { registeredDeviceIdOf } from "./device-id";
+import { resolveDeviceOutlet } from "../services/device-pin.service";
 import {
   endActingStaff,
   issueActingStaff,
@@ -45,6 +47,20 @@ async function signedDeviceId(req: Request): Promise<string> {
   return deviceId;
 }
 
+/**
+ * 409 POS_WRITE_ON_EDGE when the signed device's outlet is served by an edge
+ * (E3b). An unregistered outlet is left to the service (fail closed there).
+ */
+async function assertDeviceOutletOnCloud(
+  req: Request,
+  deviceId: string,
+): Promise<void> {
+  await assertPosWriteOnCloud(
+    req,
+    await resolveDeviceOutlet(getTenantContext(req).tenantId, deviceId),
+  );
+}
+
 export const posActingStaffRouter = Router();
 
 // Guards are per route, not `.use`: this router is mounted before
@@ -57,6 +73,8 @@ posActingStaffRouter.post(
   jsonBody,
   async (req, res) => {
     const deviceId = await signedDeviceId(req);
+    // E3b: an outlet its edge serves signs its cashiers in on the edge.
+    await assertDeviceOutletOnCloud(req, deviceId);
     const input = posSessionRequestSchema.parse(req.body);
     const auth = getAuth(req);
     // Shared-device mode: mark the login session at activation, before any
@@ -87,8 +105,10 @@ posActingStaffRouter.post(
   requireTrustedOrigin,
   requireTenantContext,
   async (req, res) => {
+    const deviceId = await signedDeviceId(req);
+    await assertDeviceOutletOnCloud(req, deviceId);
     await endActingStaff(getTenantContext(req), {
-      deviceId: await signedDeviceId(req),
+      deviceId,
       sessionId: getAuth(req).session.id,
     });
     res.status(204).end();

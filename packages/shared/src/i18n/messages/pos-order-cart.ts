@@ -91,6 +91,13 @@ export const posOrderCartMessages = {
     replaceConfirm: "Simpan lalu kembalikan",
     replaceCancel: "Batal",
   },
+  draftOrder: {
+    title: "Pesanan ini belum terkirim",
+    body: "Pesanan sudah dibuat tetapi belum dikirim. Kirim dari sini, pesanan tidak akan dobel.",
+    send: "Kirim pesanan",
+    errorTitle: "Pesanan belum terkirim",
+    errorBody: "Pesanan tetap ada di daftar. Coba lagi.",
+  },
   otherCashier: {
     title: "Ada pesanan kasir lain yang belum jelas",
     body: "Periksa tab “Belum selesai” sebelum memasukkan ulang pesanan itu.",

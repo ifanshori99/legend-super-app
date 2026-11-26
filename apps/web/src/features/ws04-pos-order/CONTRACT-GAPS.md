@@ -26,3 +26,9 @@ Kontrak bersama yang sudah ada belum dipakai karena bentuknya belum cocok dengan
 ## Demo `?demo=`
 
 `kosong` (katalog, meja, panggilan kosong), `offline` (edge_only, katalog tersimpan sekitar 25 menit sebelum jam sekarang), `gagal` (query error), `memuat` (query tidak pernah selesai).
+
+## Pesanan belum terkirim dari kasir (1268 W6, legend-9yw78.10)
+
+- "Lanjutkan di kasir" di detail pesanan draf membuka `/pos/kasir?draft=<orderId>`. Kasir menampilkan pemberitahuan dengan tombol "Kirim pesanan" (`useContinueCashierDraft`, memakai `continueDraft` yang sama dengan captain, tanpa sesi meja). Kunci kirim disimpan, jadi balasan yang hilang tidak membuat pesanan dobel. Setelah berhasil, layar pindah ke detail pesanan.
+- Kasir belum memuat isi draf ke keranjang: tidak ada endpoint yang mengembalikan draf sebagai keranjang. Isi pesanan dilihat di detail setelah terkirim.
+- Umur daftar pesanan terbuka dihitung `listAgeMs` (tidak pernah negatif), dipakai untuk peringatan tautan lama.

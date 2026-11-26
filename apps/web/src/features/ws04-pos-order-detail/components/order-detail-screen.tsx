@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { ArrowLeft, RotateCw } from "lucide-react";
+import { ArrowLeft, Link2, RotateCw } from "lucide-react";
 import type { PosOrderDetail } from "@starter/shared/pos";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
@@ -15,7 +15,7 @@ import {
   StatusPill,
   type StatusPillTone,
 } from "@/features/ws04-pos-kasir/components/shared";
-import { useKitchenVoids, useOrderDetail } from "../hooks";
+import { useKitchenVoids, useNow, useOrderDetail } from "../hooks";
 import {
   billRows,
   capturedTendersIdr,
@@ -23,8 +23,25 @@ import {
   kitchenVoidedItemIds,
   openKitchenVoidNotices,
 } from "../kitchen-void";
+import {
+  listAgeMs,
+  oldLinkRemainingIdr,
+} from "@/features/ws04-pos-open-orders/open-orders-logic";
+import { useOpenOrders } from "@/features/ws04-pos-open-orders/hooks";
 import { KitchenNotices } from "./kitchen-notices";
 import { OrderLines } from "./order-lines";
+import {
+  FireConfirmDialog,
+  FireNotice,
+  OldLinkNotice,
+  PrimaryAction,
+  SecondaryPay,
+  useOrderActions,
+} from "./order-actions";
+
+// The paid-link warning is re-checked this often, so it hides once the list
+// it came from is older than OLD_LINK_FRESH_MS.
+const OLD_LINK_CHECK_MS = 5_000;
 
 const STATUS_TONE: Record<PosOrderDetail["status"], StatusPillTone> = {
   draft: "neutral",
@@ -38,7 +55,7 @@ function BackLink() {
   const t = useT();
   return (
     <Button asChild variant="outline">
-      <Link to="/pos/meja">
+      <Link to="/pos/pesanan">
         <ArrowLeft aria-hidden="true" />
         {t("posOrderDetail.screen.back")}
       </Link>
@@ -73,7 +90,6 @@ export function OrderDetailScreen({ orderId }: { orderId: string }) {
 
 function OrderDetailBody({ orderId }: { orderId: string }) {
   const t = useT();
-  const { timeZone } = useOutletClock();
   const order = useOrderDetail(orderId);
   const voids = useKitchenVoids(orderId);
 
@@ -121,6 +137,23 @@ function OrderDetailBody({ orderId }: { orderId: string }) {
       />
     );
 
+  return <OrderDetailLoaded orderId={orderId} data={data} voids={voids} />;
+}
+
+function OrderDetailLoaded({
+  orderId,
+  data,
+  voids,
+}: {
+  orderId: string;
+  data: PosOrderDetail;
+  voids: ReturnType<typeof useKitchenVoids>;
+}) {
+  const t = useT();
+  const { timeZone } = useOutletClock();
+  const actions = useOrderActions(data);
+  const openOrders = useOpenOrders();
+  const now = useNow(OLD_LINK_CHECK_MS);
   const notices = openKitchenVoidNotices(voids.data ?? [], data.items);
   const kitchenVoided = kitchenVoidedItemIds(notices);
   const completed = data.status === "completed";
@@ -132,9 +165,18 @@ function OrderDetailBody({ orderId }: { orderId: string }) {
     ...data,
     capturedIdr: capturedTendersIdr(data.tenders),
   });
+  const remainingIdr =
+    rows.find((row) => row.key === "remaining")?.amountIdr ?? data.totalIdr;
+  const listRemainingIdr = oldLinkRemainingIdr(
+    remainingIdr,
+    openOrders.data?.find((row) => row.id === data.id),
+    listAgeMs(now, openOrders.dataUpdatedAt),
+  );
+  const heldCount = actions.held.length;
+  const unpaid = !completed && data.status !== "voided";
 
   return (
-    <div className="grid gap-4">
+    <div className="grid gap-4 max-[700px]:pb-24">
       <PosPageHeading
         title={t("posOrderDetail.screen.title", { number: data.number })}
         subtitle={t("posOrderDetail.screen.subtitle", {
@@ -143,10 +185,33 @@ function OrderDetailBody({ orderId }: { orderId: string }) {
         })}
         action={<BackLink />}
       />
+      <FireNotice state={actions} />
+      {listRemainingIdr !== null && (
+        <OldLinkNotice remainingIdr={listRemainingIdr} />
+      )}
       <PosTwoPane
         sidePosition="end"
         side={
-          <PosPanel title={t("posOrderDetail.summary.title")}>
+          <PosPanel
+            title={t("posOrderDetail.summary.title")}
+            aside={
+              unpaid ? (
+                listRemainingIdr !== null ? (
+                  <StatusPill tone="warning" icon={Link2}>
+                    {t("posOrderDetail.oldLink.pill")}
+                  </StatusPill>
+                ) : remainingIdr > 0 ? (
+                  <StatusPill tone="warning">
+                    {t("posOrderDetail.pay.unpaid")}
+                  </StatusPill>
+                ) : (
+                  <StatusPill tone="success">
+                    {t("posOrderDetail.pay.paid")}
+                  </StatusPill>
+                )
+              ) : undefined
+            }
+          >
             <div className="grid gap-2">
               {rows.map((row) => (
                 <div
@@ -168,8 +233,24 @@ function OrderDetailBody({ orderId }: { orderId: string }) {
                   {t("posOrderDetail.summary.kitchenVoidKept")}
                 </p>
               )}
+              {heldCount > 0 && unpaid && (
+                <p className="mt-2 text-base text-muted-foreground">
+                  {t("posOrderDetail.fire.completeHint")}
+                </p>
+              )}
+              <PrimaryAction
+                state={actions}
+                order={data}
+                remainingIdr={remainingIdr}
+                className="mt-2 w-full max-[700px]:hidden"
+              />
+              <SecondaryPay
+                state={actions}
+                order={data}
+                remainingIdr={remainingIdr}
+              />
               {completed && (
-                <Button asChild size="lg" className="mt-2 w-full">
+                <Button asChild size="lg" variant="outline" className="w-full">
                   <Link
                     to="/pos/pesanan/$orderId/koreksi"
                     params={{ orderId }}
@@ -180,9 +261,15 @@ function OrderDetailBody({ orderId }: { orderId: string }) {
                 </Button>
               )}
               {canVoid &&
+                !actions.unclear &&
                 (historyKnown ? (
                   <>
-                    <Button asChild size="lg" className="mt-2 w-full">
+                    <Button
+                      asChild
+                      size="lg"
+                      variant="outline"
+                      className="w-full"
+                    >
                       <Link
                         to="/pos/pesanan/$orderId/koreksi"
                         params={{ orderId }}
@@ -214,7 +301,14 @@ function OrderDetailBody({ orderId }: { orderId: string }) {
         >
           <div className="grid gap-4">
             <p className="text-base text-muted-foreground">
-              {t("posOrderDetail.panel.count", { count: data.items.length })}
+              {heldCount > 0
+                ? t("posOrderDetail.panel.countHeld", {
+                    count: data.items.length,
+                    held: heldCount,
+                  })
+                : t("posOrderDetail.panel.countAllSent", {
+                    count: data.items.length,
+                  })}
             </p>
             <KitchenNotices
               isLoading={voids.isLoading}
@@ -233,6 +327,18 @@ function OrderDetailBody({ orderId }: { orderId: string }) {
           </div>
         </PosPanel>
       </PosTwoPane>
+      <div
+        data-slot="order-action-bar"
+        className="fixed inset-x-0 bottom-0 z-30 border-t-2 border-border bg-background px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] empty:hidden min-[701px]:hidden"
+      >
+        <PrimaryAction
+          state={actions}
+          order={data}
+          remainingIdr={remainingIdr}
+          className="w-full"
+        />
+      </div>
+      <FireConfirmDialog state={actions} order={data} />
     </div>
   );
 }

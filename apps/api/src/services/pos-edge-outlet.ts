@@ -7,13 +7,16 @@
 // counts (same rule as pos-receipt): in doubt the cloud refuses. An outlet
 // without an active edge node (none, revoked) is unchanged.
 import { and, eq } from "drizzle-orm";
-import type {
-  OutletId,
-  ScopedTenantContext,
-  TenantId,
+import {
+  isOutletInScope,
+  outletIdSchema,
+  type OutletId,
+  type ScopedTenantContext,
+  type TenantId,
 } from "@starter/shared/core";
 import { PosError } from "@starter/shared/pos";
 import { db } from "../db/index.ts";
+import { memberTenantContext } from "../db/member-scope.ts";
 import { edgeNodes } from "../db/schema/edge-node.ts";
 import { tableSessions } from "../db/schema/floor.ts";
 import { withTenant } from "../db/tenant.ts";
@@ -53,14 +56,26 @@ export function setPosWriteGateEdgeModeForTests(
   isEdgeWriter = fn ?? isEdgeProcess;
 }
 
+/**
+ * True when the cloud must not write this outlet's POS rows: its edge does.
+ * Every gate goes through here, so failover (1271 F3) changes one place.
+ */
+export async function posWritesOnEdge(
+  tx: Tx,
+  tenantId: TenantId,
+  outletId: OutletId,
+): Promise<boolean> {
+  if (isEdgeWriter()) return false;
+  return outletHasActiveEdge(tx, tenantId, outletId);
+}
+
 /** 409 POS_WRITE_ON_EDGE for a cloud write on an outlet its edge serves. */
 export async function assertPosWriteNotOnEdge(
   tx: Tx,
   tenantId: TenantId,
   outletId: OutletId,
 ): Promise<void> {
-  if (isEdgeWriter()) return;
-  if (await outletHasActiveEdge(tx, tenantId, outletId))
+  if (await posWritesOnEdge(tx, tenantId, outletId))
     throw new PosError("POS_WRITE_ON_EDGE");
 }
 
@@ -98,5 +113,25 @@ export async function assertOutletNotOnEdge(
   if (isEdgeWriter()) return;
   await withTenant(db, context, (tx) =>
     assertPosWriteNotOnEdge(tx, context.tenant.tenantId, outletId),
+  );
+}
+
+/**
+ * 409 POS_WRITE_ON_EDGE for a target a route names by id (no outlet in the
+ * path, E3b): `outletId` is the target's outlet read on the server. A target
+ * not found or outside the caller's scope is left to the route's own 403/404,
+ * so the caller learns nothing of another outlet's edge.
+ */
+export async function assertTargetOutletNotOnEdge(
+  context: ScopedTenantContext,
+  outletId: string | null,
+): Promise<void> {
+  if (isEdgeWriter() || outletId === null) return;
+  const parsed = outletIdSchema.safeParse(outletId);
+  if (!parsed.success || !isOutletInScope(context.outletScope, parsed.data))
+    return;
+  const tenantId = context.tenant.tenantId;
+  await withTenant(db, memberTenantContext(tenantId), (tx) =>
+    assertPosWriteNotOnEdge(tx, tenantId, parsed.data),
   );
 }

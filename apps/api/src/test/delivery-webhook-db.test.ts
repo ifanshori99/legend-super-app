@@ -962,6 +962,118 @@ describe("voided POS twin", () => {
   });
 });
 
+// E3b (CTO 26 Nov): the edge's kitchen never sees a cloud order, so for an
+// outlet its edge serves the webhook neither injects nor accepts the order
+// (the platform cancels it on its own); it is recorded, logged and alerted.
+describe("outlet served by its edge (E3b)", () => {
+  async function addEdge(s: Seeded): Promise<string> {
+    const id = randomUUID();
+    await owner.query(
+      `INSERT INTO edge_nodes (id, tenant_id, outlet_id, role, status, label, credential_hash, last_heartbeat_at)
+       VALUES ($1, $2, $3, 'primary', 'active', 'Server lokal', $4, now())`,
+      [id, s.tenant.tenantId, s.tenant.outletId, "c".repeat(64)],
+    );
+    return id;
+  }
+  async function revoke(id: string): Promise<void> {
+    await owner.query(
+      "UPDATE edge_nodes SET status = 'revoked', revoked_at = now() WHERE id = $1",
+      [id],
+    );
+  }
+  const acceptCalls = (externalOrderId: string) =>
+    recordedDeliveryCalls().filter(
+      (call) =>
+        call.action === "accept_order" &&
+        (call.payload as { externalOrderId?: string }).externalOrderId ===
+          externalOrderId,
+    );
+  async function alertsOf(deliveryOrderId: string): Promise<number> {
+    const { rows } = await asOwnerTenant(a.tenant.tenantId, (db) =>
+      db.query<{ n: string }>(
+        `SELECT count(*) AS n FROM notification_outbox
+          WHERE tenant_id = $1 AND source_event_id = $2::uuid`,
+        [a.tenant.tenantId, deliveryOrderId],
+      ),
+    );
+    return Number(rows[0]?.n ?? 0);
+  }
+
+  it("a new order is stored, not injected, not accepted, and the outlet is alerted once", async () => {
+    const edge = await addEdge(a);
+    try {
+      const body = payloadOf(a);
+      const response = await send("gofood", body);
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(response.body.data).toMatchObject({
+        result: "needs_review",
+        status: "received",
+        orderId: null,
+      });
+      expect(
+        await count(a, "orders", "AND external_ref = $2", [body.orderId]),
+      ).toBe(0);
+      expect(acceptCalls(body.orderId)).toHaveLength(0);
+      const { rows } = await asOwnerTenant(a.tenant.tenantId, (db) =>
+        db.query<{ id: string }>(
+          `SELECT id FROM delivery_channel_orders
+            WHERE tenant_id = $1 AND external_order_id = $2`,
+          [a.tenant.tenantId, body.orderId],
+        ),
+      );
+      expect(rows).toHaveLength(1);
+      expect(await alertsOf(rows[0]!.id)).toBeGreaterThan(0);
+      const alerts = await alertsOf(rows[0]!.id);
+
+      const replay = await send("gofood", body);
+      expect(replay.status).toBe(200);
+      expect(replay.body.data).toMatchObject({
+        result: "duplicate",
+        status: "received",
+        orderId: null,
+      });
+      expect(
+        await count(a, "orders", "AND external_ref = $2", [body.orderId]),
+      ).toBe(0);
+      expect(acceptCalls(body.orderId)).toHaveLength(0);
+      expect(await alertsOf(rows[0]!.id)).toBe(alerts);
+    } finally {
+      await revoke(edge);
+    }
+  });
+
+  it("an order injected before the edge whose accept failed is not accepted on a replay", async () => {
+    const body = payloadOf(a);
+    setDeliveryChannelAdapter("gofood", {
+      async execute() {
+        throw new Error("platform down");
+      },
+    });
+    let first;
+    try {
+      first = await send("gofood", body);
+    } finally {
+      setDeliveryChannelAdapter("gofood", null);
+    }
+    expect(first.body.data).toMatchObject({
+      result: "injected",
+      status: "received",
+    });
+    const edge = await addEdge(a);
+    try {
+      const replay = await send("gofood", body);
+      expect(replay.status).toBe(200);
+      expect(replay.body.data).toMatchObject({
+        result: "duplicate",
+        status: "received",
+      });
+      expect(acceptCalls(body.orderId)).toHaveLength(0);
+    } finally {
+      await revoke(edge);
+    }
+  });
+});
+
 describe("tenant isolation", () => {
   it("the same platform order id in two tenants is two independent orders", async () => {
     const orderId = `GF-SHARED-${randomUUID().slice(0, 6)}`;

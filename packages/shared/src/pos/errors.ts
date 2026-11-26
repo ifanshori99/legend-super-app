@@ -75,6 +75,16 @@ export const posErrorHttpStatus = {
   QRIS_HOLD_ACTIVE: 409,
   /** legend-yhia9 D-09: an edge without gateway credentials cannot issue QRIS. */
   QRIS_NEEDS_CLOUD: 409,
+  /** 1271 F1: the outlet edge sent a heartbeat recently; failover needs an override. */
+  FAILOVER_EDGE_HEALTHY: 409,
+  /** 1271 F1: the outlet sells through the cloud (failover window open). */
+  FAILOVER_ACTIVE: 409,
+  /** 1271 F1: open failover work (unpaid order, QRIS hold, shift without count). */
+  FAILOVER_OPEN_WORK: 409,
+  /** 1271 F1: the outlet has no failover window in the state this action needs. */
+  FAILOVER_NOT_ACTIVE: 409,
+  /** 1271 F1 D6: failover is switched off on this server (EDGE_FAILOVER_ENABLED). */
+  FAILOVER_DISABLED: 403,
 } as const satisfies Record<string, number>;
 
 export type PosErrorCode = keyof typeof posErrorHttpStatus;
@@ -135,6 +145,14 @@ const defaultMessages: Record<PosErrorCode, string> = {
     "Pembayaran QR sedang dikonfirmasi penyedia. Tunggu konfirmasi sebelum menerima pembayaran lain.",
   QRIS_NEEDS_CLOUD:
     "QRIS belum bisa dibuat dari server lokal outlet. Pakai kasir online atau metode lain.",
+  FAILOVER_EDGE_HEALTHY:
+    "Server lokal outlet masih aktif. Pindah ke mode cloud hanya dengan alasan khusus.",
+  FAILOVER_ACTIVE:
+    "Outlet sedang berjalan dalam mode cloud. Lakukan transaksi lewat kasir mode cloud.",
+  FAILOVER_OPEN_WORK:
+    "Masih ada pekerjaan mode cloud yang terbuka. Selesaikan dulu sebelum kembali ke server lokal.",
+  FAILOVER_NOT_ACTIVE: "Outlet ini tidak sedang dalam mode cloud.",
+  FAILOVER_DISABLED: "Mode cloud belum diaktifkan untuk server ini.",
 };
 
 export class PosError extends Error {

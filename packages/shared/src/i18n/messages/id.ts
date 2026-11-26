@@ -42,6 +42,7 @@ import { promoMessages } from "./promo.ts";
 import { posDisplayMessages } from "./pos-display.ts";
 import { posCorrectionMessages } from "./pos-correction.ts";
 import { posOrderDetailMessages } from "./pos-order-detail.ts";
+import { posOpenOrdersMessages } from "./pos-open-orders.ts";
 import { posIssueChargeMessages } from "./pos-issue-charge.ts";
 import { posReceiptPublicMessages } from "./pos-receipt-public.ts";
 import { paymentDuitkuMessages } from "./ws05-duitku-credentials.ts";
@@ -176,6 +177,7 @@ export const id = {
   // (legend-shabi), public e-receipt (legend-1uk9).
   posCorrection: posCorrectionMessages,
   posOrderDetail: posOrderDetailMessages,
+  posOpenOrders: posOpenOrdersMessages,
   posIssueCharge: posIssueChargeMessages,
   posReceiptPublic: posReceiptPublicMessages,
   // Reservation desk (bead legend-oye8; PRD §3 F19, §3.22).

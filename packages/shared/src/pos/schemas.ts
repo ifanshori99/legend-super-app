@@ -61,7 +61,7 @@ import {
 import type { PaymentMethod } from "../payment/index.ts";
 import { PosError } from "./errors.ts";
 import { shiftExpectedCashIdr, shiftVarianceIdr } from "./calculations.ts";
-import { receiptNumberSchema, receiptPrefixSchema } from "./receipts.ts";
+import { receiptNumberSchema, receiptRunPrefixSchema } from "./receipts.ts";
 
 const scope = { tenantId: tenantIdSchema, outletId: outletIdSchema };
 const name = z.string().min(1).max(150);
@@ -1336,7 +1336,7 @@ export type PosCashMovement = z.infer<typeof posCashMovementSchema>;
  * issuing but the cloud never received, null otherwise.
  */
 export const posReceiptGapRunSchema = z.strictObject({
-  prefix: receiptPrefixSchema,
+  prefix: receiptRunPrefixSchema,
   missing: z.array(receiptNumberSchema),
   /** legend-0hzqw: numbers the owner wrote off as lost; not in `missing`. */
   writtenOff: z.array(receiptNumberSchema),
@@ -1799,7 +1799,7 @@ export const receiptSequenceSchema = z.strictObject({
   ...scope,
   deviceId: uuidSchema,
   /** Printed before the ordinal: "prefiks perangkat diikuti nomor urut". */
-  prefix: receiptPrefixSchema,
+  prefix: receiptRunPrefixSchema,
   lastNumber: z.number().int().min(0).max(999_999_999),
   updatedAt: isoDateTimeSchema,
 });
