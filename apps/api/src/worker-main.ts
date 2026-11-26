@@ -382,7 +382,7 @@ const runtime = createWorkerRuntime({
             // Brief 1270 W2, cloud only: a paid WFC link confirms its seat
             // claim on time, or cancels it and files the full refund (late,
             // hold lapsed, sales closed). Re-read under link -> claim locks.
-            if (event.name === "payment.paid" && sweepsRefunds)
+            if (event.name === "payment.paid" && sweepsCloudOwnedData)
               await handleWfcPaymentPaid(context, event);
             // RSV-03 (legend-lb3c): the guest's confirmation message, written
             // only if the booking is still confirmed now. Cloud only, like the
@@ -828,12 +828,13 @@ const relay = createRelayRuntime({
       console.error("Facility hours roll-forward failed");
     }
     // Brief 1270 W2, cloud only: release WFC seats whose payment hold lapsed.
-    if (sweepsRefunds)
+    if (sweepsCloudOwnedData) {
       try {
         await sweepWfcHolds(context, new Date());
       } catch {
         console.error("WFC hold sweep failed");
       }
+    }
     // §3 F39 WFC minimum spend per hour reminder (legend-e24cz); self-throttled.
     try {
       await runWfcMinSpendJob(context);
