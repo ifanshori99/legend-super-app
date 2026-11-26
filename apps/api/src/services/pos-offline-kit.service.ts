@@ -37,11 +37,13 @@ import { resolveDeviceOutlet } from "./device-pin.service.ts";
 import { getPosCatalog } from "./pos-catalog.service.ts";
 import { loadPosTaxConfig } from "./pos-order-pricing.ts";
 import { ensureOfflineReceiptRun } from "./pos-receipt.service.ts";
+import { isEdgeProcess } from "./pos-edge-outlet.ts";
 import { assertOutletPermission } from "./pos-shift-support.ts";
 
 export type OfflineKitCaller = { userId: UserId; deviceId: string | null };
 
 const NO_DEVICE = "Bekal offline hanya untuk perangkat kasir terdaftar.";
+const CLOUD_ONLY = "Bekal offline hanya diterbitkan server pusat.";
 const sameId = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 /**
@@ -69,20 +71,14 @@ export async function issuePosOfflineKit(
   input: IssuePosOfflineKitInput,
   now = new Date(),
 ): Promise<PosOfflineKit> {
+  // Review O1 P2: the L-run is cloud-issued only; an edge never hands it out.
+  if (isEdgeProcess()) throw new CoreError("CONFLICT", CLOUD_ONLY);
   if (caller.deviceId === null) throw new CoreError("FORBIDDEN", NO_DEVICE);
   const deviceId = caller.deviceId;
   const tenantId = context.tenant.tenantId;
   const deviceOutlet = await resolveDeviceOutlet(tenantId, deviceId);
   if (deviceOutlet === null || !sameId(deviceOutlet, outletId))
     throw new CoreError("FORBIDDEN", NO_DEVICE);
-
-  // The priced snapshot, read at `now` (no images: the tablet sells offline).
-  const [dineIn, takeaway] = await Promise.all(
-    OFFLINE_KIT_SERVICE_TYPES.map((serviceType) =>
-      getPosCatalog(context, outletId, { channel: "pos", serviceType }, now),
-    ),
-  );
-  const catalogs = { dine_in: dineIn!, takeaway: takeaway! };
 
   return withTenant(db, context, async (tx) => {
     await assertOutletPermission(
@@ -117,6 +113,15 @@ export async function issuePosOfflineKit(
       !sameId(shift.cashierId, caller.userId)
     )
       throw new PosError("SHIFT_NOT_OPEN");
+
+    // The priced snapshot, read at `now` (no images: the tablet sells
+    // offline). Review O1 P3 1: only once the caller and the shift passed.
+    const [dineIn, takeaway] = await Promise.all(
+      OFFLINE_KIT_SERVICE_TYPES.map((serviceType) =>
+        getPosCatalog(context, outletId, { channel: "pos", serviceType }, now),
+      ),
+    );
+    const catalogs = { dine_in: dineIn!, takeaway: takeaway! };
 
     const taxConfig = await loadPosTaxConfig(tx, context, outletId);
     const tax: PosOfflineTaxSnapshot = {

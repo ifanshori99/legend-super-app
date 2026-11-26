@@ -62,6 +62,7 @@ import {
   eq,
   inArray,
   isNull,
+  ne,
   notExists,
   notInArray,
   or,
@@ -456,6 +457,9 @@ async function ensureFailoverSequence(
   });
 }
 
+/** Review O1 P3 2 (CTO): new offline epochs one device may open per hour. */
+export const OFFLINE_EPOCHS_PER_HOUR = 6;
+
 /** O1: highest offline prefix (`L999999`, OFFLINE_RECEIPT_PREFIX_PATTERN). */
 const OFFLINE_PREFIX_MAX = 999_999;
 
@@ -516,6 +520,29 @@ export async function ensureOfflineReceiptRun(
     startedAt: row.createdAt,
   });
   if (current && current.id === resumeSequenceId) return runOf(current);
+  // Review O1 P3 2 (CTO): at most OFFLINE_EPOCHS_PER_HOUR new epochs per
+  // device, counted under the outlet lock; more is RATE_LIMITED (429).
+  const [recent] = await tx
+    .select({
+      count: sql<number>`count(*)::int`,
+      retryAfter: sql<number>`greatest(1, ceil(extract(epoch from min(${receiptSequences.createdAt}) + interval '1 hour' - now())))::int`,
+    })
+    .from(receiptSequences)
+    .where(
+      and(
+        eq(receiptSequences.tenantId, tenantId),
+        eq(receiptSequences.outletId, outletId),
+        eq(receiptSequences.deviceId, deviceId),
+        eq(receiptSequences.series, "offline"),
+        sql`${receiptSequences.createdAt} > now() - interval '1 hour'`,
+      ),
+    );
+  if ((recent?.count ?? 0) >= OFFLINE_EPOCHS_PER_HOUR)
+    throw new CoreError(
+      "RATE_LIMITED",
+      "Bekal offline baru terlalu sering diminta dari perangkat ini; coba lagi nanti.",
+      { retryAfterSeconds: recent?.retryAfter ?? 3600 },
+    );
   if (current) await retireSequence(tx, tenantId, current.id, "offline_epoch");
   const used = await prefixesOfOutlet(tx, tenantId, outletId);
   return runOf(
@@ -1502,6 +1529,8 @@ export async function localReceiptRunReport(
         eq(receiptSequences.outletId, outletId as OutletId),
         isNull(receiptSequences.retiredAt),
         sql`${receiptSequences.deviceId} <> ${receiptSequences.outletId}`,
+        // Review O1 P2: an offline L-run is the cloud's, never an edge run.
+        ne(receiptSequences.series, "offline"),
       ),
     );
   return new Map(rows.map((row) => [row.prefix, row.lastNumber]));

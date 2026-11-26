@@ -77,6 +77,7 @@ import {
   appendPosEvent,
   auditPos,
 } from "./pos-order-support.ts";
+import { isEdgeProcess } from "./pos-edge-outlet.ts";
 import { outletSnapshotFor } from "./pos-receipt.service.ts";
 import { assertOutletPermission } from "./pos-shift-support.ts";
 import { recordTaxSnapshotsFromPayload } from "./tax.service.ts";
@@ -138,6 +139,12 @@ export async function submitPosOfflineBatch(
   input: SubmitPosOfflineBatchInput,
   now = new Date(),
 ): Promise<PosOfflineBatchResult> {
+  // Review O1 P2: the L-runs are the cloud's; an edge never takes them in.
+  if (isEdgeProcess())
+    throw new CoreError(
+      "CONFLICT",
+      "Penjualan offline hanya diterima server pusat.",
+    );
   if (caller.deviceId === null) throw new CoreError("FORBIDDEN", NO_DEVICE);
   const deviceId = caller.deviceId;
   const deviceOutlet = await resolveDeviceOutlet(
