@@ -237,3 +237,6 @@ export * from "./customer-reviews";
 // (migration 0527).
 export * from "./wfc-seat";
 export * from "./wfc-settings";
+
+// X2 EDC settlement CSV per bank (legend-wasr7.11, migration 0539).
+export * from "./edc-settlement-csv";

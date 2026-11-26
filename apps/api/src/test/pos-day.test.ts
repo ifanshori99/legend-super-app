@@ -1106,7 +1106,14 @@ describe("POS-05 closing the day (legend-6c0)", () => {
   it("POS-05 once closed, reading the day returns the stored recap", async () => {
     const response = await day().get();
     expect(response.status).toBe(200);
-    expect(parseRecap(response.body)).toEqual(closedRecap);
+    // X2: the read adds the live EDC-per-terminal rows (the bank file comes
+    // after the day froze); everything else is the stored recap, unchanged.
+    const { edcSettlement, ...stored } = parseRecap(response.body) as Record<
+      string,
+      unknown
+    >;
+    expect(stored).toEqual(closedRecap);
+    expect(edcSettlement).toEqual([]);
   });
 
   it("a retry with the same idempotency key returns the same recap and does not close twice", async () => {

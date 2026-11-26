@@ -1483,6 +1483,39 @@ export const endOfDayChannelRowSchema = z.strictObject({
 });
 export type EndOfDayChannelRow = z.infer<typeof endOfDayChannelRowSchema>;
 
+/**
+ * X2 (legend-wasr7.11): EDC per terminal on the Tutup Hari recap. The day's
+ * captured EDC tenders against the bank settlement CSV lines matched to them.
+ * Computed on every read (the bank file comes H+1, after the day closed), so
+ * it is never part of the frozen recap; the blind view never carries it.
+ */
+export const endOfDayEdcTerminalRowSchema = z
+  .strictObject({
+    terminalId: uuidSchema,
+    terminalCode: z.string().min(1).max(64),
+    bank: edcBankSchema,
+    /** Captured EDC tenders of the day's completed sales on this terminal. */
+    receiptIdr: nonnegativeIdr,
+    receiptCount: z.number().int().nonnegative(),
+    /** Of those: confirmed by a matched bank settlement line. */
+    settledIdr: nonnegativeIdr,
+    settledCount: z.number().int().nonnegative(),
+    /** Of those: still "perlu dicek" (e.g. a manual slip not yet matched). */
+    flaggedCount: z.number().int().nonnegative(),
+    /** Bank lines naming one of these sales with another amount or terminal. */
+    mismatchCount: z.number().int().nonnegative(),
+  })
+  .refine(
+    (row) =>
+      Number(row.settledIdr) <= Number(row.receiptIdr) &&
+      row.settledCount <= row.receiptCount &&
+      row.flaggedCount <= row.receiptCount,
+    { message: "settled and flagged are part of the receipts" },
+  );
+export type EndOfDayEdcTerminalRow = z.infer<
+  typeof endOfDayEdcTerminalRowSchema
+>;
+
 export const endOfDayRecapSchema = z
   .strictObject({
     id: dailyCloseIdSchema,
@@ -1518,6 +1551,8 @@ export const endOfDayRecapSchema = z
       journalCount: z.number().int().nonnegative(),
       postedAt: isoDateTimeSchema.nullable(),
     }),
+    /** X2: EDC per terminal, live on read only (see the row schema). */
+    edcSettlement: z.array(endOfDayEdcTerminalRowSchema).optional(),
   })
   .superRefine((recap, ctx) => {
     for (const device of recap.devices) {

@@ -25,6 +25,7 @@ import {
 import { refundEscalationReasonSchema } from "./refund-events.ts";
 import { defineEndpoint } from "../api/endpoint.ts";
 import {
+  edcBankSchema,
   edcTransactionSchema,
   edcTransactionStatusSchema,
   resolveEdcReconciliationBodySchema,
@@ -808,6 +809,62 @@ export const settlementImportViewSchema = z.strictObject({
 });
 export type SettlementImportView = z.infer<typeof settlementImportViewSchema>;
 
+// ---- EDC settlement CSV per bank (X2 legend-wasr7.11) ---------------------
+
+/** Largest CSV text one upload carries (the API caps bodies at 100 kB). */
+export const EDC_SETTLEMENT_CSV_MAX_CHARS = 90_000;
+
+/**
+ * The bank's settlement export as text. Lines are matched to EDC sales by
+ * terminal + RRN + amount; nothing is booked and no amount or payment status
+ * changes. Card number columns are never read or stored.
+ */
+export const importEdcSettlementCsvInputSchema = clientInputSchema({
+  outletId: outletIdSchema,
+  bank: edcBankSchema,
+  fileName: z
+    .string()
+    .trim()
+    .min(1)
+    .max(200)
+    .refine(
+      (name) =>
+        !/[/\\]/.test(name) && [...name].every((ch) => ch.charCodeAt(0) >= 32),
+      "Nama berkas tidak valid",
+    ),
+  csv: z.string().min(1).max(EDC_SETTLEMENT_CSV_MAX_CHARS),
+});
+export type ImportEdcSettlementCsvInput = z.infer<
+  typeof importEdcSettlementCsvInputSchema
+>;
+
+const count = z.number().int().nonnegative();
+
+/** What the import recorded. `replayed`: the same file was imported before. */
+export const edcSettlementCsvImportViewSchema = z.strictObject({
+  id: uuidSchema,
+  outletId: outletIdSchema,
+  bank: edcBankSchema,
+  fileName: z.string().min(1).max(200),
+  fileHash: z.string().regex(/^[0-9a-f]{64}$/),
+  rowCount: count,
+  /** Lines that named an approved sale with the same terminal and amount. */
+  matched: count,
+  /** Of the matched lines: the sale's "perlu dicek" flag was cleared. */
+  cleared: count,
+  /** Same RRN with another amount or terminal: alerted, nothing cleared. */
+  mismatch: count,
+  /** No approved sale for the line at this outlet. */
+  unmatched: count,
+  /** Lines already imported (this file or an earlier one): no effect. */
+  duplicate: count,
+  replayed: z.boolean(),
+  createdAt: isoDateTimeSchema,
+});
+export type EdcSettlementCsvImportView = z.infer<
+  typeof edcSettlementCsvImportViewSchema
+>;
+
 /**
  * Ties imported gateway settlements to the bank statement line that paid them
  * (1269 C4a). The nets must add up to the line exactly and every settlement is
@@ -1103,6 +1160,16 @@ export const importSettlement = defineEndpoint({
   path: `${ADMIN}/reconciliation/settlements`,
   body: importSettlementInputSchema,
   response: dataResponseSchema(settlementImportViewSchema),
+});
+/**
+ * X2: a bank's EDC settlement CSV, matched by terminal + RRN + amount. Needs
+ * payment.reconcile at the outlet and a second factor (it clears flags).
+ */
+export const importEdcSettlementCsv = defineEndpoint({
+  method: "POST",
+  path: `${ADMIN}/edc/settlement-csv`,
+  body: importEdcSettlementCsvInputSchema,
+  response: dataResponseSchema(edcSettlementCsvImportViewSchema),
 });
 /** Tenant-wide finance only (payment.reconcile and accounting.reconcile). */
 export const reconcileSettlements = defineEndpoint({

@@ -168,9 +168,19 @@ function dayRecapFrom(recap: EndOfDayRecapView, cutoff: string): DayCloseRecap {
       0,
     ),
     ...(hidden ? { drawerFiguresHidden: true } : {}),
-    // Settlement per bank and unmatched standalone are not in the contract yet.
-    settlement: null,
-    standaloneUnmatched: null,
+    // X2: EDC settled by the bank CSV per terminal, and sales still "perlu
+    // dicek". Absent (blind view, older server): null, the screen says pending.
+    settlement:
+      "edcSettlement" in recap && recap.edcSettlement
+        ? recap.edcSettlement.map((row) => ({
+            bank: `${row.terminalCode} · ${row.bank.toUpperCase()}`,
+            amountIdr: Number(row.settledIdr),
+          }))
+        : null,
+    standaloneUnmatched:
+      "edcSettlement" in recap && recap.edcSettlement
+        ? recap.edcSettlement.reduce((sum, row) => sum + row.flaggedCount, 0)
+        : null,
     unsyncedReceiptCount: recap.unsyncedReceiptCount,
     stockDeduction: {
       available: true,
