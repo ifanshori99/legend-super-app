@@ -201,7 +201,7 @@ async function assertNotShiftClosedOfflineSale(
       and(
         eq(posOfflineSales.tenantId, context.tenant.tenantId),
         eq(posOfflineSales.eventId, orderId),
-        sql`${posOfflineSales.flags} @> '["shift_closed"]'::jsonb`,
+        sql`${posOfflineSales.flags} ?| array['shift_closed', 'event_conflict']`,
       ),
     )
     .limit(1);

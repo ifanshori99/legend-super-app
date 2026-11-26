@@ -2849,7 +2849,8 @@ export async function autoJournalFactOf(
           and(
             eq(posOfflineSales.tenantId, tenantId),
             eq(posOfflineSales.eventId, p.orderId),
-            sql`${posOfflineSales.flags} @> '["shift_closed"]'::jsonb`,
+            // Review O3 P1: a reported conflicting sale is outside the drawer too.
+            sql`${posOfflineSales.flags} ?| array['shift_closed', 'event_conflict']`,
           ),
         );
       const variant = offlineUnmatched
