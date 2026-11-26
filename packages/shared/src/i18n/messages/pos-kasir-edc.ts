@@ -177,6 +177,8 @@ export const posKasirEdcMessages = {
       "Salin dari struk EDC (RRN), 6 sampai 24 huruf atau angka. Dicocokkan dengan mutasi bank besok.",
     bankRefRequired: "Isi nomor referensi bank dari struk EDC.",
     amountRequired: "Isi nominal dari struk EDC, lebih dari Rp0.",
+    amountHint:
+      "Ketik sisa tagihan {remaining} di mesin EDC, lalu salin nominal persis dari slip.",
     amountMismatch:
       "Nominal slip berbeda dari sisa {remaining}. Cek slip lagi.",
     approval: "Kode persetujuan",

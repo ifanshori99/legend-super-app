@@ -170,7 +170,9 @@ export function EdcStandalone({
             <div className="grid gap-4 md:grid-cols-2">
               <FormField
                 label={t("posKasirPayment.unresolved.slipAmount")}
-                hint={t("posKasirPayment.unresolved.slipAmountHint")}
+                hint={t("posKasirEdc.standalone.amountHint", {
+                  remaining: formatRupiah(bill.remainingIdr),
+                })}
                 error={amountProblem}
                 required
               >
