@@ -75,7 +75,9 @@ function qrisAnswered(signature: string, facts: ChargeCodeFacts): boolean {
 
 /** The stored attempt no longer holds the other methods. */
 function freed(entry: Entry, facts: ChargeCodeFacts): boolean {
-  return (entry.refused && entry.checked) || qrisAnswered(entry.signature, facts);
+  return (
+    (entry.refused && entry.checked) || qrisAnswered(entry.signature, facts)
+  );
 }
 
 /**

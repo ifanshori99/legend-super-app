@@ -53,6 +53,9 @@ export type ChargeRequestFacts =
   | { method: "qris" }
   | { method: "edc_card"; edcTransactionId: string };
 
+/** Starting a card sale of the charge on one terminal. */
+export type EdcStartFacts = { method: "edc_start"; terminalId: string };
+
 /** Poll gap while the charge waits for the gateway or the terminal. */
 export const CHARGE_POLL_MS = 3000;
 
@@ -148,8 +151,9 @@ export function answerSettles(
  */
 export function requestSignature(
   charge: ChargeFacts,
-  request: ChargeRequestFacts,
+  request: ChargeRequestFacts | EdcStartFacts,
 ): string {
+  if (request.method === "edc_start") return `edc:${request.terminalId}`;
   if (request.method === "cash") return `cash:${request.receivedIdr}`;
   if (request.method === "edc_card")
     return `edc_card:${request.edcTransactionId}`;
@@ -167,6 +171,69 @@ export function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new CollectDeadlineError()), ms);
     work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+/**
+ * The method a stored attempt holds the picker to (legend-f1mmf (a)): a card
+ * start and recording its sale are both the card method. Unknown: null, the
+ * picker offers nothing.
+ */
+export function methodOfSignature(signature: string): ChargeMethod | null {
+  if (signature.startsWith("cash:")) return "cash";
+  if (signature.startsWith("qris:")) return "qris";
+  if (signature.startsWith("edc:") || signature.startsWith("edc_card:"))
+    return "edc_card";
+  return null;
+}
+
+/** The terminal a stored card start named, so a retry uses the same one. */
+export function terminalOfSignature(signature: string): string | null {
+  return signature.startsWith("edc:") ? signature.slice(4) : null;
+}
+
+/** The code facts the key store frees a QRIS attempt by (legend-f1mmf (c)). */
+export function codeFacts(charge: ChargeFacts | undefined): {
+  paymentId: string | null;
+  codeEnded: boolean;
+} {
+  const payment = charge?.payment ?? null;
+  return {
+    paymentId: payment?.id ?? null,
+    codeEnded: payment !== null && CODE_ENDED.includes(payment.status),
+  };
+}
+
+/** How long the read right before sending may take (legend-f1mmf (e)). */
+export const PRECHECK_DEADLINE_MS = 8_000;
+
+/** The read before sending did not answer in time: nothing was sent. */
+export class PrecheckDeadlineError extends Error {}
+
+/**
+ * Runs `read` with a signal that aborts after `ms`; the read then rejects with
+ * `PrecheckDeadlineError`, so a hanging read never holds the screen.
+ */
+export function readWithin<T>(
+  read: (signal: AbortSignal) => Promise<T>,
+  ms: number,
+): Promise<T> {
+  const controller = new AbortController();
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      controller.abort();
+      reject(new PrecheckDeadlineError());
+    }, ms);
+    read(controller.signal).then(
       (value) => {
         clearTimeout(timer);
         resolve(value);

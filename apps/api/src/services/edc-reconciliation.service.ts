@@ -175,6 +175,14 @@ async function hasLiveTender(
  * HTTP entry alerts on them after the transaction rolled back. */
 const chargedMismatches = new WeakMap<Error, EdcReconciliationMismatch>();
 
+/** The mismatch a `resolveEdcReconciliation` refusal carries, for a caller
+ * that alerts after its own transaction rolled back (legend-f1mmf). */
+export function edcReconciliationMismatchOf(
+  error: unknown,
+): EdcReconciliationMismatch | undefined {
+  return error instanceof Error ? chargedMismatches.get(error) : undefined;
+}
+
 /** The amount on the terminal/bank evidence must be exactly what the request
  * was for; otherwise the real charge is not what the books would record. The
  * row stays flagged ("perlu dicek") and the outlet is alerted (X1). */

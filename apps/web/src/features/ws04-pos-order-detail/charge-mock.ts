@@ -13,6 +13,9 @@
 //                                   says pending
 //   ?demo=selisih-edc-disetujui | -menunggu | -belum-pasti | -ditolak | -tinjau
 //                                   what the terminal answered
+//   ?demo=selisih-edc-putus     a card started here ends unknown (the
+//                               supervisor settles it with the slip)
+//   any other seed: a card started here is approved after two status reads
 //   ?mock=error | empty | slow  the shared scenarios (transport)
 //
 // Mirrors apps/api/src/services/order-recovery-charge-pos.ts: cash must reach
@@ -21,16 +24,28 @@
 // mock); EDC card pays the exact amount at once. A replay with the same key
 // answers the same, a different key on a paid charge is a 409.
 import type { z } from "@starter/shared/core";
+import {
+  ISSUE_CHARGE_EDC_STATEMENT_REQUIRED,
+  ISSUE_CHARGE_SLIP_REQUIRED,
+  type posIssueChargeDetailSchema,
+} from "@starter/shared/pos";
 import { ApiError } from "@/lib/api/errors";
 import { registerMock } from "@/lib/mock/registry";
 import {
   collectIssueChargeAtPos,
   getIssueCharge,
-  type issueChargeDetailSchema,
+  resolveIssueChargeAttempt,
+  startIssueChargeEdc,
 } from "./charge-endpoints";
 
-type ChargeWire = z.input<typeof issueChargeDetailSchema>;
+type ChargeWire = z.input<typeof posIssueChargeDetailSchema>;
 type Stored = {
+  /** Start key of each card sale started from the till, by sale id. */
+  saleKeys: Map<string, string>;
+  /** Reads until a started sale answers. */
+  readsUntilAnswer: number;
+  /** Keys a supervisor closed: a late arrival is refused. */
+  closedKeys: Set<string>;
   status: "open" | "paid";
   paidKey: string | null;
   /** The first collect answers 504 once, after recording. */
@@ -126,6 +141,9 @@ function stored(chargeId: string): Stored {
       payment: seedPayment(chargeId, seed),
       edcSales: seedSales(seed),
       readsUntilPaid: seed === "selisih-qris-lunas" ? 2 : null,
+      saleKeys: new Map(),
+      readsUntilAnswer: 0,
+      closedKeys: new Set(),
     };
     store.set(chargeId, entry);
   }
@@ -153,18 +171,10 @@ function dropOnce(entry: Stored) {
   );
 }
 
-registerMock(getIssueCharge, ({ params }) => {
-  const entry = stored(params.chargeId);
-  if (entry.payment?.status === "pending" && entry.readsUntilPaid !== null) {
-    if (entry.readsUntilPaid > 0) entry.readsUntilPaid -= 1;
-    else {
-      entry.payment = { ...entry.payment, status: "paid", paidAt: AT };
-      entry.status = "paid";
-    }
-  }
+function readCharge(chargeId: string, entry: Stored) {
   return {
     data: {
-      ...chargeWire(params.chargeId, entry),
+      ...chargeWire(chargeId, entry),
       orderNumber: "POS-0048",
       tableLabel: "Meja A12",
       original: { name: "Nasi ayam", quantity: 1, lineTotalIdr: 35_000 },
@@ -173,10 +183,168 @@ registerMock(getIssueCharge, ({ params }) => {
       edcSales: entry.edcSales,
     },
   };
+}
+
+const TERMINAL_LABEL = "EDC BCA 01";
+
+/** A sale started here answers after a few reads, like the terminal. */
+function answerStartedSales(entry: Stored) {
+  const started = entry.edcSales.find(
+    (sale) => sale.status === "pending" && entry.saleKeys.has(sale.id),
+  );
+  if (!started) return;
+  if (entry.readsUntilAnswer > 0) {
+    entry.readsUntilAnswer -= 1;
+    return;
+  }
+  started.status = demoSeed() === "selisih-edc-putus" ? "unknown" : "approved";
+  if (started.status === "approved") started.completedAt = AT;
+}
+
+registerMock(getIssueCharge, ({ params }) => {
+  const entry = stored(params.chargeId);
+  answerStartedSales(entry);
+  if (entry.payment?.status === "pending" && entry.readsUntilPaid !== null) {
+    if (entry.readsUntilPaid > 0) entry.readsUntilPaid -= 1;
+    else {
+      entry.payment = { ...entry.payment, status: "paid", paidAt: AT };
+      entry.status = "paid";
+    }
+  }
+  return readCharge(params.chargeId, entry);
+});
+
+registerMock(startIssueChargeEdc, ({ params, body }) => {
+  const entry = stored(params.chargeId);
+  if (entry.closedKeys.has(body.idempotencyKey))
+    throw new ApiError(
+      409,
+      "CONFLICT",
+      "Percobaan ini sudah ditutup supervisor; mulai penagihan baru.",
+    );
+  let sale = entry.edcSales.find(
+    (item) => entry.saleKeys.get(item.id) === body.idempotencyKey,
+  );
+  if (!sale) {
+    if (entry.status === "paid")
+      throw new ApiError(409, "CONFLICT", "Tagihan selisih ini sudah lunas.");
+    sale = {
+      id: globalThis.crypto.randomUUID(),
+      status: "pending",
+      amountIdr: AMOUNT_IDR,
+      terminalId: body.terminalId,
+      terminalLabel: TERMINAL_LABEL,
+      declineReason: null,
+      responseCode: null,
+      bank: "bca",
+      method: "card",
+      mode: "ecr",
+      createdAt: new Date().toISOString(),
+      completedAt: null,
+      needsReconciliation: false,
+    };
+    entry.edcSales = [sale, ...entry.edcSales];
+    entry.saleKeys.set(sale.id, body.idempotencyKey);
+    entry.readsUntilAnswer = 2;
+  }
+  return {
+    data: {
+      id: sale.id,
+      tenantId: "00000000-0000-4000-8000-000000000001",
+      outletId: "00000000-0000-4000-8000-000000000002",
+      terminalId: sale.terminalId,
+      bank: "bca" as const,
+      reference: params.chargeId,
+      idempotencyKey: body.idempotencyKey,
+      amountIdr: AMOUNT_IDR,
+      method: "card" as const,
+      status: sale.status,
+      trace: "MOCK0001",
+      approvalCode: null,
+      rrn: null,
+      cardType: null,
+      maskedPan: null,
+      responseCode: null,
+      message: null,
+      invoiceNo: null,
+      batchNo: null,
+      needsReconciliation: false,
+      dispatchedAt: sale.createdAt,
+      inquiryCount: 0,
+      createdAt: sale.createdAt,
+      updatedAt: sale.createdAt,
+      completedAt: null,
+    },
+  };
+});
+
+registerMock(resolveIssueChargeAttempt, ({ params, body }) => {
+  const entry = stored(params.chargeId);
+  const answer = (outcome: "recorded" | "closed") => {
+    const { data } = readCharge(params.chargeId, entry);
+    return { data: { outcome, charge: data } };
+  };
+  const close = () => {
+    entry.closedKeys.add(body.idempotencyKey);
+    return answer("closed");
+  };
+  if (body.method === "cash")
+    return entry.paidKey === body.idempotencyKey ? answer("recorded") : close();
+  const sale = entry.edcSales.find(
+    (item) => entry.saleKeys.get(item.id) === body.idempotencyKey,
+  );
+  if (!sale) return close();
+  if (sale.status === "pending")
+    throw new ApiError(
+      409,
+      "CONFLICT",
+      "Terminal masih memproses transaksi ini; tunggu sampai selesai, lalu ulangi.",
+    );
+  const pay = () => {
+    sale.status = "approved";
+    sale.completedAt = AT;
+    entry.status = "paid";
+    entry.paidKey = body.idempotencyKey;
+    return answer("recorded");
+  };
+  if (sale.status === "unknown") {
+    if (body.edc === undefined)
+      throw new ApiError(
+        409,
+        ISSUE_CHARGE_EDC_STATEMENT_REQUIRED,
+        "Cek terminal dulu: nyatakan kartu gagal, atau lunas dengan slip.",
+      );
+    if (body.edc === "failed") {
+      sale.status = "declined";
+      sale.completedAt = AT;
+      return close();
+    }
+    if (body.slip === undefined)
+      throw new ApiError(
+        409,
+        ISSUE_CHARGE_SLIP_REQUIRED,
+        "Isi RRN, kode approval, dan nominal dari slip EDC.",
+      );
+    if (body.slip.chargedAmountIdr !== AMOUNT_IDR)
+      throw new ApiError(
+        409,
+        "CONFLICT",
+        "Nominal di slip tidak sama dengan tagihan selisih; transaksi tetap perlu dicek.",
+      );
+    return pay();
+  }
+  if (sale.status === "approved") return pay();
+  return close();
 });
 
 registerMock(collectIssueChargeAtPos, ({ params, body }) => {
   const entry = stored(params.chargeId);
+  if (entry.closedKeys.has(body.idempotencyKey))
+    throw new ApiError(
+      409,
+      "CONFLICT",
+      "Percobaan ini sudah ditutup supervisor; mulai penagihan baru.",
+    );
   const received = body.method === "cash" ? body.receivedIdr : AMOUNT_IDR;
   const answer = () => ({
     data: {

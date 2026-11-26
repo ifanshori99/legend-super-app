@@ -70,12 +70,19 @@ function Choice({
   );
 }
 
+/**
+ * The methods the cashier may use. `only`: an attempt without an answer holds
+ * the picker to its own method from the start (legend-f1mmf (a)); the others
+ * are not offered at all.
+ */
 export function MethodPicker({
   value,
   onChange,
+  only = null,
 }: {
   value: ChargeMethod;
   onChange: (method: ChargeMethod) => void;
+  only?: ChargeMethod | null;
 }) {
   const t = useT();
   const name = useId();
@@ -84,15 +91,94 @@ export function MethodPicker({
       <legend className="type-heading mb-2">
         {t("posIssueCharge.method.legend")}
       </legend>
-      {METHODS.map(({ code, icon: Icon }) => (
+      {METHODS.filter(({ code }) => only === null || code === only).map(
+        ({ code, icon: Icon }) => (
+          <Choice
+            key={code}
+            name={name}
+            checked={value === code}
+            onChange={() => onChange(code)}
+          >
+            <Icon className="size-5 shrink-0" aria-hidden="true" />
+            {t(`posIssueCharge.method.${code}`)}
+          </Choice>
+        ),
+      )}
+    </fieldset>
+  );
+}
+
+export type ChargeTerminal = { id: string; label: string; detail: string };
+
+/**
+ * The outlet's card terminals (payment options). A stored card start holds
+ * the choice to its own terminal, so a retry replays the same sale.
+ */
+export function TerminalPicker({
+  terminals,
+  value,
+  onChange,
+  lockedId,
+  loading,
+  failed,
+}: {
+  terminals: readonly ChargeTerminal[];
+  value: string | null;
+  onChange: (id: string) => void;
+  lockedId: string | null;
+  loading: boolean;
+  failed: boolean;
+}) {
+  const t = useT();
+  const name = useId();
+  if (loading)
+    return (
+      <p role="status" className="text-base text-muted-foreground">
+        {t("posIssueCharge.edc.terminalsLoading")}
+      </p>
+    );
+  if (failed)
+    return (
+      <Notice tone="danger" title={t("posIssueCharge.edc.terminalsErrorTitle")}>
+        <p>{t("posIssueCharge.edc.terminalsError")}</p>
+      </Notice>
+    );
+  const shown = lockedId
+    ? terminals.filter((terminal) => terminal.id === lockedId)
+    : terminals;
+  if (shown.length === 0)
+    return (
+      <Notice
+        tone="warning"
+        title={t("posIssueCharge.edc.terminalsEmptyTitle")}
+      >
+        <p>{t("posIssueCharge.edc.terminalsEmpty")}</p>
+      </Notice>
+    );
+  return (
+    <fieldset className="grid gap-2">
+      <legend className="type-heading mb-2">
+        {t("posIssueCharge.edc.terminalLegend")}
+      </legend>
+      {lockedId && (
+        <p className="text-base text-muted-foreground">
+          {t("posIssueCharge.edc.terminalLockedHint")}
+        </p>
+      )}
+      {shown.map((terminal) => (
         <Choice
-          key={code}
+          key={terminal.id}
           name={name}
-          checked={value === code}
-          onChange={() => onChange(code)}
+          checked={value === terminal.id}
+          onChange={() => onChange(terminal.id)}
         >
-          <Icon className="size-5 shrink-0" aria-hidden="true" />
-          {t(`posIssueCharge.method.${code}`)}
+          <CreditCard className="size-5 shrink-0" aria-hidden="true" />
+          <span className="grid min-w-0 gap-1">
+            <span>{terminal.label}</span>
+            <span className="text-base font-normal text-muted-foreground">
+              {terminal.detail}
+            </span>
+          </span>
         </Choice>
       ))}
     </fieldset>

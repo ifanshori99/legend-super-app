@@ -11,9 +11,6 @@ export const posIssueChargeMessages = {
       "Tagihan ini tidak ada di outlet ini. Kembali ke pesanan lalu coba lagi.",
     errorTitle: "Tagihan selisih belum bisa dimuat",
     errorHint: "Periksa koneksi, lalu coba lagi. Pesanan tetap tersimpan.",
-    pendingTitle: "Fitur ini belum tersambung ke server",
-    pendingHint:
-      "Rincian tagihan selisih belum tersedia di lingkungan ini. Hubungi admin outlet.",
   },
   detail: {
     title: "Penggantian menu",
@@ -50,6 +47,15 @@ export const posIssueChargeMessages = {
     cash: "Tunai",
     qris: "QRIS",
     edc_card: "EDC kartu",
+    lockedTitle: "Hanya {method} yang bisa diulang",
+    lockedHint:
+      "Percobaan {method} sebelumnya belum ada jawaban server. Mengulang memakai permintaan yang sama, jadi tidak tercatat dua kali. Metode lain terbuka sesudah percobaan itu selesai.",
+    lockedResolveHint:
+      "Bila percobaan itu tidak akan diulang, minta supervisor menyelesaikannya.",
+  },
+  precheck: {
+    title: "Tagihan belum bisa dibaca",
+    hint: "Tidak ada yang dikirim. Periksa koneksi, lalu coba lagi. Metode yang terkunci tetap terkunci.",
   },
   waiting: {
     pill: "Menunggu",
@@ -92,6 +98,28 @@ export const posIssueChargeMessages = {
     record: "Catat EDC {amount}",
     waitingTitle: "Hasil EDC belum pasti",
     waiting: "Jangan gesek ulang. Status diperiksa otomatis.",
+    terminalLegend: "Mesin EDC",
+    terminalsLoading: "Memuat mesin EDC…",
+    terminalsEmptyTitle: "Belum ada mesin EDC kartu",
+    terminalsEmpty:
+      "Outlet ini belum punya mesin EDC yang menerima kartu. Pilih metode lain.",
+    terminalsErrorTitle: "Daftar mesin EDC belum bisa dimuat",
+    terminalsError: "Periksa koneksi, lalu coba lagi.",
+    terminalLockedHint: "Percobaan sebelumnya memakai mesin ini.",
+    startHint:
+      "Server mengirim nominal tagihan ke mesin. Pelanggan menempel atau memasukkan kartu di mesin.",
+    start: "Kirim {amount} ke mesin EDC",
+    sendingTitle: "Mengirim ke mesin EDC…",
+    sendingHint: "Tunggu mesin menampilkan nominal. Jangan kirim ulang.",
+    pendingTitle: "Menunggu pelanggan di mesin EDC",
+    pending: "Mesin sedang memproses kartu. Status diperiksa otomatis.",
+    checkMachineTitle: "Cek di mesin",
+    checkMachine:
+      "Lihat layar dan slip mesin EDC. Bila mesin sudah selesai tetapi status di sini tetap belum pasti, minta supervisor menyelesaikannya dengan hasil dari mesin.",
+    otherDevice:
+      "Transaksi ini dimulai dari perangkat lain. Selesaikan dari perangkat itu, atau minta bagian keuangan memeriksanya.",
+    notReady:
+      "Mesin EDC tidak terhubung ke kasir ini. Tidak ada transaksi yang dikirim. Pilih metode lain.",
     status: {
       approved: "Disetujui",
       pending: "Menunggu",
@@ -105,6 +133,30 @@ export const posIssueChargeMessages = {
     pill: "Perlu supervisor",
     title: "Pembayaran perlu diperiksa supervisor",
     hint: "Data pembayaran tidak cocok dengan tagihan. Jangan terima uang lagi untuk tagihan ini.",
+  },
+  resolve: {
+    action: "Minta supervisor menyelesaikan",
+    title: "Selesaikan percobaan pembayaran",
+    summaryCash:
+      "Percobaan tunai {amount} belum ada jawaban server. Bila sudah tercatat, tagihan lunas. Bila belum, percobaan ditutup dan tidak bisa tercatat lagi.",
+    summaryEdc:
+      "Transaksi EDC {amount} belum ada jawaban pasti. Server memeriksa transaksinya; tagihan hanya lunas bila bank menyetujui atau slip membuktikannya.",
+    statementLabel: "Hasil di mesin EDC",
+    statementHint: "Cek layar dan slip mesin sebelum memilih.",
+    statementPlaceholder: "Pilih hasil di mesin",
+    statementFailed: "Kartu tidak terdebet",
+    statementPaid: "Kartu terdebet, ada slip",
+    slipRrn: "RRN di slip",
+    slipApproval: "Kode approval di slip",
+    slipAmount: "Nominal di slip",
+    slipAmountHint:
+      "Ketik persis seperti tercetak. Server mencocokkannya dengan tagihan.",
+    statementRequired: "Pilih hasil di mesin EDC dulu.",
+    slipRequired: "Isi RRN, kode approval, dan nominal dari slip EDC.",
+    recordedTitle: "Percobaan sudah tercatat",
+    closedTitle: "Percobaan ditutup",
+    closed:
+      "Tidak ada uang yang tercatat dari percobaan itu, dan tidak akan tercatat lagi. Pilih metode untuk menagih.",
   },
   unknown: {
     title: "Status penagihan belum dapat dipastikan",

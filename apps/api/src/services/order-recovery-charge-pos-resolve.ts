@@ -50,7 +50,10 @@ import {
   alertEdcReconciliationMismatch,
   type EdcReconciliationMismatch,
 } from "./edc-reconciliation-alert.ts";
-import { resolveEdcReconciliation } from "./edc-reconciliation.service.ts";
+import {
+  edcReconciliationMismatchOf,
+  resolveEdcReconciliation,
+} from "./edc-reconciliation.service.ts";
 import type { Tx } from "./menu-internals.ts";
 import { auditCharge, lockChargeChain } from "./order-recovery-charge.ts";
 import {
@@ -422,8 +425,12 @@ export async function resolvePosIssueChargeAttempt(
   try {
     outcome = await settle();
   } catch (error) {
+    // The slip's amount against the charge (here), or against the sale
+    // (`resolveEdcReconciliation`, a slip of the charge's amount on a sale of
+    // another): both tell the outlet after the rollback.
     const mismatch =
-      error instanceof Error ? slipMismatches.get(error) : undefined;
+      (error instanceof Error ? slipMismatches.get(error) : undefined) ??
+      edcReconciliationMismatchOf(error);
     if (mismatch) await alertEdcReconciliationMismatch(context, mismatch, now);
     throw error;
   }

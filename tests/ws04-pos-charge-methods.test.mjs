@@ -391,3 +391,119 @@ describe("1267 H1 refusals, texts and deadline", () => {
     );
   });
 });
+
+describe("legend-f1mmf blockers a, b, c, e", () => {
+  const storage = () => {
+    const map = new Map();
+    return {
+      getItem: (k) => map.get(k) ?? null,
+      setItem: (k, v) => void map.set(k, v),
+      removeItem: (k) => void map.delete(k),
+    };
+  };
+  let n = 100;
+  const uuid = () => `00000000-0000-4000-8000-${String(++n).padStart(12, "0")}`;
+  const scope = { outletId: "o1", chargeId: "c1" };
+
+  test("(a) an attempt without an answer holds the picker to its own method", async () => {
+    const { beginAttempt, lockedAttempt, markChecked, markRefused } =
+      await keys();
+    const { methodOfSignature } = await logic();
+    const s = storage();
+    assert.equal(lockedAttempt(s, scope), null);
+    const first = beginAttempt(s, scope, "cash:10000", uuid);
+    // Still held after a read of the charge as open.
+    markChecked(s, scope);
+    const lock = lockedAttempt(s, scope);
+    assert.equal(lock?.key, first.key);
+    assert.equal(methodOfSignature(lock.signature), "cash");
+    // Freed only by the server's refusal for that key plus an open read.
+    markRefused(s, scope, first.key);
+    assert.equal(lockedAttempt(s, scope), null);
+    assert.equal(methodOfSignature("edc:t1"), "edc_card");
+    assert.equal(methodOfSignature("edc_card:s1"), "edc_card");
+    assert.equal(methodOfSignature("qris:none"), "qris");
+  });
+
+  test("(b) 401/403/429 on a key's first send end it; on a replay they keep it", async () => {
+    const { collectKeyAfter, edcStartKeyAfter } = await failures();
+    for (const status of [401, 403, 429]) {
+      assert.equal(collectKeyAfter(status, true), "end", String(status));
+      assert.equal(collectKeyAfter(status, false), "keep", String(status));
+    }
+    // An unknown result keeps the key even on the first send.
+    for (const status of [0, 408, 500, 504])
+      assert.equal(collectKeyAfter(status, true), "keep", String(status));
+    assert.equal(collectKeyAfter(409, true), "refused");
+    // No EDC agent here: nothing was written on the first send.
+    assert.equal(edcStartKeyAfter(503, "EDC_AGENT_NOT_READY", true), "end");
+    assert.equal(edcStartKeyAfter(503, "EDC_AGENT_NOT_READY", false), "keep");
+    assert.equal(edcStartKeyAfter(503, "OTHER", true), "keep");
+  });
+
+  test("(b) beginAttempt says whether the key was sent before", async () => {
+    const { beginAttempt } = await keys();
+    const s = storage();
+    assert.equal(beginAttempt(s, scope, "cash:10000", uuid).firstSend, true);
+    assert.equal(beginAttempt(s, scope, "cash:10000", uuid).firstSend, false);
+  });
+
+  test("(c) a QRIS attempt frees every method once the server's new code ended", async () => {
+    const { beginAttempt, lockedAttempt, markChecked } = await keys();
+    const { codeFacts } = await logic();
+    const s = storage();
+    beginAttempt(s, scope, "qris:none", uuid);
+    markChecked(s, scope);
+    const live = codeFacts(charge({ payment: qris("pending", { id: "p2" }) }));
+    assert.notEqual(lockedAttempt(s, scope, live), null);
+    assert.equal(
+      beginAttempt(s, scope, "cash:10000", uuid, live).conflict,
+      true,
+    );
+    const ended = codeFacts(charge({ payment: qris("expired", { id: "p2" }) }));
+    assert.equal(lockedAttempt(s, scope, ended), null);
+    assert.equal(
+      beginAttempt(s, scope, "cash:10000", uuid, ended).conflict,
+      false,
+    );
+    // The same code the request named proves nothing: still held.
+    const t = storage();
+    beginAttempt(t, scope, "qris:p1", uuid);
+    const same = codeFacts(charge({ payment: qris("failed", { id: "p1" }) }));
+    assert.notEqual(lockedAttempt(t, scope, same), null);
+    assert.equal(beginAttempt(t, scope, "edc:t1", uuid, same).conflict, true);
+  });
+
+  test("(e) the read before sending is aborted after its deadline", async () => {
+    const { readWithin, PrecheckDeadlineError } = await logic();
+    let aborted = false;
+    await assert.rejects(
+      readWithin(
+        (signal) =>
+          new Promise(() => {
+            signal.addEventListener("abort", () => (aborted = true));
+          }),
+        10,
+      ),
+      PrecheckDeadlineError,
+    );
+    assert.equal(aborted, true);
+    assert.equal(await readWithin(async () => "open", 1000), "open");
+  });
+
+  test("a card start keeps its key per sale for the supervisor's settle", async () => {
+    const { rememberSaleKey, saleStartKey } = await keys();
+    const { requestSignature, terminalOfSignature } = await logic();
+    const s = storage();
+    const key = uuid();
+    rememberSaleKey(s, scope, "sale-1", key);
+    assert.equal(saleStartKey(s, scope, "sale-1"), key);
+    assert.equal(saleStartKey(s, scope, "sale-2"), null);
+    assert.equal(saleStartKey(s, { ...scope, chargeId: "c2" }, "sale-1"), null);
+    const sig = requestSignature(charge(), {
+      method: "edc_start",
+      terminalId: "t1",
+    });
+    assert.equal(terminalOfSignature(sig), "t1");
+  });
+});

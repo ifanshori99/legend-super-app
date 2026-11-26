@@ -43,10 +43,31 @@ export function chargeFailureKind(status: number): "unknown" | "failed" {
  * What a failed collect does to the idempotency key. 409/422: the server
  * answered for this key and recorded nothing (the key is kept; it only frees
  * another method after the charge is read open). Auth and rate limits (401,
- * 403, 429) and any unknown result keep the key too. Any other refusal ends it.
+ * 403, 429) are refused before the server works on the request: on the key's
+ * first send nothing can be recorded and the key ends (legend-f1mmf (b)); on a
+ * later send an earlier one may have recorded, so it is kept. Any unknown
+ * result keeps the key too. Any other refusal ends it.
  */
-export function collectKeyAfter(status: number): "refused" | "keep" | "end" {
+export function collectKeyAfter(
+  status: number,
+  firstSend = false,
+): "refused" | "keep" | "end" {
   if (status === 409 || status === 422) return "refused";
-  if (status === 401 || status === 403 || status === 429) return "keep";
+  if (status === 401 || status === 403 || status === 429)
+    return firstSend ? "end" : "keep";
   return chargeFailureKind(status) === "failed" ? "end" : "keep";
+}
+
+/**
+ * The same for a card start. Without an EDC agent here the server wrote
+ * nothing (503 EDC_AGENT_NOT_READY): on the key's first send it ends.
+ */
+export function edcStartKeyAfter(
+  status: number,
+  code: string,
+  firstSend = false,
+): "refused" | "keep" | "end" {
+  if (firstSend && status === 503 && code === "EDC_AGENT_NOT_READY")
+    return "end";
+  return collectKeyAfter(status, firstSend);
 }
