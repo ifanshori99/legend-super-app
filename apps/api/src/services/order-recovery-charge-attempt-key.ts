@@ -8,7 +8,7 @@
 
 import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import type { TenantId } from "@starter/shared/core";
+import { outletIdSchema, type TenantId } from "@starter/shared/core";
 import { posOrderIdempotency } from "../db/schema/pos-order.ts";
 import { HttpError } from "../lib/http-error.ts";
 import type { Tx } from "./menu-internals.ts";
@@ -44,7 +44,7 @@ export async function isAttemptClosed(
     .where(
       and(
         eq(posOrderIdempotency.tenantId, tenantId),
-        eq(posOrderIdempotency.outletId, outletId),
+        eq(posOrderIdempotency.outletId, outletIdSchema.parse(outletId)),
         eq(
           posOrderIdempotency.key,
           attemptClosedKey(chargeId, method, idempotencyKey),
@@ -95,7 +95,7 @@ export async function closeAttempt(
   const key = attemptClosedKey(chargeId, method, idempotencyKey);
   await tx.insert(posOrderIdempotency).values({
     tenantId,
-    outletId,
+    outletId: outletIdSchema.parse(outletId),
     key,
     operation: ATTEMPT_CLOSED_OPERATION,
     // Every request's fingerprint is the hash of a JSON object: never this.

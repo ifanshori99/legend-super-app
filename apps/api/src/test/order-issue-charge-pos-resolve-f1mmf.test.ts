@@ -9,6 +9,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  idr,
   outletIdSchema,
   tenantIdSchema,
   ulidToUuid,
@@ -302,7 +303,7 @@ async function ledgerSale(input: {
         input.idempotencyKey ?? randomUUID(),
         input.amountIdr,
         input.status,
-        randomUUID().slice(0, 12),
+        randomUUID().replace(/-/g, "").slice(0, 12),
         final ? new Date() : null,
         input.needsReconciliation ?? false,
         input.dispatchedMinutesAgo === undefined
@@ -526,12 +527,12 @@ describe("legend-f1mmf (d) a supervisor settles a charge attempt without an answ
     // the route when the supervisor closed it).
     await expect(
       simAgent.requestPayment(ctx, cashier.userId, {
-        tenantId: w.tenant.tenantId,
-        outletId: w.tenant.outletId,
+        tenantId: tenantIdSchema.parse(w.tenant.tenantId),
+        outletId: outletIdSchema.parse(w.tenant.outletId),
         terminalId,
         reference: opened.charge.id,
         idempotencyKey: key,
-        amountIdr: AMOUNT,
+        amountIdr: idr(AMOUNT),
         method: "card",
       }),
     ).rejects.toMatchObject({ status: 409 });

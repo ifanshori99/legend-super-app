@@ -8,6 +8,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  idr,
   outletIdSchema,
   tenantIdSchema,
   ulidToUuid,
@@ -542,12 +543,12 @@ describe("legend-f1mmf the cashier starts the card sale of a swap charge", () =>
   describe("the agent's own write-ahead with the charge id as reference", () => {
     const request = (chargeId: string, amountIdr: number) =>
       simAgent.requestPayment(ctx, cashier.userId, {
-        tenantId: w.tenant.tenantId,
-        outletId: w.tenant.outletId,
+        tenantId: tenantIdSchema.parse(w.tenant.tenantId),
+        outletId: outletIdSchema.parse(w.tenant.outletId),
         terminalId,
         reference: chargeId,
         idempotencyKey: randomUUID(),
-        amountIdr,
+        amountIdr: idr(amountIdr),
         method: "card",
       });
 

@@ -66,3 +66,12 @@ Sisa:
 - Jalankan ulang 21 file test terkait tagihan (daftar di commit 6cabc2655) karena jalur EDC dan agent berubah.
 - Typecheck api + web lewat `heavy` (shared berubah), prettier check.
 - Review K ulang (architect) untuk (d), lalu web.
+
+### (d) dijalankan dan lulus (27 Nov, sesi lanjutan)
+
+- Bukti gagal-dulu: implementasi commit 1af2f4a23 dibalik sementara (kontrak 32c4c02ef tetap), test resolve 7/7 gagal (route 404). Sesudah dipulihkan 7/7 lulus.
+- Perbaikan test saja: fixture `trace` memakai UUID dengan tanda hubung (ditolak `ecrTraceSchema`); kini huruf dan angka saja.
+- 21 file test tagihan/EDC terkait: 404/404 lulus.
+- Typecheck api awalnya gagal (id dan nominal tanpa brand di attempt-key dan dua test f1mmf), dibetulkan; kini api dan web lulus lewat `heavy`. Ulang 4 file (resolve, edc, collect-pos, pos-edc-tender): 146/146 lulus.
+- Prettier, eslint file tersentuh bersih.
+- Berikut: review K ulang (architect) untuk (d), lalu web.
