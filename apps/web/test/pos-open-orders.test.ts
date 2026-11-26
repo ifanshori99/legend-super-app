@@ -4,6 +4,8 @@
 // lost reply repeats the same bytes.
 import assert from "node:assert/strict";
 import type { PosOrderSummary, PosParkedOrder } from "@starter/shared/pos";
+import { listPosOrders } from "@starter/shared/pos";
+import { createEndpointCaller } from "@/lib/api/endpoint-core";
 import { fireItems } from "@/features/ws04-pos-order/captain-flow";
 import { canFire, heldItemIds } from "@/features/ws04-pos-order-detail/fire";
 import {
@@ -151,4 +153,23 @@ test("a lost fire reply repeats the same key and body: one fire", async () => {
   await fireItems(deps, "order-1", ["a", "b"], "awaiting_payment");
   assert.equal(bodies.length, 2);
   assert.equal(bodies[0], bodies[1]);
+});
+
+test("the status filter goes out as the comma list the API parses", async () => {
+  let sent: unknown;
+  const call = createEndpointCaller(
+    async (_path, request) => {
+      sent = request.query;
+      return {
+        data: [],
+        meta: { limit: 100, nextCursor: null, totalCount: null },
+      };
+    },
+    { validateResponse: () => false },
+  );
+  await call(listPosOrders, {
+    params: { outletId: "0e0e0001-0000-4000-8000-000000000001" },
+    query: { status: OPEN_ORDER_STATUSES.join(","), limit: 100 } as never,
+  } as never);
+  assert.deepEqual(sent, { status: "draft,awaiting_payment,sent", limit: 100 });
 });
