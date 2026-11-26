@@ -77,6 +77,7 @@ export const AREA_MANIFEST: Readonly<
   posKasirShift: "ops",
   posKasirSupervisor: "ops",
   posKasirVoucher: "ops",
+  posOpenOrders: "ops",
   posOrderCatalog: "ops",
   posOrderDetail: "ops",
   reservation: "ops",

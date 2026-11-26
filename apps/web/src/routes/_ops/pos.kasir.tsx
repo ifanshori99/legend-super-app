@@ -11,6 +11,8 @@ import { evaluateGuard } from "@/lib/areas/guard";
 export const Route = createFileRoute("/_ops/pos/kasir")({
   validateSearch: z.object({
     v: z.enum(["keranjang"]).optional().catch(undefined),
+    // "Lanjutkan" on /pos/pesanan?tab=ditahan: open the parked carts sheet.
+    ditahan: z.enum(["1"]).optional().catch(undefined),
     // Mock seed (`?demo=offline`, `?demo=...`) read by the POS ordering mock;
     // kept so navigation does not drop it.
     demo: z.string().optional().catch(undefined),

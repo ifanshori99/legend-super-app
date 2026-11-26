@@ -215,7 +215,17 @@ export const createPosOverrideSchema = clientInputSchema({
     }),
     z.strictObject({ method: z.literal("supervisor_phone") }),
   ]),
-});
+}).refine(
+  // The reason of a hand-keyed EDC payment names the slip's reference and is
+  // kept in the audit trail and the cloud events: never a card number (PAN).
+  (value) =>
+    value.action !== "edc_standalone" ||
+    !/\d{13,19}/.test(value.reason.replace(/[\s-]/g, "")),
+  {
+    message: "Alasan tidak boleh memuat nomor yang menyerupai nomor kartu.",
+    path: ["reason"],
+  },
+);
 export type CreatePosOverrideInput = z.infer<typeof createPosOverrideSchema>;
 
 export const posOverrideParamsSchema = z.strictObject({

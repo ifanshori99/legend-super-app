@@ -23,6 +23,7 @@ import {
 } from "@starter/shared/core/server";
 import type { PosReceipt } from "@starter/shared/pos";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
+import { createPosOverrideSchema } from "@starter/shared/access/override";
 import { createApp } from "../app.ts";
 import { signDeviceToken } from "../lib/device-token.ts";
 import {
@@ -391,6 +392,7 @@ async function ledgerRow(input: {
   status: string;
   mode?: string;
   needsReconciliation?: boolean;
+  rrn?: string;
 }): Promise<string> {
   const id = randomUUID();
   const final = ["approved", "declined", "cancelled", "failed"].includes(
@@ -401,9 +403,9 @@ async function ledgerRow(input: {
       `INSERT INTO edc_transactions
          (id, tenant_id, outlet_id, terminal_id, bank, reference, idempotency_key,
           request_fingerprint, amount_idr, method, status, type, mode, trace,
-          needs_reconciliation, completed_at)
+          needs_reconciliation, completed_at, rrn)
        VALUES ($1, $2, $3, $4, 'bca', $5, $6, 'fp', $7, 'card', $8, 'sale', $9, $10,
-               $11, $12)`,
+               $11, $12, $13)`,
       [
         id,
         tenant.tenantId,
@@ -417,6 +419,7 @@ async function ledgerRow(input: {
         randomUUID().slice(0, 12),
         input.needsReconciliation ?? false,
         final ? new Date() : null,
+        input.rrn ?? null,
       ],
     ),
   );
@@ -758,7 +761,7 @@ describe("POS standalone EDC tender (legend-m4fv, EDC-04)", () => {
     const refused = async (overrideId: string) => {
       const res = await payStandalone(order, {
         terminalId,
-        bankRef: "112233445566",
+        bankRef: "112233445577",
         overrideId,
       });
       expect(res.status, JSON.stringify(res.body)).toBe(403);
@@ -886,6 +889,171 @@ describe("POS standalone EDC tender (legend-m4fv, EDC-04)", () => {
     });
     expect(res.status, JSON.stringify(res.body)).toBe(409);
     await noTender(order.orderId);
+  });
+
+  // legend-9yw78.15: one slip is one charge on the machine. The same bank
+  // reference (compared as the resolve flow does: no hyphens, upper case) never
+  // pays a second bill, whoever recorded the first one.
+  describe("one slip pays one bill (legend-9yw78.15)", () => {
+    const slipOverride = async (order: Awaited<ReturnType<typeof newOrder>>) =>
+      standaloneOverride({
+        objectId: order.orderId,
+        valueIdr: order.totalIdr,
+      });
+    const spent = async (overrideId: string) =>
+      (
+        await owner.query(
+          `SELECT 1 FROM pos_order_approval_uses WHERE override_id = $1::uuid`,
+          [ulidToUuid(overrideId)],
+        )
+      ).rows.length;
+
+    it("refuses the same slip on a second bill, however it is typed", async () => {
+      const first = await newOrder();
+      const paid = await payStandalone(first, {
+        terminalId,
+        bankRef: "7788-99AB1234",
+        overrideId: await slipOverride(first),
+      });
+      expect(paid.status, JSON.stringify(paid.body)).toBe(201);
+      for (const typed of ["7788-99AB1234", "778899ab1234", "7788-99ab-1234"]) {
+        const second = await newOrder();
+        const overrideId = await slipOverride(second);
+        const res = await payStandalone(second, {
+          terminalId,
+          bankRef: typed,
+          overrideId,
+        });
+        expect(res.status, JSON.stringify([typed, res.body])).toBe(409);
+        await noTender(second.orderId);
+        expect(await standaloneRows(second.number)).toHaveLength(0);
+        // The refusal rolled the approval back: it can pay with a real slip.
+        expect(await spent(overrideId)).toBe(0);
+        const other = await payStandalone(second, {
+          terminalId,
+          bankRef: `5566${randomUUID().replaceAll("-", "").slice(0, 8)}`,
+          overrideId,
+        });
+        expect(other.status, JSON.stringify(other.body)).toBe(201);
+      }
+    });
+
+    it("refuses a slip the card terminal already booked on another bill", async () => {
+      const other = await newOrder();
+      await ledgerRow({
+        reference: other.number,
+        amountIdr: other.totalIdr,
+        status: "approved",
+        rrn: "334455667788",
+      });
+      const order = await newOrder();
+      const res = await payStandalone(order, {
+        terminalId,
+        bankRef: "334455667788",
+        overrideId: await slipOverride(order),
+      });
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      await noTender(order.orderId);
+    });
+
+    it("a declined or cancelled slip moved no money and does not block", async () => {
+      for (const status of ["declined", "cancelled"]) {
+        const other = await newOrder();
+        const rrn = `9900${randomUUID().replaceAll("-", "").slice(0, 8)}`;
+        await ledgerRow({
+          reference: other.number,
+          amountIdr: other.totalIdr,
+          status,
+          rrn,
+        });
+        const order = await newOrder();
+        const res = await payStandalone(order, {
+          terminalId,
+          bankRef: rrn,
+          overrideId: await slipOverride(order),
+        });
+        expect(res.status, JSON.stringify([status, res.body])).toBe(201);
+      }
+    });
+
+    it("refuses a slip booked under another bank, on any terminal of the tenant", async () => {
+      const mandiriId = randomUUID();
+      await asOwnerTenant(tenant.tenantId, (client) =>
+        client.query(
+          `INSERT INTO payment_edc_terminals
+             (id, tenant_id, outlet_id, bank_code, terminal_id, merchant_id, model,
+              connection, ip_address, supported_methods, status)
+           VALUES ($1, $2, $3, 'mandiri', 'TID-MD', 'MID-MD', 'Test EDC', 'lan',
+                   '10.0.0.9', ARRAY['card','qris'], 'active')`,
+          [mandiriId, tenant.tenantId, tenant.outletId],
+        ),
+      );
+      const first = await newOrder();
+      const bankRef = "778811223344";
+      const paid = await payStandalone(first, {
+        terminalId,
+        bankRef,
+        overrideId: await slipOverride(first),
+      });
+      expect(paid.status, JSON.stringify(paid.body)).toBe(201);
+      const second = await newOrder();
+      const res = await payStandalone(second, {
+        terminalId: mandiriId,
+        bankRef,
+        overrideId: await slipOverride(second),
+      });
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      await noTender(second.orderId);
+    });
+
+    it("an override reason of a hand-keyed EDC payment never holds a card number", () => {
+      const ask = (reason: string, action = "edc_standalone") =>
+        createPosOverrideSchema.safeParse({
+          outletId: tenant.outletId,
+          action,
+          valueIdr: 25_000,
+          reason,
+          objectType: "pos_order",
+          objectId: createUlid(),
+          approval: {
+            method: "supervisor_pin",
+            approverUserId: supervisor.userId,
+            pin: PIN,
+          },
+        });
+      for (const reason of [
+        "EDC standalone, referensi bank 4111111111111111",
+        "EDC standalone, referensi bank 4111 1111 1111 1111",
+        "EDC standalone, referensi bank 4111-1111-1111-1111",
+      ])
+        expect(ask(reason).success, reason).toBe(false);
+      expect(ask("EDC standalone, referensi bank 736214805192").success).toBe(
+        true,
+      );
+      // Other actions are not touched by this rule.
+      expect(ask("Struk 4111111111111111", "void").success).toBe(true);
+    });
+
+    it("two bills sent together with one slip: one is paid, one refused", async () => {
+      const [a, b] = [await newOrder(), await newOrder()];
+      const bankRef = "665544332211";
+      const results = await Promise.all(
+        [a, b].map(async (order) =>
+          payStandalone(order, {
+            terminalId,
+            bankRef,
+            overrideId: await slipOverride(order),
+          }),
+        ),
+      );
+      expect(results.map((r) => r.status).sort()).toEqual([201, 409]);
+      const { rows } = await owner.query(
+        `SELECT 1 FROM edc_transactions WHERE tenant_id = $1 AND rrn = $2
+           AND status = 'approved'`,
+        [tenant.tenantId, bankRef],
+      );
+      expect(rows).toHaveLength(1);
+    });
   });
 
   it("one EDC row backs at most one live tender (partial unique index)", async () => {
