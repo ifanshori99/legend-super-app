@@ -36,3 +36,15 @@ Aplikasi Android kecil di tablet kasir ("Legend EDC Bridge"). Agent EDC E1-E7 (`
 - Bila spesifikasi bank belum tiba saat sistem lain siap: keputusan founder (tunda rilis atau jalan dulu EDC manual).
 
 Sumber: DealPOS BCA, Accurate BCA, majoo-BRI, majoo ECR, BNI EDC, Yokke ECR, Chromium Web Serial Android, Chrome Local Network Access, KOMOJU Terminal (tautan di laporan architect).
+
+## Temuan dokumentasi ECR online (27 Nov, permintaan founder: BCA, Mandiri, BNI)
+
+- **BCA: ada API ECR cloud resmi** di developer.bca.co.id ("ECR EDC BCA Request Payment" dan "ECR EDC BCA Inquiry Status"). Server merchant memanggil gateway BCA lewat HTTP: `POST /openapi/v1.0/ecr/payment` (ringkasan, belum dibaca verbatim) dan `POST /openapi/v1.0/ecr/inquiry-status` (`merchantId`, `terminalId`, `transType`, `partnerType`, `originalPartnerReferenceNo`). Auth gaya SNAP: OAuth2 client_credentials + `X-SIGNATURE`, `X-TIMESTAMP`, `ORIGIN`, `CHANNEL-ID`. `X-EXTERNAL-ID` unik per request (ulang = `409IS00`), `202IS00` = masih proses (poll inquiry), `504IS00` = timeout. Void (`transType` 08) dan refund QRIS (35) lewat API yang sama. Belum tersedia di sandbox; akses lewat formulir kerja sama `webform.bca.co.id/api/registrasi-api`. Dokumen tidak menyebut bagaimana nominal sampai ke EDC fisik (lewat backend BCA atau LAN).
+- **Mandiri: tidak ada spesifikasi resmi online.** Hanya panduan vendor pihak ketiga (ECR v1.2 lewat USB, 9600 baud). Mitra EDC Android Mandiri: Yokke (PT Mitra Transaksi Indonesia). Spesifikasi harus diminta ke Mandiri/Yokke.
+- **BNI: tidak ada spesifikasi resmi online.** BNI menyebutnya ICR (integrated cash register) dan memfasilitasi merchant; spesifikasi harus diminta ke BNI.
+- Salinan dokumen ECR BCA lama di Scribd/PDFCoffee tidak dipakai: sumber tidak resmi, kemungkinan dokumen rahasia bank, dan bisa usang.
+
+### Keputusan CTO
+1. **BCA jalur utama = API ECR cloud BCA** (server ke gateway BCA, tanpa aplikasi jembatan). Kartu baru B5a: adapter `bca-cloud` di agent EDC cloud, aturan aman 1-7 tetap berlaku (`202IS00`/`504IS00`/error jaringan = `unknown` lalu inquiry, tidak pernah `failed`; `X-EXTERNAL-ID` baru tiap request tetapi `partnerReferenceNo` tetap per percobaan bayar). Kunci API dan private key lewat `deploy/single-vm/runtime.env` oleh founder.
+2. **Mandiri dan BNI = aplikasi jembatan Android** (B1-B3, B5 per bank) sampai bank memberi spesifikasi atau API cloud.
+3. Founder perlu: isi formulir kerja sama API BCA (fitur ECR EDC) atas nama badan usaha, lalu tanya BCA apakah EDC yang dipakai outlet sudah mendukung ECR cloud. Untuk Mandiri (via Yokke) dan BNI: minta dokumen ECR/ICR.
