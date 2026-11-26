@@ -865,6 +865,12 @@ export async function cancelSupersededAtGateway(
 export type CreateIntentOptions = {
   orderLockedByCaller?: boolean;
   /**
+   * 1269 C3a review P3 2: the code may come from this provider only. The rule
+   * must name it and its fallback is never used; anything else is refused
+   * before the provider is called (the cashier VA / e-wallet: Duitku).
+   */
+  onlyProvider?: string;
+  /**
    * legend-9vmit (founder Q15): set by a guest-facing caller that may change
    * method. When the pre-provider guard refuses because a live VA or bank
    * transfer code of the same scope exists, this voids those codes (provider
@@ -1329,13 +1335,33 @@ async function createIntentCore(
       ),
     );
   }
+  if (
+    options.onlyProvider !== undefined &&
+    plan.routing.provider !== options.onlyProvider
+  )
+    throw new HttpError(
+      422,
+      "VALIDATION_ERROR",
+      "This payment method is not available.",
+    );
   const selected = await selectGatewayForNewIntent(
     context,
     plan.link.outletId,
-    plan.routing,
+    options.onlyProvider === undefined
+      ? plan.routing
+      : { ...plan.routing, fallbackProvider: null },
   );
   if (selected.provider === null)
     throw await gatewayDownRefusal(context, plan.link, now);
+  if (
+    options.onlyProvider !== undefined &&
+    selected.provider !== options.onlyProvider
+  )
+    throw new HttpError(
+      422,
+      "VALIDATION_ERROR",
+      "This payment method is not available.",
+    );
 
   // The caller may shorten the lifetime (a QR guest's session ends sooner);
   // never lengthen it past the method default.

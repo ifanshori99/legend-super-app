@@ -177,6 +177,19 @@ async function assertReleasableIntentTx(
       AND h.state = 'closed'
     LIMIT 1`);
   if (closedHold.rows.length > 0) throw notEligible("Kode ini sudah ditutup.");
+  // 1269 C3a review P2: a cashier VA / e-wallet code is held like the QR, and
+  // its hold has its own release (`qris/release`). A second release path here
+  // would end the code while the hold still freezes the bill.
+  const activeHold = await tx.execute(sql`
+    SELECT 1 FROM pos_qris_holds h
+    WHERE h.tenant_id = ${tenantId}
+      AND h.payment_intent_id = ${intent.id}
+      AND h.state IN ('open', 'cancelling')
+    LIMIT 1`);
+  if (activeHold.rows.length > 0)
+    throw notEligible(
+      "Kode kasir ini masih ditahan; rilis lewat pelepasan kode kasir.",
+    );
   const [released] = await tx
     .select({ id: paymentVaReleases.id })
     .from(paymentVaReleases)

@@ -148,11 +148,15 @@ async function assertOnlineCodeIssuable(
     input.outletId,
     input.method,
   );
-  if (!routing.enabled) throw onlineCodeUnavailable();
+  // Review P3 2 (CTO, strictest): the rule itself names Duitku, and no
+  // fallback is ever used for a cashier VA / e-wallet code.
+  if (!routing.enabled || routing.provider !== POS_ONLINE_CODE_PROVIDER)
+    throw onlineCodeUnavailable();
+  const duitkuOnly = { ...routing, fallbackProvider: null };
   const selected = await selectGatewayForNewIntent(
     context,
     input.outletId,
-    routing,
+    duitkuOnly,
   );
   if (selected.provider === null)
     throw new CoreError(
@@ -161,7 +165,7 @@ async function assertOnlineCodeIssuable(
     );
   if (selected.provider !== POS_ONLINE_CODE_PROVIDER)
     throw onlineCodeUnavailable();
-  const issuable = await methodIssuable(context, input.outletId, routing, {
+  const issuable = await methodIssuable(context, input.outletId, duitkuOnly, {
     method: input.method,
     channelCode: input.channelCode,
     amountIdr: input.amountIdr,
@@ -643,13 +647,17 @@ export async function addPosTender(
               ).toISOString(),
             },
             now,
-            { orderLockedByCaller: true },
+            {
+              orderLockedByCaller: true,
+              // Review P3 2: createIntent selects again; never a fallback.
+              ...(input.method === "qris"
+                ? {}
+                : { onlyProvider: POS_ONLINE_CODE_PROVIDER }),
+            },
           );
           // The intent names the gateway that issued the code (routing rule or
-          // its fallback); it committed before this read. A code the provider
-          // already made is always recorded and held, whoever issued it (a
-          // fallback that raced the Duitku check above): dropping it would
-          // leave a payable code nobody holds.
+          // its fallback); it committed before this read. A cashier VA /
+          // e-wallet code is Duitku's only (`onlyProvider` above).
           const [issued] = await tx
             .select({ provider: paymentIntents.provider })
             .from(paymentIntents)

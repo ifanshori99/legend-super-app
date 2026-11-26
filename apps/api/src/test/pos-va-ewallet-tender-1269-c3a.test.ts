@@ -19,6 +19,7 @@ import {
   setPaymentGateway,
   type GatewayIntentRequest,
 } from "../services/payment-gateway.ts";
+import { addPosTender } from "../services/pos-order-payment.ts";
 import { getPosPaymentOptions } from "../services/pos-payment-options.service.ts";
 import { createPosOverride } from "../services/staff-override.service.ts";
 import { owner } from "./floor-test-helpers.ts";
@@ -571,6 +572,95 @@ describe("1269 C3a cashier VA and e-wallet (Duitku, cloud)", () => {
     } finally {
       if (previous === undefined) delete process.env.EDGE_MODE;
       else process.env.EDGE_MODE = previous;
+    }
+  });
+});
+
+describe("1269 C3a review K (docs/qa/1272-c3a-review.md)", () => {
+  it("P2: a held cashier VA is never released through va/release (409, no release row); qris/release is its only way", async () => {
+    const order = await newSubmittedOrder(fx, 0);
+    const va = await issue(order.id, "va");
+    expect((await postCancel(fx, order.id)).status).toBe(202);
+    await backdateExpiry(va.intentId, HOLD_RELEASE_AFTER_MIN + 1);
+    const approval = await managerApproval(order.id, BILL_IDR);
+    const res = await fx.post(`${fx.base}/${order.id}/va/release`, {
+      paymentIntentId: va.intentId,
+      ...approval,
+      reason: "Penyedia VA tidak menjawab",
+      idempotencyKey: randomUUID(),
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(errorCode(res.body)).toBe("VA_RELEASE_NOT_ELIGIBLE");
+    const { rows } = await owner.query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM payment_va_releases WHERE tenant_id=$1 AND payment_intent_id=$2",
+      [fx.tenant.tenantId, va.intentId],
+    );
+    expect(rows[0]!.n).toBe(0);
+    expect((await readHold(fx, order.id))?.state).toBe("cancelling");
+    const released = await postRelease(fx, order.id, approval);
+    expect(released.status, JSON.stringify(released.body)).toBe(200);
+    expect((await readHold(fx, order.id))?.closeReason).toBe("force_released");
+  });
+
+  it("P3 1: on an edge process a VA or e-wallet tender is 409 QRIS_NEEDS_CLOUD and Duitku is never called", async () => {
+    const order = await newSubmittedOrder(fx, 0);
+    const status = await orderStatus(order.id);
+    const before = fx.gateway.requests.length;
+    const previous = process.env.EDGE_MODE;
+    process.env.EDGE_MODE = "true";
+    try {
+      for (const [method, channelCode] of [
+        ["va", "BC"],
+        ["ewallet", "OV"],
+      ] as const)
+        await expect(
+          addPosTender(
+            fx.context,
+            {
+              userId: userIdSchema.parse(fx.staff.userId),
+              deviceId: null,
+              expectedVersion: null,
+            },
+            fx.tenant.outletId as OutletId,
+            order.id,
+            {
+              method,
+              channelCode,
+              expectedStatus: status as never,
+              idempotencyKey: randomUUID(),
+            },
+          ),
+        ).rejects.toMatchObject({ code: "QRIS_NEEDS_CLOUD", status: 409 });
+    } finally {
+      if (previous === undefined) delete process.env.EDGE_MODE;
+      else process.env.EDGE_MODE = previous;
+    }
+    expect(fx.gateway.requests.length).toBe(before);
+    expect(await tenderStatuses(fx, order.id)).toEqual([]);
+  });
+
+  it("P3 2: a VA whose routing names another provider is refused even when Duitku is its fallback", async () => {
+    await owner.query(
+      `UPDATE payment_routing_rules SET provider='doit', fallback_provider='duitku'
+        WHERE tenant_id=$1 AND method='va'`,
+      [fx.tenant.tenantId],
+    );
+    try {
+      const order = await newSubmittedOrder(fx, 0);
+      const before = fx.gateway.requests.length;
+      const res = await postTender(order.id, await orderStatus(order.id), {
+        method: "va",
+        channelCode: "BC",
+      });
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(fx.gateway.requests.length).toBe(before);
+      expect(await tenderStatuses(fx, order.id)).toEqual([]);
+    } finally {
+      await owner.query(
+        `UPDATE payment_routing_rules SET provider='duitku', fallback_provider=NULL
+          WHERE tenant_id=$1 AND method='va'`,
+        [fx.tenant.tenantId],
+      );
     }
   });
 });
