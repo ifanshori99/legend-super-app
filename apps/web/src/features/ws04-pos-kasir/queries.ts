@@ -3,7 +3,6 @@
 // demand and refreshed by the mutations in ./hooks.ts.
 import { queryOptions } from "@tanstack/react-query";
 import {
-  fetchEdcApprovers,
   fetchEdcTerminals,
   fetchResolveApprovers,
   fetchEwallets,
@@ -109,13 +108,6 @@ export const edcTerminalsQuery = (outletId: string) =>
     retry: false,
   });
 
-export const edcApproversQuery = (outletId: string) =>
-  queryOptions({
-    queryKey: posKasirKeys.edcApprovers(outletId),
-    queryFn: () => fetchEdcApprovers(outletId),
-    retry: false,
-  });
-
 export const resolveApproversQuery = (
   outletId: string,
   action: "void" | "edc_standalone",
@@ -129,14 +121,14 @@ export const resolveApproversQuery = (
 export const vaBanksQuery = (outletId: string) =>
   queryOptions({
     queryKey: posKasirKeys.vaBanks(outletId),
-    queryFn: () => fetchVaBanks(),
+    queryFn: () => fetchVaBanks(outletId),
     retry: false,
   });
 
 export const ewalletsQuery = (outletId: string) =>
   queryOptions({
     queryKey: posKasirKeys.ewallets(outletId),
-    queryFn: () => fetchEwallets(),
+    queryFn: () => fetchEwallets(outletId),
     retry: false,
   });
 

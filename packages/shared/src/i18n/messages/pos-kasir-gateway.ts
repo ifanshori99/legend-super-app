@@ -95,7 +95,8 @@ export const posKasirGatewayMessages = {
     starting: "Membuat nomor VA…",
     statusWaiting: "Menunggu transfer",
     readyHeading: "Nomor VA sudah tersedia",
-    readyBody: "Nomor dan petunjuk transfer tampil di customer display.",
+    readyBody:
+      "{bank} · Tunjukkan nomor ini ke pelanggan untuk transfer dari aplikasi bank atau ATM.",
     numberLabel: "Nomor Virtual Account",
     deadline: "Batas pembayaran",
     noticeTitle: "Belum lunas",
@@ -119,11 +120,42 @@ export const posKasirGatewayMessages = {
     panelTitleNamed: "E-wallet · {wallet}",
     readyHeading: "Menunggu pembayaran {wallet}",
     readyBody:
-      "Permintaan sudah dikirim. Minta pelanggan membuka aplikasi {wallet} dan menyetujui pembayaran.",
+      "Minta pelanggan memindai halaman bayar dengan ponsel, lalu menyetujui pembayaran di aplikasi {wallet}.",
+    pageLabel: "Halaman bayar {wallet}",
+    pageHint:
+      "QR ini membuka halaman bayar untuk nominal tagihan. Hanya berlaku untuk tagihan ini.",
+    openPage: "Buka halaman bayar",
+    openPageLabel: "Buka halaman bayar {wallet} di tab baru",
+    pageUnsafe:
+      "Halaman bayar dari penyedia tidak aman untuk dibuka. Minta pelanggan memakai cara bayar lain, atau batalkan kode ini.",
     expiredHeading: "Permintaan e-wallet kedaluwarsa",
     expiredBody: "Pelanggan belum menyetujui pembayaran.",
     expiredNoticeBody:
       "Cek status dulu. Bila belum terbayar, pilih metode lain.",
+  },
+  // 1269 C3b: a VA or e-wallet code is held like a QRIS (one live code a bill).
+  code: {
+    cancel: "Batalkan kode",
+    cancelError: "Kode belum bisa dibatalkan",
+    cancellingStatus: "Menunggu kepastian",
+    cancellingHeading: "Membatalkan kode pembayaran",
+    cancellingBody:
+      "Kode sudah disembunyikan. Tagihan tetap terkunci sampai penyedia memastikan kode ini tidak dibayar.",
+    lapsedHeading: "Menunggu kepastian penyedia",
+    lapsedBody:
+      "Waktu kode sudah habis. Tagihan tetap terkunci sampai penyedia memastikan kode ini tidak dibayar.",
+    hiddenBody:
+      "Kode tidak bisa ditampilkan untuk tagihan ini. Tunggu kepastian dari penyedia pembayaran.",
+    oneCodeTitle: "Satu kode untuk tagihan ini",
+    oneCodeBody:
+      "Selama kode ini berlaku, tunai, QRIS, dan kode lain tidak bisa dipakai. Batalkan kode dulu bila pelanggan ganti cara bayar.",
+    releaseAfter:
+      "Bila penyedia tidak menjawab, manajer bisa merilis kode mulai pukul {time}.",
+    release: "Rilis kode",
+    releaseTitle: "Rilis kode pembayaran",
+    releaseSummary:
+      "Penyedia belum memastikan kode {amount} ini tidak dibayar. Setelah dirilis, tagihan terbuka untuk cara bayar lain. Uang yang masih masuk ke kode ini disimpan sebagai dana belum teralokasi, tidak dipakai untuk tagihan.",
+    releaseError: "Kode belum bisa dirilis",
   },
   card: {
     panelTitle: "Kartu kredit/debit (online)",

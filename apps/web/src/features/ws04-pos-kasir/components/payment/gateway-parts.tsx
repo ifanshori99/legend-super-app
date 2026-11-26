@@ -383,12 +383,13 @@ export function WaitingPanel({
             variant="outline"
             loading={check.isPending}
             onClick={() => check.mutate({ orderId, attemptId: attempt.id })}
+            className="w-full sm:w-auto"
           >
             {check.isPending
               ? t("posKasirGateway.common.checking")
               : t("posKasirGateway.common.checkStatus")}
           </Button>
-          <Button asChild>
+          <Button asChild className="w-full sm:w-auto">
             <Link to="/pos/customer-display">
               {t("posKasirGateway.common.viewDisplay")}
               <ArrowRight aria-hidden="true" />

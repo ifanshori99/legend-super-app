@@ -18,7 +18,14 @@ export type IntentScope = {
 };
 
 export type IntentKind =
-  "cash" | "qris" | "edc_standalone" | "points" | "complete" | "receipt";
+  | "cash"
+  | "qris"
+  | "va"
+  | "ewallet"
+  | "edc_standalone"
+  | "points"
+  | "complete"
+  | "receipt";
 
 export type PaymentIntent = {
   key: string;
@@ -57,6 +64,8 @@ const KEY_PATTERN = /^[A-Za-z0-9._:-]{8,100}$/;
 const KINDS: readonly string[] = [
   "cash",
   "qris",
+  "va",
+  "ewallet",
   "edc_standalone",
   "points",
   "complete",

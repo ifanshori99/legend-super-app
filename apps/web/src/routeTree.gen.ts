@@ -21,6 +21,7 @@ import { Route as PublicRouteImport } from './routes/_public'
 import { Route as ShareholderRouteImport } from './routes/_shareholder'
 import { Route as DesignSystemRouteImport } from './routes/design-system'
 import { Route as ManifestDotwebmanifestRouteImport } from './routes/manifest[.]webmanifest'
+import { Route as PosOfflineRouteImport } from './routes/pos-offline'
 import { Route as RobotsDottxtRouteImport } from './routes/robots[.]txt'
 import { Route as SitemapDotxmlRouteImport } from './routes/sitemap[.]xml'
 import { Route as UndanganRouteImport } from './routes/undangan'
@@ -451,6 +452,11 @@ const DesignSystemRoute = DesignSystemRouteImport.update({
 const ManifestDotwebmanifestRoute = ManifestDotwebmanifestRouteImport.update({
   id: '/manifest.webmanifest',
   path: '/manifest.webmanifest',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PosOfflineRoute = PosOfflineRouteImport.update({
+  id: '/pos-offline',
+  path: '/pos-offline',
   getParentRoute: () => rootRouteImport,
 } as any)
 const RobotsDottxtRoute = RobotsDottxtRouteImport.update({
@@ -2618,6 +2624,7 @@ export interface FileRoutesByFullPath {
   '/': typeof PublicIndexRoute
   '/design-system': typeof DesignSystemRoute
   '/manifest.webmanifest': typeof ManifestDotwebmanifestRoute
+  '/pos-offline': typeof PosOfflineRoute
   '/robots.txt': typeof RobotsDottxtRoute
   '/sitemap.xml': typeof SitemapDotxmlRoute
   '/undangan': typeof UndanganRoute
@@ -3003,6 +3010,7 @@ export interface FileRoutesByTo {
   '/': typeof PublicIndexRoute
   '/design-system': typeof DesignSystemRoute
   '/manifest.webmanifest': typeof ManifestDotwebmanifestRoute
+  '/pos-offline': typeof PosOfflineRoute
   '/robots.txt': typeof RobotsDottxtRoute
   '/sitemap.xml': typeof SitemapDotxmlRoute
   '/undangan': typeof UndanganRoute
@@ -3394,6 +3402,7 @@ export interface FileRoutesById {
   '/_shareholder': typeof ShareholderRouteWithChildren
   '/design-system': typeof DesignSystemRoute
   '/manifest.webmanifest': typeof ManifestDotwebmanifestRoute
+  '/pos-offline': typeof PosOfflineRoute
   '/robots.txt': typeof RobotsDottxtRoute
   '/sitemap.xml': typeof SitemapDotxmlRoute
   '/undangan': typeof UndanganRoute
@@ -3782,6 +3791,7 @@ export interface FileRouteTypes {
     | '/'
     | '/design-system'
     | '/manifest.webmanifest'
+    | '/pos-offline'
     | '/robots.txt'
     | '/sitemap.xml'
     | '/undangan'
@@ -4167,6 +4177,7 @@ export interface FileRouteTypes {
     | '/'
     | '/design-system'
     | '/manifest.webmanifest'
+    | '/pos-offline'
     | '/robots.txt'
     | '/sitemap.xml'
     | '/undangan'
@@ -4557,6 +4568,7 @@ export interface FileRouteTypes {
     | '/_shareholder'
     | '/design-system'
     | '/manifest.webmanifest'
+    | '/pos-offline'
     | '/robots.txt'
     | '/sitemap.xml'
     | '/undangan'
@@ -4953,6 +4965,7 @@ export interface RootRouteChildren {
   ShareholderRoute: typeof ShareholderRouteWithChildren
   DesignSystemRoute: typeof DesignSystemRoute
   ManifestDotwebmanifestRoute: typeof ManifestDotwebmanifestRoute
+  PosOfflineRoute: typeof PosOfflineRoute
   RobotsDottxtRoute: typeof RobotsDottxtRoute
   SitemapDotxmlRoute: typeof SitemapDotxmlRoute
   UndanganRoute: typeof UndanganRoute
@@ -5045,6 +5058,13 @@ declare module '@tanstack/react-router' {
       path: '/manifest.webmanifest'
       fullPath: '/manifest.webmanifest'
       preLoaderRoute: typeof ManifestDotwebmanifestRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/pos-offline': {
+      id: '/pos-offline'
+      path: '/pos-offline'
+      fullPath: '/pos-offline'
+      preLoaderRoute: typeof PosOfflineRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/robots.txt': {
@@ -8675,6 +8695,7 @@ const rootRouteChildren: RootRouteChildren = {
   ShareholderRoute: ShareholderRouteWithChildren,
   DesignSystemRoute: DesignSystemRoute,
   ManifestDotwebmanifestRoute: ManifestDotwebmanifestRoute,
+  PosOfflineRoute: PosOfflineRoute,
   RobotsDottxtRoute: RobotsDottxtRoute,
   SitemapDotxmlRoute: SitemapDotxmlRoute,
   UndanganRoute: UndanganRoute,

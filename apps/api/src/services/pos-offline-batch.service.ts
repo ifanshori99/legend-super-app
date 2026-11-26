@@ -27,14 +27,23 @@
 // under a number the cloud already holds is stored `held` / `number_taken`
 // (the money was taken; the tablet stops resending); a paidAt ahead of the
 // cloud clock is flagged and booked on today's business date; one event id
-// under two kits is a 409.
+// under two kits is a 409 OFFLINE_EVENT_CONFLICT.
+//
+// Review O3 P1 (CTO 27 Nov): the tablet then reports that sale
+// (reportPosOfflineConflict). It is booked under an order id derived from
+// (kit, eventId) with the `event_conflict` flag: its number fills the run's
+// slot (the next sale is no gap), its cash is outside the drawer and the
+// journal debits the offline clearing account, like a `shift_closed` sale.
+import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import {
   businessDateOf,
   CoreError,
   createUlid,
   idr,
+  ulidTimestamp,
   ulidToUuid,
+  uuidToUlid,
   type Idr,
   type OutletId,
   type ScopedTenantContext,
@@ -42,11 +51,14 @@ import {
 } from "@starter/shared/core";
 import {
   formatReceiptNumber,
+  offlineEventResultSchema,
+  PosError,
   posOfflineBatchResultSchema,
   type OfflineEventResult,
   type OfflineSaleEvent,
   type OfflineSaleFlag,
   type PosOfflineBatchResult,
+  type ReportPosOfflineConflictInput,
   type SubmitPosOfflineBatchInput,
 } from "@starter/shared/pos";
 import { formatRupiah } from "@starter/shared/i18n";
@@ -103,8 +115,6 @@ export const OFFLINE_SALE_SOURCE = "offline_tablet";
 const NUMBER_TAKEN = "number_taken";
 
 const NO_DEVICE = "Sinkron offline hanya untuk perangkat kasir terdaftar.";
-const EVENT_CONFLICT =
-  "Penjualan offline ini sudah tercatat dari bekal lain; periksa tablet kasir.";
 /** Tablet clock drift tolerated before a paidAt counts as in the future. */
 const FUTURE_SKEW_MS = 5 * 60 * 1000;
 const sameId = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
@@ -140,6 +150,14 @@ const result = (
   receiptNumber: extra.receiptNumber ?? null,
 });
 
+type IngestInput = {
+  outletId: OutletId;
+  event: OfflineSaleEvent;
+  now: Date;
+  /** Review O3 P1: the tablet's eventId this reported sale conflicted on. */
+  conflictOf: string | null;
+};
+
 type Outcome = {
   result: OfflineEventResult;
   /** The run's high-water after the event; null when the run was not shown. */
@@ -158,6 +176,58 @@ export async function submitPosOfflineBatch(
   input: SubmitPosOfflineBatchInput,
   now = new Date(),
 ): Promise<PosOfflineBatchResult> {
+  const deviceId = await assertOfflineCaller(context, caller, outletId);
+
+  // Walk every run in number order, whatever order the tablet sent.
+  const ordered = [...input.events].sort(
+    (x, y) =>
+      x.sequenceId.localeCompare(y.sequenceId) ||
+      x.sequenceNumber - y.sequenceNumber,
+  );
+  const byEvent = new Map<string, OfflineEventResult>();
+  const stopped = new Map<string, string>();
+  const runs = new Map<string, number>();
+  for (const event of ordered) {
+    if (byEvent.has(event.eventId)) continue;
+    const stop = stopped.get(event.sequenceId.toLowerCase());
+    if (stop !== undefined) {
+      byEvent.set(event.eventId, result(event, "rejected", { reason: stop }));
+      continue;
+    }
+    const outcome = await ingestOne(context, caller.userId, deviceId, {
+      outletId,
+      event,
+      now,
+      conflictOf: null,
+    });
+    byEvent.set(event.eventId, outcome.result);
+    if (outcome.run) runs.set(outcome.run.sequenceId, outcome.run.lastNumber);
+    const reason = outcome.result.reason;
+    if (
+      outcome.result.status === "rejected" &&
+      reason !== null &&
+      reason !== "number_taken"
+    )
+      stopped.set(event.sequenceId.toLowerCase(), reason);
+  }
+  return posOfflineBatchResultSchema.parse({
+    results: input.events.map((event) => byEvent.get(event.eventId)!),
+    runs: [...runs].map(([sequenceId, lastNumber]) => ({
+      sequenceId,
+      lastNumber,
+    })),
+  });
+}
+
+/**
+ * The caller of an offline write: the cloud process, a registered device of
+ * the outlet, a user with shift.cash.operate there. Returns the device id.
+ */
+async function assertOfflineCaller(
+  context: ScopedTenantContext,
+  caller: OfflineBatchCaller,
+  outletId: OutletId,
+): Promise<string> {
   // Review O1 P2: the L-runs are the cloud's; an edge never takes them in.
   if (isEdgeProcess())
     throw new CoreError(
@@ -181,44 +251,79 @@ export async function submitPosOfflineBatch(
       "shift.cash.operate",
     ),
   );
+  return deviceId;
+}
 
-  // Walk every run in number order, whatever order the tablet sent.
-  const ordered = [...input.events].sort(
-    (x, y) =>
-      x.sequenceId.localeCompare(y.sequenceId) ||
-      x.sequenceNumber - y.sequenceNumber,
+/**
+ * Review O3 P1: the order id of a reported conflicting sale. Derived from
+ * (tenant, kit, eventId), so a resent report is the same sale; the time part
+ * stays the sale's own.
+ */
+export function conflictOrderIdOf(
+  tenantId: string,
+  kitId: string,
+  eventId: string,
+): string {
+  const time = ulidTimestamp(eventId).toString(16).padStart(12, "0");
+  const random = createHash("sha256")
+    .update(`offline-conflict:${tenantId}:${kitId.toLowerCase()}:${eventId}`)
+    .digest("hex")
+    .slice(0, 20);
+  const hex = time + random;
+  return uuidToUlid(
+    `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
   );
-  const byEvent = new Map<string, OfflineEventResult>();
-  const stopped = new Map<string, string>();
-  const runs = new Map<string, number>();
-  for (const event of ordered) {
-    if (byEvent.has(event.eventId)) continue;
-    const stop = stopped.get(event.sequenceId.toLowerCase());
-    if (stop !== undefined) {
-      byEvent.set(event.eventId, result(event, "rejected", { reason: stop }));
-      continue;
-    }
-    const outcome = await ingestOne(context, caller.userId, deviceId, {
-      outletId,
-      event,
-      now,
-    });
-    byEvent.set(event.eventId, outcome.result);
-    if (outcome.run) runs.set(outcome.run.sequenceId, outcome.run.lastNumber);
-    const reason = outcome.result.reason;
-    if (
-      outcome.result.status === "rejected" &&
-      reason !== null &&
-      reason !== "number_taken"
-    )
-      stopped.set(event.sequenceId.toLowerCase(), reason);
-  }
-  return posOfflineBatchResultSchema.parse({
-    results: input.events.map((event) => byEvent.get(event.eventId)!),
-    runs: [...runs].map(([sequenceId, lastNumber]) => ({
-      sequenceId,
-      lastNumber,
-    })),
+}
+
+/**
+ * POST .../pos/offline-conflicts (review O3 P1, CTO 27 Nov). The tablet
+ * reports a sale the batch answered OFFLINE_EVENT_CONFLICT. While its eventId
+ * is stored under another kit, the sale is booked under conflictOrderIdOf with
+ * the `event_conflict` flag (number slot filled, cash to the clearing
+ * account, supervisors and owners alerted). Otherwise it is an ordinary event.
+ * The answer names the tablet's eventId.
+ */
+export async function reportPosOfflineConflict(
+  context: ScopedTenantContext,
+  caller: OfflineBatchCaller,
+  outletId: OutletId,
+  input: ReportPosOfflineConflictInput,
+  now = new Date(),
+): Promise<OfflineEventResult> {
+  const deviceId = await assertOfflineCaller(context, caller, outletId);
+  const { event } = input;
+  const tenantId = context.tenant.tenantId;
+  const [stored] = await withTenant(db, context, (tx) =>
+    tx
+      .select({ kitId: posOfflineSales.kitId })
+      .from(posOfflineSales)
+      .where(
+        and(
+          eq(posOfflineSales.tenantId, tenantId),
+          eq(posOfflineSales.eventId, event.eventId),
+        ),
+      ),
+  );
+  const conflicting =
+    stored !== undefined && !sameId(stored.kitId, event.kitId);
+  const outcome = await ingestOne(context, caller.userId, deviceId, {
+    outletId,
+    event: conflicting
+      ? {
+          ...event,
+          eventId: conflictOrderIdOf(
+            tenantId,
+            event.kitId,
+            event.eventId,
+          ) as OfflineSaleEvent["eventId"],
+        }
+      : event,
+    now,
+    conflictOf: conflicting ? event.eventId : null,
+  });
+  return offlineEventResultSchema.parse({
+    ...outcome.result,
+    eventId: event.eventId,
   });
 }
 
@@ -227,7 +332,7 @@ async function ingestOne(
   context: ScopedTenantContext,
   userId: UserId,
   deviceId: string,
-  input: { outletId: OutletId; event: OfflineSaleEvent; now: Date },
+  input: IngestInput,
 ): Promise<Outcome> {
   try {
     return await withTenant(db, context, (tx) =>
@@ -237,7 +342,7 @@ async function ingestOne(
     // Review O2 P3 3: a concurrent batch stored the event id under another
     // kit first (ledger primary key).
     if (sqlStateOf(error) === "23505")
-      throw new CoreError("CONFLICT", EVENT_CONFLICT);
+      throw new PosError("OFFLINE_EVENT_CONFLICT");
     if (
       error instanceof RetryLater ||
       isTransientReason(`db_error:${sqlStateOf(error)}`)
@@ -255,9 +360,9 @@ async function ingestInTransaction(
   context: ScopedTenantContext,
   userId: UserId,
   deviceId: string,
-  input: { outletId: OutletId; event: OfflineSaleEvent; now: Date },
+  input: IngestInput,
 ): Promise<Outcome> {
-  const { outletId, event, now } = input;
+  const { outletId, event, now, conflictOf } = input;
   const tenantId = context.tenant.tenantId;
 
   // 1. The kit names the device, the outlet and the run. Anything else is one
@@ -326,7 +431,7 @@ async function ingestInTransaction(
     );
   if (stored) {
     if (!sameId(stored.kitId, kit.id))
-      throw new CoreError("CONFLICT", EVENT_CONFLICT);
+      throw new PosError("OFFLINE_EVENT_CONFLICT");
     return {
       result: result(event, "duplicate", {
         reason: stored.reason,
@@ -400,7 +505,15 @@ async function ingestInTransaction(
   let reason: string | null = null;
   try {
     const applied = await tx.transaction((sp) =>
-      applySale(sp, context, { userId, kit, run, event, receiptNumber, now }),
+      applySale(sp, context, {
+        userId,
+        kit,
+        run,
+        event,
+        receiptNumber,
+        now,
+        conflict: conflictOf !== null,
+      }),
     );
     flags = applied.flags;
     late = applied.late;
@@ -429,6 +542,8 @@ async function ingestInTransaction(
   });
   if (reason !== null || flags.length > 0)
     await alertSupervisors(tx, context, {
+      // Review O3 P1: a conflicting sale reaches finance (the owners) too.
+      ...(conflictOf !== null ? { alsoOwners: true } : {}),
       outletId,
       id: edgeAlertId("offline_sale_review", tenantId, event.eventId),
       eventName: "offline_sale.review_needed",
@@ -440,14 +555,17 @@ async function ingestInTransaction(
         reason: reason ?? flags.join(","),
         shiftId: kit.shiftId,
         totalIdr: String(event.totalIdr),
+        ...(conflictOf !== null ? { conflictOf } : {}),
       },
       title: "Penjualan offline perlu dicek",
       body:
-        reason !== null
-          ? `Struk ${receiptNumber} (${formatRupiah(Number(event.totalIdr))}) dari kasir offline disimpan tanpa pesanan (${reason}). Uangnya sudah diterima; hubungi finance.`
-          : closedShift !== null
-            ? `Struk ${receiptNumber} (${formatRupiah(Number(event.totalIdr))}) dari kasir offline masuk sesudah ${closedShift} ditutup. Tunainya tidak ada di hitungan laci shift itu; finance mencocokkannya dengan selisih shift (${flags.join(", ")}).`
-            : `Struk ${receiptNumber} (${formatRupiah(Number(event.totalIdr))}) dari kasir offline sudah masuk, tetapi perlu dicek (${flags.join(", ")}).`,
+        conflictOf !== null && reason === null
+          ? `Struk ${receiptNumber} (${formatRupiah(Number(event.totalIdr))}) dari kasir offline memakai id penjualan yang sudah tercatat dari bekal lain. Penjualan dicatat sebagai pesanan sendiri; tunainya masuk Kas Offline Belum Dicocokkan, finance mencocokkannya dengan laci shift.`
+          : reason !== null
+            ? `Struk ${receiptNumber} (${formatRupiah(Number(event.totalIdr))}) dari kasir offline disimpan tanpa pesanan (${reason}). Uangnya sudah diterima; hubungi finance.`
+            : closedShift !== null
+              ? `Struk ${receiptNumber} (${formatRupiah(Number(event.totalIdr))}) dari kasir offline masuk sesudah ${closedShift} ditutup. Tunainya tidak ada di hitungan laci shift itu; finance mencocokkannya dengan selisih shift (${flags.join(", ")}).`
+              : `Struk ${receiptNumber} (${formatRupiah(Number(event.totalIdr))}) dari kasir offline sudah masuk, tetapi perlu dicek (${flags.join(", ")}).`,
     });
   return {
     result: result(event, reason === null ? "ingested" : "held", {
@@ -582,6 +700,8 @@ async function applySale(
     event: OfflineSaleEvent;
     receiptNumber: string;
     now: Date;
+    /** Review O3 P1: a reported conflicting sale; its cash is outside the drawer. */
+    conflict: boolean;
   },
 ): Promise<{
   flags: OfflineSaleFlag[];
@@ -678,8 +798,12 @@ async function applySale(
     .where(and(eq(posShifts.tenantId, tenantId), eq(posShifts.id, kit.shiftId)))
     .for("share");
   if (!shift) throw new SaleRefusal("shift_unknown");
-  const drawerShiftId = shift.status === "open" ? shift.id : null;
-  if (drawerShiftId === null) flags.push("shift_closed");
+  // Review O3 P1: a reported conflicting sale is never counted in a drawer
+  // (finance matches the clearing account against the drawer).
+  const drawerShiftId =
+    shift.status === "open" && !input.conflict ? shift.id : null;
+  if (shift.status !== "open") flags.push("shift_closed");
+  if (input.conflict) flags.push("event_conflict");
 
   // Business date of the sale's own instant; a closed day posts late.
   const [outlet] = await tx
@@ -695,7 +819,7 @@ async function applySale(
   if (!amountsMatchSnapshot(context, kit, event, soldOn))
     flags.push("amount_mismatch");
   let closedShift: string | null = null;
-  if (drawerShiftId === null) {
+  if (shift.status !== "open") {
     const [cashier] = await tx
       .select({ name: user.name })
       .from(user)

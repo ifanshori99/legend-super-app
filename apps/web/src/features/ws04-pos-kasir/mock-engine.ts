@@ -1432,7 +1432,12 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
       if (input.method === "ewallet") {
         const wallet = ewallets.find((item) => item.code === input.walletCode);
         if (!wallet) validation("Pilih dompet digital.");
-        attempt.ewallet = { code: wallet.code, label: wallet.label };
+        attempt.ewallet = {
+          code: wallet.code,
+          label: wallet.label,
+          // A demo Duitku payment page (1269 C3b): never a real provider URL.
+          paymentUrl: `https://sandbox.duitku.com/demo/pay/${attempt.id}`,
+        };
         attempt.expiresAt = iso(now + WALLET_TTL_MS);
       }
       if (input.method === "edc") {
@@ -1536,15 +1541,17 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
       if (!terminal) validation("Pilih terminal EDC.");
       const bankRef = input.bankRef.trim();
       if (bankRef.length < 6) validation("Nomor referensi bank wajib diisi.");
-      // The supervisor approved one amount: refuse to record a different one.
-      const approved = state.overrides[input.overrideId];
-      if (approved && approved.valueIdr !== remainingOf(order))
-        throw new ApiError(
-          403,
-          "OVERRIDE_INVALID",
-          "Sisa tagihan berubah sejak persetujuan. Minta persetujuan ulang.",
-        );
-      consumeOverride(input.overrideId, "edc_standalone", order.id);
+      // X1: the slip alone books it; an approval sent anyway is still spent.
+      if (input.overrideId !== undefined) {
+        const approved = state.overrides[input.overrideId];
+        if (approved && approved.valueIdr !== remainingOf(order))
+          throw new ApiError(
+            403,
+            "OVERRIDE_INVALID",
+            "Sisa tagihan berubah sejak persetujuan. Minta persetujuan ulang.",
+          );
+        consumeOverride(input.overrideId, "edc_standalone", order.id);
+      }
       archiveStale(order);
       const amountIdr = remainingOf(order);
       const attempt: EngineAttempt = {

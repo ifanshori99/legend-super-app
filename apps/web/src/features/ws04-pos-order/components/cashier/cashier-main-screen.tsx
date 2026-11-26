@@ -24,6 +24,7 @@ import {
 import { cartTotals, needsChoice } from "@/features/ws04-pos-order/cart-logic";
 import { inputOfMeta, sameOrder } from "@/features/ws04-pos-order/order-wire";
 import { readDraft, useDraftCart } from "@/features/ws04-pos-order/draft-store";
+import { usePosOffline } from "@/features/ws04-pos-kasir/offline/hooks";
 import {
   isContractPending,
   useCashierDraftKey,
@@ -72,6 +73,8 @@ export function CashierMainScreen() {
   const router = useRouter();
   const draftKey = useCashierDraftKey();
   const cart = useDraftCart(draftKey);
+  // O3: shell worker, offline kit and queue sync (the O4 banner reads it).
+  usePosOffline();
   const access = (useRouteContext({ strict: false }) as { access?: AreaAccess })
     .access;
   const canAcceptPayment = access

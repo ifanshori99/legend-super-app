@@ -25,18 +25,6 @@ export function formatClock(iso: string, timeZone: string): string {
   }).format(new Date(iso));
 }
 
-/** What one supervisor PIN of a hand-keyed EDC payment was given for. */
-export function edcApprovalKey(input: {
-  orderId: string;
-  terminalId: string;
-  amountIdr: number;
-  approverId: string;
-  bankRef: string;
-}): string {
-  const { orderId, terminalId, amountIdr, approverId, bankRef } = input;
-  return [orderId, terminalId, amountIdr, approverId, bankRef.trim()].join(":");
-}
-
 /**
  * Why a typed slip reference cannot be recorded (the contract's own rule, a
  * card number included), or undefined. Read before any approval is asked: the

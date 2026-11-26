@@ -1,5 +1,5 @@
 -- X2 (legend-wasr7.11): EDC settlement CSV per bank. New tables only, after
--- 0537. Lines are matched to EDC sales by terminal + RRN + amount; the import
+-- 0538. Lines are matched to EDC sales by terminal + RRN + amount; the import
 -- never edits an amount or a payment status.
 CREATE TABLE "edc_settlement_files" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,

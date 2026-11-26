@@ -62,7 +62,8 @@ export function EdcLayout({
   /** Replaces the heading chip, e.g. the way back to the order. */
   headAction?: ReactNode;
   sideLabel: string;
-  sideAmountIdr: number;
+  /** null: nothing to show yet (the slip amount is not typed). */
+  sideAmountIdr: number | null;
   sidePill?: EdcPill;
   sideTerminal?: EdcSideTerminal;
   sideNote: string;
@@ -107,7 +108,16 @@ export function EdcLayout({
                 <p className="text-sm font-semibold tracking-wide text-muted-foreground uppercase">
                   {sideLabel}
                 </p>
-                <Money amount={sideAmountIdr} size="hero" />
+                {sideAmountIdr === null ? (
+                  <p className="type-money-hero tabular">
+                    <span aria-hidden="true">–</span>
+                    <span className="sr-only">
+                      {t("posKasirEdc.side.notFilled")}
+                    </span>
+                  </p>
+                ) : (
+                  <Money amount={sideAmountIdr} size="hero" />
+                )}
                 {sidePill && (
                   <StatusPill
                     tone={sidePill.tone}

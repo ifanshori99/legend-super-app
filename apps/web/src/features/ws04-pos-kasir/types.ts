@@ -141,7 +141,8 @@ export type PaymentAttempt = {
   amountIdr: number;
   expiresAt?: string;
   va?: { bank: string; number: string; deadline: string };
-  ewallet?: { code: string; label: string };
+  /** `paymentUrl`: the Duitku payment page the customer opens (1269 C3a). */
+  ewallet?: { code: string; label: string; paymentUrl?: string };
   edc?: {
     terminalId: string;
     terminalLabel: string;
@@ -219,12 +220,13 @@ export type ConfirmCashInput = {
 export type RecordEdcStandaloneInput = {
   orderId: string;
   terminalId: string;
-  /** What the supervisor approved; a changed balance is refused. */
+  /** What the slip says was charged; a changed balance is refused. */
   amountIdr: number;
   edcMode: EdcMode;
   bankRef: string;
   approvalCode?: string;
-  overrideId: string;
+  /** X1: manual EDC is a normal method; an approval is optional. */
+  overrideId?: string;
 };
 
 export type AttemptRef = { orderId: string; attemptId: string };
@@ -494,7 +496,7 @@ export type EngineAttempt = {
   startedAtMs: number;
   expiresAt?: string;
   va?: { bank: string; number: string; deadline: string };
-  ewallet?: { code: string; label: string };
+  ewallet?: { code: string; label: string; paymentUrl?: string };
   edc?: PaymentAttempt["edc"];
   cardMasked?: string;
   bankRef?: string;

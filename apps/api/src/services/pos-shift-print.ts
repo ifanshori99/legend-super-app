@@ -234,7 +234,7 @@ export async function shiftCapturedTenders(
               and(
                 eq(posOfflineSales.tenantId, posOrderTenders.tenantId),
                 eq(posOfflineSales.eventId, posOrderTenders.orderId),
-                sql`${posOfflineSales.flags} @> '["shift_closed"]'::jsonb`,
+                sql`${posOfflineSales.flags} ?| array['shift_closed', 'event_conflict']`,
               ),
             ),
         ),
