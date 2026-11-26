@@ -3655,6 +3655,13 @@
       "when": 1795713957114,
       "tag": "0535_pos_offline_number_taken",
       "breakpoints": true
+    },
+    {
+      "idx": 536,
+      "version": "7",
+      "when": 1795714694306,
+      "tag": "0536_offline_cash_clearing_mapping",
+      "breakpoints": true
     }
   ]
 }

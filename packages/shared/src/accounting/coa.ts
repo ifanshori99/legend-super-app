@@ -180,6 +180,13 @@ export const POSTING_ACCOUNT_ROLES = {
   accounts_receivable: "asset",
   /** Employee PPh 21 shortfall owed to the company (founder B8). */
   employee_receivable: "asset",
+  /**
+   * Cash of an offline tablet sale ingested after its shift closed (O2,
+   * legend-wasr7.6): the cash sat in a drawer already counted, so the close
+   * booked it as an overage. Finance clears this account against that
+   * overage by hand; nothing matches it automatically (CTO 27 Nov).
+   */
+  offline_cash_clearing: "asset",
   inventory: "asset",
   inventory_semi_finished: "asset",
   ppn_input: "asset",
@@ -414,6 +421,13 @@ const standardRows: Row[] = [
     "current_asset",
     "1200",
     ["employee_receivable"],
+  ],
+  [
+    "1205",
+    "Kas Offline Belum Dicocokkan",
+    "current_asset",
+    "1200",
+    ["offline_cash_clearing"],
   ],
   ["1300", "Persediaan", "current_asset", null],
   ["1301", "Persediaan Bahan Baku", "current_asset", "1300", ["inventory"]],

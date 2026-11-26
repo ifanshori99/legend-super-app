@@ -260,6 +260,51 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
       ["rounding", "credit", "roundingIdr"],
     ],
   ),
+  // O2 (legend-wasr7.6, CTO 27 Nov): an offline tablet sale ingested after
+  // its shift closed. Its cash was in the drawer the close already counted
+  // (booked there as an overage, cashier_shift.closed), so the sale debits
+  // offline_cash_clearing, never cash_on_hand: the cash is booked once.
+  // Finance clears the account against the overage by hand.
+  rule(
+    { event: "order.paid", variant: "offline_unmatched" },
+    "sale",
+    "Penjualan offline sesudah shift tutup (kas belum dicocokkan)",
+    `${AUTO} (penjualan, pembayaran per metode); POS-05`,
+    [
+      ["offline_cash_clearing", "debit", "paidCashIdr"],
+      ["customer_deposit", "debit", "paidGatewayIntentIdr"],
+      ["customer_deposit", "debit", "paidDepositIdr"],
+      ["gateway_clearing", "debit", "paidGatewayIdr"],
+      ["edc_clearing", "debit", "paidEdcIdr"],
+      ["loyalty_liability", "debit", "paidPointsIdr"],
+      ["sales_discount", "debit", "discountIdr"],
+      ["sales_revenue", "credit", "grossSalesIdr"],
+      ["service_charge", "credit", "serviceChargeIdr"],
+      ["tax_payable_pbjt", "credit", "pbjtIdr"],
+      ["rounding", "credit", "roundingIdr"],
+    ],
+  ),
+  rule(
+    { event: "order.paid", variant: "tax_split_offline_unmatched" },
+    "sale",
+    "Penjualan offline sesudah shift tutup (pajak per jenis, kas belum dicocokkan)",
+    `${AUTO} (penjualan, pembayaran per metode); POS-05`,
+    [
+      ["offline_cash_clearing", "debit", "paidCashIdr"],
+      ["customer_deposit", "debit", "paidGatewayIntentIdr"],
+      ["customer_deposit", "debit", "paidDepositIdr"],
+      ["gateway_clearing", "debit", "paidGatewayIdr"],
+      ["edc_clearing", "debit", "paidEdcIdr"],
+      ["loyalty_liability", "debit", "paidPointsIdr"],
+      ["sales_discount", "debit", "discountIdr"],
+      ["sales_revenue", "credit", "grossSalesIdr"],
+      ["service_charge", "credit", "serviceChargeIdr"],
+      ["tax_payable_pbjt", "credit", "pbjtIdr"],
+      ["tax_payable_ppn", "credit", "ppnIdr"],
+      ["tax_payable_other", "credit", "otherTaxIdr"],
+      ["rounding", "credit", "roundingIdr"],
+    ],
+  ),
   rule(
     { event: "order.refunded", variant: "tax_split" },
     "refund",

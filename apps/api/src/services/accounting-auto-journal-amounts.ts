@@ -139,6 +139,10 @@ import {
   TAX_SPLIT_VARIANT,
 } from "./accounting-auto-journal-tax-split.ts";
 import { salePostingAccountsOf } from "./accounting-sale-account-history.ts";
+import { posOfflineSales } from "../db/schema/pos-offline-sale.ts";
+
+/** Rule variant of an offline sale ingested after its shift closed (O2). */
+export const OFFLINE_UNMATCHED_VARIANT = "offline_unmatched";
 import { netAllocatedIdrSql } from "./payment-net-allocated-sql.ts";
 import {
   ownRefundEchoesFactSql,
@@ -2835,10 +2839,30 @@ export async function autoJournalFactOf(
       // legend-xa9bc: tax per type from the order's snapshots; PBJT-only and
       // pre-cutover orders keep the base rule (all tax in tax_payable_pbjt).
       const tax = await saleTaxSplitOf(tx, tenantId, p.orderId, p.pbjtIdr);
+      // O2 (legend-wasr7.6, CTO 27 Nov): an offline tablet sale ingested after
+      // its shift closed debits offline_cash_clearing, not cash_on_hand; the
+      // close already booked that cash as the drawer's overage.
+      const [offlineUnmatched] = await tx
+        .select({ eventId: posOfflineSales.eventId })
+        .from(posOfflineSales)
+        .where(
+          and(
+            eq(posOfflineSales.tenantId, tenantId),
+            eq(posOfflineSales.eventId, p.orderId),
+            sql`${posOfflineSales.flags} @> '["shift_closed"]'::jsonb`,
+          ),
+        );
+      const variant = offlineUnmatched
+        ? isSplit(tax)
+          ? `${TAX_SPLIT_VARIANT}_${OFFLINE_UNMATCHED_VARIANT}`
+          : OFFLINE_UNMATCHED_VARIANT
+        : isSplit(tax)
+          ? TAX_SPLIT_VARIANT
+          : null;
       return {
         ruleEvent: "order.paid",
         ...orderLinkOf(p.orderId),
-        ...(isSplit(tax) ? { variant: TAX_SPLIT_VARIANT } : {}),
+        ...(variant !== null ? { variant } : {}),
         amounts: {
           paidCashIdr: p.paidCashIdr,
           paidGatewayIntentIdr: withReceipt,

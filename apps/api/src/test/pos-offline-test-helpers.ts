@@ -41,7 +41,8 @@ export async function outletSupervisor(
 
 /**
  * Closes the till's shift for real: the cashier counts exactly `drawerIdr`
- * (1.000 notes) and the supervisor's approved close override lets it close.
+ * (1.000 notes) and the supervisor's approved close override lets it close
+ * (with `varianceIdr` when the count differs from the expected cash).
  */
 export async function closeShiftExactly(input: {
   scope: ScopedTenantContext;
@@ -50,7 +51,10 @@ export async function closeShiftExactly(input: {
   shiftId: string;
   supervisorId: string;
   drawerIdr: number;
+  /** |counted - expected|: the approved override carries the variance. */
+  varianceIdr?: number;
 }): Promise<void> {
+  const overrideValueIdr = Math.abs(input.varianceIdr ?? 0);
   const outletId = outletIdSchema.parse(seededOutletA);
   const caller = {
     userId: userIdSchema.parse(input.cashierId),
@@ -85,7 +89,7 @@ export async function closeShiftExactly(input: {
          (id, tenant_id, outlet_id, action, method, status, requested_by, approved_by,
           reason, value_idr, object_type, object_id, request_fingerprint, created_at, resolved_at)
        VALUES ($1, $2, $3, 'cash_shift_close', 'supervisor_pin', 'approved', $4, $5,
-               $6, 0, 'pos_shift_count', $7, $8,
+               $6, $9, 'pos_shift_count', $7, $8,
                now() - interval '5 seconds', now() - interval '5 seconds')`,
       [
         approvalRequestId,
@@ -99,12 +103,13 @@ export async function closeShiftExactly(input: {
           requestedBy: input.cashierId,
           outletId: seededOutletA,
           action: "cash_shift_close",
-          valueIdr: 0,
+          valueIdr: overrideValueIdr,
           reason,
           objectType: "pos_shift_count",
           objectId: count.id,
           approverUserId: input.supervisorId,
         }),
+        overrideValueIdr,
       ],
     );
     await client.query("COMMIT");
@@ -119,5 +124,8 @@ export async function closeShiftExactly(input: {
     approvedBy: userIdSchema.parse(input.supervisorId),
     approvalRequestId,
     idempotencyKey: randomUUID(),
+    ...(overrideValueIdr > 0
+      ? { varianceNote: "Tunai penjualan offline di laci" }
+      : {}),
   } as Parameters<typeof closePosShift>[4]);
 }

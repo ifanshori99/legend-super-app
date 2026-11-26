@@ -65,7 +65,12 @@ import { openPosShift } from "../services/pos-shift.service.ts";
 import { liveExpectedCashIdr } from "../services/pos-shift-support.ts";
 import { deliverRecipeDeductionEvent } from "../services/recipe-deduction.service.ts";
 import { posShifts } from "../db/schema/pos-shift.ts";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/node-postgres";
+import * as schema from "../db/schema/index.ts";
+import { deliverAutoJournalEvent } from "../services/accounting-auto-journal-consumer.ts";
+import { provisionStandardChart } from "../services/accounting-provisioning.service.ts";
+import type { Tx as AccountingTx } from "../services/permission-resolver.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
 import {
   owner,
@@ -977,5 +982,92 @@ describe("Review O2 fixes", () => {
     });
     const next = await kitFor(b);
     expect(next.receiptRun.lastNumber).toBe(other.receiptRun.lastNumber);
+  });
+
+  it("P2 2 journal: the close books the offline cash as overage, the late sale debits offline_cash_clearing; cash is booked once", async () => {
+    const till = await newTill(app);
+    const kit = await kitFor(till);
+    const menu = menuOf(kit);
+    // The tablet sold offline; its cash is in the drawer the cashier counts.
+    await closeShiftExactly({
+      scope,
+      cashierId: till.cashier.userId,
+      deviceId: till.deviceId,
+      shiftId: till.shiftId,
+      supervisorId: await outletSupervisor(app, "Offline Review Journal"),
+      drawerIdr: 500_000 + menu.priceIdr,
+      varianceIdr: menu.priceIdr,
+    });
+    const event = sale(kit, menu, kit.receiptRun.lastNumber + 1);
+    expect((await submit(till, [event])).results[0]).toMatchObject({
+      status: "ingested",
+      flags: ["shift_closed"],
+    });
+    const [paid] = await paidEventsOf(event.eventId);
+    const { rows: closed } = await owner.query<{ event: EventEnvelope }>(
+      `SELECT event FROM domain_event_outbox
+        WHERE tenant_id = $1 AND event->>'name' = 'cashier_shift.closed'
+          AND event->'payload'->>'shiftId' = $2`,
+      [seededTenantId, till.shiftId],
+    );
+    expect(closed).toHaveLength(1);
+
+    // Accounting set up and both events posted in one transaction that is
+    // rolled back, so the shared tenant keeps its own accounting state.
+    const client = await owner.connect();
+    const rollback = new Error("rollback");
+    let byRole: Record<string, number> = {};
+    try {
+      await drizzle(client, { schema }).transaction(async (raw) => {
+        const tx = raw as unknown as AccountingTx;
+        await tx.execute(
+          sql`SELECT set_config('app.tenant_id', ${seededTenantId}, true), set_config('app.outlet_ids', '*', true)`,
+        );
+        await tx.execute(
+          sql`UPDATE tenants SET feature_flags = jsonb_set(feature_flags, '{modules}', (feature_flags->'modules') || '["accounting"]'::jsonb)
+                 WHERE id = ${seededTenantId} AND NOT (feature_flags->'modules') ? 'accounting'`,
+        );
+        const entity = (
+          await tx.execute<{ id: string }>(
+            sql`SELECT legal_entity_id AS id FROM outlets WHERE id = ${seededOutletA}`,
+          )
+        ).rows[0]!.id;
+        await provisionStandardChart(tx as never, scope, entity, null);
+        await tx.execute(
+          sql`INSERT INTO fiscal_periods (tenant_id, legal_entity_id, period)
+                VALUES (${seededTenantId}, ${entity}, to_char(now(), 'YYYY-MM'))
+                ON CONFLICT (tenant_id, legal_entity_id, period) DO NOTHING`,
+        );
+        const posted = [
+          await deliverAutoJournalEvent(scope, closed[0]!.event, tx),
+          await deliverAutoJournalEvent(scope, paid!, tx),
+        ];
+        expect(posted.map((row) => row.status)).toEqual(["posted", "posted"]);
+        const ids = posted.map((row) =>
+          row.status === "posted" ? row.journalEntryId : "",
+        );
+        const lines = await tx.execute<{ role: string; net: string }>(
+          sql`SELECT m.role, sum(l.debit_idr - l.credit_idr)::text AS net
+                  FROM journal_lines l
+                  JOIN account_mappings m
+                    ON m.tenant_id = l.tenant_id AND m.account_id = l.account_id
+                 WHERE l.tenant_id = ${seededTenantId}
+                   AND l.entry_id = ANY(${`{${ids.join(",")}}`}::uuid[])
+                 GROUP BY m.role`,
+        );
+        byRole = Object.fromEntries(
+          lines.rows.map((row) => [row.role, Number(row.net)]),
+        );
+        throw rollback;
+      });
+    } catch (error) {
+      if (error !== rollback) throw error;
+    } finally {
+      client.release();
+    }
+    // Drawer cash once (the close's overage), the sale in the suspense account.
+    expect(byRole.cash_on_hand).toBe(menu.priceIdr);
+    expect(byRole.offline_cash_clearing).toBe(menu.priceIdr);
+    expect(byRole.sales_revenue).toBe(-menu.priceIdr);
   });
 });
