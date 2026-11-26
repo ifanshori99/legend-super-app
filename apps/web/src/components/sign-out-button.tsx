@@ -5,6 +5,7 @@ import { LogOut } from "lucide-react";
 import { authClient } from "@/lib/auth-client";
 import { endActingStaffMode } from "@/lib/api/acting-staff";
 import { revokePushOnSignOut } from "@/features/ws05-notifications/revoke";
+import { clearPosShell } from "@/features/ws04-pos-kasir/offline/shell";
 import { Button } from "@/components/ui/button";
 import { clearRetainedAttempt } from "@/lib/retained-attempt-key";
 import { hrisKeys } from "@/features/ws10-hris-employee/queries";
@@ -28,6 +29,8 @@ export function SignOutButton() {
       endActingStaffMode();
       // Idempotency attempts kept for dialogs belong to this login.
       clearRetainedAttempt();
+      // O3: the /pos pages cached for offline belong to this login.
+      await clearPosShell();
       // The next account on this tab must not see the employee data cached
       // for this one (profile, history, corrections).
       queryClient.removeQueries({ queryKey: hrisKeys.all });

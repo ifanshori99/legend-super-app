@@ -10,6 +10,7 @@ import {
   listPosCashMovements,
   listPosShifts,
   openPosShift,
+  PosError,
   recordPosCashMovement,
   submitPosShiftCount,
   type EndOfDayRecapView,
@@ -24,6 +25,8 @@ import { callEndpoint } from "@/lib/api/endpoint";
 import { ApiError } from "@/lib/api/errors";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { contractPending, local, METHOD_LABELS } from "./api";
+import { countPendingOfflineSales } from "./offline/queue";
+import { defaultOfflineBackend } from "./offline/store";
 import { runPosKasirMock } from "./mock-engine";
 import {
   clearStoredCount,
@@ -411,6 +414,17 @@ export async function closeShiftWithApproval(
   onApproved: (overrideId: string) => void,
 ): Promise<void> {
   const reason = input.reason.trim();
+  // O3 (CTO O2 (a)): offline sales still on this tablet hold drawer cash the
+  // shift does not count yet. Refused before any PIN; the count also goes to
+  // the server, which refuses too. Unreadable storage throws: never a guess.
+  const offlineQueuePending = await countPendingOfflineSales(
+    defaultOfflineBackend(),
+    outletId,
+  );
+  if (offlineQueuePending > 0) {
+    const refusal = new PosError("OFFLINE_QUEUE_PENDING");
+    throw new ApiError(refusal.status, refusal.code, refusal.message);
+  }
   if (API_MOCK) {
     const approved =
       existing ??
@@ -453,6 +467,7 @@ export async function closeShiftWithApproval(
       approvedBy: input.approverUserId,
       approvalRequestId: approved.overrideId,
       idempotencyKey: closeKey,
+      offlineQueuePending,
     },
   });
   clearStoredCount(outletId, input.shiftId);
