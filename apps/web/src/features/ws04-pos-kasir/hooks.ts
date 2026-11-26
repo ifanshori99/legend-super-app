@@ -22,7 +22,7 @@ import { useActiveStaff } from "@/features/ws01-device-pin/storage";
 import { noteCatalogSalesBlocked } from "@/features/ws02-edge/hooks";
 import { MOCK_SUPERVISOR_ID } from "./fixtures";
 import { paperWidthOf, readTabletPrinter } from "./print/printer-settings";
-import { sendToPrinter } from "./print/send-to-printer";
+import { deliverToTabletPrinter } from "./print/send-to-printer";
 import {
   applyVoucherCode,
   cancelAttempt,
@@ -377,8 +377,8 @@ export function usePrintReceipt() {
         actorId,
         paperWidthOf(printer),
       );
-      if (result.print) sendToPrinter(result.print, printer.method);
-      return result;
+      const { outcome } = deliverToTabletPrinter(result.print, printer);
+      return { ...result, tabletPrint: outcome };
     },
     onSettled: (_result, _error, { orderId }) => {
       void queryClient.invalidateQueries({

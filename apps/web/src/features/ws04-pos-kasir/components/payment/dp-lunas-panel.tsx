@@ -7,6 +7,7 @@ import { Notice, PosPanel, StateBlock, StatusPill } from "../shared";
 import { ORDER_COMPLETE_FAILED } from "../../api";
 import { usePaymentSession, usePrintReceipt } from "../../hooks";
 import { ReceiptNotPrinted, wasQueued } from "./receipt-result-notice";
+import { ReceiptSent } from "./receipt-sent-notice";
 
 // The reservation DP covered the whole bill (legend-p7lx): no method, no cash,
 // no change. The cashier only prints the receipt and starts the next
@@ -26,6 +27,8 @@ export function DpLunasPanel({
     print.data && !wasQueued(print.data) ? print.data : undefined;
   const held = completion === "held";
   const toNewTransaction = () => void navigate({ to: "/pos/meja" });
+  const reprint = () => print.mutate({ orderId });
+  const sent = print.data && wasQueued(print.data) ? print.data : undefined;
 
   return (
     <PosPanel
@@ -44,26 +47,24 @@ export function DpLunasPanel({
           >
             {t("posKasirPayment.success.eReceipt")}
           </Button>
-          <Button
-            type="button"
-            disabled={print.isPending || held}
-            aria-busy={print.isPending}
-            onClick={() =>
-              print.mutate(
-                { orderId },
-                {
-                  onSuccess: (result) => {
-                    if (wasQueued(result)) toNewTransaction();
-                  },
-                },
-              )
-            }
-          >
-            {print.isPending
-              ? t("posKasirPayment.success.printing")
-              : t("posKasirPayment.success.printAndNew")}
-            <ArrowRight aria-hidden="true" />
-          </Button>
+          {print.data ? (
+            // After a print the screen stays (review P2 no. 2): moving on is a tap.
+            <Button type="button" onClick={toNewTransaction}>
+              {t("posKasirCommon.printer.next")}
+              <ArrowRight aria-hidden="true" />
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              disabled={print.isPending || held}
+              aria-busy={print.isPending}
+              onClick={reprint}
+            >
+              {print.isPending
+                ? t("posKasirPayment.success.printing")
+                : t("posKasirCommon.printer.print")}
+            </Button>
+          )}
         </div>
       }
     >
@@ -111,8 +112,20 @@ export function DpLunasPanel({
               {t("posKasirPayment.success.heldHint")}
             </Notice>
           )}
+          {sent && (
+            <ReceiptSent
+              receiptNo={sent.receiptNo}
+              onReprint={reprint}
+              reprinting={print.isPending}
+            />
+          )}
           {notPrinted && (
-            <ReceiptNotPrinted result={notPrinted} onSkip={toNewTransaction} />
+            <ReceiptNotPrinted
+              result={notPrinted}
+              onSkip={toNewTransaction}
+              onReprint={reprint}
+              reprinting={print.isPending}
+            />
           )}
           {print.isError &&
             (print.error.code === ORDER_COMPLETE_FAILED ? (

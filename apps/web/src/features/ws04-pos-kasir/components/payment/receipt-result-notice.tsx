@@ -5,28 +5,56 @@ import { TabletPrinterSettings } from "../../print/tablet-printer-settings";
 import type { ReceiptResult } from "../../types";
 import { Notice } from "../shared";
 
-// The server said nothing was printed (legend-9yw78.6): say so, offer the PDF.
+// Nothing went to a printer (legend-9yw78.6): say why, then the way out:
+// change the printer and print again, or keep the PDF (review P2 no. 3).
 export function ReceiptNotPrinted({
   result,
   onSkip,
+  onReprint,
+  reprinting = false,
 }: {
   result: ReceiptResult;
   /** Move on without paper; absent where the screen has its own way out. */
   onSkip?: () => void;
+  /** Print again (a reprint), e.g. after changing the printer. */
+  onReprint?: () => void;
+  reprinting?: boolean;
 }) {
   const t = useT();
   const pdf = useReceiptPdf();
-  const { receiptId, receiptNo } = result;
+  const { receiptId, receiptNo, tabletPrint } = result;
+  const cause =
+    tabletPrint === "failed" || tabletPrint === "none" ? tabletPrint : null;
   return (
-    <div className="grid w-full max-w-2xl justify-items-start gap-3 text-left">
+    <div
+      aria-live="polite"
+      className="grid w-full max-w-2xl justify-items-start gap-3 text-left"
+    >
       <Notice
         tone="warning"
-        title={t("posKasirGateway.receipt.notPrintedTitle", { receiptNo })}
+        title={
+          cause
+            ? t(`posKasirCommon.printer.notSent.${cause}.title`, { receiptNo })
+            : t("posKasirGateway.receipt.notPrintedTitle", { receiptNo })
+        }
         className="w-full"
       >
-        {t("posKasirGateway.receipt.notPrintedBody")}
+        {cause
+          ? t(`posKasirCommon.printer.notSent.${cause}.body`)
+          : t("posKasirGateway.receipt.notPrintedBody")}
       </Notice>
       <div className="flex flex-wrap gap-3">
+        <TabletPrinterSettings variant="button" />
+        {onReprint && (
+          <Button
+            type="button"
+            variant="outline"
+            loading={reprinting}
+            onClick={onReprint}
+          >
+            {t("posKasirCommon.printer.reprint")}
+          </Button>
+        )}
         {receiptId && (
           <Button
             type="button"
@@ -37,7 +65,6 @@ export function ReceiptNotPrinted({
             {t("posKasirGateway.receipt.pdf")}
           </Button>
         )}
-        <TabletPrinterSettings variant="button" />
         {onSkip && (
           <Button type="button" variant="outline" onClick={onSkip}>
             {t("posKasirGateway.receipt.skipPrint")}
@@ -59,4 +86,4 @@ export function ReceiptNotPrinted({
 
 /** The only result that may mean paper: anything else is not a print. */
 export const wasQueued = (result: ReceiptResult) =>
-  result.printResult === "queued_to_printer";
+  result.printResult === "queued_to_printer" && result.tabletPrint !== "failed";

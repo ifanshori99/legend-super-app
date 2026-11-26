@@ -45,8 +45,7 @@ export const posKasirCommonMessages = {
     label: "Printer tablet",
     open: "Ubah printer",
     title: "Printer tablet ini",
-    description:
-      "Hanya berlaku di tablet ini. Struk dan laporan dikirim ke printer yang dipilih di sini.",
+    description: "Hanya berlaku di tablet ini. Struk dikirim ke printer ini.",
     methodLabel: "Cara cetak",
     paperLabel: "Lebar kertas",
     method: {
@@ -70,5 +69,24 @@ export const posKasirCommonMessages = {
       "Struk dikirim ke printer. Bila kertas tidak keluar, periksa printer lalu cetak ulang.",
     save: "Simpan printer",
     cancel: "Batal",
+    saved: "Printer disimpan: {summary}",
+    sentTitle: "Struk {receiptNo} dikirim ke printer",
+    print: "Cetak struk",
+    reprint: "Cetak ulang",
+    next: "Transaksi baru",
+    notSent: {
+      none: {
+        title: "Struk {receiptNo} belum dikirim ke printer",
+        body: "Tablet ini diatur tanpa printer. Ubah printer lalu cetak ulang, atau simpan PDF struk untuk pelanggan.",
+      },
+      failed: {
+        title: "Struk {receiptNo} gagal dikirim ke printer",
+        body: "RawBT atau dialog cetak tidak terbuka. Pastikan aplikasi RawBT terpasang atau pilih Browser, lalu cetak ulang.",
+      },
+    },
+    testPrint: "Cetak tes",
+    testSent: "Halaman tes dikirim ke printer. Periksa kertasnya.",
+    testFailed:
+      "Halaman tes gagal dikirim. Pastikan aplikasi RawBT terpasang atau pilih Browser.",
   },
 };

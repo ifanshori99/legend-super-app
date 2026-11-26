@@ -5,7 +5,7 @@
 // the page whether paper came out, so the result is "sent", never "printed".
 import type { PrintPayload } from "@starter/shared/pos";
 import { escposLines, receiptHtml } from "./escpos-text.ts";
-import type { PrinterMethod } from "./printer-settings.ts";
+import type { PrinterMethod, TabletPrinter } from "./printer-settings.ts";
 
 export type PrinterIo = {
   openUrl: (url: string) => void;
@@ -15,24 +15,47 @@ export type PrinterIo = {
 export const rawbtUrl = (escposBase64: string) =>
   `rawbt:base64,${escposBase64}`;
 
+type FrameDocument = {
+  createElement: (tag: "iframe") => HTMLIFrameElement;
+  body: { append: (node: HTMLIFrameElement) => void };
+};
+
 /** Prints a standalone page from a hidden frame, then removes the frame. */
-function printHtmlInFrame(html: string): void {
-  const frame = document.createElement("iframe");
+export function printHtmlInFrame(
+  html: string,
+  doc: FrameDocument = document,
+): void {
+  const frame = doc.createElement("iframe");
   frame.setAttribute("aria-hidden", "true");
   frame.tabIndex = -1;
   frame.style.cssText =
     "position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden";
   frame.onload = () => {
     const view = frame.contentWindow;
-    if (!view) return;
-    view.addEventListener("afterprint", () => frame.remove(), { once: true });
-    view.focus();
-    view.print();
+    if (!view) {
+      frame.remove();
+      return;
+    }
     // Some browsers never fire afterprint; never leave the frame behind.
-    window.setTimeout(() => frame.remove(), 60_000);
+    const timer = setTimeout(() => frame.remove(), 60_000);
+    view.addEventListener(
+      "afterprint",
+      () => {
+        clearTimeout(timer);
+        frame.remove();
+      },
+      { once: true },
+    );
+    try {
+      view.focus();
+      view.print();
+    } catch {
+      clearTimeout(timer);
+      frame.remove();
+    }
   };
   frame.srcdoc = html;
-  document.body.append(frame);
+  doc.body.append(frame);
 }
 
 const browserIo: PrinterIo = {
@@ -58,4 +81,27 @@ export function sendToPrinter(
     return "sent";
   }
   return "skipped";
+}
+
+/**
+ * What happened on this tablet: `none` (no printer chosen), `skipped` (no
+ * bytes: the edge or the mock printed), `sent`, or `failed`. Never throws: the
+ * receipt is already issued, so a printer problem must not look like a failed
+ * receipt (review P2 no. 7).
+ */
+export type TabletPrintOutcome = "none" | "skipped" | "sent" | "failed";
+
+export function deliverToTabletPrinter(
+  payload: PrintPayload | null | undefined,
+  printer: TabletPrinter,
+  io: PrinterIo = browserIo,
+): { outcome: TabletPrintOutcome } {
+  if (printer.method === "none") return { outcome: "none" };
+  if (!payload) return { outcome: "skipped" };
+  try {
+    sendToPrinter(payload, printer.method, io);
+    return { outcome: "sent" };
+  } catch {
+    return { outcome: "failed" };
+  }
 }

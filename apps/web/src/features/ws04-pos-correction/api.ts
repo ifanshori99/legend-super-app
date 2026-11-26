@@ -13,6 +13,7 @@ import {
   type PosApprovalPolicy,
   type PosOrderDetail,
   type PosReceiptIssueResult,
+  type PrintPaperWidth,
   type PosRefund,
   type ReceiptDocument,
   type RefundReason,
@@ -152,10 +153,16 @@ export async function printOrderReceipt(
   outletId: string,
   orderId: string,
   idempotencyKey: string,
+  /** P2: this tablet's paper; the cloud then answers with the ESC/POS bytes. */
+  paperWidth?: PrintPaperWidth,
 ): Promise<PosReceiptIssueResult> {
   const { data } = await callEndpoint(issuePosReceipt, {
     params: { outletId, orderId },
-    body: { deliveries: ["print"], idempotencyKey },
+    body: {
+      deliveries: ["print"],
+      ...(paperWidth === undefined ? {} : { paperWidth }),
+      idempotencyKey,
+    },
   });
   return data;
 }

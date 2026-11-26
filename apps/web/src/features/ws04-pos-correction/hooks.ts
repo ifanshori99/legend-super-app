@@ -20,6 +20,11 @@ import {
 import { ApiError } from "@/lib/api/client";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { useTenantContext } from "@/lib/tenant-context";
+import {
+  paperWidthOf,
+  readTabletPrinter,
+} from "../ws04-pos-kasir/print/printer-settings";
+import { deliverToTabletPrinter } from "../ws04-pos-kasir/print/send-to-printer";
 import { requestOverride } from "../ws04-pos-kasir/shift-api";
 import { useSupervisorOptions } from "../ws04-pos-kasir/shift-hooks";
 import type { OverrideAction } from "../ws04-pos-kasir/types";
@@ -262,8 +267,20 @@ export function usePrintReceipt() {
   const queryClient = useQueryClient();
   const intent = useIntentKey("pos-receipt");
   return useMutation({
-    mutationFn: (orderId: string) =>
-      printOrderReceipt(outletId, orderId, intent.keyFor(orderId)),
+    mutationFn: async (orderId: string) => {
+      // P2: the reprint goes to this tablet's printer too. The width is part
+      // of the ask, so a changed printer is a new request, not a replay.
+      const printer = readTabletPrinter();
+      const paperWidth = paperWidthOf(printer);
+      const result = await printOrderReceipt(
+        outletId,
+        orderId,
+        intent.keyFor(`${orderId}:${paperWidth ?? "none"}`),
+        paperWidth,
+      );
+      const { outcome } = deliverToTabletPrinter(result.print, printer);
+      return { ...result, tabletPrint: outcome };
+    },
     onSuccess: (_result, orderId) => {
       intent.clear();
       refreshOrder(queryClient, outletId, orderId);
