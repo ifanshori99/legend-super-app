@@ -75,3 +75,12 @@ Sisa:
 - Typecheck api awalnya gagal (id dan nominal tanpa brand di attempt-key dan dua test f1mmf), dibetulkan; kini api dan web lulus lewat `heavy`. Ulang 4 file (resolve, edc, collect-pos, pos-edc-tender): 146/146 lulus.
 - Prettier, eslint file tersentuh bersih.
 - Berikut: review K ulang (architect) untuk (d), lalu web.
+
+### Review K (d) LULUS dengan 1 P2: dibetulkan (27 Nov)
+
+- P2: penjualan EDC disetujui dengan nominal lain dari tagihan kini 409, tagihan tetap open (`record()` cek `sale.amountIdr`). Gagal dulu: tanpa fix tercatat lunas.
+- P3: slip nominal beda memberi alert `edc_transaction.reconciliation_mismatch` sesudah rollback (pola X1). Gagal dulu: tanpa alert.
+- P3: `if (!charge) return false;` ganda di `pos-order-support.ts` dihapus.
+- P3 test: disetujui tanpa tanda = recorded sekali, ulang tetap sekali; 404 outlet lain untuk `method: "edc"`.
+- 6 file test (resolve, edc, collect-pos, pos-edc-tender, edc-agent-amount, edc-reconciliation) 213/213 lulus; typecheck api lulus; prettier/eslint bersih.
+- Berikut: satu reviewer sonnet atas diff fix, lalu web.

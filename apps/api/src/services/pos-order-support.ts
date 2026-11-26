@@ -534,7 +534,6 @@ async function edcSaleChargePayable(
       "edc",
       input.idempotencyKey,
     );
-  if (!charge) return false;
   if (
     (charge.status !== "open" && charge.status !== "routed_pos") ||
     charge.orderStatus === "voided" ||

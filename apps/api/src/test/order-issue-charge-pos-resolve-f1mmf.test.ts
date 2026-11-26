@@ -469,6 +469,13 @@ describe("legend-f1mmf (d) a supervisor settles a charge attempt without an answ
       OTHER_OUTLET_DEVICE_ID,
     );
     expect(other.status, JSON.stringify(other.body)).toBe(404);
+    const otherEdc = await resolve(
+      opened.charge.id,
+      { method: "edc", idempotencyKey: randomUUID(), edc: "failed" },
+      otherOutletCashier,
+      OTHER_OUTLET_DEVICE_ID,
+    );
+    expect(otherEdc.status, JSON.stringify(otherEdc.body)).toBe(404);
     expect(await failedPinAttempts(approver.userId)).toBe(before + 1);
     expect(await closedAttempts()).toBe(closedBefore);
     // Nothing was closed: the cash attempt still pays.
@@ -603,6 +610,64 @@ describe("legend-f1mmf (d) a supervisor settles a charge attempt without an answ
     expect(res.status, JSON.stringify(res.body)).toBe(409);
     expect((await saleOf(id)).status).toBe("unknown");
     expect((await chargeOf(opened.issueId)).status).toBe("open");
+    // The outlet is told, after the refused resolve rolled back.
+    const { rows: alerts } = await owner.query<{
+      payload: Record<string, unknown>;
+    }>(
+      `SELECT payload FROM notification_outbox
+       WHERE tenant_id = $1 AND event_type = 'edc_transaction.reconciliation_mismatch'
+         AND payload->>'edcTransactionId' = $2`,
+      [w.tenant.tenantId, id],
+    );
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]!.payload).toMatchObject({
+      kind: "amount",
+      amountIdr: String(AMOUNT),
+      chargedAmountIdr: String(AMOUNT + 1_000),
+    });
+  });
+
+  it("an approved sale of another amount is 409; the charge stays open and unpaid", async () => {
+    const opened = await openCharge();
+    const key = randomUUID();
+    await ledgerSale({
+      reference: opened.charge.id,
+      amountIdr: AMOUNT + 1_000,
+      status: "approved",
+      idempotencyKey: key,
+    });
+    const res = await resolve(opened.charge.id, {
+      method: "edc",
+      idempotencyKey: key,
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    const row = await chargeOf(opened.issueId);
+    expect(row.status).toBe("open");
+    expect(await chargePaidEvents(opened.issueId)).toBe(0);
+  });
+
+  it("an approved sale whose answer never reached the till is recorded once; again stays once", async () => {
+    const opened = await openCharge();
+    const key = randomUUID();
+    const id = await ledgerSale({
+      reference: opened.charge.id,
+      amountIdr: AMOUNT,
+      status: "approved",
+      idempotencyKey: key,
+    });
+    const body = { method: "edc", idempotencyKey: key };
+    const first = await resolve(opened.charge.id, body);
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    expect(first.body.data.outcome).toBe("recorded");
+    expect(first.body.data.charge.status).toBe("paid");
+    expect(await saleOf(id)).toMatchObject({
+      status: "approved",
+      needs_reconciliation: false,
+    });
+    const again = await resolve(opened.charge.id, body);
+    expect(again.status, JSON.stringify(again.body)).toBe(200);
+    expect(again.body.data.outcome).toBe("recorded");
+    expect(await chargePaidEvents(opened.issueId)).toBe(1);
   });
 
   it("a valid slip pays the charge once; paid from a slip needs payment.reconcile", async () => {

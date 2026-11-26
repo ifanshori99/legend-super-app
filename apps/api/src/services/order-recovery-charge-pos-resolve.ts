@@ -46,6 +46,10 @@ import { cashMovements } from "../db/schema/pos-shift.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { outletContext, outletTarget } from "./device-pin-support.ts";
+import {
+  alertEdcReconciliationMismatch,
+  type EdcReconciliationMismatch,
+} from "./edc-reconciliation-alert.ts";
 import { resolveEdcReconciliation } from "./edc-reconciliation.service.ts";
 import type { Tx } from "./menu-internals.ts";
 import { auditCharge, lockChargeChain } from "./order-recovery-charge.ts";
@@ -109,6 +113,10 @@ async function outletInReach(
     throw notFound();
   return charge.outletId;
 }
+
+/** A slip stating another amount than the charge: the entry alerts the
+ * outlet after the transaction rolled back (as the reconciliation's X1). */
+const slipMismatches = new WeakMap<Error, EdcReconciliationMismatch>();
 
 type Settled = {
   outcome: PosIssueChargeAttemptOutcome;
@@ -209,6 +217,11 @@ async function settleEdc(
       throw conflict(
         "Hanya penjualan kartu dari terminal yang bisa dipakai sebagai pembayaran.",
       );
+    // The sale pays the charge only for exactly the charge's amount.
+    if (sale.amountIdr !== charge.amountIdr)
+      throw conflict(
+        "Nominal transaksi EDC tidak sama dengan tagihan selisih; transaksi perlu dicek.",
+      );
     await recordEdcSaleOnCharge(
       tx,
       context,
@@ -247,10 +260,19 @@ async function settleEdc(
         ISSUE_CHARGE_SLIP_REQUIRED,
         "Isi RRN, kode approval, dan nominal dari slip EDC.",
       );
-    if (input.slip.chargedAmountIdr !== charge.amountIdr)
-      throw conflict(
+    if (input.slip.chargedAmountIdr !== charge.amountIdr) {
+      const error = conflict(
         "Nominal di slip tidak sama dengan tagihan selisih; transaksi tetap perlu dicek.",
       );
+      slipMismatches.set(error, {
+        kind: "amount",
+        edcTransactionId: sale.id,
+        outletId: charge.outletId,
+        amountIdr: sale.amountIdr,
+        chargedAmountIdr: input.slip.chargedAmountIdr,
+      });
+      throw error;
+    }
     await resolveEdcReconciliation(
       tx,
       context,
@@ -356,45 +378,55 @@ export async function resolvePosIssueChargeAttempt(
   });
   // 3. Settle under the charge chain lock (the cash collect's and the card
   //    start's first lock), then the method's own.
-  const outcome = await withTenant(db, context, async (tx) => {
-    const locked = await lockChargeChain(tx, tenantId, { chargeId });
-    await outletInReach(tx, context, caller, locked?.charge, now);
-    if (!locked) throw notFound();
-    // A role that ended while the PIN was checked fails closed.
-    await assertApprover(tx);
-    const { charge, issue } = locked;
-    const settled: Settled = (await isAttemptClosed(
-      tx,
-      tenantId,
-      charge.outletId,
-      charge.id,
-      input.method,
-      input.idempotencyKey,
-    ))
-      ? { outcome: "closed", edcTransactionId: null }
-      : input.method === "cash"
-        ? await settleCash(tx, context, locked, input)
-        : await settleEdc(tx, context, locked, input, now);
-    await auditCharge(tx, context, {
-      outletId: charge.outletId,
-      issueId: issue.id,
-      action: AUDIT_ATTEMPT_RESOLVED,
-      actorUserId: caller.userId,
-      reason: input.reason,
-      after: {
-        chargeId: charge.id,
-        status: settled.outcome,
-        approvedBy: approverUserId,
-        attemptMethod: input.method,
-        ...(input.edc ? { statement: input.edc } : {}),
-        ...(settled.edcTransactionId
-          ? { edcTransactionId: settled.edcTransactionId }
-          : {}),
-      },
-      at: now,
+  const settle = () =>
+    withTenant(db, context, async (tx) => {
+      const locked = await lockChargeChain(tx, tenantId, { chargeId });
+      await outletInReach(tx, context, caller, locked?.charge, now);
+      if (!locked) throw notFound();
+      // A role that ended while the PIN was checked fails closed.
+      await assertApprover(tx);
+      const { charge, issue } = locked;
+      const settled: Settled = (await isAttemptClosed(
+        tx,
+        tenantId,
+        charge.outletId,
+        charge.id,
+        input.method,
+        input.idempotencyKey,
+      ))
+        ? { outcome: "closed", edcTransactionId: null }
+        : input.method === "cash"
+          ? await settleCash(tx, context, locked, input)
+          : await settleEdc(tx, context, locked, input, now);
+      await auditCharge(tx, context, {
+        outletId: charge.outletId,
+        issueId: issue.id,
+        action: AUDIT_ATTEMPT_RESOLVED,
+        actorUserId: caller.userId,
+        reason: input.reason,
+        after: {
+          chargeId: charge.id,
+          status: settled.outcome,
+          approvedBy: approverUserId,
+          attemptMethod: input.method,
+          ...(input.edc ? { statement: input.edc } : {}),
+          ...(settled.edcTransactionId
+            ? { edcTransactionId: settled.edcTransactionId }
+            : {}),
+        },
+        at: now,
+      });
+      return settled.outcome;
     });
-    return settled.outcome;
-  });
+  let outcome: PosIssueChargeAttemptOutcome;
+  try {
+    outcome = await settle();
+  } catch (error) {
+    const mismatch =
+      error instanceof Error ? slipMismatches.get(error) : undefined;
+    if (mismatch) await alertEdcReconciliationMismatch(context, mismatch, now);
+    throw error;
+  }
   return {
     outcome,
     charge: await readPosIssueCharge(
