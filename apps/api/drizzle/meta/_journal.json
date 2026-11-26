@@ -3671,10 +3671,24 @@
       "breakpoints": true
     },
     {
+      "idx": 538,
+      "version": "7",
+      "when": 1795717345508,
+      "tag": "0538_pos_shift_offline_queue_unverified",
+      "breakpoints": true
+    },
+    {
       "idx": 539,
       "version": "7",
-      "when": 1795719549551,
-      "tag": "0539_report_delivery",
+      "when": 1795719435164,
+      "tag": "0539_edc_settlement_csv",
+      "breakpoints": true
+    },
+    {
+      "idx": 540,
+      "version": "7",
+      "when": 1795720646313,
+      "tag": "0540_report_delivery",
       "breakpoints": true
     }
   ]

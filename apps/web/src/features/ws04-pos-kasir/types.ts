@@ -446,7 +446,7 @@ export type DayCloseRecap = {
   totalNetIdr: number | null;
   /** Blind view: the caller ran a shift today, so drawer figures are null. */
   drawerFiguresHidden?: boolean;
-  /** DEMO-CONTRACT: EDC settlement per bank; null when the server has none. */
+  /** EDC settled by the bank CSV per terminal (X2); null when the server has none. */
   settlement: { bank: string; amountIdr: number }[] | null;
   /** Standalone EDC transactions that still need reconciliation. */
   standaloneUnmatched: number | null;

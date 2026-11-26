@@ -1,8 +1,9 @@
 -- WS-11 F12 (bead legend-ay6e6, docs/briefs/259-ws11-card-split.md): saved
 -- report builder queries, their delivery schedules and export jobs. New
--- tables only, no existing row changes. Temporary number 0539 (CTO 27 Nov:
--- after 0538), renumbered at merge. Foreign keys are inline in CREATE TABLE
--- (contracts.md legend-m007 pattern 1: no validation scan under FORCE RLS).
+-- tables only, no existing row changes. Foreign keys are inline in CREATE
+-- TABLE (contracts.md legend-m007 pattern 1: no validation scan under FORCE
+-- RLS). The RLS block at the end is copied from
+-- src/db/schema/report-delivery.custom.sql (drizzle-kit does not emit it).
 --> statement-breakpoint
 CREATE TABLE "saved_reports" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,

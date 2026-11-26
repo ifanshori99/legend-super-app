@@ -19,6 +19,7 @@ import * as service from "../services/payment-admin.service.ts";
 import * as config from "../services/payment-admin-config.service.ts";
 import * as funds from "../services/payment-admin-funds.service.ts";
 import * as edcReconciliation from "../services/edc-reconciliation.service.ts";
+import * as edcSettlementCsv from "../services/edc-settlement-import.service.ts";
 import * as reconciliation from "../services/payment-admin-reconciliation.service.ts";
 import * as corrections from "../services/payment-reconciliation-correction.service.ts";
 import * as settlementEmit from "../services/payment-settlement-emit.service.ts";
@@ -234,6 +235,24 @@ paymentAdminRouter.post(
         scope(req),
         actor(req),
         req.params,
+        req.body,
+        { mfaVerified: (await sessionMfaVerifiedAt(req)) !== null },
+      ),
+    });
+  },
+);
+// X2 (legend-wasr7.11): a bank's EDC settlement CSV. The service answers 404
+// for an outlet outside the tenant or scope, then re-checks payment.reconcile
+// at the outlet and the session's second factor.
+paymentAdminRouter.post(
+  route(contract.importEdcSettlementCsv.path),
+  jsonBody,
+  reconcileRecord,
+  async (req, res) => {
+    res.json({
+      data: await edcSettlementCsv.importEdcSettlementCsv(
+        scope(req),
+        actor(req),
         req.body,
         { mfaVerified: (await sessionMfaVerifiedAt(req)) !== null },
       ),

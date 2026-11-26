@@ -11,6 +11,7 @@ import {
 } from "@starter/shared/core";
 import {
   closePosShift,
+  forceClosePosShift,
   submitPosShiftCount,
 } from "../services/pos-shift.service.ts";
 import { agent, signUp } from "./helpers.ts";
@@ -53,6 +54,8 @@ export async function closeShiftExactly(input: {
   drawerIdr: number;
   /** |counted - expected|: the approved override carries the variance. */
   varianceIdr?: number;
+  /** O3: the offline sales the tablet reports as still queued (default 0; null: not sent). */
+  offlineQueuePending?: number | null;
 }): Promise<void> {
   const overrideValueIdr = Math.abs(input.varianceIdr ?? 0);
   const outletId = outletIdSchema.parse(seededOutletA);
@@ -75,6 +78,33 @@ export async function closeShiftExactly(input: {
       idempotencyKey: randomUUID(),
     } as Parameters<typeof submitPosShiftCount>[4],
   );
+  const approvalRequestId = await approvedCloseOverride({
+    requestedBy: input.cashierId,
+    approverId: input.supervisorId,
+    countId: count.id,
+    valueIdr: overrideValueIdr,
+  });
+  await closePosShift(input.scope, caller, outletId, input.shiftId, {
+    countId: count.id,
+    approvedBy: userIdSchema.parse(input.supervisorId),
+    approvalRequestId,
+    idempotencyKey: randomUUID(),
+    ...(input.offlineQueuePending !== null
+      ? { offlineQueuePending: input.offlineQueuePending ?? 0 }
+      : {}),
+    ...(overrideValueIdr > 0
+      ? { varianceNote: "Tunai penjualan offline di laci" }
+      : {}),
+  } as Parameters<typeof closePosShift>[4]);
+}
+
+/** An approved `cash_shift_close` PIN override of count `countId`; its id. */
+async function approvedCloseOverride(input: {
+  requestedBy: string;
+  approverId: string;
+  countId: string;
+  valueIdr: number;
+}): Promise<string> {
   const approvalRequestId = randomUUID();
   const reason = "Hitung kas akhir shift";
   const client = await owner.connect();
@@ -95,21 +125,21 @@ export async function closeShiftExactly(input: {
         approvalRequestId,
         seededTenantId,
         seededOutletA,
-        input.cashierId,
-        input.supervisorId,
+        input.requestedBy,
+        input.approverId,
         reason,
-        count.id,
+        input.countId,
         pinOverrideFixtureFingerprint({
-          requestedBy: input.cashierId,
+          requestedBy: input.requestedBy,
           outletId: seededOutletA,
           action: "cash_shift_close",
-          valueIdr: overrideValueIdr,
+          valueIdr: input.valueIdr,
           reason,
           objectType: "pos_shift_count",
-          objectId: count.id,
-          approverUserId: input.supervisorId,
+          objectId: input.countId,
+          approverUserId: input.approverId,
         }),
-        overrideValueIdr,
+        input.valueIdr,
       ],
     );
     await client.query("COMMIT");
@@ -119,13 +149,52 @@ export async function closeShiftExactly(input: {
   } finally {
     client.release();
   }
-  await closePosShift(input.scope, caller, outletId, input.shiftId, {
+  return approvalRequestId;
+}
+
+/**
+ * Review O3 P2 1: a supervisor force-closes the shift with a forced count of
+ * exactly `drawerIdr` (the expected cash), a second supervisor witnessing.
+ */
+export async function forceCloseShiftExactly(input: {
+  scope: ScopedTenantContext;
+  deviceId: string;
+  shiftId: string;
+  supervisorId: string;
+  witnessId: string;
+  drawerIdr: number;
+}): Promise<void> {
+  const outletId = outletIdSchema.parse(seededOutletA);
+  const caller = {
+    userId: userIdSchema.parse(input.supervisorId),
+    deviceId: input.deviceId,
+  };
+  const count = await submitPosShiftCount(
+    input.scope,
+    caller,
+    outletId,
+    input.shiftId,
+    {
+      counts: [
+        {
+          denominationIdr: idr(1_000),
+          quantity: Math.round(input.drawerIdr / 1_000),
+        },
+      ],
+      idempotencyKey: randomUUID(),
+    } as Parameters<typeof submitPosShiftCount>[4],
+  );
+  const approvalRequestId = await approvedCloseOverride({
+    requestedBy: input.supervisorId,
+    approverId: input.witnessId,
     countId: count.id,
-    approvedBy: userIdSchema.parse(input.supervisorId),
+    valueIdr: 0,
+  });
+  await forceClosePosShift(input.scope, caller, outletId, input.shiftId, {
+    countId: count.id,
+    note: "Tablet kasir rusak, antrean offline tidak terbaca",
+    approvedBy: userIdSchema.parse(input.witnessId),
     approvalRequestId,
     idempotencyKey: randomUUID(),
-    ...(overrideValueIdr > 0
-      ? { varianceNote: "Tunai penjualan offline di laci" }
-      : {}),
-  } as Parameters<typeof closePosShift>[4]);
+  } as Parameters<typeof forceClosePosShift>[4]);
 }

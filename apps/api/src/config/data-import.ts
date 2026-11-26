@@ -60,6 +60,14 @@ export const DATA_IMPORT_SOURCES = {
     description:
       "Gateway and EDC bank settlement report upload committed by importSettlement.",
   },
+  "edc-settlement.csv-import": {
+    classification: "deployment",
+    file: "apps/api/src/services/edc-settlement-import.service.ts",
+    entry: "export async function importEdcSettlementCsv(",
+    beforeWrite: "withTenant(",
+    description:
+      "EDC bank settlement CSV upload (X2) matched to EDC sales by importEdcSettlementCsv.",
+  },
   "seed.dev-tenant": {
     classification: "synthetic",
     modes: ["development"],

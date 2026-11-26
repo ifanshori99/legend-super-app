@@ -148,6 +148,8 @@ export async function alertSupervisors(
     payload: Record<string, string>;
     title: string;
     body: string;
+    /** Owners get it too (review O3 P1: finance must see it). */
+    alsoOwners?: boolean;
   },
 ): Promise<void> {
   try {

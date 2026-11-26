@@ -7,6 +7,7 @@ import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Money } from "@/components/ui/money";
 import { ApiError } from "@/lib/api/errors";
 import { useActiveShift, useSubmitBlindCount } from "../../shift-hooks";
+import { usePosOffline } from "../../offline/hooks";
 import { SHIFT_COUNT_LIMIT_CODE } from "../../shift-extra-types";
 import type { ActiveShift } from "../../types";
 import {
@@ -176,6 +177,8 @@ function CountForm({ shift }: { shift: ActiveShift }) {
 export function BlindCountScreen() {
   const t = useT();
   const shift = useActiveShift();
+  // Review O3 P3: the queue keeps sending while the cashier counts the drawer.
+  usePosOffline();
   if (shift.isPending)
     return <ShiftScreenSkeleton label={t("posKasirShift.loading")} />;
   if (shift.isError)

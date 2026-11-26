@@ -144,6 +144,12 @@ export const OFFLINE_SALE_FLAGS = [
   "amount_mismatch",
   /** paidAt after the cloud's clock; booked on today's business date (review O2 P3 2). */
   "paid_in_future",
+  /**
+   * Review O3 P1: the sale's eventId was stored under another kit; the tablet
+   * reported it and the cloud booked it under its own order id, its cash in
+   * the offline clearing account (like `shift_closed`).
+   */
+  "event_conflict",
 ] as const;
 export const offlineSaleFlagSchema = z.enum(OFFLINE_SALE_FLAGS);
 export type OfflineSaleFlag = z.infer<typeof offlineSaleFlagSchema>;
@@ -177,4 +183,28 @@ export const submitPosOfflineBatch = defineEndpoint({
   params: z.strictObject({ outletId: outletIdSchema }),
   body: submitPosOfflineBatchInputSchema,
   response: dataResponseSchema(posOfflineBatchResultSchema),
+});
+
+/**
+ * Review O3 P1 (CTO 27 Nov): the tablet's report of a sale the batch refused
+ * with OFFLINE_EVENT_CONFLICT (its eventId is stored under another kit). The
+ * cloud books it under an order id derived from (kit, eventId), flagged
+ * `event_conflict`: its number fills the run's slot, its cash goes to the
+ * offline clearing account, supervisors and owners are alerted. Idempotent per
+ * (kit, eventId): a resend answers `duplicate`. A sale that turns out not to
+ * conflict is ingested as a normal batch event.
+ */
+export const reportPosOfflineConflictInputSchema = clientInputSchema({
+  event: offlineSaleEventSchema,
+});
+export type ReportPosOfflineConflictInput = z.infer<
+  typeof reportPosOfflineConflictInputSchema
+>;
+
+export const reportPosOfflineConflict = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pos/offline-conflicts",
+  params: z.strictObject({ outletId: outletIdSchema }),
+  body: reportPosOfflineConflictInputSchema,
+  response: dataResponseSchema(offlineEventResultSchema),
 });

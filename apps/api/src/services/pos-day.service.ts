@@ -77,6 +77,7 @@ import { edgePosIngests } from "../db/schema/edge-pos-ingest.ts";
 import { edgeAlertId } from "../edge/late-adjustment.ts";
 import { isHeartbeatFreshForDayClose } from "../edge/link-freshness.ts";
 import { logger } from "../lib/logger.ts";
+import { edcSettlementByTerminal } from "./pos-day-edc-settlement.ts";
 import {
   domainEventOutbox,
   outlets,
@@ -1167,7 +1168,26 @@ export async function getEndOfDayRecap(
     const recap = closed
       ? endOfDayRecapSchema.parse(closed.recap)
       : await computeRecap(tx, context, outlet, outletId, businessDate, now);
-    return blindOwnDrawer(tx, context, snapshot, caller, outletId, recap);
+    const view = await blindOwnDrawer(
+      tx,
+      context,
+      snapshot,
+      caller,
+      outletId,
+      recap,
+    );
+    // X2: EDC per terminal, live (the bank file comes after the day froze);
+    // the blind view never carries it (it would show the EDC net).
+    if ("drawerFiguresHidden" in view) return view;
+    return endOfDayRecapSchema.parse({
+      ...view,
+      edcSettlement: await edcSettlementByTerminal(
+        tx,
+        context,
+        outletId,
+        businessDate,
+      ),
+    });
   });
 }
 

@@ -128,6 +128,14 @@ export const posShifts = pgTable(
      * every normal and edge shift.
      */
     failoverWindowId: uuid("failover_window_id"),
+    /**
+     * Review O3 P2 1 (CTO 27 Nov): a shift with an offline kit closed by a
+     * supervisor's force close, without the kit device's queue count. Finance
+     * is alerted; sales synced later take the `shift_closed` path.
+     */
+    offlineQueueUnverified: boolean("offline_queue_unverified")
+      .notNull()
+      .default(false),
     version: integer("version").notNull().default(1),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
