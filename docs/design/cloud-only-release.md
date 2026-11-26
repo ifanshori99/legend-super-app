@@ -89,3 +89,9 @@ Sisanya diputuskan CTO: tanpa plafon untuk tunai offline, bekal offline berlaku 
 - (d) Sumber/ledger baru `offline_tablet`, terpisah dari edge: penjualan offline yang ter-ingest menjadi order cloud biasa, refund lewat jalur refund cloud biasa (bukan penjaga sale edge).
 - Promo otomatis tidak berlaku saat offline di v1 (harga daftar saja); UI menampilkan "Promo tidak berlaku saat offline". Route bekal di bawah outlet diterima.
 - Nominal dari payload, tidak dihitung ulang; selisih harga vs snapshot masuk "perlu dicek". Satu eventId = satu order, replay aman.
+
+## Keputusan CTO O4 (27 Nov)
+- Menu offline dari bekal (dine-in/takeaway). Mockup design/mockups/pos/offline disetujui.
+- Offline = browser offline ATAU ping API gagal 2x (~10 detik, gagal jaringan); online lagi sesudah ping sukses. Keranjang yang permintaan cloud-nya belum pasti tidak boleh dijual ulang offline (pengaman dobel); jual offline hanya keranjang baru.
+- Antrean = sheet di layar kasir. Tutup shift menampilkan tunai belum terkirim dari tablet; tutup paksa supervisor masuk O4 supaya kafe tidak terkunci.
+- Cetak struk offline lewat jalur cetak tablet bila tanpa server; selain itu nomor L + cetak ulang sesudah online (O5).
