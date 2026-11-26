@@ -33,3 +33,21 @@ Cabang `ws/1272-f1mmf`. Bead: legend-f1mmf (backend tukar menu QRIS/EDC, lalu bu
 1. Batal QRIS: usulan diterima. Tidak ada endpoint batal; kode basi ditutup server sesudah lewat waktu + 60 detik dan jawaban final provider.
 2. Tunai/EDC tanpa jawaban: pakai pola supervisor PIN 1268 W2 (`payment-intents/resolve`) untuk tagihan, kunci `cash:`/`edc:` per tagihan, alasan wajib, penyetuju bukan pemanggil, audit. EDC `unknown` hanya boleh diselesaikan dengan bukti slip (RRN + kode approval) atau dinyatakan gagal sesudah cek terminal; tidak pernah dianggap lunas tanpa bukti. Desain dicek architect di review K.
 3. Layar tetap terkunci (CONTRACT_PENDING) sampai (d) dibangun dan review K lulus.
+
+## Review K 27 Nov: pengerjaan (sesi lanjutan)
+
+Sudah (commit 6cabc2655, typecheck api lulus, 72+551 test terkait lulus):
+- Temuan 1: QRIS/VA tamu menolak selama penjualan EDC tagihan belum selesai/disetujui.
+- Temuan 3: tunai menolak selama kode tagihan masih hidup (`liveCodeWhere`); kode basi ditanyakan dulu ke provider (`closeLapsedChargeCodes`). Guard pindah ke `order-recovery-charge-money-path.ts`. Empat test lama "tunai menang" disesuaikan ke aturan baru.
+- Temuan 2: test write-ahead agent dengan id tagihan (nominal, dibayar/tutup, void, kode hidup), 404 tanpa izin bayar di outlet tagihan (tanpa izin sama sekali: 403 dari route).
+
+Sedang (d), WIP:
+- Kontrak `resolvePosIssueChargeAttempt` di `packages/shared/src/pos/issue-charge.ts` (method cash/edc + idempotencyKey, pernyataan edc failed/paid, slip, alasan, penyetuju, PIN).
+- `order-recovery-charge-attempt-key.ts`: penanda tutup di `pos_order_idempotency` (key `oic-attempt:<sha256>`).
+
+Sisa (d):
+- Service `order-recovery-charge-pos-resolve.ts`: penyetuju != pemanggil (403), izin override `void` (cash) / `edc_standalone` (edc) + `payment.reconcile` untuk `paid`, `attemptApproverPin`, lalu di bawah kunci tagihan + advisory lock agent: cash (movement dengan kunci itu = recorded, selain itu tutup); edc (tanpa sale = tutup; pending/wire terbuka = 409; approved = catat sekali; unknown tanpa pernyataan/slip = 409, `paid` lewat `resolveEdcReconciliation` approved lalu catat sekali, `failed` lewat declined lalu closed; flagged = 409).
+- Pasang cek penanda di jalur tunai (sesudah replay), start EDC (sesudah `earlier`), dan `edcSaleChargePayable` (tambah `idempotencyKey` opsional dari agent).
+- Ekstrak pencatatan EDC dari `collectChargeAtPosEdc` jadi fungsi bersama.
+- Route `POST /order-issue-charges/:chargeId/attempts/resolve` (middleware sama `/edc`), audit `order_issue.charge_attempt_resolved`.
+- Test wajib (d) sesuai daftar CTO di review, typecheck api+web, prettier/eslint.

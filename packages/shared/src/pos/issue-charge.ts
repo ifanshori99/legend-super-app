@@ -5,13 +5,19 @@
 
 import {
   z,
+  clientInputSchema,
   dataResponseSchema,
   idempotencyKeySchema,
   isoDateTimeSchema,
+  userIdSchema,
   uuidSchema,
 } from "../core/index.ts";
 import { defineEndpoint } from "../api/endpoint.ts";
-import { edcTransactionSchema } from "../edc/index.ts";
+import {
+  edcReconciliationEvidenceSchema,
+  edcTransactionSchema,
+} from "../edc/index.ts";
+import { staffPinInputSchema } from "../identity/inputs.ts";
 import { guestPaymentSchema } from "../qr-order/guest.ts";
 import { orderIssueChargeStatusSchema } from "../qr-order/schemas.ts";
 import { posEdcAttemptSchema } from "./schemas.ts";
@@ -79,4 +85,73 @@ export const startPosIssueChargeEdc = defineEndpoint({
     idempotencyKey: idempotencyKeySchema,
   }),
   response: dataResponseSchema(edcTransactionSchema),
+});
+
+/**
+ * What the supervisor states about a card sale whose answer is `unknown`
+ * after checking the terminal: `failed` (the card was not charged), or `paid`
+ * with the slip (RRN, approval code and the printed amount). Never assumed
+ * paid without the slip.
+ */
+export const posIssueChargeEdcStatementSchema = z.enum(["failed", "paid"]);
+
+export const posIssueChargeSlipSchema = z.strictObject({
+  rrn: edcReconciliationEvidenceSchema.shape.rrn.unwrap(),
+  approvalCode: edcReconciliationEvidenceSchema.shape.approvalCode.unwrap(),
+  chargedAmountIdr:
+    edcReconciliationEvidenceSchema.shape.chargedAmountIdr.unwrap(),
+});
+
+/**
+ * - `recorded`: the attempt paid the charge (now or before); read the charge.
+ * - `closed`: it did not, and it never will: a late arrival of the same key is
+ *   refused, the terminal is not asked again.
+ */
+export const posIssueChargeAttemptOutcomeSchema = z.enum([
+  "recorded",
+  "closed",
+]);
+export type PosIssueChargeAttemptOutcome = z.infer<
+  typeof posIssueChargeAttemptOutcomeSchema
+>;
+
+/** An unknown card sale without the supervisor's statement (409). */
+export const ISSUE_CHARGE_EDC_STATEMENT_REQUIRED =
+  "ISSUE_CHARGE_EDC_STATEMENT_REQUIRED" as const;
+/** `paid` stated for an unknown card sale without its slip (409). */
+export const ISSUE_CHARGE_SLIP_REQUIRED = "ISSUE_CHARGE_SLIP_REQUIRED" as const;
+
+/**
+ * A cash or card attempt of the charge whose answer never reached the till
+ * (legend-f1mmf, 1268 W2 pattern). Another person who may approve it
+ * (`void` for cash, `edc_standalone` for a card; a `paid` statement also
+ * needs `payment.reconcile`) types their own PIN; the reason is audited. No
+ * money is invented: a recorded attempt is read back, an approved card sale is
+ * recorded once, an unrecorded attempt is closed for good.
+ */
+export const resolvePosIssueChargeAttempt = defineEndpoint({
+  method: "POST",
+  path: "/api/order-issue-charges/:chargeId/attempts/resolve",
+  params: chargeParams,
+  body: clientInputSchema({
+    method: z.enum(["cash", "edc"]),
+    /** The key the till sent with the attempt. */
+    idempotencyKey: idempotencyKeySchema,
+    edc: posIssueChargeEdcStatementSchema.optional(),
+    slip: posIssueChargeSlipSchema.optional(),
+    reason: z.string().trim().min(3).max(500),
+    approverUserId: userIdSchema,
+    pin: staffPinInputSchema,
+  }).refine(
+    (value) =>
+      value.method === "edc" ||
+      (value.edc === undefined && value.slip === undefined),
+    { message: "Pernyataan kartu hanya untuk percobaan EDC.", path: ["edc"] },
+  ),
+  response: dataResponseSchema(
+    z.strictObject({
+      outcome: posIssueChargeAttemptOutcomeSchema,
+      charge: posIssueChargeDetailSchema,
+    }),
+  ),
 });
