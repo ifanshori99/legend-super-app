@@ -564,7 +564,7 @@ function toCode(intent: {
       intent.instructions.method === "qris"
         ? (intent.instructions.qrPayload ?? null)
         : null,
-    amountIdr: intent.amountIdr,
+    amountIdr: idr(intent.amountIdr),
     status: intent.status,
     expiresAt: intent.expiresAt,
   };
