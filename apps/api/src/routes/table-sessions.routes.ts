@@ -27,7 +27,6 @@ import {
 import { requireAuthAllowSharedDevice } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
-import { requirePosWriteOnCloud } from "../middleware/pos-on-cloud";
 import { requireTenantContext } from "../middleware/tenant";
 import {
   closeTableSession,
