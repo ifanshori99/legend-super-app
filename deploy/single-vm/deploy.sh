@@ -28,6 +28,8 @@ compose config --quiet >/dev/null 2>&1 || {
 }
 if [ "$dry_run" -eq 1 ]; then
   "$script_dir/provision-roles.sh" --env-file "$env_file" --dry-run >/dev/null
+  "$script_dir/check-refund-flag.sh" --env-file "$env_file" ||
+    { echo "Env agreement check failed (dry run): turn every edge switch off and make the refund and Duitku settings agree in api.env and worker.env." >&2; exit 1; }
   echo 'Validated compose configuration; would start database, run the pre-deploy check, run migrations, audit database roles, then start services.'
   exit 0
 fi

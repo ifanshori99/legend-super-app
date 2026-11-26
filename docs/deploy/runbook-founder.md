@@ -33,7 +33,7 @@ Pertama kali di VPS:
 2. Bangun image dari commit rilis: API, web (dengan `VITE_API_URL` dan `VITE_SENTRY_DSN`), worker, migrator, dan postgres dengan backup (`docker build -f deploy/backup/Dockerfile -t <nama:tag> .`). Perintah lain: `docs/deployment.md`, bagian "Docker images".
 3. Salin `deploy/single-vm/compose.env.example` dan `runtime.env.example` ke luar repo. Satu berkas per proses (`api.env`, `web.env`, `worker.env`, `migrator.env`). Mode: `DEPLOYMENT_MODE=production`, `DATA_CLASSIFICATION=real`, `EDGE_MODE=false`. Semua saklar edge tetap `false`.
 4. Isi `pgbackrest.conf` dari `deploy/backup/pgbackrest.conf.example` (mode 0600, pemilik `postgres`).
-5. Cek tanpa menjalankan: `deploy/single-vm/deploy.sh --env-file /path/compose.env --dry-run`.
+5. Cek tanpa menjalankan: `deploy/single-vm/deploy.sh --env-file /path/compose.env --dry-run` (ikut memeriksa saklar edge dan setelan refund/Duitku).
 6. Nyalakan database saja: `docker compose --env-file /path/compose.env -f deploy/single-vm/compose.yaml up -d --wait postgres`.
 7. Buat login migrasi (sekali): `deploy/single-vm/provision-roles.sh --env-file /path/compose.env --migrator`.
 8. Migrasi dan buat login terbatas: `deploy/single-vm/provision-roles.sh --env-file /path/compose.env`.
@@ -42,7 +42,7 @@ Pertama kali di VPS:
 11. Cek: `GET https://<api>/api/health` menjawab ok dan `scanner: "ok"` (pemindai butuh beberapa menit pertama).
 12. Daftarkan webhook KirimDev ke `https://<api>/api/webhooks/whatsapp` (`docs/runbooks/kirimdev-webhook.md`).
 
-Deploy berikutnya: langkah 5 lalu 10 saja. `deploy.sh` berhenti sebelum migrasi bila ada saklar edge menyala, bila `DOIT_REFUNDS_ENABLED` atau setelan Duitku beda antara API dan worker, atau bila gerbang pre-deploy gagal.
+Deploy berikutnya: langkah 5 lalu 10 saja. `deploy.sh` (dan langkah 8 pada deploy pertama) berhenti sebelum migrasi bila ada saklar edge menyala, bila `DOIT_REFUNDS_ENABLED` atau setelan Duitku beda antara API dan worker, atau bila gerbang pre-deploy gagal.
 
 ## 3. Hasil latihan backup dan restore (27 Nov 2026)
 
