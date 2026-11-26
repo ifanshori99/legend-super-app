@@ -146,7 +146,27 @@ test("an unknown EDC result blocks every other payment until it is checked", () 
   assert.equal(paid.activeAttempt.bankRef, "736214805192");
 });
 
-test("EDC standalone needs a supervisor override and no earlier request", () => {
+test("X1 manual EDC records from the slip alone, no supervisor override", () => {
+  const { engine } = fresh();
+  const input = {
+    orderId: DEMO_ORDER_ID,
+    terminalId: "edc-01",
+    bankRef: "736214805192",
+  };
+  assert.equal(
+    code(() => engine.recordEdcStandalone({ ...input, bankRef: "12" })),
+    "VALIDATION_ERROR",
+  );
+  const session = engine.recordEdcStandalone(input);
+  assert.equal(session.bill.paid, true);
+  assert.equal(session.activeAttempt.standalone, true);
+  assert.equal(
+    code(() => engine.recordEdcStandalone(input)),
+    "ALREADY_PAID",
+  );
+});
+
+test("EDC standalone spends an override the till still sends", () => {
   const { engine } = fresh();
   const input = {
     orderId: DEMO_ORDER_ID,

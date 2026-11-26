@@ -490,7 +490,7 @@ test("legend-mjmm EDC-03 an uncertain EDC result forces a status check before an
   await expect(heading(page, "Pembayaran EDC berhasil")).toBeVisible();
 });
 
-test("legend-mjmm EDC-04 standalone needs a bank reference and a supervisor PIN, and is marked for reconciliation", async ({
+test("legend-mjmm EDC-04 / X1 manual EDC needs the slip amount and bank reference, no supervisor PIN, and is marked for reconciliation", async ({
   page,
 }) => {
   await open(page, payUrl());
@@ -507,37 +507,33 @@ test("legend-mjmm EDC-04 standalone needs a bank reference and a supervisor PIN,
   await expect(heading(page, "Catat pembayaran EDC standalone")).toBeVisible();
   const area = main(page);
   await expect(area).toContainText("Perlu rekonsiliasi");
-  await expect(area).toContainText("Koneksi ECR tidak tersedia");
   await expect(area).toContainText(new RegExp(rp("148.000")));
   await expect(area).toContainText(/Nomor referensi bank\s*·?\s*wajib/);
-  await expect(area).toContainText(/PIN supervisor\s*·?\s*wajib/);
+  // X1: no supervisor and no PIN on the normal manual EDC path.
+  await expect(area).not.toContainText(/PIN supervisor/);
+  await expect(
+    page.getByRole("combobox", { name: /Supervisor yang menyetujui/ }),
+  ).toHaveCount(0);
   await shot(page, "edc-standalone");
 
-  const submit = page.getByRole("button", {
-    name: /Setujui & catat pembayaran/,
-  });
+  const submit = page.getByRole("button", { name: /Catat pembayaran EDC/ });
   const reference = page.getByLabel(/Nomor referensi bank/);
+  const amount = page.getByLabel(/Nominal di slip EDC/);
   const enabledSubmit = submit.and(page.locator(":enabled"));
 
   // Nothing filled: cannot record.
-  await clickIfEnabled(submit);
-  await expect(heading(page, "Catat pembayaran EDC standalone")).toBeVisible();
-
-  // PIN without a bank reference: still cannot record.
-  await enterPin(page, "123456");
-  await clickIfEnabled(submit);
-  await expect(heading(page, "Catat pembayaran EDC standalone")).toBeVisible();
-  await expect(reference).toHaveValue("");
-
-  // Reference + PIN without a chosen supervisor: still cannot record.
-  await reference.fill("736214805192");
   await expect(enabledSubmit).toHaveCount(0);
 
-  // Reference + supervisor + PIN: recorded and the bill is paid.
-  await page
-    .getByRole("combobox", { name: /Supervisor yang menyetujui/ })
-    .click();
-  await page.getByRole("option", { name: "Supervisor 01" }).click();
+  // Amount without a bank reference: still cannot record.
+  await amount.fill("148000");
+  await expect(enabledSubmit).toHaveCount(0);
+
+  // A card number is never a slip reference.
+  await reference.fill("4111111111111111");
+  await expect(enabledSubmit).toHaveCount(0);
+
+  // Amount + slip reference: recorded and the bill is paid.
+  await reference.fill("736214805192");
   await expect(enabledSubmit).toHaveCount(1);
   await submit.click();
   await expect(
