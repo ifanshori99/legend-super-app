@@ -61,10 +61,7 @@ const paymentPaidPayloadSchema = z.object({
 });
 
 export type WfcPaymentOutcome =
-  | "ignored"
-  | "confirmed"
-  | "unchanged"
-  | "late_refund_requested";
+  "ignored" | "confirmed" | "unchanged" | "late_refund_requested";
 
 type IntentRow = typeof paymentIntents.$inferSelect;
 type LinkRow = typeof paymentLinks.$inferSelect;
@@ -361,7 +358,13 @@ export async function handleWfcPaymentPaid(
         paidIdr: claim.priceIdr,
         updatedAt: now,
       });
-    const refundId = await requestLateRefund(tx, context, claim, intent.id, now);
+    const refundId = await requestLateRefund(
+      tx,
+      context,
+      claim,
+      intent.id,
+      now,
+    );
     if (refundId === null) return "unchanged";
     await auditFacility(tx, context, null, now, {
       action: "wfc.late_payment_refund",

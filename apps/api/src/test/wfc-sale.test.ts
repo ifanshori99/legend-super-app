@@ -38,10 +38,7 @@ import {
   listWfcSaleProducts,
   refreshWfcPayment,
 } from "../services/wfc-sale.service.ts";
-import {
-  createWfcSeat,
-  setWfcProduct,
-} from "../services/wfc-seat.service.ts";
+import { createWfcSeat, setWfcProduct } from "../services/wfc-seat.service.ts";
 import { seedFacility } from "./facility-entitlement-helpers.ts";
 import {
   asTenant,
@@ -290,9 +287,11 @@ async function seedWfcProduct(
     },
     expectedUpdatedAt: stamp!.updated_at.toISOString(),
   });
-  await q(world, "UPDATE facility_products SET is_active = true WHERE id = $1", [
-    id,
-  ]);
+  await q(
+    world,
+    "UPDATE facility_products SET is_active = true WHERE id = $1",
+    [id],
+  );
   return id;
 }
 
@@ -385,9 +384,7 @@ async function member(world: World): Promise<MemberScope> {
 const setHours = (s: Shop, opensAt: string, closesAt: string) =>
   q(s.world, "UPDATE facilities SET operating_hours = $2 WHERE id = $1", [
     s.facilityId,
-    JSON.stringify([
-      { daysOfWeek: [0, 1, 2, 3, 4, 5, 6], opensAt, closesAt },
-    ]),
+    JSON.stringify([{ daysOfWeek: [0, 1, 2, 3, 4, 5, 6], opensAt, closesAt }]),
   ]);
 
 const claimsOf = (world: World) =>
@@ -837,7 +834,11 @@ describe("settlement", () => {
     const s = await shop();
     const { claim, scope, linkId, intentId: first } = await hold(s);
     // The member asks for a new code after the first one lapsed (10 min).
-    await refreshWfcPayment(scope, claim.id, new Date(Date.now() + 11 * MINUTE));
+    await refreshWfcPayment(
+      scope,
+      claim.id,
+      new Date(Date.now() + 11 * MINUTE),
+    );
     const codes = await intentsOf(s.world, linkId);
     expect(codes).toHaveLength(2);
     const second = codes[1]!.id;

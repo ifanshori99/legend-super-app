@@ -96,10 +96,13 @@ export const holdWfcSeatSchema = clientInputSchema({
   seatId: uuidSchema.optional(),
   startsAt: isoDateTimeSchema.optional(),
   date: businessDateSchema.optional(),
-}).refine((value) => (value.startsAt === undefined) !== (value.date === undefined), {
-  message: "Isi jam mulai untuk reservasi atau tanggal untuk day pass.",
-  path: ["startsAt"],
-});
+}).refine(
+  (value) => (value.startsAt === undefined) !== (value.date === undefined),
+  {
+    message: "Isi jam mulai untuk reservasi atau tanggal untuk day pass.",
+    path: ["startsAt"],
+  },
+);
 export type HoldWfcSeatInput = z.input<typeof holdWfcSeatSchema>;
 
 export const wfcClaimParamsSchema = clientInputSchema({ claimId: uuidSchema });

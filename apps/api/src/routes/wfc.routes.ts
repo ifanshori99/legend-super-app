@@ -27,7 +27,8 @@ function claimIdOf(params: unknown): string {
 wfcRouter.get("/products", ...base, requireMember(), async (req, res) => {
   res.json({
     data: await sale.listWfcSaleProducts(getMemberScope(req), {
-      outletId: typeof req.query.outletId === "string" ? req.query.outletId : "",
+      outletId:
+        typeof req.query.outletId === "string" ? req.query.outletId : "",
     }),
   });
 });

@@ -68,7 +68,12 @@ import { getEdgeRuntimeState } from "../edge/runtime.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { logger } from "../lib/logger.ts";
 import { openSecret, sealSecret } from "../lib/secrets.ts";
-import { auditFacility, notFound, pgErrorCode, type Tx } from "./facility-shared.ts";
+import {
+  auditFacility,
+  notFound,
+  pgErrorCode,
+  type Tx,
+} from "./facility-shared.ts";
 import { resolveOperatingHoursOn } from "./facility-hours-versions.service.ts";
 import {
   gatewayListsMethod,
@@ -153,7 +158,11 @@ function assertCloud(): void {
 
 function memberProfileId(scope: MemberScope): string {
   if (scope.customerProfileId === null)
-    throw new HttpError(404, "CUSTOMER_NOT_FOUND", "Pelanggan tidak ditemukan.");
+    throw new HttpError(
+      404,
+      "CUSTOMER_NOT_FOUND",
+      "Pelanggan tidak ditemukan.",
+    );
   return scope.customerProfileId;
 }
 
@@ -293,8 +302,7 @@ function planSlot(
     startMinute = wallClockAt(startsAt, clock.timeZone).minutesOfDay;
     endMinute = startMinute + product.durationMinutes;
   } else {
-    if (input.date === undefined)
-      throw slotInvalid("Day pass butuh tanggal.");
+    if (input.date === undefined) throw slotInvalid("Day pass butuh tanggal.");
     date = input.date;
     const today = localDate(now, clock.timeZone);
     if (date < today) throw slotInvalid("Tanggal sudah lewat.");
@@ -321,13 +329,19 @@ function planSlot(
   const startsAt = wallInstant(date, startMinute, clock.timeZone);
   const endsAt = wallInstant(date, endMinute, clock.timeZone);
   // A clock change inside the slot would make the minute math wrong: refuse.
-  if (endsAt.getTime() - startsAt.getTime() !== (endMinute - startMinute) * MINUTE_MS)
+  if (
+    endsAt.getTime() - startsAt.getTime() !==
+    (endMinute - startMinute) * MINUTE_MS
+  )
     throw slotInvalid("Jam itu tidak bisa dipesan.");
   const dayOfWeek = wallClockAt(startsAt, clock.timeZone).dayOfWeek;
   const openMinutes = dayBitmap(windows, dayOfWeek);
   const mustBeOpen =
     product.wfcKind === "seat_reservation"
-      ? Array.from({ length: endMinute - startMinute }, (_, i) => startMinute + i)
+      ? Array.from(
+          { length: endMinute - startMinute },
+          (_, i) => startMinute + i,
+        )
       : [startMinute, endMinute - 1];
   if (!mustBeOpen.every((minute) => openMinutes[minute]))
     throw slotInvalid("Jam itu di luar jam buka fasilitas.");
@@ -423,7 +437,9 @@ async function claimsOverlapping(
         activeClaim(),
         lt(wfcSeatReservations.startsAt, to),
         gt(wfcSeatReservations.endsAt, from),
-        ...(seatId === undefined ? [] : [eq(wfcSeatReservations.seatId, seatId)]),
+        ...(seatId === undefined
+          ? []
+          : [eq(wfcSeatReservations.seatId, seatId)]),
       ),
     );
 }
@@ -481,7 +497,11 @@ async function assertQrisReady(
     const routing = await withTenant(db, context, (tx) =>
       resolveRoutingRule(tx, context, outletId, WFC_PAYMENT_METHOD),
     );
-    const selected = await selectGatewayForNewIntent(context, outletId, routing);
+    const selected = await selectGatewayForNewIntent(
+      context,
+      outletId,
+      routing,
+    );
     if (
       !routing.enabled ||
       selected.provider === null ||
@@ -655,7 +675,10 @@ async function seatCodeOf(
     .select({ code: wfcSeats.code })
     .from(wfcSeats)
     .where(
-      and(eq(wfcSeats.tenantId, context.tenant.tenantId), eq(wfcSeats.id, seatId)),
+      and(
+        eq(wfcSeats.tenantId, context.tenant.tenantId),
+        eq(wfcSeats.id, seatId),
+      ),
     )
     .limit(1);
   return seat?.code ?? "";
@@ -720,7 +743,10 @@ export async function getWfcClaim(
 ): Promise<WfcClaim> {
   const { row, seatCode } = await withMemberScope(db, scope, async (tx) => {
     const found = await loadOwnClaim(tx, scope, claimId);
-    return { row: found, seatCode: await seatCodeOf(tx, scope.context, found.seatId) };
+    return {
+      row: found,
+      seatCode: await seatCodeOf(tx, scope.context, found.seatId),
+    };
   });
   return toClaim(row, seatCode, await latestCode(scope.context, row, now));
 }
@@ -831,7 +857,8 @@ async function insertHold(
     const today = await assertWfcSalesOpen(tx, context, outletId, now);
     const product = await loadSaleProduct(tx, context, input.productId);
     const clock = await loadOutletClock(tx, context, outletId);
-    const hoursDate = input.date ?? localDate(new Date(input.startsAt!), clock.timeZone);
+    const hoursDate =
+      input.date ?? localDate(new Date(input.startsAt!), clock.timeZone);
     const hours = await resolveOperatingHoursOn(
       tx,
       context.tenant.tenantId,
@@ -849,7 +876,12 @@ async function insertHold(
         return { claim: open, replay: true };
       throw holdOpen();
     }
-    const businessDate = await wfcBusinessDate(tx, context, outletId, slot.startsAt);
+    const businessDate = await wfcBusinessDate(
+      tx,
+      context,
+      outletId,
+      slot.startsAt,
+    );
     if (businessDate < (await wfcBusinessDate(tx, context, outletId, now)))
       throw slotInvalid("Tanggal sudah lewat.");
     // The version of the slot's own business date, read again under the lock.
@@ -886,7 +918,13 @@ async function insertHold(
       Math.min(settings.wfcSeats, today.wfcSeats),
     );
     const minutes = slot.endMinute - slot.startMinute;
-    const peak = await slotPeakMinutes(tx, context, outletId, seat.zoneId, slot);
+    const peak = await slotPeakMinutes(
+      tx,
+      context,
+      outletId,
+      seat.zoneId,
+      slot,
+    );
     if (product.wfcAccess === "off_peak" && peak !== 0)
       throw slotInvalid(
         peak === null
@@ -911,7 +949,10 @@ async function insertHold(
         "WFC_PRICE_BELOW_FLOOR",
         "Pass ini belum bisa dijual untuk jam itu.",
       );
-    const floorPerHour = Math.max(1, Math.ceil((floor.floorIdr * 60) / minutes));
+    const floorPerHour = Math.max(
+      1,
+      Math.ceil((floor.floorIdr * 60) / minutes),
+    );
     try {
       const [claim] = await tx
         .insert(wfcSeatReservations)
