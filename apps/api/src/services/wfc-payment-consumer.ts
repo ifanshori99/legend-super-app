@@ -108,7 +108,8 @@ async function linkRefundsIdr(
 
 /**
  * Files the full refund of a paid code of a claim that never got (or lost) its
- * seat. Idempotent per code. Runs under the claim lock; locks the intent.
+ * seat. Idempotent per code (a replay returns null). Runs under the claim
+ * lock; locks the intent.
  */
 async function requestLateRefund(
   tx: Tx,
@@ -134,6 +135,8 @@ async function requestLateRefund(
     !(PAID_INTENT_STATUSES as readonly string[]).includes(intent.status)
   )
     return null;
+  // A replay answers the stored response; only a first run files a refund.
+  let filed = false;
   const response = await idempotentPaymentAdminWrite(
     tx,
     context,
@@ -201,10 +204,11 @@ async function requestLateRefund(
         },
         now,
       });
+      filed = true;
       return { refundId: row.id as string | null };
     },
   );
-  return response.refundId;
+  return filed ? response.refundId : null;
 }
 
 async function setClaim(
