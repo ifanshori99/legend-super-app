@@ -107,9 +107,7 @@ export function OnlineCodeHold({
         noticeTitle={
           shown ? noticeTitle : t("posKasirGateway.code.oneCodeTitle")
         }
-        noticeBody={
-          shown ? noticeBody : t("posKasirGateway.code.oneCodeBody")
-        }
+        noticeBody={shown ? noticeBody : t("posKasirGateway.code.oneCodeBody")}
         action={
           canRelease ? (
             <Button variant="outline" onClick={() => setReleasing(true)}>

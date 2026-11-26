@@ -1432,7 +1432,12 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
       if (input.method === "ewallet") {
         const wallet = ewallets.find((item) => item.code === input.walletCode);
         if (!wallet) validation("Pilih dompet digital.");
-        attempt.ewallet = { code: wallet.code, label: wallet.label };
+        attempt.ewallet = {
+          code: wallet.code,
+          label: wallet.label,
+          // A demo Duitku payment page (1269 C3b): never a real provider URL.
+          paymentUrl: `https://sandbox.duitku.com/demo/pay/${attempt.id}`,
+        };
         attempt.expiresAt = iso(now + WALLET_TTL_MS);
       }
       if (input.method === "edc") {
