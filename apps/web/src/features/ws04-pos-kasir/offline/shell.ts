@@ -2,7 +2,7 @@
 // that handles web push). Registered from the POS screens in production
 // builds only: the dev server's modules must never be served from a cache.
 
-/** Registers /sw.js so /pos pages and their assets load without internet. */
+/** Registers /sw.js so /pos/kasir and its assets load without internet. */
 export async function registerPosShell(): Promise<void> {
   if (typeof window === "undefined" || import.meta.env.DEV) return;
   if (!window.isSecureContext || !("serviceWorker" in navigator)) return;
@@ -13,13 +13,15 @@ export async function registerPosShell(): Promise<void> {
   }
 }
 
-/** Sign-out: the cached /pos pages belong to this login. Best-effort. */
+/** The worker's cache name (public/sw.js `POS_SHELL`). */
+export const POS_SHELL_CACHE = "legend-pos-shell-v1";
+
+/** Sign-out: drops the cached shell and assets. Best-effort. */
 export async function clearPosShell(): Promise<void> {
-  if (typeof window === "undefined" || !("serviceWorker" in navigator)) return;
+  if (typeof window === "undefined" || !("caches" in window)) return;
   try {
-    const registration = await navigator.serviceWorker.getRegistration();
-    registration?.active?.postMessage({ type: "legend-pos-shell-clear" });
+    await caches.delete(POS_SHELL_CACHE);
   } catch {
-    // Nothing registered: nothing cached.
+    // Storage refused: nothing to drop.
   }
 }

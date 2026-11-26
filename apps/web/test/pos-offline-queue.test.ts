@@ -10,8 +10,11 @@
 //   transaction that queues it: a crash leaves neither, never a gap.
 // - The queue survives a reload; a resend repeats the same eventIds and the
 //   cloud answers `duplicate` for what it already holds.
-// - A 409 CONFLICT fails a whole batch: only the sale behind it is parked
-//   ("perlu dicek"), the rest of the queue still syncs.
+// - A 409 OFFLINE_EVENT_CONFLICT fails a whole batch: only the sale behind it
+//   is parked ("perlu dicek") and reported; the cloud books the report and
+//   fills its number slot, the rest of the queue still syncs (review O3 P1).
+// - A parked sale blocks the shift close and sign-out until its report is
+//   settled; a rejected result stops the sync (review O3 P3).
 import {
   OFFLINE_KIT_TTL_MS,
   offlineSaleEventSchema,
@@ -29,6 +32,7 @@ import { priceOfflineSale } from "@/features/ws04-pos-kasir/offline/price";
 import {
   countPendingOfflineSales,
   createOfflineQueue,
+  type OfflineReport,
   type OfflineSubmit,
 } from "@/features/ws04-pos-kasir/offline/queue";
 import {
@@ -141,13 +145,31 @@ function fakeCloud() {
   const cloud = {
     stored,
     calls,
-    /** eventIds the cloud holds under another kit (409 CONFLICT). */
+    /** eventIds the cloud holds under another kit (409 OFFLINE_EVENT_CONFLICT). */
     conflicting: new Set<string>(),
     /** eventIds answered `rejected` (`retry`). */
     rejecting: new Set<string>(),
     /** The answer is lost after the cloud stored the batch. */
     loseAnswer: false,
     refuse: null as ApiError | null,
+    /** Conflict reports the cloud booked, by the sale's eventId. */
+    reports: new Map<string, OfflineSaleEvent>(),
+    reportCalls: [] as string[],
+    /** The report endpoint is unreachable. */
+    reportDown: false,
+    report: (async (event) => {
+      cloud.reportCalls.push(event.eventId);
+      if (cloud.reportDown) throw new TypeError("Failed to fetch");
+      const known = cloud.reports.has(event.eventId);
+      cloud.reports.set(event.eventId, event);
+      return {
+        eventId: event.eventId,
+        status: known ? "duplicate" : "ingested",
+        reason: null,
+        flags: ["event_conflict"],
+        receiptNumber: `L1-${String(event.sequenceNumber).padStart(6, "0")}`,
+      } as OfflineEventResult;
+    }) as OfflineReport,
     submit: (async (events) => {
       calls.push(events.map((event) => event.eventId));
       if (cloud.refuse) throw cloud.refuse;
@@ -157,7 +179,7 @@ function fakeCloud() {
         if (cloud.conflicting.has(event.eventId))
           throw new ApiError(
             409,
-            "CONFLICT",
+            "OFFLINE_EVENT_CONFLICT",
             "Penjualan offline ini sudah tercatat dari bekal lain",
           );
         if (cloud.rejecting.has(event.eventId)) {
@@ -203,11 +225,19 @@ function fakeCloud() {
 }
 
 let clock = new Date(2026, 10, 27, 10, 0, 0);
-const queueOver = (backend: OfflineBackend, submit: OfflineSubmit) =>
+const neverReported: OfflineReport = async () => {
+  throw new Error("no conflict expected");
+};
+const queueOver = (
+  backend: OfflineBackend,
+  submit: OfflineSubmit,
+  report: OfflineReport = neverReported,
+) =>
   createOfflineQueue({
     backend,
     outletId: OUTLET,
     submit,
+    report,
     now: () => clock,
   });
 
@@ -429,7 +459,7 @@ describe("sync to the cloud", () => {
   async function queuedSales(count: number) {
     const backend = createMemoryOfflineBackend();
     const cloud = fakeCloud();
-    const queue = queueOver(backend, cloud.submit);
+    const queue = queueOver(backend, cloud.submit, cloud.report);
     const kit = kitOf();
     await queue.saveKit(kit);
     const total = priceOfflineSale(kit, cart, clock).totalIdr;
@@ -483,31 +513,81 @@ describe("sync to the cloud", () => {
     expect(cloud.calls.map((call) => call.length)).toEqual([100, 1]);
   });
 
-  it("review O2: a 409 sale is parked for a supervisor, the rest still syncs", async () => {
+  it("review O3 P3: a rejected result stops the sync; later batches wait", async () => {
+    const { cloud, queue, sales } = await queuedSales(101);
+    cloud.rejecting.add(sales[0]!.eventId);
+    expect(await queue.sync()).toMatchObject({ settled: 99, remaining: 2 });
+    expect(cloud.calls.map((call) => call.length)).toEqual([100]);
+    cloud.rejecting.clear();
+    expect(await queue.sync()).toMatchObject({ settled: 2, remaining: 0 });
+  });
+
+  it("review O3 P1: a conflicting sale is parked and reported, the rest still syncs", async () => {
     const { cloud, queue, sales } = await queuedSales(3);
     cloud.conflicting.add(sales[1]!.eventId);
     const report = await queue.sync();
-    expect(report).toMatchObject({ parked: 1, remaining: 0, error: null });
+    expect(report).toMatchObject({
+      settled: 3,
+      parked: 0,
+      remaining: 0,
+      error: null,
+    });
     expect(cloud.stored.has(sales[0]!.eventId)).toBe(true);
     expect(cloud.stored.has(sales[2]!.eventId)).toBe(true);
+    expect([...cloud.reports.keys()]).toEqual([sales[1]!.eventId]);
+    expect(await queue.parked()).toEqual([]);
+    expect(await queue.pendingCount()).toBe(0);
+  });
+
+  it("review O3 P1: an unreported conflict blocks the close and is reported before the rest", async () => {
+    const { backend, cloud, queue, sales } = await queuedSales(3);
+    cloud.conflicting.add(sales[1]!.eventId);
+    cloud.reportDown = true;
+    const first = await queue.sync();
+    expect(first.error).toBeInstanceOf(TypeError);
+    expect(first).toMatchObject({ settled: 1, remaining: 2 });
     const parked = await queue.parked();
     expect(parked.map((row) => [row.eventId, row.reason])).toEqual([
-      [sales[1]!.eventId, "CONFLICT"],
+      [sales[1]!.eventId, "OFFLINE_EVENT_CONFLICT"],
     ]);
-    // Parked sales are not resent and do not hold the shift close.
-    expect(await queue.pendingCount()).toBe(0);
+    // Parked sales still hold the shift close and the sign-out.
+    expect(await queue.pendingCount()).toBe(2);
+    expect(await countPendingOfflineSales(backend, null)).toBe(2);
+    // Still down: the queue behind the gap is not sent.
     cloud.calls.length = 0;
     await queue.sync();
     expect(cloud.calls).toEqual([]);
+    cloud.reportDown = false;
+    expect(await queue.sync()).toMatchObject({
+      settled: 2,
+      remaining: 0,
+      error: null,
+    });
+    expect(cloud.reportCalls.at(-1)).toBe(sales[1]!.eventId);
+    expect(cloud.stored.has(sales[2]!.eventId)).toBe(true);
+    expect(await queue.pendingCount()).toBe(0);
   });
 
   it("another refusal of the whole call parks nothing and keeps the queue", async () => {
-    const { cloud, queue } = await queuedSales(2);
-    cloud.refuse = new ApiError(409, "POS_WRITE_ON_EDGE", "edge");
+    const { cloud, queue, sales } = await queuedSales(2);
+    cloud.refuse = new ApiError(409, "CONFLICT", "other");
     const report = await queue.sync();
     expect(report).toMatchObject({ settled: 0, parked: 0, remaining: 2 });
-    expect(report.error).toMatchObject({ code: "POS_WRITE_ON_EDGE" });
+    expect(report.error).toMatchObject({ code: "CONFLICT" });
     expect(await queue.parked()).toEqual([]);
+    expect(cloud.reportCalls).toEqual([]);
+    expect(sales).toHaveLength(2);
+  });
+
+  it("review O3 P2 4: a closed shift's kit takes no sale", async () => {
+    const { queue } = await queuedSales(1);
+    await queue.closeKit();
+    expect(await queue.kit()).toBeNull();
+    await expect(queue.recordSale(cart, [cash(1)])).rejects.toMatchObject({
+      code: "KIT_SHIFT_CLOSED",
+    });
+    // The queued sale is still sent.
+    expect(await queue.pendingCount()).toBe(1);
   });
 
   it("two syncs at once send the queue once", async () => {

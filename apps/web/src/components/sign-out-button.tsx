@@ -6,20 +6,35 @@ import { authClient } from "@/lib/auth-client";
 import { endActingStaffMode } from "@/lib/api/acting-staff";
 import { revokePushOnSignOut } from "@/features/ws05-notifications/revoke";
 import { clearPosShell } from "@/features/ws04-pos-kasir/offline/shell";
+import { countPendingOfflineSales } from "@/features/ws04-pos-kasir/offline/queue";
+import { defaultOfflineBackend } from "@/features/ws04-pos-kasir/offline/store";
 import { Button } from "@/components/ui/button";
 import { clearRetainedAttempt } from "@/lib/retained-attempt-key";
 import { hrisKeys } from "@/features/ws10-hris-employee/queries";
 
 export function SignOutButton() {
   const [pending, setPending] = useState(false);
-  const [error, setError] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const router = useRouter();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   async function signOut() {
     setPending(true);
-    setError(false);
+    setError(null);
     try {
+      // Review O3 P2 3: offline sales still on this tablet (unsent or waiting
+      // on a conflict report) would be stranded by a new login. Unreadable
+      // storage holds none this button can protect, so it does not block.
+      const unsent = await countPendingOfflineSales(
+        defaultOfflineBackend(),
+        null,
+      ).catch(() => 0);
+      if (unsent > 0) {
+        setError(
+          `${unsent} offline sale${unsent === 1 ? " is" : "s are"} not sent yet. Connect to the internet and wait before signing out.`,
+        );
+        return;
+      }
       // While the session still exists: drop this browser's alarm push
       // subscription so the next person here does not receive it. Best-effort.
       await revokePushOnSignOut();
@@ -37,7 +52,7 @@ export function SignOutButton() {
       await router.invalidate();
       await navigate({ to: "/sign-in", replace: true });
     } catch {
-      setError(true);
+      setError("Couldn’t sign out. Try again.");
     } finally {
       setPending(false);
     }
@@ -46,7 +61,7 @@ export function SignOutButton() {
     <div className="flex flex-wrap items-center gap-2">
       {error && (
         <p role="alert" className="text-sm text-destructive">
-          Couldn’t sign out. Try again.
+          {error}
         </p>
       )}
       <Button onClick={signOut} disabled={pending} variant="outline" size="sm">

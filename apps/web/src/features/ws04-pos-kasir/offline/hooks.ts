@@ -48,6 +48,9 @@ export function usePosOffline(): PosOfflineState {
   const outletId = useOutletId();
   const shift = useActiveShift();
   const shiftId = shift.data?.status === "open" ? shift.data.id : null;
+  // Review O3 P2 4: the cloud says this outlet has no open shift, so the
+  // kit of the last one takes no more sales.
+  const shiftGone = shift.isSuccess && shiftId === null;
   const queue = useMemo(() => {
     const backend = API_MOCK ? null : defaultOfflineBackend();
     if (!backend || outletId === "") return null;
@@ -78,13 +81,19 @@ export function usePosOffline(): PosOfflineState {
     };
     const tick = async () => {
       clearTimeout(timer);
-      try {
-        if (navigator.onLine) {
+      // Review O3 P3: one failing step does not skip the other.
+      if (navigator.onLine) {
+        try {
           if (shiftId) await ensureKit(queue, outletId, shiftId, Date.now());
-          if ((await queue.pendingCount()) > 0) await queue.sync();
+          else if (shiftGone) await queue.closeKit();
+        } catch {
+          // Offline or refused: the old kit stays usable until it expires.
         }
-      } catch {
-        // Offline, 5xx or a refusal: the queue is kept, the next tick retries.
+        try {
+          if ((await queue.pendingCount()) > 0) await queue.sync();
+        } catch {
+          // Offline, 5xx or a refusal: the queue is kept, the next tick retries.
+        }
       }
       try {
         await refresh();
@@ -101,7 +110,7 @@ export function usePosOffline(): PosOfflineState {
       clearTimeout(timer);
       window.removeEventListener("online", online);
     };
-  }, [queue, outletId, shiftId]);
+  }, [queue, outletId, shiftId, shiftGone]);
 
   return { queue, ...counts };
 }
