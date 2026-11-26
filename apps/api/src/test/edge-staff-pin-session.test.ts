@@ -1237,14 +1237,15 @@ describe("override approved with the PIN of the session's own user", () => {
       const refused = await call.send(body);
       expectRefused(refused, 403, "PERMISSION_DENIED");
     }
-    // Both roles hold pos.refund.request: on the cloud the call gets past it.
+    // Both roles hold pos.refund.request: on the cloud the call gets past it
+    // and meets the F3 write gate (this outlet is served by an edge node).
     asCloud();
     const cloud = await request(cloudApp)
       .post(path)
       .set({ Host: tenant.hostname, Cookie: cashier.cookie })
       .set(originHeader)
       .send(body);
-    expectRefused(cloud, 404, "NOT_FOUND");
+    expectRefused(cloud, 409, "POS_WRITE_ON_EDGE");
   });
 });
 

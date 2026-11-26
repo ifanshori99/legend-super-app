@@ -45,7 +45,8 @@ function brokenDrain(stage: "select" | "update"): EdgeTx {
         {
           eventId: PRIVATE,
           edgeNodeId: PRIVATE,
-          envelope: { secret: PRIVATE },
+          // A real envelope always has a name (redactEdgeEnvelopeSecrets reads it).
+          envelope: { name: "staff_pin.unknown", secret: PRIVATE },
         },
       ];
     },
