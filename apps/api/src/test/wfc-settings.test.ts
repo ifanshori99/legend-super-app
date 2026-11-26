@@ -167,15 +167,22 @@ const decide = (
     { mfaVerified: true, idempotencyKey: null },
   );
 
-const apply = (s: Setup, chainId: string, context?: ScopedTenantContext) =>
+const apply = (
+  s: Setup,
+  chainId: string,
+  context?: ScopedTenantContext,
+  now = new Date(),
+) =>
   withTenant(db, context ?? s.world.context, (tx) =>
-    applyApprovedWfcSettings(
-      tx,
-      context ?? s.world.context,
-      chainId,
-      new Date(),
-    ),
+    applyApprovedWfcSettings(tx, context ?? s.world.context, chainId, now),
   );
+
+/** A business date `days` after `date` (YYYY-MM-DD). */
+function addDays(date: string, days: number): string {
+  const next = new Date(`${date}T00:00:00Z`);
+  next.setUTCDate(next.getUTCDate() + days);
+  return next.toISOString().slice(0, 10);
+}
 
 async function approvedVersion(
   s: Setup,
@@ -214,7 +221,7 @@ async function stampOf(s: Setup, productId: string): Promise<string> {
   });
 }
 
-/** One-hour all-day seat reservation: floor Rp39.000, at the floor = 29.677. */
+/** One-hour all-day seat reservation: floor Rp39.000, at the floor = 32.105. */
 const hourSplit = (seatFeeIdr: number) => ({
   kind: "seat_reservation" as const,
   access: "all_day" as const,
@@ -464,17 +471,17 @@ describe("WFC price floor on products", () => {
   it("one rupiah under the floor is refused on save and on switch-on", async () => {
     const s = await setup();
     const productId = await seedProduct(s);
-    await saveProduct(s, productId, 29_676); // saved before any version
+    await saveProduct(s, productId, 32_104); // saved before any version
     await approvedVersion(s);
     expect(await failure(switchOn(s, productId))).toMatchObject({
       status: 422,
       code: "WFC_PRICE_BELOW_FLOOR",
     });
-    expect(await failure(saveProduct(s, productId, 29_676))).toMatchObject({
+    expect(await failure(saveProduct(s, productId, 32_104))).toMatchObject({
       status: 422,
       code: "WFC_PRICE_BELOW_FLOOR",
     });
-    await saveProduct(s, productId, 29_677);
+    await saveProduct(s, productId, 32_105);
     expect((await switchOn(s, productId)).isActive).toBe(true);
     // A day pass is used through the longest open day (23 h 59 min here).
     const dayPass = await seedProduct(s);
@@ -497,7 +504,7 @@ describe("WFC price floor on products", () => {
     const s = await setup();
     const productId = await seedProduct(s);
     const first = await approvedVersion(s);
-    await saveProduct(s, productId, 29_677);
+    await saveProduct(s, productId, 32_105);
     await switchOn(s, productId);
     // A claim already sold on version 1 (snapshot of price and floor).
     const seat = await createWfcSeat(s.world.context, s.proposer, {
@@ -513,7 +520,7 @@ describe("WFC price floor on products", () => {
            kind, access, business_date, slot, status, seat_fee_idr, credit_idr, price_idr,
            settings_version_id, floor_per_hour_idr, hold_expires_at)
          VALUES ($1, $2, $3, $4, $5, $6, 'seat_reservation', 'all_day', '2098-11-08',
-           '[2098-11-08T03:00:00Z,2098-11-08T04:00:00Z)', 'pending_payment', 29677, 20000, 49677,
+           '[2098-11-08T03:00:00Z,2098-11-08T04:00:00Z)', 'pending_payment', 32105, 20000, 52105,
            $7, 39000, '2098-11-08T03:45:00Z')`,
         [
           claimId,
@@ -551,5 +558,76 @@ describe("WFC price floor on products", () => {
       [claimId],
     );
     expect(after.rows).toEqual(before.rows);
+  });
+});
+
+describe("review K W1b", () => {
+  it("no. 1: an active outlet service charge raises the floor (it is paid out of the credit)", async () => {
+    const s = await setup();
+    await approvedVersion(s);
+    await asTenant(s.world.tenantId, (client) =>
+      client.query(
+        `INSERT INTO service_charge_rules
+           (id, tenant_id, outlet_id, code, name, rate_bp, zone_id, order_types, item_classes,
+            is_active, version, effective_from, status, published_at, published_by)
+         VALUES ($1, $2, $3, 'SC-WFC', 'Service', 500, NULL, '["dine_in"]',
+                 '["food_beverage"]', true, 1, '2026-01-01', 'published', now(), $4)`,
+        [randomUUID(), s.world.tenantId, s.world.outletA, s.proposer],
+      ),
+    );
+    const productId = await seedProduct(s);
+    // Enough without service charge, Rp1 short with 5%.
+    expect(await failure(saveProduct(s, productId, 32_968))).toMatchObject({
+      status: 422,
+      code: "WFC_PRICE_BELOW_FLOOR",
+    });
+    await saveProduct(s, productId, 32_969);
+    expect((await switchOn(s, productId)).isActive).toBe(true);
+  });
+
+  it("no. 3: an approval applied after its date has passed writes nothing (409)", async () => {
+    const s = await setup();
+    const proposal = await proposeWfcSettings(
+      s.world.context,
+      s.proposer,
+      numbers(s),
+    );
+    await decide(s, s.approver, proposal.chainId);
+    const later = new Date(Date.now() + 2 * 24 * 3_600_000);
+    expect(await apply(s, proposal.chainId, undefined, later)).toBeNull();
+    expect(
+      await failure(
+        applyWfcSettings(
+          s.world.context,
+          s.proposer,
+          { chainId: proposal.chainId },
+          later,
+        ),
+      ),
+    ).toMatchObject({ status: 409, code: "WFC_SETTINGS_NOT_APPROVED" });
+    expect(await versionCount(s)).toBe(0);
+  });
+
+  it("no. 3: an old approval closed by a newer dated version writes nothing", async () => {
+    const s = await setup();
+    const old = await proposeWfcSettings(
+      s.world.context,
+      s.proposer,
+      numbers(s, { effectiveFrom: addDays(s.today, 5) }),
+    );
+    await decide(s, s.approver, old.chainId);
+    // Approved but not applied yet: the next proposal takes the next number.
+    const newer = await proposeWfcSettings(
+      s.world.context,
+      s.proposer,
+      numbers(s, { effectiveFrom: addDays(s.today, 7) }),
+    );
+    expect(newer.payload.version).toBe(old.payload.version + 1);
+    await decide(s, s.approver, newer.chainId);
+    expect(await apply(s, newer.chainId)).toMatchObject({
+      id: newer.settingsId,
+    });
+    expect(await apply(s, old.chainId)).toBeNull();
+    expect(await versionCount(s)).toBe(1);
   });
 });

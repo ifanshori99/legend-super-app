@@ -10,13 +10,19 @@
 //   M = max(F + L, R × (1 − c))
 //   B1 = M / (S × H × o)                 B2 = A × (1 − c) / d
 //   peak floor / hour = max(B1, B2)      off-peak floor / hour = max(B1, B2 × o)
-//   contribution = seat fee net of tax + credit × (1 − c) − gateway fee
+//   contribution = seat fee net of tax + credit left − gateway fee
+//   credit left = credit − credit × c − credit × t / (1 + t)
+//
+// t is the tax inside the order the credit pays for (`WFC_FLOOR_SEAT_TAX_BP`)
+// plus the outlet's food and drink service charge when one is active: an order
+// paid with `wfc_credit` is taxed at full price, so that tax and service charge
+// leave the outlet out of the credit money (review K W1b no. 1).
 //
 // Each hourly floor is rounded up to Rp1.000; a slot's floor is the minutes it
 // spends in peak and off-peak hours, weighted per minute and rounded up. The
 // worst case is assumed: the credit is spent in full and every hour is used.
-// The contribution rounds every part against the outlet (seat net and credit
-// margin down, gateway fee up).
+// The contribution rounds every part against the outlet (seat net down; cost
+// of goods, tax and service charge out of the credit up; gateway fee up).
 
 import type { WfcAccess, WfcBusinessSettings } from "./seat.ts";
 
@@ -131,28 +137,40 @@ export function wfcSlotFloorIdr(
   );
 }
 
-/** What a sold pass leaves the outlet in the worst case (credit spent in full). */
+/**
+ * What a sold pass leaves the outlet in the worst case (credit spent in full).
+ * `serviceChargeBp`: the highest food and drink service charge active at the
+ * outlet (0 without one); it is added to the tax inside the credit's orders.
+ */
 export function wfcContributionIdr(
   split: { readonly seatFeeIdr: number; readonly creditIdr: number },
   settings: Pick<WfcFloorSettings, "cogsBp">,
   rates: {
-    readonly seatTaxBp: number;
-    readonly gatewayFeeBp: number;
-  } = {
-    seatTaxBp: WFC_FLOOR_SEAT_TAX_BP,
-    gatewayFeeBp: WFC_FLOOR_GATEWAY_FEE_BP,
+    readonly serviceChargeBp: number;
+    readonly seatTaxBp?: number;
+    readonly gatewayFeeBp?: number;
   },
 ): number {
+  const seatTaxBp = rates.seatTaxBp ?? WFC_FLOOR_SEAT_TAX_BP;
+  const gatewayFeeBp = rates.gatewayFeeBp ?? WFC_FLOOR_GATEWAY_FEE_BP;
   assertPositiveInt("seatFeeIdr", split.seatFeeIdr, 0);
   assertPositiveInt("creditIdr", split.creditIdr, 0);
-  assertPositiveInt("seatTaxBp", rates.seatTaxBp, 0);
-  assertPositiveInt("gatewayFeeBp", rates.gatewayFeeBp, 0);
+  assertPositiveInt("seatTaxBp", seatTaxBp, 0);
+  assertPositiveInt("gatewayFeeBp", gatewayFeeBp, 0);
+  assertPositiveInt("serviceChargeBp", rates.serviceChargeBp, 0);
+  if (rates.serviceChargeBp > 10_000)
+    throw new RangeError("serviceChargeBp must be at most 100%");
   const seat = BigInt(split.seatFeeIdr);
   const credit = BigInt(split.creditIdr);
-  const seatNet = (seat * BP) / (BP + BigInt(rates.seatTaxBp));
-  const creditMargin = (credit * (BP - BigInt(settings.cogsBp))) / BP;
-  const gateway = ceilDiv((seat + credit) * BigInt(rates.gatewayFeeBp), BP);
-  return Number(seatNet + creditMargin - gateway);
+  const seatNet = (seat * BP) / (BP + BigInt(seatTaxBp));
+  // The credit's orders carry at least the seat's tax rate, plus service charge.
+  const creditTax = BigInt(seatTaxBp + rates.serviceChargeBp);
+  const creditLeft =
+    credit -
+    ceilDiv(credit * BigInt(settings.cogsBp), BP) -
+    ceilDiv(credit * creditTax, BP + creditTax);
+  const gateway = ceilDiv((seat + credit) * BigInt(gatewayFeeBp), BP);
+  return Number(seatNet + creditLeft - gateway);
 }
 
 export type WfcFloorCheck = {
@@ -166,9 +184,12 @@ export function checkWfcSlotFloor(
   settings: WfcFloorSettings,
   split: { readonly seatFeeIdr: number; readonly creditIdr: number },
   minutes: { readonly peakMinutes: number; readonly offPeakMinutes: number },
+  serviceChargeBp: number,
 ): WfcFloorCheck {
   const floorIdr = wfcSlotFloorIdr(settings, minutes);
-  const contributionIdr = wfcContributionIdr(split, settings);
+  const contributionIdr = wfcContributionIdr(split, settings, {
+    serviceChargeBp,
+  });
   return { floorIdr, contributionIdr, ok: contributionIdr >= floorIdr };
 }
 
@@ -185,6 +206,7 @@ export function checkWfcProductFloor(
     readonly creditIdr: number;
   },
   minutes: number,
+  serviceChargeBp: number,
 ): WfcFloorCheck {
   return checkWfcSlotFloor(
     settings,
@@ -192,5 +214,6 @@ export function checkWfcProductFloor(
     product.access === "off_peak"
       ? { peakMinutes: 0, offPeakMinutes: minutes }
       : { peakMinutes: minutes, offPeakMinutes: 0 },
+    serviceChargeBp,
   );
 }

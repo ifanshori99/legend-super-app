@@ -10,16 +10,30 @@
 // - Apply: only after the whole chain is approved by someone else who also
 //   holds `wfc.policy.manage` on the outlet. Runs from the approval.resolved
 //   consumer or the apply route, idempotent (the version id is the key). An
-//   approval the proposer decided, a payload that does not parse, or a quota
-//   that grew past the approved seats writes nothing. Products already sold
+//   approval the proposer decided, a payload that does not parse, a quota
+//   that grew past the approved seats, a date already past or before a version
+//   already written writes nothing. Products already sold
 //   keep their snapshot; an active product now under the floor is switched off.
 // - Floor: `packages/shared/src/wfc/pricing.ts`. Saving a WFC product checks it
-//   against every version in force or still to come (422); switching one on
+//   against every version in force or still to come, with the outlet's food
+//   and drink service charge (422); switching one on
 //   also needs a version in force (409 WFC_CONFIG_INCOMPLETE). A day pass is
 //   priced as if used through the longest open day of its facility.
 // - AI never applies anything here: it may only open the same proposal (W13).
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, gt, inArray, isNotNull, lte } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  lte,
+  max,
+  or,
+} from "drizzle-orm";
 import { approvalResolvedEvent } from "@starter/shared/identity";
 import {
   userIdSchema,
@@ -57,7 +71,9 @@ import {
   facilityOperatingHoursVersions,
   facilityProducts,
 } from "../db/schema/facility.ts";
+import { floorZones } from "../db/schema/floor.ts";
 import { approvalRequests } from "../db/schema/platform-approval.ts";
+import { serviceChargeRules } from "../db/schema/tax.ts";
 import { wfcBusinessSettings } from "../db/schema/wfc-settings.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
@@ -268,6 +284,68 @@ type FloorProduct = {
   readonly durationMinutes: number | null;
 };
 
+/**
+ * The highest food and drink service charge the credit's orders may carry at
+ * the outlet (basis points): every published, active rule of the outlet or the
+ * tenant for food and drink, in force today or coming (per code, the version in
+ * force and every later one), and every active zone's rate. 0 without one.
+ */
+export async function outletServiceChargeBp(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: string,
+  today: string,
+): Promise<number> {
+  const rules = await tx
+    .select({
+      outletId: serviceChargeRules.outletId,
+      code: serviceChargeRules.code,
+      rateBp: serviceChargeRules.rateBp,
+      itemClasses: serviceChargeRules.itemClasses,
+      isActive: serviceChargeRules.isActive,
+      version: serviceChargeRules.version,
+      effectiveFrom: serviceChargeRules.effectiveFrom,
+    })
+    .from(serviceChargeRules)
+    .where(
+      and(
+        eq(serviceChargeRules.tenantId, context.tenant.tenantId),
+        eq(serviceChargeRules.status, "published"),
+        or(
+          isNull(serviceChargeRules.outletId),
+          eqId(serviceChargeRules.outletId, outletId),
+        ),
+      ),
+    )
+    .orderBy(
+      desc(serviceChargeRules.effectiveFrom),
+      desc(serviceChargeRules.version),
+    );
+  let highest = 0;
+  const inForceSeen = new Set<string>();
+  for (const rule of rules) {
+    const key = `${rule.outletId ?? "*"}:${rule.code}`;
+    if (rule.effectiveFrom <= today) {
+      // Rows come newest first: only the first one in force per code counts.
+      if (inForceSeen.has(key)) continue;
+      inForceSeen.add(key);
+    }
+    if (rule.isActive && rule.itemClasses.includes("food_beverage"))
+      highest = Math.max(highest, rule.rateBp);
+  }
+  const [zone] = await tx
+    .select({ rateBp: max(floorZones.serviceChargeBp) })
+    .from(floorZones)
+    .where(
+      and(
+        eq(floorZones.tenantId, context.tenant.tenantId),
+        eqId(floorZones.outletId, outletId),
+        eq(floorZones.status, "active"),
+      ),
+    );
+  return Math.max(highest, zone?.rateBp ?? 0);
+}
+
 /** The first version the product falls under, with its floor; null = all met. */
 async function firstFloorMiss(
   tx: Tx,
@@ -275,13 +353,19 @@ async function firstFloorMiss(
   product: FloorProduct,
   versions: readonly WfcSettingsRow[],
   today: string,
+  serviceChargeBp: number,
 ): Promise<number | null> {
   if (versions.length === 0) return null;
   const minutes =
     product.durationMinutes ??
     (await dayPassMinutes(tx, context, product.facilityId, today));
   for (const version of versions) {
-    const check = checkWfcProductFloor(version, product, minutes);
+    const check = checkWfcProductFloor(
+      version,
+      product,
+      minutes,
+      serviceChargeBp,
+    );
     if (!check.ok) return check.floorIdr;
   }
   return null;
@@ -304,7 +388,14 @@ export async function assertWfcProductFloor(
   if (options.requireInForce && live.inForce === null)
     throw wfcConfigIncomplete();
   const today = await wfcBusinessDate(tx, context, outletId, now);
-  const miss = await firstFloorMiss(tx, context, product, live.all, today);
+  const miss = await firstFloorMiss(
+    tx,
+    context,
+    product,
+    live.all,
+    today,
+    await outletServiceChargeBp(tx, context, outletId, today),
+  );
   if (miss !== null) throw priceBelowFloor(miss);
 }
 
@@ -494,7 +585,18 @@ export async function proposeWfcSettings(
     const settingsId = randomUUID();
     const payload: WfcSettingsPayload = {
       outletId,
-      version: (top?.version ?? 0) + 1,
+      // Past every version written and every number an earlier proposal of
+      // the outlet took, so an approved chain applied late never collides.
+      version:
+        Math.max(
+          top?.version ?? 0,
+          ...requests.map((row) => {
+            const taken = (row.payload as { version?: unknown }).version;
+            return typeof taken === "number" && Number.isSafeInteger(taken)
+              ? taken
+              : 0;
+          }),
+        ) + 1,
       ...numbers,
     };
     const opened = await openApprovalRequest(tx, context, {
@@ -590,8 +692,9 @@ export async function listWfcSettings(
  * Writes the version of an approved chain, inside the caller's transaction.
  * Returns the version (also when written before), or null when nothing may be
  * written: not ours, not approved, decided by the proposer or by someone
- * without `wfc.policy.manage`, a payload that does not parse, or a quota cell
- * that grew past the approved seats.
+ * without `wfc.policy.manage`, a payload that does not parse, a quota cell
+ * that grew past the approved seats, or a date before today or before a
+ * version already written (review K W1b no. 3).
  */
 export async function applyApprovedWfcSettings(
   tx: Tx,
@@ -677,6 +780,22 @@ export async function applyApprovedWfcSettings(
   }
   if (payload.data.wfcSeats < (await maxWfcQuota(tx, context, outletId)))
     return null;
+  // Review K W1b no. 3: applied late, a version is never back-dated nor
+  // hidden behind a version already written with a later date.
+  const today = await wfcBusinessDate(tx, context, outletId, now);
+  if (payload.data.effectiveFrom < today) return null;
+  const [latest] = await tx
+    .select({ effectiveFrom: wfcBusinessSettings.effectiveFrom })
+    .from(wfcBusinessSettings)
+    .where(
+      and(
+        eq(wfcBusinessSettings.tenantId, context.tenant.tenantId),
+        eqId(wfcBusinessSettings.outletId, outletId),
+      ),
+    )
+    .orderBy(desc(wfcBusinessSettings.effectiveFrom))
+    .limit(1);
+  if (latest && payload.data.effectiveFrom < latest.effectiveFrom) return null;
   const { version, ...numbers } = payload.data;
   const [row] = await tx
     .insert(wfcBusinessSettings)
@@ -729,13 +848,25 @@ async function switchOffBelowFloor(
         eq(facilityProducts.isActive, true),
       ),
     );
+  const serviceChargeBp = await outletServiceChargeBp(
+    tx,
+    context,
+    outletId,
+    today,
+  );
   const below: ProductRow[] = [];
   for (const product of active) {
     const floorProduct = floorProductOf(product);
     if (
       floorProduct === null ||
-      (await firstFloorMiss(tx, context, floorProduct, live.all, today)) !==
-        null
+      (await firstFloorMiss(
+        tx,
+        context,
+        floorProduct,
+        live.all,
+        today,
+        serviceChargeBp,
+      )) !== null
     )
       below.push(product);
   }
