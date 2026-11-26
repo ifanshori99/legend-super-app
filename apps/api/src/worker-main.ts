@@ -114,6 +114,10 @@ import { runScheduledExitClearance } from "./services/hris-offboarding-jobs.ts";
 import { handleJournalApprovalResolved } from "./services/accounting-journal-consumers.ts";
 import { handleCashBankApprovalResolved } from "./services/cash-bank-approval-consumer.ts";
 import { handleWfcSettingsApprovalResolved } from "./services/wfc-settings.service.ts";
+import {
+  handleWfcPaymentPaid,
+  sweepWfcHolds,
+} from "./services/wfc-payment-consumer.ts";
 import { handleProfitShareApprovalResolved } from "./services/profit-share-approval-consumers.ts";
 import { handleReconciliationApprovalResolved } from "./services/payment-reconciliation-approval-consumer.ts";
 import { handleApprovalResolved } from "./services/staff-override-consumers.ts";
@@ -375,6 +379,11 @@ const runtime = createWorkerRuntime({
             // (idempotent, replay safe), then the deployment consumer runs.
             if (event.name === "payment.paid")
               await handlePaymentPaid(context, event);
+            // Brief 1270 W2, cloud only: a paid WFC link confirms its seat
+            // claim on time, or cancels it and files the full refund (late,
+            // hold lapsed, sales closed). Re-read under link -> claim locks.
+            if (event.name === "payment.paid" && sweepsRefunds)
+              await handleWfcPaymentPaid(context, event);
             // RSV-03 (legend-lb3c): the guest's confirmation message, written
             // only if the booking is still confirmed now. Cloud only, like the
             // reminder: an edge must not message guests.
@@ -818,6 +827,13 @@ const relay = createRelayRuntime({
     } catch {
       console.error("Facility hours roll-forward failed");
     }
+    // Brief 1270 W2, cloud only: release WFC seats whose payment hold lapsed.
+    if (sweepsRefunds)
+      try {
+        await sweepWfcHolds(context, new Date());
+      } catch {
+        console.error("WFC hold sweep failed");
+      }
     // §3 F39 WFC minimum spend per hour reminder (legend-e24cz); self-throttled.
     try {
       await runWfcMinSpendJob(context);
