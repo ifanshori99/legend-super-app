@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   useNavigate,
   useRouter,
@@ -22,9 +22,24 @@ import {
   PosPageHeading,
 } from "@/features/ws04-pos-kasir/components/shared";
 import { cartTotals, needsChoice } from "@/features/ws04-pos-order/cart-logic";
-import { inputOfMeta, sameOrder } from "@/features/ws04-pos-order/order-wire";
+import {
+  inputOfMeta,
+  mapCatalog,
+  sameOrder,
+} from "@/features/ws04-pos-order/order-wire";
+import { formatRupiah } from "@starter/shared/i18n";
 import { readDraft, useDraftCart } from "@/features/ws04-pos-order/draft-store";
 import { usePosOffline } from "@/features/ws04-pos-kasir/offline/hooks";
+import { OfflineBanner } from "@/features/ws04-pos-kasir/offline/offline-banner";
+import {
+  OfflinePayDialog,
+  OfflineSavedDialog,
+  type OfflineSaved,
+} from "@/features/ws04-pos-kasir/offline/offline-pay-dialog";
+import { OfflineQueueSheet } from "@/features/ws04-pos-kasir/offline/offline-queue-sheet";
+import { priceOfflineSale } from "@/features/ws04-pos-kasir/offline/price";
+import { offlineSaleBlock } from "@/features/ws04-pos-kasir/offline/sale-guard";
+import { offlineCartOf } from "@/features/ws04-pos-kasir/offline/sale-view";
 import {
   isContractPending,
   useCashierDraftKey,
@@ -73,8 +88,13 @@ export function CashierMainScreen() {
   const router = useRouter();
   const draftKey = useCashierDraftKey();
   const cart = useDraftCart(draftKey);
-  // O3: shell worker, offline kit and queue sync (the O4 banner reads it).
-  usePosOffline();
+  // O3: shell worker, offline kit and queue sync. O4: the banner, the offline
+  // menu from the kit and the offline sale read it.
+  const offline = usePosOffline();
+  const isOffline = !offline.online;
+  const [payOpen, setPayOpen] = useState(false);
+  const [saved, setSaved] = useState<OfflineSaved | null>(null);
+  const [queueOpen, setQueueOpen] = useState(false);
   const access = (useRouteContext({ strict: false }) as { access?: AreaAccess })
     .access;
   const canAcceptPayment = access
@@ -163,6 +183,36 @@ export function CashierMainScreen() {
   const focusAfter = useRef<{ lineId: string | null } | null>(null);
 
   const totals = cartTotals(cart.lines);
+
+  // O4: offline, only a new dine-in or takeaway cart is sold, from the kit.
+  const offlineService = meta.channel === "takeaway" ? "takeaway" : "dine_in";
+  const offlineKit = offline.kit;
+  const offlineCatalog = useMemo(
+    () =>
+      isOffline && offlineKit
+        ? mapCatalog(offlineKit.catalogs[offlineService])
+        : null,
+    [isOffline, offlineKit, offlineService],
+  );
+  const offlineCart = useMemo(
+    () => offlineCartOf(offlineService, cart.lines),
+    [offlineService, cart.lines],
+  );
+  const offlineTotal = useMemo(() => {
+    if (!isOffline || !offlineKit || cart.lines.length === 0) return null;
+    try {
+      return priceOfflineSale(offlineKit, offlineCart, new Date()).totalIdr;
+    } catch {
+      return null;
+    }
+  }, [isOffline, offlineKit, offlineCart, cart.lines.length]);
+  const offlineBlock = offlineSaleBlock({
+    lines: cart.lines,
+    channel: meta.channel,
+    pending: pendingOrder.pending,
+    submitting: submit.isPending,
+    cloudOrderId: draft,
+  });
 
   useEffect(() => {
     if (removed.length === 0) return;
@@ -617,7 +667,16 @@ export function CashierMainScreen() {
           subtitle={t("posOrderCart.subtitle")}
           className="[&_h1]:font-extrabold"
         />
-        <CatalogPane onPick={pick} />
+        <OfflineBanner
+          state={{
+            online: offline.online,
+            pending: offline.pending,
+            parked: offline.parked,
+            hasKit: offlineKit !== null,
+          }}
+          onOpenQueue={() => setQueueOpen(true)}
+        />
+        <CatalogPane onPick={pick} offlineCatalog={offlineCatalog} />
       </div>
 
       <CartPane
@@ -636,6 +695,24 @@ export function CashierMainScreen() {
         feedback={feedback}
         parking={park.isPending}
         submitting={submit.isPending}
+        offline={
+          isOffline
+            ? {
+                payLabel:
+                  offlineTotal === null
+                    ? t("posKasirOffline.cart.payPlain")
+                    : t("posKasirOffline.cart.pay", {
+                        amount: formatRupiah(offlineTotal),
+                      }),
+                onPay: () => setPayOpen(true),
+                blocked: !offlineKit
+                  ? t("posKasirOffline.cart.blocked.noKit")
+                  : offlineBlock
+                    ? t(`posKasirOffline.cart.blocked.${offlineBlock}`)
+                    : null,
+              }
+            : undefined
+        }
         className={cn(
           "min-[701px]:sticky min-[701px]:top-4 min-[701px]:h-[calc(100dvh-10.25rem)] min-[701px]:min-h-128",
           view === "menu" && "max-[700px]:hidden",
@@ -661,6 +738,36 @@ export function CashierMainScreen() {
           if (pickedItem) cart.add(pickedItem, selection);
           setPickedItem(null);
         }}
+      />
+      {offlineKit && offline.queue && (
+        <OfflinePayDialog
+          open={payOpen && isOffline && offlineBlock === null}
+          onOpenChange={setPayOpen}
+          kit={offlineKit}
+          cart={offlineCart}
+          itemCount={totals.itemCount}
+          queue={offline.queue}
+          onSaved={(result) => {
+            // The sale is on the tablet now: this cart is done.
+            cart.clear();
+            setPayOpen(false);
+            setSaved(result);
+            void offline.refresh();
+          }}
+        />
+      )}
+      <OfflineSavedDialog
+        saved={saved}
+        pending={offline.pending}
+        onDone={() => setSaved(null)}
+      />
+      <OfflineQueueSheet
+        open={queueOpen}
+        onOpenChange={setQueueOpen}
+        queue={offline.queue}
+        kit={offlineKit}
+        online={offline.online}
+        syncNow={offline.syncNow}
       />
       <ParkedDraftsSheet
         draftKey={draftKey}

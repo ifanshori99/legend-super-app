@@ -83,9 +83,7 @@ export function usePosOffline(): PosOfflineState {
       queue.kit(),
     ]);
     setCounts({ pending, parked });
-    setKit(
-      stored && Date.parse(stored.expiresAt) > Date.now() ? stored : null,
-    );
+    setKit(stored && Date.parse(stored.expiresAt) > Date.now() ? stored : null);
   }, [queue]);
 
   const syncNow = useCallback(async () => {

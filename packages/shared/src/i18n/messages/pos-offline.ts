@@ -14,4 +14,10 @@ export const posOfflineMessages = {
   },
   signOutBlocked:
     "{count} penjualan offline belum terkirim. Sambungkan tablet ke internet dan tunggu sampai terkirim sebelum keluar.",
+  // O4 (legend-wasr7.8): the refusal is a dialog.
+  signOutTitle: "Belum bisa keluar",
+  signOutRisk:
+    "Penjualan ini hanya ada di tablet ini. Keluar sekarang membuat tunainya tidak tercatat.",
+  signOutStay: "Tetap di sini",
+  signOutOpenCashier: "Buka kasir",
 };

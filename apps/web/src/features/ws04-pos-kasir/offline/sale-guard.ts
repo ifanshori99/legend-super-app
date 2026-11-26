@@ -50,9 +50,7 @@ export function offlineSaleBlock(input: {
     return "uncertain_order";
   if (input.cloudOrderId) return "cloud_order";
   if (input.lines.length === 0) return "empty";
-  if (
-    !(OFFLINE_KIT_SERVICE_TYPES as readonly string[]).includes(input.channel)
-  )
+  if (!(OFFLINE_KIT_SERVICE_TYPES as readonly string[]).includes(input.channel))
     return "channel";
   return null;
 }
