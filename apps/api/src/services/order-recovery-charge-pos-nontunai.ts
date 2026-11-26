@@ -51,6 +51,7 @@ import {
   confirmChargeLinksUnpaid,
   lockChargeChain,
 } from "./order-recovery-charge.ts";
+import { assertNoEdcSaleOutstanding } from "./order-recovery-charge-money-path.ts";
 import { openChargeLinkInTx } from "./order-recovery-charge-payment.ts";
 import type {
   CollectChargeAtPosCaller,
@@ -168,47 +169,6 @@ export async function assertNoPaidIntentOnLink(
       409,
       "CONFLICT",
       "QRIS sudah dibayar; tunggu konfirmasi.",
-    );
-}
-
-/**
- * legend-f1mmf: one money path at a time. An EDC sale of the charge (its
- * reference is the charge id) that is unresolved (`pending`, `unknown`),
- * approved but not recorded yet, or waiting for reconciliation refuses a QRIS
- * code, cash and another sale: the bank may hold the money already.
- */
-export async function assertNoEdcSaleOutstanding(
-  tx: Tx,
-  tenantId: TenantId,
-  charge: { id: string; outletId: OutletId },
-): Promise<void> {
-  // The EDC agent's write-ahead lock for this reference (edge/edc/agent.ts):
-  // a sale starting now waits for this transaction, and this one sees a sale
-  // already written. Taken after the charge chain; the agent locks no charge.
-  await tx.execute(
-    sql`SELECT pg_advisory_xact_lock(hashtext(${tenantId}), hashtext(${`${charge.outletId}:${charge.id}`}))`,
-  );
-  const [sale] = await tx
-    .select({ id: edcTransactions.id })
-    .from(edcTransactions)
-    .where(
-      and(
-        eq(edcTransactions.tenantId, tenantId),
-        eq(edcTransactions.outletId, charge.outletId),
-        eq(edcTransactions.type, "sale"),
-        eq(edcTransactions.reference, charge.id),
-        or(
-          inArray(edcTransactions.status, ["pending", "unknown", "approved"]),
-          eq(edcTransactions.needsReconciliation, true),
-        ),
-      ),
-    )
-    .limit(1);
-  if (sale)
-    throw new HttpError(
-      409,
-      "CONFLICT",
-      "Transaksi EDC untuk tagihan ini belum selesai atau sudah disetujui; cek status EDC dulu.",
     );
 }
 

@@ -18,7 +18,8 @@
 //   key is IDEMPOTENCY_KEY_REUSED; any other paid / closed charge is a 409.
 // - The guest's payment link is cancelled in the same transaction. A guest who
 //   still pays the old code is a `late_payment_on_closed_charge` of the
-//   charge consumer and gets the money back. A QRIS the guest already paid
+//   charge consumer and gets the money back. A code that may still take money
+//   (`liveCodeWhere`) refuses the cash (legend-f1mmf). A QRIS the guest already paid
 //   (a verified `paid` intent) refuses the cash: the
 //   cashier waits for the confirmation. A voided order is refused too, as its
 //   sale journal never posts and the cash journal would stay parked.
@@ -56,6 +57,9 @@ import {
 } from "./order-recovery-charge.ts";
 import {
   assertNoEdcSaleOutstanding,
+  assertNoLiveChargeCode,
+} from "./order-recovery-charge-money-path.ts";
+import {
   collectChargeAtPosEdc,
   collectChargeAtPosQris,
 } from "./order-recovery-charge-pos-nontunai.ts";
@@ -211,6 +215,9 @@ async function collectChargeAtPosCash(
           "CONFLICT",
           "QRIS sudah dibayar; tunggu konfirmasi.",
         );
+      // legend-f1mmf (review K): a code the guest may still pay refuses the
+      // cash too, the same rule as the card sale and the cashier's screen.
+      await assertNoLiveChargeCode(tx, tenantId, charge.paymentLinkId);
     }
 
     // Shift next (after the issue, order, charge chain, link): SHIFT_NOT_OPEN

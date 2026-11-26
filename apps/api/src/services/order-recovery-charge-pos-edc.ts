@@ -34,18 +34,18 @@ import {
 } from "@starter/shared/edc";
 import { db } from "../db/index.ts";
 import { edcTransactions } from "../db/schema/edc.ts";
-import { paymentIntents } from "../db/schema/payment.ts";
 import { withTenant } from "../db/tenant.ts";
 import { getEdgeEdcAgent } from "../edge/edc/runtime.ts";
-import { HttpError } from "../lib/http-error.ts";
 import { lockChargeChain } from "./order-recovery-charge.ts";
 import {
-  assertCollectable,
   assertNoEdcSaleOutstanding,
+  assertNoLiveChargeCode,
+} from "./order-recovery-charge-money-path.ts";
+import {
+  assertCollectable,
   assertNoPaidIntentOnLink,
 } from "./order-recovery-charge-pos-nontunai.ts";
 import type { CollectChargeAtPosCaller } from "./order-recovery-charge-pos.ts";
-import { liveCodeWhere } from "./payment-live-code.ts";
 import { accessSnapshotInTransaction } from "./permission-resolver.ts";
 import { lockCashierShiftForCash } from "./pos-cash-guard.ts";
 
@@ -105,25 +105,7 @@ export async function startPosIssueChargeEdc(
 
     await assertCollectable(tx, tenantId, locked);
     await assertNoPaidIntentOnLink(tx, context, charge.paymentLinkId, false);
-    if (charge.paymentLinkId !== null) {
-      const [live] = await tx
-        .select({ id: paymentIntents.id })
-        .from(paymentIntents)
-        .where(
-          and(
-            eq(paymentIntents.tenantId, tenantId),
-            eq(paymentIntents.paymentLinkId, charge.paymentLinkId),
-            liveCodeWhere(),
-          ),
-        )
-        .limit(1);
-      if (live)
-        throw new HttpError(
-          409,
-          "CONFLICT",
-          "Kode QRIS tagihan ini masih bisa dibayar; tunggu sampai berakhir.",
-        );
-    }
+    await assertNoLiveChargeCode(tx, tenantId, charge.paymentLinkId);
     await assertNoEdcSaleOutstanding(tx, tenantId, charge);
     await lockCashierShiftForCash(tx, context, {
       outletId,

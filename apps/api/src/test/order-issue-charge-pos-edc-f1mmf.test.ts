@@ -35,6 +35,7 @@ import {
   PRICES,
   asOwnerTenant,
   createWorld,
+  type Guest,
   type World,
 } from "./order-recovery-helpers.ts";
 import { owner } from "./floor-test-helpers.ts";
@@ -42,6 +43,7 @@ import { owner } from "./floor-test-helpers.ts";
 let w: World;
 const DEVICE_ID = randomUUID();
 const OTHER_OUTLET_DEVICE_ID = randomUUID();
+const VIEWER_DEVICE_ID = randomUUID();
 let cashier: { client: ReturnType<typeof agent>; userId: string };
 let otherOutletCashier: { client: ReturnType<typeof agent>; userId: string };
 let shiftId = "";
@@ -70,20 +72,36 @@ const deviceHeader = (deviceId: string) =>
     deviceId,
   });
 
+async function grantRole(
+  userId: string,
+  label: string,
+  scopeOutletId: string,
+  permissions: readonly string[],
+): Promise<void> {
+  const roleId = randomUUID();
+  await owner.query(
+    `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
+     VALUES ($1, $2, $3, false, NULL, $4, false, '["tenant","outlet"]')`,
+    [roleId, w.tenant.tenantId, label, JSON.stringify(permissions)],
+  );
+  await owner.query(
+    `INSERT INTO role_assignments
+       (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+     VALUES ($1, $2, $3, 'outlet', $4, now() - interval '1 minute', $2)`,
+    [w.tenant.tenantId, userId, roleId, scopeOutletId],
+  );
+}
+
 async function cashierWithRole(
   label: string,
   scopeOutletId: string,
+  permissions: readonly string[] = ["pos.payment.accept", "order.view"],
 ): Promise<{ client: ReturnType<typeof agent>; userId: string }> {
   const roleId = randomUUID();
   await owner.query(
     `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
      VALUES ($1, $2, $3, false, NULL, $4, false, '["tenant","outlet"]')`,
-    [
-      roleId,
-      w.tenant.tenantId,
-      `Kasir ${label}`,
-      JSON.stringify(["pos.payment.accept", "order.view"]),
-    ],
+    [roleId, w.tenant.tenantId, `Kasir ${label}`, JSON.stringify(permissions)],
   );
   const client = agent(w.app);
   await signUp(client, `Kasir ${label}`);
@@ -104,6 +122,11 @@ beforeAll(async () => {
     tenantId: w.tenant.tenantId,
     outletId: w.tenant.outletId,
     deviceId: DEVICE_ID,
+  });
+  await registerTestDevice(owner, {
+    tenantId: w.tenant.tenantId,
+    outletId: w.tenant.outletId,
+    deviceId: VIEWER_DEVICE_ID,
   });
   await registerTestDevice(owner, {
     tenantId: w.tenant.tenantId,
@@ -233,6 +256,18 @@ function collect(
     .set(originHeader);
   if (deviceId) request.set(DEVICE_TOKEN_HEADER, deviceHeader(deviceId));
   return request.send(body);
+}
+
+/** The guest's own payment of the charge (QR link). */
+function guestPay(guest: Guest, chargeId: string) {
+  return agent(w.app)
+    .post(
+      `/api/table-sessions/${guest.sessionId}/issue-charges/${chargeId}/payments`,
+    )
+    .set("Host", w.tenant.hostname)
+    .set("Authorization", `Bearer ${guest.token}`)
+    .set(originHeader)
+    .send({ method: "qris", idempotencyKey: randomUUID() });
 }
 
 const qrisBody = (idempotencyKey = randomUUID()) => ({
@@ -461,6 +496,164 @@ describe("legend-f1mmf the cashier starts the card sale of a swap charge", () =>
     );
     expect(other.status, JSON.stringify(other.body)).toBe(404);
     expect((await startEdc(randomUUID())).status).toBe(404);
+    expect(sim.calls.sale).toBe(before);
+    expect(await salesOf(opened.charge.id)).toBe(0);
+  });
+  // ---- review K 27 Nov ------------------------------------------------------
+
+  it("an unresolved EDC sale of the charge refuses the guest's own QRIS / VA code", async () => {
+    const opened = await openCharge();
+    await ledgerSale({
+      reference: opened.charge.id,
+      amountIdr: AMOUNT,
+      status: "unknown",
+    });
+    const intents = await intentCount();
+    const res = await guestPay(opened.guest, opened.charge.id);
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(await intentCount()).toBe(intents);
+    expect((await chargeOf(opened.issueId)).payment_intent_id).toBeNull();
+  });
+
+  it("cash is refused while a QRIS code of the charge may still take money", async () => {
+    const opened = await openCharge();
+    expectAccepted(await collect(opened.charge.id, qrisBody()));
+    const cash = await collect(opened.charge.id, {
+      idempotencyKey: randomUUID(),
+      method: "cash",
+      receivedIdr: AMOUNT,
+    });
+    expect(cash.status, JSON.stringify(cash.body)).toBe(409);
+    const row = await chargeOf(opened.issueId);
+    expect(row.status).toBe("open");
+    expect(row.cash_movement_id).toBeNull();
+
+    const guestOpened = await openCharge();
+    expectAccepted(await guestPay(guestOpened.guest, guestOpened.charge.id));
+    const guestCash = await collect(guestOpened.charge.id, {
+      idempotencyKey: randomUUID(),
+      method: "cash",
+      receivedIdr: AMOUNT,
+    });
+    expect(guestCash.status, JSON.stringify(guestCash.body)).toBe(409);
+    expect((await chargeOf(guestOpened.issueId)).status).toBe("open");
+  });
+
+  describe("the agent's own write-ahead with the charge id as reference", () => {
+    const request = (chargeId: string, amountIdr: number) =>
+      simAgent.requestPayment(ctx, cashier.userId, {
+        tenantId: w.tenant.tenantId,
+        outletId: w.tenant.outletId,
+        terminalId,
+        reference: chargeId,
+        idempotencyKey: randomUUID(),
+        amountIdr,
+        method: "card",
+      });
+
+    it("another amount than the charge's is EDC_AMOUNT_MISMATCH", async () => {
+      const opened = await openCharge();
+      const before = sim.calls.sale;
+      await expect(request(opened.charge.id, AMOUNT + 1)).rejects.toMatchObject(
+        { reason: "EDC_AMOUNT_MISMATCH" },
+      );
+      await expect(request(opened.charge.id, AMOUNT - 1)).rejects.toMatchObject(
+        { reason: "EDC_AMOUNT_MISMATCH" },
+      );
+      expect(sim.calls.sale).toBe(before);
+      expect(await salesOf(opened.charge.id)).toBe(0);
+    });
+
+    it("a paid or closed charge is ORDER_NOT_PAYABLE", async () => {
+      const paid = await openCharge();
+      expectAccepted(
+        await collect(paid.charge.id, {
+          idempotencyKey: randomUUID(),
+          method: "cash",
+          receivedIdr: AMOUNT,
+        }),
+      );
+      expect((await chargeOf(paid.issueId)).status).toBe("paid");
+      const closed = await openCharge();
+      await owner.query(
+        `UPDATE order_issue_charges
+         SET status = 'waived', closed_at = now(), closed_by = $3,
+             close_reason = 'Tamu komplain lama menunggu'
+         WHERE tenant_id = $1 AND id = $2`,
+        [w.tenant.tenantId, closed.charge.id, w.supervisor.userId],
+      );
+      const before = sim.calls.sale;
+      for (const chargeId of [paid.charge.id, closed.charge.id])
+        await expect(request(chargeId, AMOUNT)).rejects.toMatchObject({
+          code: "ORDER_NOT_PAYABLE",
+        });
+      expect(sim.calls.sale).toBe(before);
+      expect(await salesOf(paid.charge.id)).toBe(0);
+      expect(await salesOf(closed.charge.id)).toBe(0);
+    });
+
+    it("a voided order is ORDER_NOT_PAYABLE", async () => {
+      const opened = await openCharge();
+      await owner.query(
+        `UPDATE orders SET status = 'voided', voided_at = now(), void_reason = 'Batal di kasir'
+         WHERE tenant_id = $1 AND id = $2`,
+        [w.tenant.tenantId, ulidToUuid(opened.order.id)],
+      );
+      const before = sim.calls.sale;
+      await expect(request(opened.charge.id, AMOUNT)).rejects.toMatchObject({
+        code: "ORDER_NOT_PAYABLE",
+      });
+      expect(sim.calls.sale).toBe(before);
+      expect(await salesOf(opened.charge.id)).toBe(0);
+    });
+
+    it("a live code of the charge's link is ORDER_NOT_PAYABLE", async () => {
+      const opened = await openCharge();
+      expectAccepted(await guestPay(opened.guest, opened.charge.id));
+      const before = sim.calls.sale;
+      await expect(request(opened.charge.id, AMOUNT)).rejects.toMatchObject({
+        code: "ORDER_NOT_PAYABLE",
+      });
+      expect(sim.calls.sale).toBe(before);
+      expect(await salesOf(opened.charge.id)).toBe(0);
+    });
+  });
+
+  it("pos.payment.accept elsewhere but not at the charge's outlet is a 404; none at all is the route's 403; the terminal is never asked", async () => {
+    setEdgeEdcAgentForTests(simAgent);
+    const opened = await openCharge();
+    const viewer = await cashierWithRole(
+      "Tanpa Izin Bayar",
+      w.tenant.outletId,
+      ["order.view"],
+    );
+    await openShiftFor(
+      viewer.userId,
+      VIEWER_DEVICE_ID,
+      w.tenant.outletId,
+      await businessDateOf(opened.order.id),
+    );
+    const before = sim.calls.sale;
+    // No payment permission anywhere: the route refuses whatever the charge.
+    const none = await startEdc(
+      opened.charge.id,
+      randomUUID(),
+      viewer,
+      VIEWER_DEVICE_ID,
+    );
+    expect(none.status, JSON.stringify(none.body)).toBe(403);
+    // Pays at another outlet only: the charge's outlet is in scope but the
+    // service answers as if the charge did not exist.
+    await grantRole(viewer.userId, "Bayar Outlet Lain", w.ids.otherOutlet, [
+      "pos.payment.accept",
+    ]);
+    const elsewhere = await startEdc(
+      opened.charge.id,
+      randomUUID(),
+      viewer,
+      VIEWER_DEVICE_ID,
+    );
+    expect(elsewhere.status, JSON.stringify(elsewhere.body)).toBe(404);
     expect(sim.calls.sale).toBe(before);
     expect(await salesOf(opened.charge.id)).toBe(0);
   });
