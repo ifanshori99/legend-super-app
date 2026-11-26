@@ -1671,6 +1671,8 @@ test("POS-04 order.paid and order.refunded payloads post balanced WS-07 journals
     refundGatewayClearingIdr: 0,
     refundEdcIdr: 0,
     refundPointsIdr: 10_000,
+    refundBankIdr: 0,
+    refundPettyCashIdr: 0,
   };
   const lines = journalFor("order.refunded", refund);
   assert.ok(lines.some((line) => line.creditIdr === 10_000));

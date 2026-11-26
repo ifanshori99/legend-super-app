@@ -14,7 +14,7 @@
 // is not voided afterwards and a voided sale is not refunded (one correction
 // path per sale keeps the day's totals unambiguous, POS-05).
 
-import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { AccessError } from "@starter/shared/access";
 import {
   allocateIdr,

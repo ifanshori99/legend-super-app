@@ -1231,6 +1231,8 @@ describe("Auto-journal receipt-first rules and late adjustment", () => {
       refundGatewayClearingIdr: 0,
       refundEdcIdr: 0,
       refundPointsIdr: 0,
+      refundBankIdr: 0,
+      refundPettyCashIdr: 0,
     });
     assert.equal(sum(lines, "2107", "creditIdr"), 55_000);
     assert.equal(sum(lines, "1202", "creditIdr"), 0);

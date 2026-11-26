@@ -994,7 +994,10 @@ export const posRefundSchema = z
  * sale. The edge owns the drawer, so the money leaves outside it: a bank
  * transfer or petty cash (journal: bank / petty_cash, never the drawer).
  */
-export const posRefundCashChannelSchema = z.enum(["bank_transfer", "petty_cash"]);
+export const posRefundCashChannelSchema = z.enum([
+  "bank_transfer",
+  "petty_cash",
+]);
 export type PosRefundCashChannel = z.infer<typeof posRefundCashChannelSchema>;
 
 /** A payment reference (transfer or petty cash slip), never an account number. */

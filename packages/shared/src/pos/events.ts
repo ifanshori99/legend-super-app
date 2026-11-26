@@ -432,7 +432,10 @@ export const orderRefundedPayloadSchema = z
           path: [key],
           message: `${key} must equal the ${bucket} refund lines`,
         });
-    if (payload.cashPaidFrom !== undefined && Number(payload.refundCashIdr) <= 0)
+    if (
+      payload.cashPaidFrom !== undefined &&
+      Number(payload.refundCashIdr) <= 0
+    )
       ctx.addIssue({
         code: "custom",
         path: ["cashPaidFrom"],

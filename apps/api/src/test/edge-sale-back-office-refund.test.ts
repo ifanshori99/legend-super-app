@@ -102,7 +102,9 @@ async function asOwner<T>(run: (client: PoolClient) => Promise<T>) {
 
 /** A completed sale the cloud ingested from the edge (ledger `ingested`). */
 async function edgeSale(
-  tenders: Tender[] = [{ method: "cash", provider: "manual", amountIdr: 100_000 }],
+  tenders: Tender[] = [
+    { method: "cash", provider: "manual", amountIdr: 100_000 },
+  ],
   ledger: "ingested" | null = "ingested",
 ): Promise<Sale> {
   const orderId = createUlid();
