@@ -124,11 +124,18 @@ export type StartFailoverReturnInput = z.infer<
   typeof startFailoverReturnInputSchema
 >;
 
-/** What still blocks the return (`FAILOVER_OPEN_WORK`). */
+/**
+ * What still blocks the return or the cancel (`FAILOVER_OPEN_WORK`). A cancel
+ * lists every order of the window in `orderIds` (paid ones too) and its
+ * shifts; a return lists the unpaid orders, open shifts, open QRIS holds and
+ * cloud parked carts not yet resumed.
+ */
 export const failoverOpenWorkSchema = z.strictObject({
-  unpaidOrderIds: z.array(orderIdSchema).max(500),
+  orderIds: z.array(orderIdSchema).max(500).default([]),
+  unpaidOrderIds: z.array(orderIdSchema).max(500).default([]),
   openShiftIds: z.array(posShiftIdSchema).max(500),
-  qrisHoldOrderIds: z.array(orderIdSchema).max(500),
+  qrisHoldOrderIds: z.array(orderIdSchema).max(500).default([]),
+  parkedOrderIds: z.array(uuidSchema).max(500).default([]),
 });
 export type FailoverOpenWork = z.infer<typeof failoverOpenWorkSchema>;
 

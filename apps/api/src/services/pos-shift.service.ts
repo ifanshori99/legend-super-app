@@ -66,6 +66,7 @@ import { approvalPolicies } from "../db/schema/platform-access.ts";
 import { approvalRequests } from "../db/schema/platform-approval.ts";
 import { posOverrides } from "../db/schema/device-pin.ts";
 import { posQrisHolds } from "../db/schema/pos-qris-hold.ts";
+import { outletFailoverSwitchoverCounts } from "../db/schema/edge-failover-switchover.ts";
 import {
   cashMovementOutcomes,
   cashMovementRefusals,
@@ -124,7 +125,7 @@ import {
 } from "./permission-resolver.ts";
 import { revokeActingStaffForDevice } from "./pos-acting-staff-revoke.ts";
 import { POS_OVERRIDE_SOURCE_MODULE } from "./staff-override.service.ts";
-import { isEdgeProcess } from "./pos-edge-outlet.ts";
+import { isEdgeProcess, posWriteFailoverWindowId } from "./pos-edge-outlet.ts";
 import { enqueueClosedShiftReport } from "./pos-shift-print.ts";
 
 export type { ShiftCaller } from "./pos-shift-support.ts";
@@ -220,6 +221,35 @@ export async function openPosShift(
       // POS-03 blind count: the cashier never sees the drawer figures.
       return shiftDto(replay, undefined, { blind: true });
     }
+    // 1271 F3: the write gate inside the transaction (window share-locked).
+    // On an edge outlet the cloud opens only a failover shift, with the
+    // switchover count as its float (D2).
+    const failoverWindowId = await posWriteFailoverWindowId(
+      tx,
+      tenantId,
+      outletId,
+      { failover: "core" },
+    );
+    if (failoverWindowId === null && input.openingCounts !== undefined)
+      throw new CoreError(
+        "VALIDATION_ERROR",
+        "Hitungan laci pembuka hanya untuk shift mode cloud.",
+      );
+    if (failoverWindowId !== null) {
+      if (input.openingCounts === undefined)
+        throw new CoreError(
+          "VALIDATION_ERROR",
+          "Shift mode cloud dibuka dengan hitungan laci.",
+        );
+      if (
+        Number(blindCountTotalIdr(input.openingCounts)) !==
+        Number(input.openingFloatIdr)
+      )
+        throw new CoreError(
+          "VALIDATION_ERROR",
+          "Modal awal harus sama dengan jumlah hitungan laci.",
+        );
+    }
     const businessDate = businessDateFor(outlet, now);
     const [closedDay] = await tx
       .select({ id: posDailyCloses.id })
@@ -262,6 +292,7 @@ export async function openPosShift(
           openingFloatIdr: input.openingFloatIdr,
           openKey: idempotencyKey,
           openFingerprint: fingerprint,
+          failoverWindowId,
           createdAt: now,
           updatedAt: now,
         })
@@ -276,6 +307,30 @@ export async function openPosShift(
       throw error;
     }
     if (!row) throw new Error("Shift insert returned no row");
+    // The device's first failover shift holds the switchover count C1; a
+    // later failover shift on the device (cashier change) keeps the first.
+    if (failoverWindowId !== null && input.openingCounts !== undefined)
+      await tx
+        .insert(outletFailoverSwitchoverCounts)
+        .values({
+          tenantId,
+          outletId,
+          windowId: failoverWindowId,
+          deviceId,
+          shiftId: row.id,
+          cashierId: caller.userId,
+          countedAt: now,
+          counts: input.openingCounts,
+          totalIdr: input.openingFloatIdr,
+          createdAt: now,
+        })
+        .onConflictDoNothing({
+          target: [
+            outletFailoverSwitchoverCounts.tenantId,
+            outletFailoverSwitchoverCounts.windowId,
+            outletFailoverSwitchoverCounts.deviceId,
+          ],
+        });
     await appendShiftEvent(tx, context, "cashier_shift.opened", {
       aggregateId: row.id,
       outletId,

@@ -1294,6 +1294,12 @@ export const forceClosePosShiftInputSchema = clientInputSchema({
 
 export const openPosShiftInputSchema = clientInputSchema({
   openingFloatIdr: nonnegativeIdr,
+  /**
+   * 1271 F3: required for (and only for) a failover shift in the cloud: the
+   * blind drawer count at switchover (C1). Its total is the opening float and
+   * the forced count of the interrupted edge shift.
+   */
+  openingCounts: blindCountsSchema.optional(),
   idempotencyKey: idempotencyKeySchema,
 });
 
