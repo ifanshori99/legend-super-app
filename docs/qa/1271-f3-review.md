@@ -22,3 +22,11 @@ Reviewer: architect (Opus), 27 Nov. Baca kode saja. Hasil: **GAGAL ringan**, 0 P
 - Refund order failover sesudah kembali ke edge ditolak untuk v1 (tidak ada yang dibayar lebih). Bead jalur refund lewat back office; dilaporkan ke founder sebagai batasan.
 - P3 parked: masuk daftar kerja terbuka (paling ketat). P3 `orderIds`: dibetulkan sekarang. P3 primary baru: bead F4/F7.
 - F6b: kasir membaca status lewat endpoint baca sempit (izin jual, hanya `{id, status}`).
+
+## Re-review 27 Nov (ba3b91f97): LULUS
+- P2 kill switch: jalur `finish` hanya untuk baris window aktif; pembuatan baru ditolak di transaksi (`FINISHING_OPERATIONS`).
+- P2 kunci window: `FOR SHARE` sesudah `lockPosOrder` di `pos-order-corrections.ts:222` dan `pos-payment-intent-resolve.ts:281`; race refund vs return diuji.
+- P3 `orderIds` dan parked: beres.
+- P3 baru (bead): `payment-va-release.ts:324` tidak cek window di transaksi; test kill switch membatalkan order lewat SQL, bukan route void.
+- Syarat rilis: sesudah F2+F3 di int, jalankan `edge-failover.test.ts` dan `edge-failover-receipt.test.ts` lewat heavy (masuk gate gabung F3).
+- Migrasi dinomori ulang 0532 (a41ca1bb4).
