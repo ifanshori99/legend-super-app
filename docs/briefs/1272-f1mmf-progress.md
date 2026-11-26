@@ -85,12 +85,16 @@ Sisa:
 - 6 file test (resolve, edc, collect-pos, pos-edc-tender, edc-agent-amount, edc-reconciliation) 213/213 lulus; typecheck api lulus; prettier/eslint bersih.
 - Berikut: satu reviewer sonnet atas diff fix, lalu web.
 
-### P3 + web, WIP (27 Nov, ui-engineer)
+### P3 + web (27 Nov, ui-engineer), commit e5382a136
 
-Sudah (belum dijalankan semua):
-- P3: test baru `order-issue-charge-pos-resolve-f1mmf.test.ts` (slip sama nominal tagihan, sale unknown nominal lain -> 409 + alert outbox). Sedang dijalankan untuk bukti gagal-dulu; fix (catch juga mismatch dari `resolveEdcReconciliation`) menyusul.
-- Web: `charge-endpoints.ts` memakai kontrak `@starter/shared/pos` (GET, start EDC, resolve); `charge-api.ts` tanpa CONTRACT_PENDING, tambah `startChargeEdc`, `resolveChargeAttempt`.
-- `charge-key-store.ts`: `lockedAttempt` (a), pembebasan QRIS saat id kode server berganti dan kode lama berakhir (c), `firstSend` untuk (b), kunci start EDC per sale (`rememberSaleKey`/`saleStartKey`).
+Sudah:
+- P3: `edcReconciliationMismatchOf` (edc-reconciliation.service.ts) dipakai catch resolve; slip nominal tagihan pada sale unknown nominal lain = 409 + alert outbox. Gagal dulu (alert 0), sesudah fix 3 file (resolve, edc, edc-reconciliation) 80/80 lulus.
+- Web: CONTRACT_PENDING dihapus; GET, start EDC, resolve memakai `@starter/shared/pos`. Tombol EDC + pilih mesin (payment options, kartu saja), status menunggu, "Cek di mesin".
+- (a) pemilih terkunci sejak awal (`lockedAttempt`, hanya metode belum pasti + alasan); (b) 401/403/429 pada kiriman pertama menghapus kunci (`collectKeyAfter(status, firstSend)`, 503 EDC_AGENT_NOT_READY juga); (c) QRIS: id kode server berganti + berakhir membebaskan semua metode; (e) GET pra-kirim `readWithin` (AbortController, 8 dtk), gagal = tidak kirim, kunci tetap, pesan.
+- (d) `charge-resolve-dialog.tsx`: penyetuju, PIN, alasan; EDC unknown: kartu tidak terdebet / terdebet + slip (RRN, approval, nominal di slip). Teks dari kode server (ISSUE_CHARGE_*). Kunci start EDC disimpan per sale.
+- Rincian memakai `amountIdr` server (tidak lagi menjumlah di UI).
+- Test node 6 baru (gagal dulu pada b64ba29c3), 132/132 lulus; text-contract lulus; typecheck web + api lulus; prettier/eslint bersih.
 
 Sisa:
-- `charge-logic.ts` (b) `collectKeyAfter(status, firstSend)`; GET pra-kirim dengan AbortController (e); hooks EDC start + resolve; komponen (pemilih terkunci, tombol EDC + terminal, dialog supervisor); mock; test node gagal-dulu b/c/e; text-contract; typecheck; screenshot 390/1280.
+- Screenshot 390/1280 (siap bayar, menunggu EDC, unknown, resolve supervisor, lunas) ke `docs/review/img/f1mmf-*.png`.
+- Review K (architect) untuk web + P3, second-opinion area.
