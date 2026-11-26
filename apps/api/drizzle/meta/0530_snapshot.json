@@ -1,5 +1,5 @@
 {
-  "id": "3711c47c-5d31-464e-8dc6-7384accb3a0c",
+  "id": "dff17504-d5a6-4c38-a245-6f0036b019ca",
   "prevId": "1b39f671-033b-4eb9-b9f5-6ec1fa582e8f",
   "version": "7",
   "dialect": "postgresql",
@@ -48704,6 +48704,163 @@
         "edge_order_ingests_late_check": {
           "name": "edge_order_ingests_late_check",
           "value": "(\"edge_order_ingests\".\"late_business_date\" IS NULL) = (\"edge_order_ingests\".\"original_business_date\" IS NULL)\n        AND (\"edge_order_ingests\".\"late_business_date\" IS NULL OR \"edge_order_ingests\".\"late_business_date\" > \"edge_order_ingests\".\"original_business_date\")"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.edge_edc_ingests": {
+      "name": "edge_edc_ingests",
+      "schema": "",
+      "columns": {
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "transaction_id": {
+          "name": "transaction_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outlet_id": {
+          "name": "outlet_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "edge_node_id": {
+          "name": "edge_node_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "event_id": {
+          "name": "event_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sequence": {
+          "name": "sequence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "varchar(10)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "state_hash": {
+          "name": "state_hash",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "edge_edc_ingests_state_idx": {
+          "name": "edge_edc_ingests_state_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "state",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "updated_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "edge_edc_ingests_tenant_id_tenants_id_fk": {
+          "name": "edge_edc_ingests_tenant_id_tenants_id_fk",
+          "tableFrom": "edge_edc_ingests",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "edge_edc_ingests_outlet_id_outlets_id_fk": {
+          "name": "edge_edc_ingests_outlet_id_outlets_id_fk",
+          "tableFrom": "edge_edc_ingests",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "edge_edc_ingests_tenant_id_transaction_id_pk": {
+          "name": "edge_edc_ingests_tenant_id_transaction_id_pk",
+          "columns": [
+            "tenant_id",
+            "transaction_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "edge_edc_ingests_state_check": {
+          "name": "edge_edc_ingests_state_check",
+          "value": "\"edge_edc_ingests\".\"state\" IN ('ingested', 'refused')"
+        },
+        "edge_edc_ingests_sequence_check": {
+          "name": "edge_edc_ingests_sequence_check",
+          "value": "\"edge_edc_ingests\".\"sequence\" > 0"
+        },
+        "edge_edc_ingests_hash_check": {
+          "name": "edge_edc_ingests_hash_check",
+          "value": "(\"edge_edc_ingests\".\"state\" = 'ingested') = (\"edge_edc_ingests\".\"state_hash\" IS NOT NULL)"
         }
       },
       "isRLSEnabled": false
@@ -101413,12 +101570,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "payment_link_token_sealed": {
-          "name": "payment_link_token_sealed",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "hold_expires_at": {
           "name": "hold_expires_at",
           "type": "timestamp with time zone",
@@ -101513,28 +101664,6 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "wfc_seat_reservations_one_hold_key": {
-          "name": "wfc_seat_reservations_one_hold_key",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "customer_profile_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"wfc_seat_reservations\".\"status\" = 'pending_payment'",
           "concurrently": false,
           "method": "btree",
           "with": {}

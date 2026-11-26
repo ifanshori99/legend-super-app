@@ -13,6 +13,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { createUlid, type ScopedTenantContext } from "@starter/shared/core";
 import {
   EDC_TRANSACTION_EVENTS,
+  edcEventRrnSchema,
   type EdcTransactionEventName,
   type EdcTransactionEventPayload,
 } from "@starter/shared/edc/events";
@@ -61,6 +62,16 @@ function payloadOf(row: EdcTransactionRow): EdcTransactionEventPayload {
     approvalCode: row.approvalCode ?? null,
     maskedPan: row.maskedPan ?? null,
     needsReconciliation: row.needsReconciliation,
+    method: row.method as NonNullable<EdcTransactionEventPayload["method"]>,
+    type: row.type as NonNullable<EdcTransactionEventPayload["type"]>,
+    mode: row.mode as NonNullable<EdcTransactionEventPayload["mode"]>,
+    // Dropped, never thrown: a strange terminal RRN must not roll back the
+    // ledger write of a charge the terminal already made.
+    rrn:
+      row.rrn !== null && edcEventRrnSchema.safeParse(row.rrn).success
+        ? row.rrn
+        : null,
+    completedAt: row.completedAt?.toISOString() ?? null,
   };
 }
 
