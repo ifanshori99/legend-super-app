@@ -17,6 +17,10 @@
 - P3: tombol tutup paksa juga untuk `COUNT_NOT_SUBMITTED` (`offersForceClose`); saksi lewat `thirdPersons`/`sameUser` (`shift-extra-logic.ts`).
 - Test: `apps/web/test/pos-offline-o4-review.test.ts` (5), detect (+4). Pra-gate lulus: prettier, eslint, text-contract + i18n-area-split, typecheck api + web.
 
+## Screenshot (Keputusan CTO 27 Nov, opsi B)
+- Mode mock: `e2e/o4-offline.mock.spec.ts` (8 test lulus), 5 adegan x 390/1280 di `docs/review/img/o4-{banner-tanpa-bekal,paksa-hitung,paksa-saksi,paksa-siap,paksa-selesai}-{390,1280}.png`.
+- Spec API nyata `e2e/o4-offline-shots.spec.ts` buntu: SSR `/api/me/access` di localhost tidak punya tenant (domain `localhost` ditolak `normalizeHostname`) -> `/pos/kasir` 404. Adegan bayar, tersimpan, antrean, tutup, keluar pindah ke O5 dengan domain tenant tes.
+
 ## Lain-lain
 - Teks: namespace baru `posKasirOffline` (chunk `ops`), tambahan `posOffline.signOut*` (core).
 - Test UI: `apps/web/test/pos-offline-o4-ui.test.ts` (8): simpan masuk antrean dengan nomor L, metode online tidak ditawarkan, tutup shift/keluar ditolak, tampilan disisihkan, banner.
