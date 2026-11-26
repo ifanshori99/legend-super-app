@@ -760,7 +760,7 @@ describe("POS standalone EDC tender (legend-m4fv, EDC-04)", () => {
     const refused = async (overrideId: string) => {
       const res = await payStandalone(order, {
         terminalId,
-        bankRef: "112233445566",
+        bankRef: "112233445577",
         overrideId,
       });
       expect(res.status, JSON.stringify(res.body)).toBe(403);
@@ -977,7 +977,7 @@ describe("POS standalone EDC tender (legend-m4fv, EDC-04)", () => {
 
     it("two bills sent together with one slip: one is paid, one refused", async () => {
       const [a, b] = [await newOrder(), await newOrder()];
-      const bankRef = "112233445566";
+      const bankRef = "665544332211";
       const results = await Promise.all(
         [a, b].map(async (order) =>
           payStandalone(order, {
