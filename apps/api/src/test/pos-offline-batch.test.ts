@@ -1038,6 +1038,50 @@ describe("Review O2 fixes", () => {
     expect(new Set(rows.map((row) => row.business_date)).size).toBe(1);
   });
 
+  it("O5 (1): a sale marked another customer is ingested once, flagged for finance with the reason, cash in the drawer", async () => {
+    const kit = await kitFor(c);
+    const menu = menuOf(kit);
+    const event = offlineSaleEventSchema.parse({
+      ...sale(kit, menu, kit.receiptRun.lastNumber + 1),
+      otherCustomerReason: "Meja 4 minta kopi yang sama, orang lain",
+    });
+    const result = await submit(c, [event]);
+    expect(result.results[0]).toMatchObject({
+      status: "ingested",
+      flags: ["other_customer"],
+    });
+    const receiptNumber = result.results[0]!.receiptNumber!;
+    const { rows: alerts } = await owner.query<{ body: string }>(
+      "SELECT body FROM notifications WHERE tenant_id = $1 AND body LIKE $2",
+      [seededTenantId, `%${receiptNumber}%`],
+    );
+    expect(alerts.length).toBeGreaterThan(0);
+    expect(alerts[0]!.body).toContain("Meja 4 minta kopi yang sama");
+    // Not a shift_closed sale: the shift is open, so the cash is in its drawer.
+    const { rows: tenders } = await owner.query<{ shift_id: string | null }>(
+      "SELECT shift_id FROM pos_order_tenders WHERE tenant_id = $1 AND order_id = $2",
+      [seededTenantId, ulidToUuid(event.eventId)],
+    );
+    expect(tenders).toHaveLength(1);
+    expect(tenders[0]!.shift_id).not.toBeNull();
+    // A replay never doubles the sale (money: paid once).
+    const again = await submit(c, [event]);
+    expect(again.results[0]!.status).toBe("duplicate");
+    expect(await ordersOf(event.eventId)).toBe(1);
+  });
+
+  it("O5 (1): the reason of another customer must be written (4 to 200 characters)", async () => {
+    const kit = await kitFor(c);
+    const base = sale(kit, menuOf(kit), kit.receiptRun.lastNumber + 1);
+    for (const reason of ["", "  ab ", "x".repeat(201)])
+      expect(
+        offlineSaleEventSchema.safeParse({
+          ...base,
+          otherCustomerReason: reason,
+        }).success,
+      ).toBe(false);
+  });
+
   it("P3 3: the same event id under another kit is a conflict (409), nothing stored", async () => {
     const kit = await kitFor(c);
     const menu = menuOf(kit);
