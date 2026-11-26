@@ -99,7 +99,7 @@ async function sqlState(
 
 async function insertWindow(
   place: Place,
-  values: { status?: string; key?: string } = {},
+  values: { status?: string; key?: string; actor?: string } = {},
 ): Promise<string> {
   const id = randomUUID();
   const status = values.status ?? "active";
@@ -108,9 +108,11 @@ async function insertWindow(
     `INSERT INTO outlet_failover_windows
        (id, tenant_id, outlet_id, edge_node_id, status, reason, idempotency_key,
         activated_by, business_date_from, business_date_to, return_started_at,
-        closed_at, cancelled_at)
+        closed_at, cancelled_at, return_started_by, cancelled_by)
      VALUES ($1, $2, $3, $4, $5, 'Mini PC mati', $6, $7, '2026-11-26',
-        $8::date, $9::timestamptz, $10::timestamptz, $11::timestamptz)`,
+        $8::date, $9::timestamptz, $10::timestamptz, $11::timestamptz,
+        CASE WHEN $9::timestamptz IS NULL THEN NULL ELSE $12 END,
+        CASE WHEN $11::timestamptz IS NULL THEN NULL ELSE $12 END)`,
     [
       id,
       tenantAId,
@@ -118,13 +120,14 @@ async function insertWindow(
       place.nodeId,
       status,
       values.key ?? `fo-${hex()}`,
-      place.userId,
+      values.actor ?? place.userId,
       ended ? "2026-11-26" : null,
       status === "returning" || status === "closed"
         ? "2026-11-26T05:00:00Z"
         : null,
       status === "closed" ? "2026-11-26T06:00:00Z" : null,
       status === "cancelled" ? "2026-11-26T04:00:00Z" : null,
+      values.actor ?? place.userId,
     ],
   );
   return id;
@@ -180,7 +183,7 @@ describe("1271 F1 outlet_failover_windows", () => {
         await moveTo(
           place,
           first,
-          "status = 'returning', return_started_at = now(), business_date_to = '2026-11-26'",
+          "status = 'returning', return_started_at = now(), return_started_by = activated_by, business_date_to = '2026-11-26'",
         ),
       ).toBeNull();
       // Still open while returning.
@@ -219,7 +222,7 @@ describe("1271 F1 outlet_failover_windows", () => {
         await moveTo(
           place,
           id,
-          "status = 'closed', return_started_at = now(), closed_at = now(), business_date_to = '2026-11-26'",
+          "status = 'closed', return_started_at = now(), return_started_by = activated_by, closed_at = now(), business_date_to = '2026-11-26'",
         ),
       ).toBe("42501");
       // Identity is fixed.
@@ -229,7 +232,7 @@ describe("1271 F1 outlet_failover_windows", () => {
         await moveTo(
           place,
           id,
-          "status = 'returning', return_started_at = now(), business_date_to = '2026-11-26', closing_event_id = gen_random_uuid()",
+          "status = 'returning', return_started_at = now(), return_started_by = activated_by, business_date_to = '2026-11-26', closing_event_id = gen_random_uuid()",
         ),
       ).toBeNull();
       // returning -> active goes backwards; set-once fields keep their value.
@@ -260,7 +263,7 @@ describe("1271 F1 outlet_failover_windows", () => {
         await moveTo(
           place,
           cancelled,
-          "status = 'cancelled', cancelled_at = now(), business_date_to = '2026-11-26'",
+          "status = 'cancelled', cancelled_at = now(), cancelled_by = activated_by, business_date_to = '2026-11-26'",
         ),
       ).toBeNull();
       expect(
@@ -281,7 +284,7 @@ describe("1271 F1 outlet_failover_windows", () => {
         await moveTo(
           place,
           id,
-          "status = 'returning', business_date_to = '2026-11-26'",
+          "status = 'returning', return_started_by = activated_by, business_date_to = '2026-11-26'",
         ),
       ).toBe("23514");
       // A window that left active names its last business date.
@@ -289,12 +292,52 @@ describe("1271 F1 outlet_failover_windows", () => {
         await moveTo(
           place,
           id,
-          "status = 'returning', return_started_at = now()",
+          "status = 'returning', return_started_at = now(), return_started_by = activated_by",
         ),
       ).toBe("23514");
       expect(await moveTo(place, id, "business_date_to = '2026-11-25'")).toBe(
         "23514",
       );
+    });
+  });
+
+  it("review P2: an edge copy applies although its managers are not in the edge people snapshot", async () => {
+    await inRollback(async (place) => {
+      // Ids of managers the edge has never seen (no row in "user").
+      for (const status of ["closed", "cancelled", "returning"])
+        await insertWindow(place, {
+          status,
+          actor: `absent-${hex()}`,
+        }).then(
+          (id) => expect(id).toBeTypeOf("string"),
+          (error: { code?: string }) => expect(error.code ?? null).toBeNull(),
+        );
+    });
+  });
+
+  it("who started the return and who cancelled are tied to the status", async () => {
+    await inRollback(async (place) => {
+      const id = await insertWindow(place);
+      expect(
+        await moveTo(
+          place,
+          id,
+          "status = 'returning', return_started_at = now(), business_date_to = '2026-11-26'",
+        ),
+      ).toBe("23514");
+      expect(await moveTo(place, id, "cancelled_by = activated_by")).toBe(
+        "23514",
+      );
+      expect(await moveTo(place, id, "return_started_by = activated_by")).toBe(
+        "23514",
+      );
+      expect(
+        await moveTo(
+          place,
+          id,
+          "status = 'cancelled', cancelled_at = now(), business_date_to = '2026-11-26'",
+        ),
+      ).toBe("23514");
     });
   });
 
