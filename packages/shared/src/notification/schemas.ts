@@ -264,6 +264,16 @@ export const NOTIFICATION_CATEGORY_CATALOG = {
     defaultChannels: ["web_push", "email"],
     prd: "§4 Alur K; legend-7gghu",
   },
+  // legend-ay6e6 (WS-11 F12): a scheduled report file is ready to download.
+  // The message names the report only; figures stay behind the download,
+  // which re-checks the reader's permission.
+  report_delivery: {
+    audience: "staff",
+    realtime: false,
+    bypassQuietHours: false,
+    defaultChannels: ["email"],
+    prd: "§3.36 Laporan terjadwal; DASH-02",
+  },
 } as const satisfies Record<string, CategoryMeta>;
 
 export type NotificationCategory = keyof typeof NOTIFICATION_CATEGORY_CATALOG;

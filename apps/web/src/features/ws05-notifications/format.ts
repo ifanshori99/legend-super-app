@@ -65,6 +65,7 @@ export const NOTIFICATION_CATEGORY_ICONS: Record<
   tenant_invitation: MailCheck,
   hr_settlement: UserRoundMinus,
   payout_receipt: BadgeCheck,
+  report_delivery: FileText,
 };
 
 export function categoryLabelKey(category: NotificationCategory): MessageKey {

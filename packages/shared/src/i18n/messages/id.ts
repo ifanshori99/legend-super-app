@@ -1583,6 +1583,7 @@ export const id = {
       tenant_invitation: "Undangan admin",
       hr_settlement: "Penyelesaian karyawan keluar",
       payout_receipt: "Tanda terima pencairan gaji",
+      report_delivery: "Laporan terjadwal",
     },
     inbox: {
       heading: "Kotak masuk",

@@ -23,6 +23,7 @@
 // never row values.
 import { and, desc, eq, getTableColumns, inArray, lt, sql } from "drizzle-orm";
 import {
+  createUlid,
   decodeCursor,
   encodeCursor,
   outletIdsForQuery,
@@ -63,7 +64,9 @@ import {
   userViewerAccess,
   type ViewerAccess,
 } from "../routes/report-viewer";
+import { eventEnvelopeSchema } from "@starter/shared/events";
 import { recordAudit } from "./audit-writer";
+import { appendOutbox } from "./core-outbox";
 import {
   openApprovalRequest,
   resolveApprovalChainOutcome,
@@ -732,6 +735,8 @@ export async function generateReportExport(
       { type: "system" },
       outcome.ok ? { rowCount: outcome.rowCount } : { errorCode: outcome.code },
     );
+    if (outcome.ok && row.scheduleId !== null)
+      await emitReportDelivered(tx, context, row, completedAt);
     if (outcome.ok && row.savedReportId !== null)
       await tx
         .update(savedReports)
@@ -743,6 +748,45 @@ export async function generateReportExport(
           ),
         );
     return outcome.ok ? "ready" : "failed";
+  });
+}
+
+export const REPORT_DELIVERED_EVENT = "report_export.delivered";
+
+/**
+ * A scheduled job's file is ready: one outbox event for the notification
+ * consumer (worker/notification-adapters.ts `report_export.delivered`), which
+ * re-reads the job and notifies its recipient in-app and by email. Ids only;
+ * the event carries no figure.
+ */
+async function emitReportDelivered(
+  tx: Tx,
+  context: ScopedTenantContext,
+  row: Row,
+  now: Date,
+): Promise<void> {
+  const event = eventEnvelopeSchema.parse({
+    id: createUlid(now.getTime()),
+    tenantId: context.tenant.tenantId,
+    outletId: null,
+    name: REPORT_DELIVERED_EVENT,
+    version: 1,
+    aggregateType: "report_export",
+    aggregateId: row.id,
+    sequence: 1,
+    occurredAt: now.toISOString(),
+    actor: { type: "system" },
+    deviceId: null,
+    idempotencyKey: `${REPORT_DELIVERED_EVENT}:${row.id}`,
+    payloadSchemaRef: `${REPORT_DELIVERED_EVENT}.v1`,
+    payload: { exportId: row.id },
+  });
+  await appendOutbox(tx, context, {
+    id: createUlid(now.getTime()),
+    event,
+    destination: "notification",
+    direction: null,
+    peerId: null,
   });
 }
 
