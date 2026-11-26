@@ -14,7 +14,7 @@
 // is not voided afterwards and a voided sale is not refunded (one correction
 // path per sale keeps the day's totals unambiguous, POS-05).
 
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import {
   allocateIdr,
   CoreError,
@@ -42,6 +42,7 @@ import { db } from "../db/index.ts";
 import { edcTransactions } from "../db/schema/edc.ts";
 import { edgeOrderIngests } from "../db/schema/edge-order-ingest.ts";
 import { orderIssueCharges, orderIssues } from "../db/schema/kds-issues.ts";
+import { posOfflineSales } from "../db/schema/pos-offline-sale.ts";
 import { posDepositRefunds } from "../db/schema/pos-deposit-refund.ts";
 import {
   posOrderRefunds,
@@ -182,6 +183,36 @@ async function assertNotEdgeIngested(
     );
 }
 
+/**
+ * O2 review 27 Nov (legend-ss7n5): an offline sale ingested after its shift
+ * closed has its cash outside any drawer and its journal on the clearing
+ * account (1205). A cloud void would reverse that journal as if the money left
+ * an open drawer, so it is refused; the correction is a refund from back office.
+ */
+async function assertNotShiftClosedOfflineSale(
+  tx: Tx,
+  context: ScopedTenantContext,
+  orderId: string,
+): Promise<void> {
+  const [row] = await tx
+    .select({ eventId: posOfflineSales.eventId })
+    .from(posOfflineSales)
+    .where(
+      and(
+        eq(posOfflineSales.tenantId, context.tenant.tenantId),
+        eq(posOfflineSales.eventId, orderId),
+        sql`${posOfflineSales.flags} @> '["shift_closed"]'::jsonb`,
+      ),
+    )
+    .limit(1);
+  if (row)
+    throw new HttpError(
+      409,
+      "OFFLINE_SHIFT_CLOSED_VOID_BLOCKED",
+      "Penjualan offline ini masuk setelah shift tutup, jadi tidak bisa di-void. Koreksi lewat refund back office.",
+    );
+}
+
 /** Corrections lock the final order (FOR UPDATE does not fire the triggers). */
 async function correct<T>(
   context: ScopedTenantContext,
@@ -308,6 +339,7 @@ export async function voidPosOrderCorrection(
       request,
     },
     async (tx, { order }, now) => {
+      await assertNotShiftClosedOfflineSale(tx, context, order.id);
       const { voids, refunds } = await correctionsOf(tx, context, order.id);
       if (voids.length > 0)
         throw new CoreError("CONFLICT", "Transaksi ini sudah di-void.");
