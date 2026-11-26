@@ -124,7 +124,12 @@ function kitOf(
   });
 }
 
-const kopi = { menuItemId: KOPI, variantId: null, quantity: 1, modifierIds: [] };
+const kopi = {
+  menuItemId: KOPI,
+  variantId: null,
+  quantity: 1,
+  modifierIds: [],
+};
 const cart = { serviceType: "dine_in" as const, lines: [kopi] };
 const cash = (amountIdr: number): OfflineSaleTender =>
   ({ method: "cash", amountIdr, receivedIdr: amountIdr }) as OfflineSaleTender;
@@ -150,7 +155,11 @@ function fakeCloud() {
       for (const event of events) {
         offlineSaleEventSchema.parse(event);
         if (cloud.conflicting.has(event.eventId))
-          throw new ApiError(409, "CONFLICT", "Penjualan offline ini sudah tercatat dari bekal lain");
+          throw new ApiError(
+            409,
+            "CONFLICT",
+            "Penjualan offline ini sudah tercatat dari bekal lain",
+          );
         if (cloud.rejecting.has(event.eventId)) {
           results.push({
             eventId: event.eventId,
@@ -287,19 +296,31 @@ describe("recording an offline sale", () => {
     ).rejects.toMatchObject({ code: "TENDER_TOTAL_MISMATCH" });
     await expect(
       queue.recordSale(cart, [
-        { method: "cash", amountIdr: total, receivedIdr: total - 1 } as OfflineSaleTender,
+        {
+          method: "cash",
+          amountIdr: total,
+          receivedIdr: total - 1,
+        } as OfflineSaleTender,
       ]),
     ).rejects.toMatchObject({ code: "CASH_RECEIVED_SHORT" });
     await expect(
       queue.recordSale(cart, [
-        { method: "edc_card", amountIdr: total, reference: "  " } as OfflineSaleTender,
+        {
+          method: "edc_card",
+          amountIdr: total,
+          reference: "  ",
+        } as OfflineSaleTender,
       ]),
     ).rejects.toMatchObject({ code: "SALE_INVALID" });
     // A kit without EDC takes cash only.
     await queue.saveKit({ ...kit, tenders: ["cash"] });
     await expect(
       queue.recordSale(cart, [
-        { method: "edc_card", amountIdr: total, reference: "SLIP-1" } as OfflineSaleTender,
+        {
+          method: "edc_card",
+          amountIdr: total,
+          reference: "SLIP-1",
+        } as OfflineSaleTender,
       ]),
     ).rejects.toMatchObject({ code: "TENDER_NOT_OFFLINE" });
     expect(await queue.pendingCount()).toBe(0);
@@ -393,7 +414,9 @@ describe("the queue survives reload and crash", () => {
     await queue.recordSale(cart, [cash(total)]);
     // The cloud has synced only #1 of this run: the tablet keeps #2.
     await queue.saveKit(kitOf({ lastNumber: 1 }));
-    expect((await queue.recordSale(cart, [cash(total)])).sequenceNumber).toBe(3);
+    expect((await queue.recordSale(cart, [cash(total)])).sequenceNumber).toBe(
+      3,
+    );
     await queue.saveKit(kitOf({ sequenceId: NEW_RUN, lastNumber: 0 }));
     const fresh = await queue.recordSale(cart, [cash(total)]);
     expect([fresh.sequenceId, fresh.sequenceNumber]).toEqual([NEW_RUN, 1]);
@@ -421,7 +444,12 @@ describe("sync to the cloud", () => {
   it("sends the queue in run order and drops what the cloud settled", async () => {
     const { cloud, queue, sales } = await queuedSales(3);
     const report = await queue.sync();
-    expect(report).toMatchObject({ settled: 3, parked: 0, remaining: 0, error: null });
+    expect(report).toMatchObject({
+      settled: 3,
+      parked: 0,
+      remaining: 0,
+      error: null,
+    });
     expect(cloud.calls).toEqual([sales.map((sale) => sale.eventId)]);
     expect(await queue.pendingCount()).toBe(0);
   });

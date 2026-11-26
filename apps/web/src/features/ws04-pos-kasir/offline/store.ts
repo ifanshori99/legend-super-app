@@ -140,11 +140,12 @@ const DB_NAME = "legend-pos-offline";
 const DB_VERSION = 1;
 const STORES: StoreName[] = ["kits", "queue", "parked"];
 
-const request = <T>(req: IDBRequest<T>) =>
-  new Promise<T>((resolve, reject) => {
+function request<T>(req: IDBRequest<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
+}
 
 function openDatabase(factory: IDBFactory): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -174,8 +175,7 @@ export function createIndexedDbBackend(
 ): OfflineBackend {
   let database: Promise<IDBDatabase> | null = null;
   const connect = () => {
-    if (!factory)
-      return Promise.reject(new Error(OFFLINE_STORAGE_UNAVAILABLE));
+    if (!factory) return Promise.reject(new Error(OFFLINE_STORAGE_UNAVAILABLE));
     database ??= openDatabase(factory).then((opened) => {
       // Another tab upgrading the schema: let go, reopen on the next call.
       opened.onversionchange = () => {

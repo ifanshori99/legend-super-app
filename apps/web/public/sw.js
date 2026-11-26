@@ -1,4 +1,4 @@
-/* global self */
+/* global self, caches */
 /* Push payloads contain public-facing text only; endpoint and keys stay server-side. */
 /*
  * O3 (legend-wasr7.7): app shell of /pos for the offline POS. Only same-origin

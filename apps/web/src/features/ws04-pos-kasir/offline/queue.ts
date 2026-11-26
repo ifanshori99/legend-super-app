@@ -68,7 +68,9 @@ const byRun = (a: OfflineSaleEvent, b: OfflineSaleEvent) =>
   a.sequenceNumber - b.sequenceNumber;
 
 const isEventConflict = (error: unknown) =>
-  error instanceof ApiError && error.status === 409 && error.code === "CONFLICT";
+  error instanceof ApiError &&
+  error.status === 409 &&
+  error.code === "CONFLICT";
 
 const settles = (result: OfflineEventResult) =>
   OFFLINE_EVENT_SETTLED.includes(result.status);
@@ -211,8 +213,7 @@ export function createOfflineQueue(options: {
         const { kit } = stored;
         if (paidAt.getTime() >= Date.parse(kit.expiresAt))
           throw new OfflineSaleError("KIT_EXPIRED");
-        if (tenders.length === 0)
-          throw new OfflineSaleError("TENDER_REQUIRED");
+        if (tenders.length === 0) throw new OfflineSaleError("TENDER_REQUIRED");
         // Only what the kit allows offline: cash and manual EDC.
         for (const tender of tenders)
           if (!kit.tenders.includes(tender.method))

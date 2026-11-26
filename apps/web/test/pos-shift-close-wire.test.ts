@@ -481,8 +481,12 @@ describe("O3: the close waits for the offline queue", () => {
     );
     setDefaultOfflineBackend(backend);
     await expect(
-      closeShiftWithApproval(OUTLET, approval, null, "shift-close:q1", () =>
-        undefined,
+      closeShiftWithApproval(
+        OUTLET,
+        approval,
+        null,
+        "shift-close:q1",
+        () => undefined,
       ),
     ).rejects.toMatchObject({ status: 409, code: "OFFLINE_QUEUE_PENDING" });
     expect(overrideCalls()).toHaveLength(0);
@@ -494,8 +498,12 @@ describe("O3: the close waits for the offline queue", () => {
       run: () => Promise.reject(new Error("IndexedDB broken")),
     });
     await expect(
-      closeShiftWithApproval(OUTLET, approval, null, "shift-close:q2", () =>
-        undefined,
+      closeShiftWithApproval(
+        OUTLET,
+        approval,
+        null,
+        "shift-close:q2",
+        () => undefined,
       ),
     ).rejects.toThrow();
     expect(closeCalls()).toHaveLength(0);

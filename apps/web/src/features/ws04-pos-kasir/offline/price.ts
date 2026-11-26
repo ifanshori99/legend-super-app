@@ -79,7 +79,11 @@ function priceLine(
   );
   if (!item) throw new OfflineSaleError("ITEM_NOT_IN_KIT");
   if (item.soldOut) throw new OfflineSaleError("ITEM_SOLD_OUT");
-  if (!Number.isInteger(line.quantity) || line.quantity < 1 || line.quantity > 99)
+  if (
+    !Number.isInteger(line.quantity) ||
+    line.quantity < 1 ||
+    line.quantity > 99
+  )
     throw new OfflineSaleError("QUANTITY_INVALID");
   let unitPriceIdr: number;
   let name = item.name;
@@ -93,7 +97,10 @@ function priceLine(
     unitPriceIdr = variant.priceIdr;
     name = `${item.name} ${variant.name}`.slice(0, 150);
   }
-  if (new Set(line.modifierIds.map((id) => id.toLowerCase())).size !== line.modifierIds.length)
+  if (
+    new Set(line.modifierIds.map((id) => id.toLowerCase())).size !==
+    line.modifierIds.length
+  )
     throw new OfflineSaleError("MODIFIER_REPEATED");
   const modifiers: OfflineSaleLine["modifiers"] = [];
   for (const modifierId of line.modifierIds) {
@@ -110,7 +117,9 @@ function priceLine(
     });
   }
   for (const group of item.modifierGroups) {
-    const chosen = modifiers.filter((row) => same(row.groupId, group.id)).length;
+    const chosen = modifiers.filter((row) =>
+      same(row.groupId, group.id),
+    ).length;
     const min = group.required ? Math.max(group.min, 1) : group.min;
     if (chosen < min || (group.max > 0 && chosen > group.max))
       throw new OfflineSaleError("MODIFIER_CHOICE_INVALID");
