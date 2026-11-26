@@ -9,9 +9,13 @@
 - W3 2e2ac5473 review uang GAGAL (retry tutup shift) -> perbaikan jalan; keputusan CTO di docs/qa/1268-w3-review.md.
 - WFC W1b jalan (lanjut dari batas giliran).
 - Malam: `int/rc2` db8f4b391 (push) = + W3 (b268e4c24) + E3 0528 (4f4354c2b) + WFC W1b. Gate tiap gabung lulus.
-- Jalan: W5 `ws/1268-w5` (Opus), EDC slip unik+nominal kunci `ws/1268-edc` (.15 naik P1, .17), E3b gerbang cloud `ws/1269-e3b` (osqou.48, serah terima di side-session-notes/e3b-handoff.md).
-- Antre slot: F1 failover (Opus K, migrasi 0529 bila EDC tanpa migrasi), perbaikan mockup F6a (docs/qa/1271-f6a-audit.md), W2 WFC (syarat: QRIS saja online, cek lantai per slot), W6.
-- Menunggu founder: tetap mini PC atau hitung opsi cloud saja (tablet tetap dipakai).
+- Larut malam: EDC re-review uang LULUS (93476ba6b) -> digabung lokal `int/rc2` cdcecce3d (belum push, gate jalan: typecheck api+web, edc-standalone, payment-intent api+web, 3 test override). Lulus -> push, hapus `../legend-1268-edc`, tutup legend-9yw78.15/.17.
+- Keputusan CTO W5 (docs/qa/1268-w5-review.md): guard kasir (waiter ke captain), tombol per izin, draft tanpa bayar "Lanjutkan di kasir", peringatan tautan lama hanya bila daftar < 20 detik.
+- Jalan (agent edit 3): W5 perbaikan no. 1-4 `ws/1268-w5` -> re-review reviewer sama -> gabung -> W6 (9yw78.10). E3b gerbang cloud `ws/1269-e3b` (dari 4f4354c2b; serah terima side-session-notes/e3b-handoff.md) -> review K architect. F1 failover `ws/1271-f1` (dari db8f4b391, migrasi 0529) -> review K xhigh -> F2/F3/F5 paralel -> F4 -> F6b -> F7. F0 docs kapan saja.
+- Mockup F6a DISETUJUI CTO (d9fd9e005, docs/qa/1271-f6a-audit.md).
+- Antre: W2 WFC (QRIS saja online, cek lantai per slot), W6, E4/E5/E7/E9/E10/E11, osqou.36/.37, D1->D2->D4/D5, C2b/C4b/W-UI (mockup dulu), kartu P3.
+- Akhir gelombang: suite penuh `node scripts/test-shards.mjs --chunks 8 --lanes 2 --heavy` di rc1, session-usage, hapus worktree tergabung. Jadwal rilis dihitung ulang sesudah kartu failover (sebelumnya 11-17 Des).
+- Menunggu founder: tetap mini PC (saran CTO) atau hitung opsi cloud saja (tablet tetap dipakai). Lain: VM/domain/Cloudflare, kredensial runtime.env, fee Finance, mini PC+UPS, printer, ECR bank, denah WFC, Wi-Fi, konsultan pajak.
 
 ## CTO 26 Nov (kuota pulih, lanjut)
 
