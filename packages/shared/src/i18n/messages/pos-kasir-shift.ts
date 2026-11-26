@@ -109,6 +109,10 @@ export const posKasirShiftMessages = {
     dialogTitle: "Supervisor menutup shift",
     dialogSummary:
       "Supervisor memilih namanya, menulis catatan, lalu memasukkan PIN di perangkat ini. Saldo sistem dan selisih tidak ditampilkan di layar kasir.",
+    noteLabel: "Catatan selisih (wajib bila ada selisih)",
+    overrideFailed:
+      "Persetujuan belum terkirim. Periksa koneksi, lalu masukkan PIN lagi.",
+    retry: "Coba lagi",
     pinRejected:
       "PIN atau persetujuan supervisor ditolak. Periksa pilihan supervisor dan PIN, lalu coba lagi.",
     retryHint:

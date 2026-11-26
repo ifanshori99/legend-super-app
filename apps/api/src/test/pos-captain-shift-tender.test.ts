@@ -155,7 +155,11 @@ describe("1268 W3 captain order non-cash tender shift", () => {
     expect(await shiftOfTenders(order.id)).toEqual([]);
   });
 
-  it("prints the receiving cashier on the receipt, not the waiter who submitted", async () => {
+  /** Pay a captain order in cash, issue its receipt, read the cashier name. */
+  async function receiptCashier(options: {
+    keepOrderShift: boolean;
+    issuedAt: string;
+  }) {
     const order = await waiterOrder();
     const orderUuid = ulidToUuid(order.id);
     const { rows: waiters } = await owner.query<{ id: string; name: string }>(
@@ -167,9 +171,18 @@ describe("1268 W3 captain order non-cash tender shift", () => {
       [fixture.staff.userId],
     );
     expect(waiters[0]!.name.trim()).not.toBe(cashiers[0]!.name.trim());
+    const { rows: shifts } = await owner.query<{ id: string }>(
+      "SELECT id FROM pos_shifts WHERE tenant_id = $1 AND cashier_id = $2 AND status = 'open'",
+      [fixture.tenant.tenantId, fixture.staff.userId],
+    );
     await owner.query(
-      "UPDATE pos_orders SET cashier_id = $3 WHERE tenant_id = $1 AND order_id = $2",
-      [fixture.tenant.tenantId, orderUuid, waiters[0]!.id],
+      "UPDATE pos_orders SET cashier_id = $3, shift_id = $4 WHERE tenant_id = $1 AND order_id = $2",
+      [
+        fixture.tenant.tenantId,
+        orderUuid,
+        waiters[0]!.id,
+        options.keepOrderShift ? shifts[0]!.id : null,
+      ],
     );
     const paid = await fixture.tender(order.id, order.status, "cash", 33_000);
     expect(paid.status, JSON.stringify(paid.body)).toBe(201);
@@ -191,7 +204,7 @@ describe("1268 W3 captain order non-cash tender shift", () => {
       `INSERT INTO pos_receipts
          (tenant_id, outlet_id, order_id, sequence_id, device_id, number, sequence_number,
           status, issued_at, outlet_snapshot)
-       VALUES ($1, $2, $3::uuid, $4, $5, $6, 1, 'issued', now(), $7::jsonb)
+       VALUES ($1, $2, $3::uuid, $4, $5, $6, 1, 'issued', $8::timestamptz, $7::jsonb)
        RETURNING id`,
       [
         fixture.tenant.tenantId,
@@ -206,6 +219,7 @@ describe("1268 W3 captain order non-cash tender shift", () => {
           legalName: null,
           npwpLast4: null,
         }),
+        options.issuedAt,
       ],
     );
     const document = await getReceiptDocument(
@@ -213,6 +227,34 @@ describe("1268 W3 captain order non-cash tender shift", () => {
       outletIdSchema.parse(fixture.tenant.outletId),
       rows[0]!.id,
     );
-    expect(document.cashierName).toBe(cashiers[0]!.name.trim());
+    return {
+      name: document.cashierName,
+      cashier: cashiers[0]!.name.trim(),
+      waiter: waiters[0]!.name.trim(),
+    };
+  }
+
+  it("prints the receiving cashier on the receipt, not the waiter who submitted", async () => {
+    const result = await receiptCashier({
+      keepOrderShift: false,
+      issuedAt: new Date().toISOString(),
+    });
+    expect(result.name).toBe(result.cashier);
+  });
+
+  it("keeps the name of a receipt issued before the release day", async () => {
+    const result = await receiptCashier({
+      keepOrderShift: false,
+      issuedAt: "2026-11-01T03:00:00.000Z",
+    });
+    expect(result.name).toBe(result.waiter);
+  });
+
+  it("keeps the order's own cashier when the order carries its own shift", async () => {
+    const result = await receiptCashier({
+      keepOrderShift: true,
+      issuedAt: new Date().toISOString(),
+    });
+    expect(result.name).toBe(result.waiter);
   });
 });

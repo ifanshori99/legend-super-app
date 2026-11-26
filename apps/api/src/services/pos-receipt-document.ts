@@ -62,6 +62,9 @@ function printableAddress(address: string): string {
   return trimmed.slice(0, MAX_ADDRESS);
 }
 
+/** First day the receipt names the cashier who took the money (1268 W3). */
+const PAYER_CASHIER_FROM = "2026-11-26T00:00:00.000Z";
+
 /** Receipt or kuitansi built from the order of `receipt`. */
 export async function buildReceiptDocument(
   tx: Tx,
@@ -86,33 +89,40 @@ export async function buildReceiptDocument(
   const address = printableAddress(outlet.outletAddress);
 
   const [pos] = await tx
-    .select({ cashierId: posOrders.cashierId })
+    .select({ cashierId: posOrders.cashierId, shiftId: posOrders.shiftId })
     .from(posOrders)
     .where(
       and(eq(posOrders.tenantId, tenantId), eq(posOrders.orderId, order.id)),
     );
   // 1268 W3: the cashier is who took the money. A captain order a waiter
-  // submitted names the waiter on the order; its captured tender names the
-  // receiving cashier's shift, which wins.
-  const [takenOn] = await tx
-    .select({ cashierId: posShifts.cashierId })
-    .from(posOrderTenders)
-    .innerJoin(
-      posShifts,
-      and(
-        eq(posShifts.tenantId, posOrderTenders.tenantId),
-        eq(posShifts.id, posOrderTenders.shiftId),
-      ),
-    )
-    .where(
-      and(
-        eq(posOrderTenders.tenantId, tenantId),
-        eq(posOrderTenders.orderId, order.id),
-        eq(posOrderTenders.status, "captured"),
-      ),
-    )
-    .orderBy(desc(posOrderTenders.resolvedAt))
-    .limit(1);
+  // submitted carries no shift; its captured tender names the receiving
+  // cashier's shift, which wins. Only for receipts issued from the release
+  // day on, and only for such orders: a receipt issued before (or an order
+  // with its own shift) prints the same name on every reprint.
+  const [takenOn] =
+    pos &&
+    pos.shiftId === null &&
+    Date.parse(receipt.issuedAt) >= Date.parse(PAYER_CASHIER_FROM)
+      ? await tx
+          .select({ cashierId: posShifts.cashierId })
+          .from(posOrderTenders)
+          .innerJoin(
+            posShifts,
+            and(
+              eq(posShifts.tenantId, posOrderTenders.tenantId),
+              eq(posShifts.id, posOrderTenders.shiftId),
+            ),
+          )
+          .where(
+            and(
+              eq(posOrderTenders.tenantId, tenantId),
+              eq(posOrderTenders.orderId, order.id),
+              eq(posOrderTenders.status, "captured"),
+            ),
+          )
+          .orderBy(desc(posOrderTenders.resolvedAt))
+          .limit(1)
+      : [];
   const cashierId = takenOn?.cashierId ?? pos?.cashierId ?? null;
   let cashierName: string | null = null;
   if (cashierId) {

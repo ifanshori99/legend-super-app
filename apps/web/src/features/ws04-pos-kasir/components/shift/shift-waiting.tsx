@@ -6,7 +6,7 @@ import { Money } from "@/components/ui/money";
 import { useOutletClock } from "@/lib/tenant-context";
 import { ApiError } from "@/lib/api/errors";
 import { ApprovalDialog } from "../../../ws04-pos-correction/components/approval-dialog";
-import { isCloseStale, isQrisHoldBlock } from "../../shift-api";
+import { isCloseSettled, isCloseStale, isQrisHoldBlock } from "../../shift-api";
 import {
   useActiveShift,
   useCloseShiftWithApproval,
@@ -145,8 +145,15 @@ export function ShiftWaiting({ shift }: { shift: WaitingShift }) {
         close.error.status >= 400 &&
         close.error.status < 500
         ? t("posKasirShift.close.pinRejected")
-        : t("posKasirShift.close.retryHint")
+        : t("posKasirShift.close.overrideFailed")
       : null;
+  // The approval was accepted but its answer is unknown: no dialog, no new PIN,
+  // only "Coba lagi" with the stored body. Closed by a lost answer: read again.
+  const dialogOpen =
+    closing &&
+    !close.canRetry &&
+    !close.isSuccess &&
+    !isCloseSettled(close.error);
   const recount = () => {
     close.reset();
     startRecount(shift.id);
@@ -242,7 +249,19 @@ export function ShiftWaiting({ shift }: { shift: WaitingShift }) {
                   {t("posKasirShift.submitted.recount")}
                 </Button>
               )}
-              {closeCount && (
+              {closeCount && close.canRetry && (
+                <Button
+                  type="button"
+                  loading={close.isPending}
+                  onClick={() => {
+                    setClosing(false);
+                    close.retry();
+                  }}
+                >
+                  {t("posKasirShift.close.retry")}
+                </Button>
+              )}
+              {closeCount && !close.canRetry && (
                 <Button
                   type="button"
                   loading={close.isPending}
@@ -292,6 +311,12 @@ export function ShiftWaiting({ shift }: { shift: WaitingShift }) {
                 </Button>
               </Notice>
             )}
+            {close.canRetry && !close.isPending && (
+              <Notice
+                tone="warning"
+                title={t("posKasirShift.close.retryHint")}
+              />
+            )}
             {holdBlocked && (
               <Notice tone="warning" title={t("posKasirShift.close.holdTitle")}>
                 {t("posKasirShift.close.holdBody")}
@@ -302,11 +327,12 @@ export function ShiftWaiting({ shift }: { shift: WaitingShift }) {
       </PosTwoPane>
       {closeCount && (
         <ApprovalDialog
-          open={closing && !close.isSuccess}
+          open={dialogOpen}
           onOpenChange={setClosing}
           action="cash_shift_close"
           title={t("posKasirShift.close.dialogTitle")}
           summary={t("posKasirShift.close.dialogSummary")}
+          reasonLabel={t("posKasirShift.close.noteLabel")}
           pending={close.isPending}
           error={dialogError}
           onSubmit={({ approverUserId, pin, reason }) =>

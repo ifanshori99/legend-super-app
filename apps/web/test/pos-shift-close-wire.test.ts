@@ -55,10 +55,12 @@ import {
   discardOwnCount,
   fetchActiveShift,
   fetchSupervisors,
+  isCloseSettled,
   isCloseStale,
   isQrisHoldBlock,
   submitBlindCount,
 } from "@/features/ws04-pos-kasir/shift-api";
+import { createCloseFlow } from "@/features/ws04-pos-kasir/shift-close-flow";
 import {
   fetchOwnCountSummary,
   forceCloseShift,
@@ -339,6 +341,114 @@ describe("the supervisor close on the cashier's device", () => {
       ),
     ).rejects.toMatchObject({ status: 403 });
     expect(closeCalls()).toHaveLength(0);
+  });
+});
+
+describe("the close retry (review K 1)", () => {
+  const OTHER_SUPERVISOR = "0a1b2c3d-0000-4000-8000-0000000000d2";
+  const flow = () => createCloseFlow(OUTLET);
+  const first = { ...approval, noteRequired: true };
+  const different = {
+    ...first,
+    approverUserId: OTHER_SUPERVISOR,
+    reason: "Alasan lain sama sekali",
+    pin: "999999",
+  };
+
+  beforeEach(async () => {
+    await submitBlindCount(
+      OUTLET,
+      { shiftId: SHIFT, counts: ZERO, otherAmountIdr: 0 },
+      "shift-count:retry",
+    );
+    net.calls.length = 0;
+  });
+
+  it("a lost close answer retries the stored body exactly, with no PIN and one approval", async () => {
+    let lost = true;
+    server({
+      close: () => {
+        if (lost) throw new ApiError(0, "NETWORK", "offline");
+        return { data: { id: SHIFT } };
+      },
+    });
+    const attempt = flow();
+    await expect(attempt.run(first)).rejects.toThrow();
+    // The approval is kept without its PIN; the retry needs no new one.
+    expect(attempt.pending()).toEqual({ ...first, pin: "" });
+    lost = false;
+    await attempt.run(different);
+    expect(overrideCalls()).toHaveLength(1);
+    expect(closeCalls()).toHaveLength(2);
+    expect(closeCalls()[1]!.body).toEqual(closeCalls()[0]!.body);
+    expect(closeCalls()[1]!.body).toMatchObject({
+      approvedBy: SUPERVISOR,
+      varianceNote: first.reason,
+    });
+    expect(attempt.pending()).toBeNull();
+  });
+
+  it("a failure before the approval keeps nothing: the PIN is asked again", async () => {
+    net.respond = (call) => {
+      if (call.path === "/api/pos-overrides")
+        throw new ApiError(503, "UNAVAILABLE", "down");
+      throw new Error(`unexpected ${call.path}`);
+    };
+    const attempt = flow();
+    await expect(attempt.run(first)).rejects.toThrow();
+    expect(attempt.pending()).toBeNull();
+    expect(closeCalls()).toHaveLength(0);
+  });
+
+  it.each(["SHIFT_ALREADY_CLOSED", "IDEMPOTENCY_KEY_REUSED"])(
+    "%s ends the retry: nothing stays to repeat, the shift is read again",
+    async (code) => {
+      let lost = true;
+      server({
+        close: () => {
+          if (lost) throw new ApiError(0, "NETWORK", "offline");
+          throw new ApiError(409, code, "closed");
+        },
+      });
+      const attempt = flow();
+      await expect(attempt.run(first)).rejects.toThrow();
+      lost = false;
+      const error = await attempt.run(first).catch((e: unknown) => e);
+      expect(isCloseSettled(error)).toBe(true);
+      expect(attempt.pending()).toBeNull();
+    },
+  );
+
+  it("a stale count drops the approval", async () => {
+    server({
+      close: () => {
+        throw new ApiError(409, "SHIFT_COUNT_STALE", "stale");
+      },
+    });
+    const attempt = flow();
+    await expect(attempt.run(first)).rejects.toThrow();
+    expect(attempt.pending()).toBeNull();
+  });
+});
+
+describe("the count is kept per device and shift", () => {
+  it("lives in localStorage, not a tab", async () => {
+    const store = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+      removeItem: (k: string) => void store.delete(k),
+    });
+    vi.stubGlobal("sessionStorage", undefined);
+    await submitBlindCount(
+      OUTLET,
+      { shiftId: SHIFT, counts: ZERO, otherAmountIdr: 0 },
+      "shift-count:device",
+    );
+    expect([...store.keys()]).toEqual([
+      `pos-kasir:shift-count:${OUTLET}:${SHIFT}`,
+    ]);
+    vi.unstubAllGlobals();
   });
 });
 

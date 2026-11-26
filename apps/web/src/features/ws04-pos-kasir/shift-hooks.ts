@@ -2,20 +2,21 @@
 // ./hooks.ts, brief 1268 W0). Same rules as ./hooks.ts: components import
 // hooks and never touch the api or the query cache directly.
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useRef } from "react";
+import { useMemo } from "react";
 import { businessDateOf } from "@starter/shared/core";
 import { useOutletClock } from "@/lib/tenant-context";
 import { useIntentKey, useOutletId, useReady } from "./hooks";
 import {
   approveShiftClose,
   closeDay,
-  closeShiftWithApproval,
   discardOwnCount,
+  isCloseSettled,
   openShift,
   recordCashMovement,
   requestOverride,
   submitBlindCount,
 } from "./shift-api";
+import { createCloseFlow } from "./shift-close-flow";
 import {
   decideHeldCashMovement,
   forceCloseShift,
@@ -51,7 +52,6 @@ import type {
   RequestOverrideInput,
   SubmitBlindCountInput,
 } from "./types";
-import { ApiError } from "@/lib/api/errors";
 
 // ---- Shift -----------------------------------------------------------------
 
@@ -149,50 +149,39 @@ export function useStartRecount() {
 
 /**
  * The supervisor closes the shift on the cashier's device: PIN override of the
- * count, then the close. Retries repeat the same close key and reuse the
- * approval that was already given (a lost answer closes once, never twice, and
- * does not ask for the PIN again). A stale count drops both, so the next try
- * needs a fresh count and a fresh approval.
+ * count, then the close (`./shift-close-flow.ts`). Once the PIN was accepted a
+ * retry (`retry`) sends the stored body again with no new PIN, so a lost answer
+ * closes once. A stale count or a definite refusal drops the approval; "already
+ * closed" reads the shift again.
  */
 export function useCloseShiftWithApproval() {
   const outletId = useOutletId();
   const queryClient = useQueryClient();
-  const intent = useIntentKey("shift-close");
-  const approval = useRef<{ countId: string; overrideId: string } | null>(null);
-  return useMutation({
-    mutationFn: async (input: CloseShiftWithApprovalInput) => {
-      const reuse =
-        approval.current?.countId === input.countId
-          ? { overrideId: approval.current.overrideId }
-          : null;
-      await closeShiftWithApproval(
-        outletId,
-        input,
-        reuse,
-        intent.keyFor({ shiftId: input.shiftId, countId: input.countId }),
-        (overrideId) => {
-          approval.current = { countId: input.countId, overrideId };
-        },
-      );
-      intent.clear();
-      approval.current = null;
+  const flow = useMemo(() => createCloseFlow(outletId), [outletId]);
+  const refresh = (shiftId: string) => {
+    void queryClient.invalidateQueries({
+      queryKey: posKasirKeys.ownCount(outletId, shiftId),
+    });
+    return queryClient.invalidateQueries({
+      queryKey: posKasirKeys.shift(outletId),
+    });
+  };
+  const mutation = useMutation({
+    mutationFn: (input: CloseShiftWithApprovalInput) => flow.run(input),
+    onError: (error, input) => {
+      if (isCloseSettled(error)) void refresh(input.shiftId);
     },
-    onError: (error) => {
-      // A refusal is final for this count; only a lost answer may repeat.
-      if (error instanceof ApiError && error.status < 500 && error.status > 0) {
-        intent.clear();
-        approval.current = null;
-      }
-    },
-    onSuccess: (_result, input) => {
-      void queryClient.invalidateQueries({
-        queryKey: posKasirKeys.ownCount(outletId, input.shiftId),
-      });
-      return queryClient.invalidateQueries({
-        queryKey: posKasirKeys.shift(outletId),
-      });
-    },
+    onSuccess: (_result, input) => refresh(input.shiftId),
   });
+  const pending = flow.pending();
+  return {
+    ...mutation,
+    /** The approval was given but the answer is unknown: only "retry" is left. */
+    canRetry: mutation.isError && pending !== null,
+    retry: () => {
+      if (pending) mutation.mutate(pending);
+    },
+  };
 }
 
 /** The cashier's latest count (number and counted figure; never a system figure). */

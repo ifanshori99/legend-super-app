@@ -31,6 +31,8 @@ export type SupervisorPinDialogProps = {
   error?: string | null;
   /** Shortest reason accepted; the default only asks for a non-empty one. */
   minReasonLength?: number;
+  /** Label of the reason field when it is more than a plain reason. */
+  reasonLabel?: string;
 };
 
 function PinDialogBody({
@@ -42,6 +44,7 @@ function PinDialogBody({
   pending,
   error,
   minReasonLength,
+  reasonLabel,
 }: Omit<SupervisorPinDialogProps, "open" | "onOpenChange"> & {
   onCancel: () => void;
 }) {
@@ -88,7 +91,7 @@ function PinDialogBody({
       </DialogHeader>
       {details}
       <FormField
-        label={t("posKasirCommon.pinDialog.reasonLabel")}
+        label={reasonLabel ?? t("posKasirCommon.pinDialog.reasonLabel")}
         id={reasonId}
         required
         error={reasonError}

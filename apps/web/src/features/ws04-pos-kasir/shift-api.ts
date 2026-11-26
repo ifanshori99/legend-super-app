@@ -389,6 +389,11 @@ const CLOSE_STALE_CODES = new Set([
 ]);
 export const isCloseStale = (error: unknown): boolean =>
   error instanceof ApiError && CLOSE_STALE_CODES.has(error.code);
+/** The shift is already closed (maybe by this very request): read it again. */
+export const isCloseSettled = (error: unknown): boolean =>
+  error instanceof ApiError &&
+  (error.code === "SHIFT_ALREADY_CLOSED" ||
+    error.code === "IDEMPOTENCY_KEY_REUSED");
 export const isQrisHoldBlock = (error: unknown): boolean =>
   error instanceof ApiError && error.code === "QRIS_HOLD_ACTIVE";
 

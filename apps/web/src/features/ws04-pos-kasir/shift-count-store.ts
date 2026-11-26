@@ -19,7 +19,7 @@ const keyOf = (outletId: string, shiftId: string) =>
 
 function browserStorage(): StorageLike | null {
   try {
-    return typeof sessionStorage === "undefined" ? null : sessionStorage;
+    return typeof localStorage === "undefined" ? null : localStorage;
   } catch {
     return null;
   }
