@@ -85,6 +85,7 @@ import {
   posShiftIdSchema,
   posShiftReportSchema,
   posShiftSchema,
+  posShiftStatusSchema,
   posTenderMethodSchema,
   posTenderResultSchema,
   posVoidSchema,
@@ -694,6 +695,8 @@ export const listPosShifts = defineEndpoint({
   query: cursorPageQuerySchema.extend({
     businessDate: businessDateSchema.optional(),
     deviceId: uuidSchema.optional(),
+    /** O5 (2): `open` lists the shifts still open, of any business day. */
+    status: posShiftStatusSchema.optional(),
   }),
   response: cursorPageSchema(posShiftSchema),
 });

@@ -524,6 +524,7 @@ export async function listPosShifts(
     if (query.businessDate)
       filters.push(eq(posShifts.businessDate, query.businessDate));
     if (query.deviceId) filters.push(eq(posShifts.deviceId, query.deviceId));
+    if (query.status) filters.push(eq(posShifts.status, query.status));
     if (query.cursor) {
       const after = decodeTimeCursor(query.cursor);
       filters.push(

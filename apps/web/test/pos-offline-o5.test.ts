@@ -116,8 +116,10 @@ describe("O5 (2): the day close lists the shifts still open since before today",
       "2026-11-24",
     ]);
     expect(net.calls).toHaveLength(3);
-    for (const call of net.calls)
+    for (const call of net.calls) {
       expect(call.query).not.toHaveProperty("businessDate");
+      expect(call.query?.status).toBe("open");
+    }
     expect(net.calls.map((call) => call.query?.cursor)).toEqual([
       undefined,
       "c1",

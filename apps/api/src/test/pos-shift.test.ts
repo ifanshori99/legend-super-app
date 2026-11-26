@@ -3708,6 +3708,61 @@ describe("POS-03 who can read a shift", () => {
     expect((await report(cashier, randomUUID())).status).toBe(404);
   });
 
+  it("O5 (2): status=open lists only open shifts (no business-day limit), across pages; an unknown status is a validation error", async () => {
+    const open = await newCashier("Kasir Buka");
+    const done = await newCashier("Kasir Tutup");
+    const shiftOpen = await openShift(open);
+    const shiftDone = await openShift(done);
+    const closed = await closeShift(done, shiftDone.id, FLOAT_IDR);
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+    const everything = await list(viewAllUser, "?limit=100");
+    const everyId = everything.body.data.map((s: { id: string }) => s.id);
+    expect(everyId).toEqual(
+      expect.arrayContaining([shiftOpen.id, shiftDone.id]),
+    );
+
+    const onlyOpen = await list(viewAllUser, "?limit=100&status=open");
+    expect(onlyOpen.status).toBe(200);
+    const openIds = onlyOpen.body.data.map((s: { id: string }) => s.id);
+    expect(openIds).toContain(shiftOpen.id);
+    expect(openIds).not.toContain(shiftDone.id);
+    for (const s of onlyOpen.body.data) expect(s.status).toBe("open");
+
+    // Paging keeps the filter: one open row per page, never a closed one.
+    const seen: string[] = [];
+    let cursor = "";
+    for (let guard = 0; guard < 200; guard += 1) {
+      const page = await list(
+        viewAllUser,
+        `?limit=1&status=open${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+      );
+      expect(page.status).toBe(200);
+      for (const s of page.body.data) {
+        expect(s.status).toBe("open");
+        seen.push(s.id);
+      }
+      if (!page.body.meta.nextCursor) break;
+      cursor = page.body.meta.nextCursor;
+    }
+    expect(seen).toContain(shiftOpen.id);
+    expect(seen).not.toContain(shiftDone.id);
+
+    // No business-day limit unless asked: a date still narrows the list.
+    const otherDay = await list(
+      viewAllUser,
+      "?limit=100&status=open&businessDate=2001-01-01",
+    );
+    expect(otherDay.body.data).toEqual([]);
+
+    const onlyClosed = await list(viewAllUser, "?limit=100&status=closed");
+    const closedIds = onlyClosed.body.data.map((s: { id: string }) => s.id);
+    expect(closedIds).toContain(shiftDone.id);
+    expect(closedIds).not.toContain(shiftOpen.id);
+
+    const invalid = await list(viewAllUser, "?status=paused");
+    expect(invalid.status).toBe(VALIDATION_STATUS);
+  });
+
   it("lists only the caller's own shifts for an operate-only cashier, all shifts for view_all, with filters, paging and an empty state", async () => {
     const a = await newCashier("Kasir A");
     const b = await newCashier("Kasir B");

@@ -228,7 +228,8 @@ export async function fetchActiveShift(
  * Review K P1 + O5 (2): every shift still open, a supervisor sees every
  * cashier's, for the links to their force close on the day close. No business
  * day limit: a shift left open since yesterday (or earlier) is listed too, so
- * the day cannot be closed past it unseen. Reads every page (newest first).
+ * the day cannot be closed past it unseen. The API filters `status=open`; every
+ * page is read (newest first).
  * `businessDate` only names the day on screen; it is not sent.
  */
 export async function fetchOpenShiftsOfDay(
@@ -244,7 +245,11 @@ export async function fetchOpenShiftsOfDay(
       listPosShifts,
       {
         params: { outletId },
-        query: { limit: PAGE_LIMIT_MAX, ...(cursor ? { cursor } : {}) },
+        query: {
+          limit: PAGE_LIMIT_MAX,
+          status: "open",
+          ...(cursor ? { cursor } : {}),
+        },
       },
       { signal },
     );
