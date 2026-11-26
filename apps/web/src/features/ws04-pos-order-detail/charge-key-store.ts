@@ -55,9 +55,37 @@ const isQris = (signature: string) => signature.startsWith("qris:");
  * What the server's charge says about its gateway code right now: the code's
  * id and whether it ended unpaid (expired or failed).
  */
-export type ChargeCodeFacts = { paymentId: string | null; codeEnded: boolean };
+export type ChargeCodeFacts = {
+  paymentId: string | null;
+  codeEnded: boolean;
+  /**
+   * The card sales the server lists as approved for exactly this charge (its
+   * amount, by card on a terminal), with their terminal.
+   */
+  approvedSales?: readonly { id: string; terminalId: string }[];
+};
 
 const NO_CODE: ChargeCodeFacts = { paymentId: null, codeEnded: false };
+
+/**
+ * A card start without an answer (`edc:<terminal>`) may move on to recording
+ * a sale (`edc_card:<id>`) only when the server lists that sale approved for
+ * exactly this charge on the same terminal: it is the one money result of the
+ * start, and the server records one sale once (legend-f1mmf web review P1).
+ */
+function startAnswered(
+  current: string,
+  next: string,
+  facts: ChargeCodeFacts,
+): boolean {
+  if (!current.startsWith("edc:") || !next.startsWith("edc_card:"))
+    return false;
+  const terminalId = current.slice("edc:".length);
+  const saleId = next.slice("edc_card:".length);
+  return (facts.approvedSales ?? []).some(
+    (sale) => sale.id === saleId && sale.terminalId === terminalId,
+  );
+}
 
 /**
  * A QRIS request named the code the server had when it was sent. A server
@@ -114,7 +142,9 @@ export function beginAttempt(
   const current = read(storage, scope);
   if (current && current.signature !== signature) {
     const free =
-      freed(current, facts) || (isQris(current.signature) && isQris(signature));
+      freed(current, facts) ||
+      (isQris(current.signature) && isQris(signature)) ||
+      startAnswered(current.signature, signature, facts);
     if (!free) return { key: current.key, conflict: true, firstSend: false };
   }
   const replay = current?.signature === signature;

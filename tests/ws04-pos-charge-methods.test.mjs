@@ -435,10 +435,11 @@ describe("legend-f1mmf blockers a, b, c, e", () => {
     for (const status of [0, 408, 500, 504])
       assert.equal(collectKeyAfter(status, true), "keep", String(status));
     assert.equal(collectKeyAfter(409, true), "refused");
-    // No EDC agent here: nothing was written on the first send.
-    assert.equal(edcStartKeyAfter(503, "EDC_AGENT_NOT_READY", true), "end");
-    assert.equal(edcStartKeyAfter(503, "EDC_AGENT_NOT_READY", false), "keep");
-    assert.equal(edcStartKeyAfter(503, "OTHER", true), "keep");
+    // P3-1: the agent also answers EDC_AGENT_NOT_READY after the sale was
+    // written ahead: a 503 is unknown, the key stays, the server is read first.
+    assert.equal(edcStartKeyAfter(503, true), "keep");
+    assert.equal(edcStartKeyAfter(503, false), "keep");
+    assert.equal(edcStartKeyAfter(401, true), "end");
   });
 
   test("(b) beginAttempt says whether the key was sent before", async () => {
@@ -505,5 +506,63 @@ describe("legend-f1mmf blockers a, b, c, e", () => {
       terminalId: "t1",
     });
     assert.equal(terminalOfSignature(sig), "t1");
+  });
+});
+
+describe("legend-f1mmf web review P1: a card start that answered late", () => {
+  const storage = () => {
+    const map = new Map();
+    return {
+      getItem: (k) => map.get(k) ?? null,
+      setItem: (k, v) => void map.set(k, v),
+      removeItem: (k) => void map.delete(k),
+    };
+  };
+  let n = 500;
+  const uuid = () => `00000000-0000-4000-8000-${String(++n).padStart(12, "0")}`;
+  const scope = { outletId: "o1", chargeId: "c1" };
+
+  test("the start's key moves to recording only the approved matching sale on its terminal", async () => {
+    const { beginAttempt, markChecked } = await keys();
+    const { codeFacts, EDC_START_DEADLINE_MS } = await logic();
+    // The agent waits up to 120 s for the terminal; the screen waits longer.
+    assert.ok(EDC_START_DEADLINE_MS >= 150_000);
+    const s = storage();
+    const start = beginAttempt(s, scope, "edc:t1", uuid);
+    markChecked(s, scope);
+    const approved = (extra) =>
+      codeFacts(
+        charge({
+          edcSales: [
+            sale("approved", { id: "s1", terminalId: "t1", ...extra }),
+          ],
+        }),
+      );
+    // Another terminal, another amount, a flagged sale or none: still held.
+    for (const facts of [
+      codeFacts(charge()),
+      approved({ terminalId: "t2" }),
+      approved({ amountIdr: 9000 }),
+      approved({ needsReconciliation: true }),
+    ])
+      assert.equal(
+        beginAttempt(s, scope, "edc_card:s1", uuid, facts).conflict,
+        true,
+      );
+    // Another sale id than the one approved: held.
+    assert.equal(
+      beginAttempt(s, scope, "edc_card:s2", uuid, approved()).conflict,
+      true,
+    );
+    const record = beginAttempt(s, scope, "edc_card:s1", uuid, approved());
+    assert.equal(record.conflict, false);
+    assert.notEqual(record.key, start.key);
+    // Cash never follows a card start this way.
+    const t = storage();
+    beginAttempt(t, scope, "edc:t1", uuid);
+    assert.equal(
+      beginAttempt(t, scope, "cash:10000", uuid, approved()).conflict,
+      true,
+    );
   });
 });

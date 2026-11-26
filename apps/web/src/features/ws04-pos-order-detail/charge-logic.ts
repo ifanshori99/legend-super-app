@@ -59,15 +59,13 @@ export function collectKeyAfter(
 }
 
 /**
- * The same for a card start. Without an EDC agent here the server wrote
- * nothing (503 EDC_AGENT_NOT_READY): on the key's first send it ends.
+ * The same for a card start. 503 EDC_AGENT_NOT_READY is not "nothing
+ * written": the agent also answers it after the sale was written ahead. It
+ * stays unknown like any 5xx; the screen reads the server first.
  */
 export function edcStartKeyAfter(
   status: number,
-  code: string,
   firstSend = false,
 ): "refused" | "keep" | "end" {
-  if (firstSend && status === 503 && code === "EDC_AGENT_NOT_READY")
-    return "end";
   return collectKeyAfter(status, firstSend);
 }
