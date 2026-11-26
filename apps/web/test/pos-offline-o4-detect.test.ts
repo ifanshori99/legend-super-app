@@ -3,7 +3,8 @@
 //
 // Assumptions (from the decision):
 // - Offline = the browser says offline, OR two pings of the API in a row fail
-//   at the network (timeout, refused). An HTTP 4xx/5xx answer is not offline.
+//   (timeout, refused, or an HTTP 5xx: Keputusan CTO 27 Nov, review K P2 3,
+//   a dead VPS behind the proxy answers 502). A 4xx answer is online.
 // - Back online only after a ping succeeds, not on the browser's word alone.
 // - A cart whose cloud order request is unclear is never sold offline; a new
 //   cart is.
@@ -45,11 +46,26 @@ describe("offline detection", () => {
     expect(nextReachability(off, "ping_ok").online).toBe(true);
   });
 
-  test("any HTTP answer is a reachable API, 4xx and 5xx included", async () => {
-    for (const status of [200, 404, 500, 503])
+  test("a 2xx-4xx answer is a reachable API; a 5xx answer is a failure", async () => {
+    for (const status of [200, 404])
       expect(await pingApi(async () => ({ status }), "https://api.test")).toBe(
         "ok",
       );
+    for (const status of [500, 502, 503, 522])
+      expect(await pingApi(async () => ({ status }), "https://api.test")).toBe(
+        "failed",
+      );
+  });
+
+  test("a proxy answering 502 twice turns the tablet offline; 200 brings it back", async () => {
+    const ping = (status: number) =>
+      pingApi(async () => ({ status }), "https://api.test").then((result) =>
+        result === "ok" ? "ping_ok" : "ping_failed",
+      );
+    const events: ReachEvent[] = [await ping(502), await ping(502)];
+    const down = run(events);
+    expect(down.online).toBe(false);
+    expect(nextReachability(down, await ping(200)).online).toBe(true);
   });
 
   test("a refused connection or a timeout is a network failure", async () => {
@@ -67,14 +83,18 @@ describe("offline detection", () => {
     expect(await pingApi(hang, "https://api.test", 20)).toBe("failed");
   });
 
-  test("the ping names the health path and sends no cookie", async () => {
-    const seen: { url: string; credentials: string }[] = [];
+  test("the ping reads the health status cross-origin and sends no cookie", async () => {
+    const seen: { url: string; credentials: string; mode: string }[] = [];
     await pingApi(async (url, init) => {
-      seen.push({ url, credentials: init.credentials });
-      return {};
+      seen.push({ url, credentials: init.credentials, mode: init.mode });
+      return { status: 200 };
     }, "https://api.test");
     expect(seen).toEqual([
-      { url: "https://api.test/api/health", credentials: "omit" },
+      {
+        url: "https://api.test/api/health",
+        credentials: "omit",
+        mode: "cors",
+      },
     ]);
   });
 });
@@ -125,6 +145,7 @@ describe("offline sale guard", () => {
         pending: snapshot(cart),
         submitting: false,
         cloudOrderId: null,
+        canAcceptPayment: true,
       }),
     ).toBe("uncertain_order");
   });
@@ -137,8 +158,48 @@ describe("offline sale guard", () => {
         pending: snapshot(cart),
         submitting: false,
         cloudOrderId: null,
+        canAcceptPayment: true,
       }),
     ).toBe("uncertain_order");
+  });
+
+  test("pending plus one more item is still the unclear cart", () => {
+    expect(
+      offlineSaleBlock({
+        lines: [...cart, line("roti", 1)],
+        channel: "dine_in",
+        pending: snapshot(cart),
+        submitting: false,
+        cloudOrderId: null,
+        canAcceptPayment: true,
+      }),
+    ).toBe("uncertain_order");
+  });
+
+  test("one line of the unclear order, other quantity, is still that cart", () => {
+    expect(
+      offlineSaleBlock({
+        lines: [line("kopi", 1, ["shot"])],
+        channel: "takeaway",
+        pending: snapshot(cart),
+        submitting: false,
+        cloudOrderId: null,
+        canAcceptPayment: true,
+      }),
+    ).toBe("uncertain_order");
+  });
+
+  test("a cashier who may not take payment does not sell offline", () => {
+    expect(
+      offlineSaleBlock({
+        lines: [line("kopi", 1)],
+        channel: "takeaway",
+        pending: null,
+        submitting: false,
+        cloudOrderId: null,
+        canAcceptPayment: false,
+      }),
+    ).toBe("noPermission");
   });
 
   test("a new cart sells offline even while an older request is unclear", () => {
@@ -149,6 +210,7 @@ describe("offline sale guard", () => {
         pending: snapshot(cart),
         submitting: false,
         cloudOrderId: null,
+        canAcceptPayment: true,
       }),
     ).toBeNull();
   });
@@ -160,6 +222,7 @@ describe("offline sale guard", () => {
       pending: null,
       submitting: false,
       cloudOrderId: null,
+      canAcceptPayment: true,
     };
     expect(offlineSaleBlock({ ...base, submitting: true })).toBe("sending");
     expect(offlineSaleBlock({ ...base, cloudOrderId: "01J" })).toBe(
