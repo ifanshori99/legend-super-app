@@ -24,13 +24,12 @@
 //   refuses the EDC with 409 (a human refunds one of the two).
 
 import { createHash } from "node:crypto";
-import { and, eq, inArray, or, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { AccessError } from "@starter/shared/access";
 import {
   assertOutletInScope,
   CoreError,
   outletIdSchema,
-  type OutletId,
   type ScopedTenantContext,
   type TenantId,
 } from "@starter/shared/core";

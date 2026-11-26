@@ -3,13 +3,21 @@
 // card sale) asks these guards inside its own transaction, after the charge
 // chain is locked (`lockChargeChain`).
 
-import { and, eq, inArray, or, sql } from "drizzle-orm";
-import type { OutletId, TenantId } from "@starter/shared/core";
+import { and, eq, inArray, lte, or, sql } from "drizzle-orm";
+import type {
+  OutletId,
+  ScopedTenantContext,
+  TenantId,
+} from "@starter/shared/core";
+import { db } from "../db/index.ts";
 import { edcTransactions } from "../db/schema/edc.ts";
+import { orderIssueCharges } from "../db/schema/kds-issues.ts";
 import { paymentIntents } from "../db/schema/payment.ts";
+import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import type { Tx } from "./menu-internals.ts";
 import { liveCodeWhere } from "./payment-live-code.ts";
+import { settleGatewayIntentNowDetailed } from "./payment.service.ts";
 
 /**
  * legend-f1mmf: one money path at a time. An EDC sale of the charge (its
@@ -81,4 +89,43 @@ export async function assertNoLiveChargeCode(
       "CONFLICT",
       "Kode QRIS tagihan ini masih bisa dibayar; tunggu sampai berakhir.",
     );
+}
+
+/**
+ * Penutup kode basi, as the cashier's read does (`readPosIssueCharge`): every
+ * code of the charge's link that may still take money and has lapsed is asked
+ * of the provider, outside any transaction (network I/O), through the poll's
+ * own path. Money is applied once, a final answer past the margin ends the
+ * code, anything unclear (or an error) leaves it live for
+ * `assertNoLiveChargeCode` to refuse.
+ */
+export async function closeLapsedChargeCodes(
+  context: ScopedTenantContext,
+  chargeId: string,
+  now: Date,
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const lapsed = await withTenant(db, context, (tx) =>
+    tx
+      .select({ id: paymentIntents.id })
+      .from(paymentIntents)
+      .innerJoin(
+        orderIssueCharges,
+        and(
+          eq(orderIssueCharges.tenantId, paymentIntents.tenantId),
+          eq(orderIssueCharges.paymentLinkId, paymentIntents.paymentLinkId),
+        ),
+      )
+      .where(
+        and(
+          eq(paymentIntents.tenantId, tenantId),
+          eq(orderIssueCharges.id, chargeId),
+          inArray(orderIssueCharges.status, ["open", "routed_pos"]),
+          lte(paymentIntents.expiresAt, now),
+          liveCodeWhere(),
+        ),
+      ),
+  );
+  for (const intent of lapsed)
+    await settleGatewayIntentNowDetailed(context, intent.id, now);
 }

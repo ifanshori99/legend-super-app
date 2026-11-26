@@ -428,7 +428,7 @@ describe("legend-gt98h collect a swap charge at the till with EDC or QRIS", () =
     expect(await expectedCash()).toBe(cashBefore);
   });
 
-  it("QRIS timeout: an expired intent does not mark the charge paid, and the charge can still be collected in cash", async () => {
+  it("QRIS timeout: an expired intent does not mark the charge paid; cash waits for the provider's final answer, then collects", async () => {
     const opened = await openCharge();
     expectAccepted(await collect(opened.charge.id, qrisBody()));
     const intentId = (await chargeOf(opened.issueId)).payment_intent_id!;
@@ -447,6 +447,17 @@ describe("legend-gt98h collect a swap charge at the till with EDC or QRIS", () =
     expect(row.status).toBe("open");
     expect(row.paid_at).toBeNull();
     expect(await chargePaidEvents(opened.issueId)).toHaveLength(0);
+
+    // legend-f1mmf: local expiry is no proof; until the provider answered
+    // final the code may still be paid and the cash is refused.
+    const early = await collect(opened.charge.id, cashBody());
+    expect(early.status, JSON.stringify(early.body)).toBe(409);
+    expect((await chargeOf(opened.issueId)).status).toBe("open");
+    await owner.query(
+      `UPDATE payment_intents SET provider_final_at = now()
+       WHERE tenant_id = $1 AND id = $2`,
+      [w.tenant.tenantId, intentId],
+    );
 
     const cash = await collect(opened.charge.id, cashBody());
     expect(cash.status, JSON.stringify(cash.body)).toBe(200);
@@ -682,18 +693,22 @@ describe("legend-gt98h collect a swap charge at the till with EDC or QRIS", () =
     });
   });
 
-  it("cash while a POS QRIS is pending: cash wins, the intent is expired, a late QRIS payment is not a second charge_paid", async () => {
+  it("cash while a POS QRIS may still be paid is refused; the QRIS that pays is the one charge_paid", async () => {
     const opened = await openCharge();
     expectAccepted(await collect(opened.charge.id, qrisBody()));
     const intentId = (await chargeOf(opened.issueId)).payment_intent_id!;
     expect(intentId).not.toBeNull();
+    const moves = await movementCount();
 
     const cash = await collect(opened.charge.id, cashBody());
-    expect(cash.status, JSON.stringify(cash.body)).toBe(200);
-    expect(await intentStatus(intentId)).toBe("expired");
+    expect(cash.status, JSON.stringify(cash.body)).toBe(409);
+    expect(await intentStatus(intentId)).toBe("pending");
+    expect(await movementCount()).toBe(moves);
 
     await settleQris(intentId);
-    expect((await chargeOf(opened.issueId)).status).toBe("paid");
+    const row = await chargeOf(opened.issueId);
+    expect(row.status).toBe("paid");
+    expect(row.cash_movement_id).toBeNull();
     expect(await chargePaidEvents(opened.issueId)).toHaveLength(1);
   });
 

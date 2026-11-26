@@ -58,6 +58,7 @@ import {
 import {
   assertNoEdcSaleOutstanding,
   assertNoLiveChargeCode,
+  closeLapsedChargeCodes,
 } from "./order-recovery-charge-money-path.ts";
 import {
   collectChargeAtPosEdc,
@@ -113,6 +114,9 @@ async function collectChargeAtPosCash(
   const tenantId = context.tenant.tenantId;
   // legend-ukbq3: ask the provider first (outside the transaction). Money the
   // provider already holds is applied to the charge, so the cash is refused.
+  // legend-f1mmf: a lapsed code is closed first when the provider answers
+  // final; a code still live refuses the cash below (`assertNoLiveChargeCode`).
+  await closeLapsedChargeCodes(context, chargeId, now);
   const settled = await confirmChargeLinksUnpaid(context, { chargeId }, now);
   return withTenant(db, context, async (tx) => {
     const snapshot = await accessSnapshotInTransaction(
