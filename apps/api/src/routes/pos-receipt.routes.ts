@@ -35,7 +35,7 @@ import {
 } from "../middleware/acting-staff.ts";
 import { requireAuthAllowSharedDevice } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
-import { requirePosWriteOnCloud } from "../middleware/pos-on-cloud.ts";
+import { requireCorePosWriteOnCloud } from "../middleware/pos-on-cloud.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
   getScopedTenantContext,
@@ -96,7 +96,7 @@ function sendPdf(res: Response, file: delivery.PdfFile): void {
 posReceiptRouter.post(
   "/orders/:orderId/receipts",
   pay,
-  requirePosWriteOnCloud,
+  requireCorePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId } = issuePosReceipt.params.parse(req.params);
@@ -155,7 +155,7 @@ posReceiptRouter.get("/receipts/:receiptId/pdf", view, async (req, res) => {
 posReceiptRouter.post(
   "/receipts/:receiptId/link",
   pay,
-  requirePosWriteOnCloud,
+  requireCorePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, receiptId } = createPosReceiptLink.params.parse(
@@ -179,7 +179,7 @@ posReceiptRouter.post(
 posReceiptRouter.post(
   "/orders/:orderId/invoices",
   pay,
-  requirePosWriteOnCloud,
+  requireCorePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId } = createPosInvoice.params.parse(req.params);

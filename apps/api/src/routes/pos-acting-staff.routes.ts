@@ -55,9 +55,11 @@ async function assertDeviceOutletOnCloud(
   req: Request,
   deviceId: string,
 ): Promise<void> {
+  // 1271 F3: the cashier sign-in is a core path during a failover window.
   await assertPosWriteOnCloud(
     req,
     await resolveDeviceOutlet(getTenantContext(req).tenantId, deviceId),
+    { failover: "core" },
   );
 }
 

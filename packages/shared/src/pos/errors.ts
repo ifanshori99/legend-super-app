@@ -85,6 +85,8 @@ export const posErrorHttpStatus = {
   FAILOVER_NOT_ACTIVE: 409,
   /** 1271 F1 D6: failover is switched off on this server (EDGE_FAILOVER_ENABLED). */
   FAILOVER_DISABLED: 403,
+  /** 1271 F3: return to the edge needs a fresh edge heartbeat (< 60 s). */
+  FAILOVER_EDGE_OFFLINE: 409,
 } as const satisfies Record<string, number>;
 
 export type PosErrorCode = keyof typeof posErrorHttpStatus;
@@ -153,6 +155,8 @@ const defaultMessages: Record<PosErrorCode, string> = {
     "Masih ada pekerjaan mode cloud yang terbuka. Selesaikan dulu sebelum kembali ke server lokal.",
   FAILOVER_NOT_ACTIVE: "Outlet ini tidak sedang dalam mode cloud.",
   FAILOVER_DISABLED: "Mode cloud belum diaktifkan untuk server ini.",
+  FAILOVER_EDGE_OFFLINE:
+    "Server lokal outlet belum tersambung. Kembali ke server lokal setelah server lokal menyala dan tersambung.",
 };
 
 export class PosError extends Error {
