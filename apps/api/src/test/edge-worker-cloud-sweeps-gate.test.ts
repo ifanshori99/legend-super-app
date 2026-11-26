@@ -20,6 +20,8 @@ const cloudOwnedSweeps = [
   "redriveEdgeOrderRefusalsForTenant",
   "runPayoutGlRecoverySweep",
   "sweepEdgeCommandResults",
+  // Brief 1270 W2: WFC holds, late refunds and lost payment events.
+  "sweepWfcHolds",
 ] as const;
 
 // legend-rs2xy (855) added two more gated blocks (fixed-asset depreciation and
@@ -53,6 +55,13 @@ describe("legend-647 cloud-owned data sweeps never run on the edge", () => {
     expect(
       source.match(/if \(sweepsCloudOwnedData\) \{\s*try \{/g),
     ).toHaveLength(cloudOwnedSweeps.length + accountingGates);
+  });
+
+  it("settles paid WFC links only in the cloud (brief 1270 W2)", () => {
+    expect(source.match(/handleWfcPaymentPaid\(/g)).toHaveLength(1);
+    expect(source).toMatch(
+      /if \(event\.name === "payment\.paid" && sweepsCloudOwnedData\)\s*await handleWfcPaymentPaid\(/,
+    );
   });
 
   it("does not gate releaseExpiredSlotHolds (facility is served on the edge)", () => {

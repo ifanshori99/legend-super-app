@@ -337,6 +337,10 @@ async function claimRow(s: Setup) {
 }
 type ClaimRow = ReturnType<Awaited<ReturnType<typeof claimRow>>>;
 
+/** A second member (one unpaid hold per member, W2). */
+const otherMember = async (s: Setup) =>
+  (await seedProfile(s.world.tenantId)).id;
+
 const insertClaim = (s: Setup, row: Record<string, unknown>) =>
   asTenant(s.world.tenantId, (client) =>
     insertInto(client, "wfc_seat_reservations", row),
@@ -880,14 +884,15 @@ describe("seat claims", () => {
       build({ slot: "[2098-11-08T05:00:00Z,2098-11-08T06:00:00Z)" }),
     );
     await updateClaim(s, first.id, "status = 'no_show'");
-    const second = build();
+    // Another member each: one member holds one unpaid claim (W2).
+    const second = build({ customer_profile_id: await otherMember(s) });
     await insertClaim(s, second);
     await updateClaim(
       s,
       second.id,
       "status = 'cancelled', hold_expires_at = NULL",
     );
-    await insertClaim(s, build());
+    await insertClaim(s, build({ customer_profile_id: await otherMember(s) }));
   });
 
   it("starts pending and unpaid, and the split always adds up", async () => {
@@ -1061,6 +1066,7 @@ describe("review 1: paid is proven by the payment link", () => {
     const linkId = await pendingOnLink(s, row);
     const second = build({
       slot: "[2098-11-08T07:00:00Z,2098-11-08T08:00:00Z)",
+      customer_profile_id: await otherMember(s),
     });
     await insertClaim(s, second);
     await expect(
@@ -1436,11 +1442,12 @@ describe("review 2: a claim is a frozen snapshot on legal steps", () => {
     const s = await setup();
     const build = await claimRow(s);
     let hour = 0;
-    const next = () => {
+    const next = async () => {
       hour += 1;
       const at = (h: number) => `2098-11-${String(10 + h)}T01:00:00Z`;
       return build({
         slot: `[${at(hour)},${at(hour).replace("T01", "T02")})`,
+        customer_profile_id: await otherMember(s),
       });
     };
     const reach: Record<string, string[]> = {
@@ -1462,7 +1469,7 @@ describe("review 2: a claim is a frozen snapshot on legal steps", () => {
       refunded: ["confirmed", "checked_in", "cancelled", "completed"],
     };
     for (const [from, targets] of Object.entries(illegal)) {
-      const row = next();
+      const row = await next();
       const linkId = await pendingOnLink(s, row);
       await settleLink(s, linkId);
       for (const step of reach[from]!) await updateClaim(s, row.id, step);

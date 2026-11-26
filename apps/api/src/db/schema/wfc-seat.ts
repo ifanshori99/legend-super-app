@@ -24,6 +24,7 @@ import {
   foreignKey,
   index,
   pgTable,
+  text,
   timestamp,
   unique,
   uniqueIndex,
@@ -133,6 +134,12 @@ export const wfcSeatReservations = pgTable(
     paymentLinkExpiresAt: timestamp("payment_link_expires_at", {
       withTimezone: true,
     }),
+    /**
+     * The link's guest token, sealed (`wfcLinkSealAad`, wfc-sale.service.ts):
+     * the server issues the QRIS codes itself, so the token never reaches the
+     * member and no other method can be picked (W2, QRIS only).
+     */
+    paymentLinkTokenSealed: text("payment_link_token_sealed"),
     /** Set while `pending_payment`: the sweep releases the seat after it. */
     holdExpiresAt: timestamp("hold_expires_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -198,6 +205,10 @@ export const wfcSeatReservations = pgTable(
       table.outletId,
       table.startsAt,
     ),
+    // W2: one unpaid hold per member at a time, whatever the outlet.
+    uniqueIndex("wfc_seat_reservations_one_hold_key")
+      .on(table.tenantId, table.customerProfileId)
+      .where(sql`${table.status} = 'pending_payment'`),
     index("wfc_seat_reservations_hold_idx")
       .on(table.tenantId, table.holdExpiresAt)
       .where(sql`${table.status} = 'pending_payment'`),

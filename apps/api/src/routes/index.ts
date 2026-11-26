@@ -179,6 +179,7 @@ import { segmentsRouter } from "./segments.routes.ts"; // legend-ts50
 import { feedbackRouter } from "./feedback.routes.ts"; // legend-ts50
 import { customerReviewRouter } from "./customer-review.routes.ts"; // legend-vqicf
 import { memberFeedbackRouter } from "./member-feedback.routes.ts"; // legend-ts50
+import { wfcRouter } from "./wfc.routes.ts"; // brief 1270 W2
 import { memberRewardsRouter } from "./member-rewards.routes.ts"; // legend-m4p5
 import { loyaltyRewardsRouter } from "./loyalty-rewards.routes.ts"; // legend-m4p5
 import { loyaltyTiersRouter } from "./loyalty-tiers.routes.ts"; // legend-3zd1
@@ -391,6 +392,8 @@ apiRouter.use("/member", memberRouter);
 // legend-m4p5: rewards, redemptions, missions, member vouchers; staff rewards/missions/fulfil.
 apiRouter.use("/member", memberRewardsRouter);
 apiRouter.use("/member", memberFeedbackRouter); // legend-ts50
+// Brief 1270 W2: member WFC passes (hold, QRIS, my claims); cloud only.
+apiRouter.use("/wfc", wfcRouter);
 // The next two keep full paths inside the router and guard each route.
 apiRouter.use(loyaltyProgramRouter);
 apiRouter.use(customersRouter); // legend-ts50
