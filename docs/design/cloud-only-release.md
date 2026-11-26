@@ -81,3 +81,11 @@ Sisanya diputuskan CTO: tanpa plafon untuk tunai offline, bekal offline berlaku 
 - Ditanyakan ke founder: ECR otomatis mundur sesudah rilis 1 (EDC manual + rekonsiliasi H+1), dan pembelian perangkat.
 - Slot edit maks 3: lajur Cetak (K0 lalu P1-P3), Offline (O1-O5), Duitku (C2a .40/.41, C3a, C3b, C4b, C2b). Laporan (D2/D4/D5) dan Kecil (X1/X2, f1mmf, 9yw78.12, V1) mengisi slot yang kosong.
 - Migrasi sementara mulai 0533 (E6/E9 tidak digabung), dinomori ulang saat merge.
+
+## Keputusan CTO O2 (27 Nov, dasar "jangan sampai rugi")
+- (a) Tunai offline masuk total laci shift cloud yang sama (uang fisik ada di laci). Tutup shift ditolak selama antrean tablet belum kosong; hitung laci membandingkan dengan expected termasuk tunai offline.
+- (b) Tiap penjualan offline mendapat baris struk nomor `L` (deret tanpa celah per epoch; celah = alert, bukan write-off diam-diam).
+- (c) Stok dipotong cloud saat ingest (tablet tidak memegang stok).
+- (d) Sumber/ledger baru `offline_tablet`, terpisah dari edge: penjualan offline yang ter-ingest menjadi order cloud biasa, refund lewat jalur refund cloud biasa (bukan penjaga sale edge).
+- Promo otomatis tidak berlaku saat offline di v1 (harga daftar saja); UI menampilkan "Promo tidak berlaku saat offline". Route bekal di bawah outlet diterima.
+- Nominal dari payload, tidak dihitung ulang; selisih harga vs snapshot masuk "perlu dicek". Satu eventId = satu order, replay aman.
