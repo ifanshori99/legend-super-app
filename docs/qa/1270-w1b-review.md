@@ -34,3 +34,15 @@ Cabang `ws/1270-w1b` 29e15477e vs 0e6d570b3 (int/rc2). Reviewer: architect subag
 - No. 1 dan 3: perbaiki + test, lalu re-review architect yang sama.
 - No. 2: rilis 1, pass WFC online hanya QRIS (fee persen); di outlet tunai/EDC lewat kasir. VA/kartu/e-wallet/paylater untuk pass dibuka sesudah fee per metode dihitung di lantai harga. Syarat W2 WFC.
 - No. 4: catat ke W2 WFC.
+
+## Re-review 26 Nov (456550bb3)
+
+Delta 29e15477e..456550bb3 (1 commit, 4 file). Reviewer membaca kode dan test, tidak menjalankan test.
+
+**Putusan: lolos untuk no. 1 dan 3.** Tidak ada temuan yang menahan merge. Ada satu catatan rendah yang disarankan dibetulkan.
+
+- **No. 1 selesai.** `wfcContributionIdr` sekarang menghitung `credit − ceil(credit×c) − ceil(credit×(t+s)/(1+t+s))`, dengan t = 12% dan s = service charge F&B tertinggi. Arah pembulatan tetap merugikan outlet. `outletServiceChargeBp` mengambil maksimum dari: aturan yang dipublikasikan di level outlet dan tenant (kelas `food_beverage`; hanya versi terbaru yang sedang berlaku per kode, ditambah semua versi mendatang) dan `floor_zones.service_charge_bp` zona aktif. Nilai ini dipakai di simpan, nyalakan, dan apply. Test memakai angka pasti (27.142; batas Rp1 dengan dan tanpa service charge).
+- **No. 3 selesai.** Apply mengembalikan null (route 409) bila tanggal berlaku < hari ini atau < tanggal versi terakhir. Nomor versi kini melewati nomor setiap usulan outlet, apa pun statusnya, di bawah lock outlet. `onConflictDoNothing` tetap jadi pengaman terakhir. Test: apply terlambat dan apply yang tertutup versi lebih baru, keduanya tidak menulis.
+- **Keputusan CTO no. 2 (QRIS saja) dan no. 4:** sesuai, keduanya tercatat sebagai syarat W2.
+- **Catatan rendah (disarankan, tidak menahan merge):** POS memungut pajak dari dasar + service charge (fixture PBJT 10% atas 109.200, berbunga). Rumus memakai t + s yang dijumlah, bukan (1+t)(1+s) − 1. Ini masih konservatif selama pajak F&B yang nyata ≤ 10% dan s ≤ 20%; PBJT maksimal 10%, jadi aman hari ini. Supaya tidak bergantung pada asumsi itu, ganti dengan bunga majemuk `t + s + t×s/BP` (satu baris di `packages/shared/src/wfc/pricing.ts`, perbarui angka test).
+- **Syarat W2 (tambahan untuk no. 4):** menaikkan service charge atau jam buka tidak mengecek ulang produk aktif. Hold W2 wajib memanggil `checkWfcSlotFloor` dengan `outletServiceChargeBp` dan menit slot nyata dari versi yang dibaca ulang.
