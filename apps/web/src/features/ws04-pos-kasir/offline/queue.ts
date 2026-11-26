@@ -1,20 +1,22 @@
 // O3 offline sale queue of one outlet on this tablet (bead legend-wasr7.7;
-// docs/design/cloud-only-release.md §2, Keputusan CTO O2, review O2).
+// docs/design/cloud-only-release.md §2, Keputusan CTO O2, review O2, review O3).
 //
 // - recordSale prices the cart from the kit (list prices, no promo), takes the
 //   next `L` number and appends the sale in one transaction. Only cash and
-//   manual EDC (slip reference) are accepted, as the kit lists them.
+//   manual EDC (slip reference) are accepted, as the kit lists them. A kit
+//   whose shift closed takes no sale (review O3 P2 4).
 // - sync sends the queue in run order, at most OFFLINE_BATCH_MAX_EVENTS per
 //   call. Replays are safe: the cloud keys each sale by its eventId. A
 //   settled result (ingested, held, duplicate) drops the sale; a rejected one
-//   stays queued for the next sync.
-// - A 409 CONFLICT fails the whole call (one eventId under two kits): the
-//   batch is resent one sale at a time and only the sale that still answers
-//   409 is parked ("perlu dicek", shown to a supervisor) so the rest of the
-//   queue keeps flowing. Any other refusal stops the sync with the queue kept.
-// - pendingCount is what blocks the shift close (tablet guard, and reported to
-//   the server as `offlineQueuePending`). Parked sales do not block it: the
-//   cloud already holds that eventId, the supervisor reviews them.
+//   stays queued and the sync stops there (review O3 P3: what follows would
+//   only be a false gap).
+// - Review O3 P1: a 409 OFFLINE_EVENT_CONFLICT (the eventId is stored under
+//   another kit) fails the whole call. The batch is resent one sale at a time;
+//   the sale that still answers it is parked and reported to the cloud
+//   (reportPosOfflineConflict), which books it and fills its number slot. Only
+//   a settled report drops it. Any other refusal stops the sync, nothing parked.
+// - pendingCount (queue + parked) blocks the shift close and the sign-out
+//   (tablet guard; the count also goes to the server as offlineQueuePending).
 import { createUlidFactory } from "@starter/shared/core";
 import {
   OFFLINE_BATCH_MAX_EVENTS,
@@ -29,16 +31,25 @@ import {
 } from "@starter/shared/pos";
 import { ApiError } from "@/lib/api/errors";
 import { OfflineSaleError, priceOfflineSale, type OfflineCart } from "./price";
-import type { OfflineBackend, ParkedRecord, QueueRecord } from "./store";
+import type {
+  OfflineBackend,
+  OfflineTx,
+  ParkedRecord,
+  QueueRecord,
+} from "./store";
 
 export type OfflineSubmit = (
   events: OfflineSaleEvent[],
 ) => Promise<PosOfflineBatchResult>;
 
+export type OfflineReport = (
+  event: OfflineSaleEvent,
+) => Promise<OfflineEventResult>;
+
 export type OfflineSyncReport = {
   settled: number;
   parked: number;
-  /** Sales still queued after this sync. */
+  /** Sales still queued or parked after this sync. */
   remaining: number;
   /** Why the sync stopped early (network, 5xx, refusal); null when it ran through. */
   error: unknown;
@@ -47,7 +58,10 @@ export type OfflineSyncReport = {
 export type OfflineQueue = {
   /** Stores the kit the cloud issued; keeps the local counter of its run. */
   saveKit(kit: PosOfflineKit): Promise<void>;
+  /** The usable kit; null when none or its shift closed. */
   kit(): Promise<PosOfflineKit | null>;
+  /** The shift closed: the kit takes no sale; its run is kept for the next kit. */
+  closeKit(): Promise<void>;
   /** The run to name in the next kit request (null: none stored). */
   resumeSequenceId(): Promise<string | null>;
   recordSale(
@@ -55,6 +69,7 @@ export type OfflineQueue = {
     tenders: OfflineSaleTender[],
   ): Promise<OfflineSaleEvent>;
   pending(): Promise<OfflineSaleEvent[]>;
+  /** Queued + parked: what blocks Tutup shift and sign-out. */
   pendingCount(): Promise<number>;
   parked(): Promise<ParkedRecord[]>;
   sync(): Promise<OfflineSyncReport>;
@@ -62,6 +77,8 @@ export type OfflineQueue = {
 
 /** Tutup shift is refused on the tablet while sales are still queued. */
 export const OFFLINE_QUEUE_PENDING = "OFFLINE_QUEUE_PENDING";
+/** The only 409 that parks a sale (review O3 P1). */
+export const OFFLINE_EVENT_CONFLICT = "OFFLINE_EVENT_CONFLICT";
 
 const byRun = (a: OfflineSaleEvent, b: OfflineSaleEvent) =>
   a.sequenceId.localeCompare(b.sequenceId) ||
@@ -70,18 +87,30 @@ const byRun = (a: OfflineSaleEvent, b: OfflineSaleEvent) =>
 const isEventConflict = (error: unknown) =>
   error instanceof ApiError &&
   error.status === 409 &&
-  error.code === "CONFLICT";
+  error.code === OFFLINE_EVENT_CONFLICT;
 
 const settles = (result: OfflineEventResult) =>
   OFFLINE_EVENT_SETTLED.includes(result.status);
+
+type Step = { settled: number; parked: number; stop: boolean };
+
+async function countOf(tx: OfflineTx, outletId: string | null) {
+  const mine = (row: { outletId: string }) =>
+    outletId === null || row.outletId === outletId;
+  return (
+    (await tx.getAll("queue")).filter(mine).length +
+    (await tx.getAll("parked")).filter(mine).length
+  );
+}
 
 export function createOfflineQueue(options: {
   backend: OfflineBackend;
   outletId: string;
   submit: OfflineSubmit;
+  report: OfflineReport;
   now?: () => Date;
 }): OfflineQueue {
-  const { backend, submit } = options;
+  const { backend, submit, report } = options;
   const outletId = options.outletId.toLowerCase();
   const now = options.now ?? (() => new Date());
   const nextUlid = createUlidFactory({ now: () => now().getTime() });
@@ -95,24 +124,17 @@ export function createOfflineQueue(options: {
         .sort(byRun),
     );
 
-  /** Drops settled sales, parks the named ones, raises run counters. */
-  const apply = (
-    settled: string[],
-    parked: { event: OfflineSaleEvent; reason: string }[],
-    runs: PosOfflineBatchResult["runs"],
-  ) =>
+  const parkedRows = () =>
+    backend.run("readonly", async (tx) =>
+      (await tx.getAll("parked"))
+        .filter((row) => row.outletId === outletId)
+        .sort((a, b) => byRun(a.event, b.event)),
+    );
+
+  /** Drops settled sales and raises the run counter. */
+  const apply = (settled: string[], runs: PosOfflineBatchResult["runs"]) =>
     backend.run("readwrite", async (tx) => {
       for (const eventId of settled) await tx.delete("queue", eventId);
-      for (const { event, reason } of parked) {
-        await tx.put("parked", {
-          eventId: event.eventId,
-          outletId,
-          event,
-          reason,
-          parkedAt: now().toISOString(),
-        });
-        await tx.delete("queue", event.eventId);
-      }
       const stored = await tx.get("kits", outletId);
       const run = runs.find(
         (row) => row.sequenceId === stored?.kit.receiptRun.sequenceId,
@@ -121,55 +143,84 @@ export function createOfflineQueue(options: {
         await tx.put("kits", { ...stored, counter: run.lastNumber });
     });
 
-  /** One call; a 409 CONFLICT is isolated to the sale behind it. */
-  async function sendChunk(chunk: OfflineSaleEvent[]) {
+  const park = (event: OfflineSaleEvent) =>
+    backend.run("readwrite", async (tx) => {
+      await tx.put("parked", {
+        eventId: event.eventId,
+        outletId,
+        event,
+        reason: OFFLINE_EVENT_CONFLICT,
+        parkedAt: now().toISOString(),
+      });
+      await tx.delete("queue", event.eventId);
+    });
+
+  /** Reports a parked sale; true once the cloud settled it (slot filled). */
+  async function reportParked(event: OfflineSaleEvent): Promise<boolean> {
+    const answer = await report(event);
+    if (!settles(answer)) return false;
+    await backend.run("readwrite", (tx) => tx.delete("parked", event.eventId));
+    return true;
+  }
+
+  /** One call; a 409 OFFLINE_EVENT_CONFLICT is isolated to its sale. */
+  async function sendChunk(chunk: OfflineSaleEvent[]): Promise<Step> {
     try {
       const answer = await submit(chunk);
-      await apply(
-        answer.results.filter(settles).map((row) => row.eventId),
-        [],
-        answer.runs,
-      );
-      return { settled: answer.results.filter(settles).length, parked: 0 };
+      const settled = answer.results.filter(settles).map((row) => row.eventId);
+      await apply(settled, answer.runs);
+      return {
+        settled: settled.length,
+        parked: 0,
+        stop: settled.length < answer.results.length,
+      };
     } catch (error) {
-      if (!isEventConflict(error) || chunk.length === 1) {
-        if (isEventConflict(error)) {
-          await apply([], [{ event: chunk[0]!, reason: "CONFLICT" }], []);
-          return { settled: 0, parked: 1 };
-        }
-        throw error;
-      }
+      if (!isEventConflict(error)) throw error;
+    }
+    if (chunk.length === 1) {
+      await park(chunk[0]!);
+      const filled = await reportParked(chunk[0]!);
+      return { settled: filled ? 1 : 0, parked: filled ? 0 : 1, stop: !filled };
     }
     // Every sale before the conflicting one was stored: alone it answers
     // `duplicate`. Only the conflicting one answers 409 again.
-    let settled = 0;
-    let parked = 0;
+    const total: Step = { settled: 0, parked: 0, stop: false };
     for (const event of chunk) {
-      const outcome = await sendChunk([event]);
-      settled += outcome.settled;
-      parked += outcome.parked;
+      const step = await sendChunk([event]);
+      total.settled += step.settled;
+      total.parked += step.parked;
+      if (step.stop) return { ...total, stop: true };
     }
-    return { settled, parked };
+    return total;
   }
 
   async function runSync(): Promise<OfflineSyncReport> {
     let settled = 0;
     let parked = 0;
     let error: unknown = null;
-    const events = await queued();
-    for (let at = 0; at < events.length; at += OFFLINE_BATCH_MAX_EVENTS) {
-      try {
-        const outcome = await sendChunk(
+    try {
+      // Reports first: an unreported conflict leaves a gap before the rest.
+      let blocked = false;
+      for (const row of await parkedRows()) {
+        if (await reportParked(row.event)) settled += 1;
+        else blocked = true;
+      }
+      const events = blocked ? [] : await queued();
+      for (let at = 0; at < events.length; at += OFFLINE_BATCH_MAX_EVENTS) {
+        const step = await sendChunk(
           events.slice(at, at + OFFLINE_BATCH_MAX_EVENTS),
         );
-        settled += outcome.settled;
-        parked += outcome.parked;
-      } catch (caught) {
-        error = caught;
-        break;
+        settled += step.settled;
+        parked += step.parked;
+        if (step.stop) break;
       }
+    } catch (caught) {
+      error = caught;
     }
-    return { settled, parked, remaining: (await queued()).length, error };
+    const remaining = await backend.run("readonly", (tx) =>
+      countOf(tx, outletId),
+    );
+    return { settled, parked, remaining, error };
   }
 
   return {
@@ -187,15 +238,17 @@ export function createOfflineQueue(options: {
           sameRun ? stored.counter : 0,
           kit.receiptRun.lastNumber,
         );
-        await tx.put("kits", { outletId, kit, counter });
+        await tx.put("kits", { outletId, kit, counter, closed: false });
       });
     },
 
     kit: () =>
-      backend.run(
-        "readonly",
-        async (tx) => (await tx.get("kits", outletId))?.kit ?? null,
-      ),
+      backend.run("readonly", async (tx) => {
+        const stored = await tx.get("kits", outletId);
+        return stored && !stored.closed ? stored.kit : null;
+      }),
+
+    closeKit: () => closeOfflineKit(backend, outletId),
 
     resumeSequenceId: () =>
       backend.run(
@@ -210,6 +263,7 @@ export function createOfflineQueue(options: {
       return backend.run("readwrite", async (tx) => {
         const stored = await tx.get("kits", outletId);
         if (!stored) throw new OfflineSaleError("KIT_MISSING");
+        if (stored.closed) throw new OfflineSaleError("KIT_SHIFT_CLOSED");
         const { kit } = stored;
         if (paidAt.getTime() >= Date.parse(kit.expiresAt))
           throw new OfflineSaleError("KIT_EXPIRED");
@@ -250,14 +304,9 @@ export function createOfflineQueue(options: {
 
     pending: queued,
 
-    pendingCount: async () => (await queued()).length,
+    pendingCount: () => backend.run("readonly", (tx) => countOf(tx, outletId)),
 
-    parked: () =>
-      backend.run("readonly", async (tx) =>
-        (await tx.getAll("parked"))
-          .filter((row) => row.outletId === outletId)
-          .sort((a, b) => byRun(a.event, b.event)),
-      ),
+    parked: parkedRows,
 
     sync() {
       // One sync at a time per queue; another tab's sync is harmless (replay).
@@ -270,20 +319,33 @@ export function createOfflineQueue(options: {
 }
 
 /**
- * Offline sales this tablet still queues for the outlet (the shift close
- * guard). No IndexedDB: nothing was ever queued. A storage that cannot be
- * read throws: the close is refused rather than guessed.
+ * Offline sales this tablet still holds for the outlet, queued or parked (the
+ * shift close guard); every outlet when `outletId` is null (sign-out). No
+ * IndexedDB: nothing was ever queued. A storage that cannot be read throws:
+ * the close is refused rather than guessed.
  */
 export async function countPendingOfflineSales(
   backend: OfflineBackend | null,
-  outletId: string,
+  outletId: string | null,
 ): Promise<number> {
   if (backend === null) return 0;
+  const outlet = outletId === null ? null : outletId.toLowerCase();
+  return backend.run("readonly", (tx) => countOf(tx, outlet));
+}
+
+/**
+ * Review O3 P2 4: the shift closed, so its kit takes no more sales. The run
+ * and counter stay so the next shift's kit continues it.
+ */
+export async function closeOfflineKit(
+  backend: OfflineBackend | null,
+  outletId: string,
+): Promise<void> {
+  if (backend === null) return;
   const outlet = outletId.toLowerCase();
-  return backend.run(
-    "readonly",
-    async (tx) =>
-      (await tx.getAll("queue")).filter((row) => row.outletId === outlet)
-        .length,
-  );
+  await backend.run("readwrite", async (tx) => {
+    const stored = await tx.get("kits", outlet);
+    if (stored && !stored.closed)
+      await tx.put("kits", { ...stored, closed: true });
+  });
 }

@@ -21,6 +21,8 @@ export type KitRecord = {
   kit: PosOfflineKit;
   /** Last `L` number this tablet used on `kit.receiptRun.sequenceId`. */
   counter: number;
+  /** Review O3 P2 4: the kit's shift closed; no sale is taken on it. */
+  closed?: boolean;
 };
 
 export type QueueRecord = {
@@ -34,7 +36,7 @@ export type ParkedRecord = {
   eventId: string;
   outletId: string;
   event: OfflineSaleEvent;
-  /** Error code of the cloud's answer, e.g. `CONFLICT`. */
+  /** Error code of the cloud's answer (`OFFLINE_EVENT_CONFLICT`). */
   reason: string;
   parkedAt: string;
 };

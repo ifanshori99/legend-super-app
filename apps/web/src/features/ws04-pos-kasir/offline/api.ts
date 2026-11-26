@@ -1,7 +1,9 @@
 // O3 calls of the offline POS: the kit (O1) and the batch sync (O2).
 import {
   issuePosOfflineKit,
+  reportPosOfflineConflict,
   submitPosOfflineBatch,
+  type OfflineEventResult,
   type OfflineSaleEvent,
   type PosOfflineBatchResult,
   type PosOfflineKit,
@@ -27,6 +29,18 @@ export async function sendOfflineBatch(
   const { data } = await callEndpoint(submitPosOfflineBatch, {
     params: { outletId },
     body: { events },
+  });
+  return data;
+}
+
+/** Review O3 P1: the report of a sale the batch refused with OFFLINE_EVENT_CONFLICT. */
+export async function sendOfflineConflict(
+  outletId: string,
+  event: OfflineSaleEvent,
+): Promise<OfflineEventResult> {
+  const { data } = await callEndpoint(reportPosOfflineConflict, {
+    params: { outletId },
+    body: { event },
   });
   return data;
 }

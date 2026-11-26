@@ -8,7 +8,7 @@ import { useEffect, useMemo, useState } from "react";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { useOutletId } from "../hooks";
 import { useActiveShift } from "../shift-hooks";
-import { fetchOfflineKit, sendOfflineBatch } from "./api";
+import { fetchOfflineKit, sendOfflineBatch, sendOfflineConflict } from "./api";
 import { createOfflineQueue, type OfflineQueue } from "./queue";
 import { registerPosShell } from "./shell";
 import { defaultOfflineBackend } from "./store";
@@ -55,6 +55,7 @@ export function usePosOffline(): PosOfflineState {
       backend,
       outletId,
       submit: (events) => sendOfflineBatch(outletId, events),
+      report: (event) => sendOfflineConflict(outletId, event),
     });
   }, [outletId]);
   const [counts, setCounts] = useState({ pending: 0, parked: 0 });

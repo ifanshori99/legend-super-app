@@ -27,7 +27,10 @@ import { callEndpoint } from "@/lib/api/endpoint";
 import { ApiError } from "@/lib/api/errors";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { contractPending, local, METHOD_LABELS } from "./api";
-import { countPendingOfflineSales } from "./offline/queue";
+import {
+  closeOfflineKit,
+  countPendingOfflineSales,
+} from "./offline/queue";
 import { defaultOfflineBackend } from "./offline/store";
 import { runPosKasirMock } from "./mock-engine";
 import {
@@ -487,6 +490,8 @@ export async function closeShiftWithApproval(
     },
   });
   clearStoredCount(outletId, input.shiftId);
+  // Review O3 P2 4: the kit of a closed shift takes no more offline sales.
+  await closeOfflineKit(defaultOfflineBackend(), outletId);
 }
 
 // ---- End of day ------------------------------------------------------------
