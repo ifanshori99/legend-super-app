@@ -27,3 +27,13 @@ Layar tutup paksa `/pos/supervisor/shift/$shiftId` tidak punya link. `offline-cl
 - P1 (3 jalan ke tutup paksa), P2 #1-#3 (`/api/health` sudah di belakang `cors(trustedOrigins)`, `health-cors.test.ts`), P3 tertutup.
 - P3 sisa -> O5: `fetchOpenShiftsOfDay` hanya shift hari ini satu halaman; shift buka sejak kemarin tidak tampil di tutup hari (jalan lain: notice 409).
 - Keputusan CTO (sebelum rilis, O5): pesanan belum pasti tidak boleh mengunci item populer selama offline panjang. Jalan keluar: kasir menandai "pelanggan lain" (wajib alasan singkat), sale tetap tercatat offline dengan flag "perlu dicek" untuk Finance. Tanpa tanda itu, baris yang sama tetap ditolak.
+
+## ui-auditor 27 Nov (1541cfc89): 0 P1, 3 P2, 6 P3
+Wajib sebelum gabung (keputusan CTO):
+1. P2 tiga banner bertentangan (`offline-banner.tsx:58-68`, `pos-order-catalog.ts:19-21`, `id.ts:669`): notice katalog lama hanya bila `hasKit`; banner perangkat digabung ke banner O4.
+2. P2 tutup paksa tanpa konfirmasi (`shift-force-close.tsx` ReadyStage `closeNow`): alertdialog dengan ringkasan selisih + alasan.
+3. P3 WitnessStage: tombol kirim PIN jadi aksi utama; ReadyStage mobile: Alasan di atas Fact.
+4. P3 `offline-pay-dialog.tsx`: validasi kurang bayar saat blur/kirim; `spellCheck={false}` EDC; MethodButton -> RadioGroup shadcn.
+5. P3 `offline-queue-sheet.tsx:41-44` jam pakai zona outlet; live region hanya pesan status (`:238`). `offline-banner.tsx:69-86` warning `role="status"`.
+6. P3 `ForceCloseLink` di `offline-close-block.tsx:72-81`: tampil hanya bila izin `shift.cash.approve_close`; route tanpa izin tampil alasan jelas (bukan 404).
+Ke O5: screenshot bayar/tersimpan/antrean/tutup/keluar + 320 px + dark + axe.
