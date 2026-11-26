@@ -1,6 +1,6 @@
 // The data door of the order detail screen: components import these hooks and
 // never touch the endpoints or the mock.
-import { useCallback, useEffect, useState } from "react";
+import { useMemo, useSyncExternalStore } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PosOrderStatus } from "@starter/shared/pos";
 import { API_MOCK } from "@/lib/api/mock-flag";
@@ -30,20 +30,34 @@ export function useKitchenVoids(orderId: string) {
   return useQuery({ ...kitchenVoidsQuery(outletId, orderId), enabled });
 }
 
+// Sends on this screen and other tabs (the storage event) re-read the slot.
+const listeners = new Set<() => void>();
+function subscribe(listener: () => void) {
+  listeners.add(listener);
+  window.addEventListener("storage", listener);
+  return () => {
+    listeners.delete(listener);
+    window.removeEventListener("storage", listener);
+  };
+}
+function notify() {
+  for (const listener of listeners) listener();
+}
+
 /**
- * The fire of this order whose answer is unknown, read after hydration (the
- * key lives in sessionStorage) and again after every send.
+ * The fire of this order whose answer is unknown (the key lives in
+ * sessionStorage, so the server render has none), re-read after every send.
  */
 export function usePendingFire(orderId: string) {
   const outletId = useOutletId();
   const actorId = useActorId();
-  const [itemIds, setItemIds] = useState<string[] | null>(null);
-  const refresh = useCallback(
-    () => setItemIds(pendingFireOf(outletId, actorId, orderId)),
-    [outletId, actorId, orderId],
+  const text = useSyncExternalStore(
+    subscribe,
+    () => JSON.stringify(pendingFireOf(outletId, actorId, orderId)),
+    () => "null",
   );
-  useEffect(refresh, [refresh]);
-  return { itemIds, refresh };
+  const itemIds = useMemo(() => JSON.parse(text) as string[] | null, [text]);
+  return { itemIds, refresh: notify };
 }
 
 /**

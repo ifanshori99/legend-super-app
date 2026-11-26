@@ -120,12 +120,11 @@ export function CashierMainScreen() {
     });
   };
   const [pickedItem, setPickedItem] = useState<MenuItem | null>(null);
-  const [parkedOpen, setParkedOpen] = useState(false);
   // "Lanjutkan" on the open orders list (`?ditahan=1`) opens the parked sheet
   // once; the flag leaves the URL so a refresh does not open it again.
+  const [parkedOpen, setParkedOpen] = useState(ditahan === "1");
   useEffect(() => {
     if (ditahan !== "1") return;
-    setParkedOpen(true);
     void navigate({
       to: "/pos/kasir",
       search: (prev) => ({ ...prev, ditahan: undefined }),
