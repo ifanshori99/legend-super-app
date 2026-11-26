@@ -113,6 +113,8 @@ export type ForceCloseView = {
   openedAt: string;
   /** The viewer is the cashier of this shift and may not approve or close it. */
   ownShift: boolean;
+  /** Real wire: the shift's cashier, never offered as witness. */
+  cashierId?: string;
   stage: ForceCloseStage;
   count: {
     id: string;
@@ -135,6 +137,26 @@ export type SubmitForcedCountInput = {
 export type WitnessForcedCountInput = { shiftId: string; overrideId: string };
 
 export type ForceCloseInput = { shiftId: string; note: string };
+
+/** The signed-in supervisor: who counts and who closes (O4 real wire). */
+export type ForceCloseViewer = { userId: string; name: string };
+
+/**
+ * The witness's PIN approval of the supervisor's forced count (O4): override
+ * `cash_shift_close` of this exact count, value |counted - expected|.
+ */
+export type ApproveForcedCountInput = {
+  shiftId: string;
+  countId: string;
+  valueIdr: number;
+  approverUserId: string;
+  approverName: string;
+  pin: string;
+  reason: string;
+};
+
+/** The API's floor for the written force close reason (trimmed). */
+export const FORCE_CLOSE_NOTE_MIN = 10;
 
 /** Extra mock state, stored on the engine state next to the base fields. */
 export type ShiftExtraState = {
