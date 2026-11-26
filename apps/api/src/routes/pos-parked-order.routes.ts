@@ -13,7 +13,7 @@ import {
 } from "../middleware/acting-staff.ts";
 import { requireAuthAllowSharedDevice } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
-import { requirePosWriteOnCloud } from "../middleware/pos-on-cloud.ts";
+import { requireCorePosWriteOnCloud } from "../middleware/pos-on-cloud.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
   getScopedTenantContext,
@@ -39,7 +39,7 @@ const creatorOf = (req: Request) => userIdSchema.parse(actorOf(req));
 posParkedOrderRouter.post(
   "/parked-orders",
   sell,
-  requirePosWriteOnCloud,
+  requireCorePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId } = createPosParkedOrder.params.parse(req.params);
@@ -92,7 +92,7 @@ posParkedOrderRouter.get(
 posParkedOrderRouter.post(
   "/parked-orders/:parkedOrderId/resume",
   sell,
-  requirePosWriteOnCloud,
+  requireCorePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, parkedOrderId } = resumePosParkedOrder.params.parse(

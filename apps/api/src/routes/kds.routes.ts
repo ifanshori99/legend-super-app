@@ -57,7 +57,10 @@ import {
 } from "../middleware/acting-staff.ts";
 import { requireAuthAllowSharedDevice } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
-import { requirePosWriteOnCloud } from "../middleware/pos-on-cloud.ts";
+import {
+  requireCoreKitchenItemWriteOnCloud,
+  requireCorePosWriteOnCloud,
+} from "../middleware/pos-on-cloud.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
   getScopedTenantContext,
@@ -122,7 +125,7 @@ function actor(req: Request): KdsActor {
 kdsRouter.post(
   "/stations/:stationId/heartbeat",
   ...processStation,
-  requirePosWriteOnCloud,
+  requireCorePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, stationId } = recordKitchenStationHeartbeat.params.parse(
@@ -263,7 +266,7 @@ kdsRouter.get("/tickets/:ticketId", processTicket, async (req, res) => {
 kdsRouter.post(
   "/tickets/:ticketId/start",
   processTicket,
-  requirePosWriteOnCloud,
+  requireCorePosWriteOnCloud,
   async (req, res) => {
     const { outletId, ticketId } = startKitchenTicket.params.parse(req.params);
     res.json({
@@ -283,7 +286,7 @@ kdsRouter.post(
 kdsRouter.post(
   "/tickets/:ticketId/bump",
   processTicket,
-  requirePosWriteOnCloud,
+  requireCorePosWriteOnCloud,
   async (req, res) => {
     const { outletId, ticketId } = bumpKitchenTicket.params.parse(req.params);
     res.json({
@@ -303,7 +306,7 @@ kdsRouter.post(
 kdsRouter.post(
   "/tickets/:ticketId/recall",
   processTicket,
-  requirePosWriteOnCloud,
+  requireCorePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, ticketId } = recallKitchenTicket.params.parse(req.params);
@@ -325,7 +328,7 @@ kdsRouter.post(
 kdsRouter.post(
   "/tickets/:ticketId/void",
   processTicket,
-  requirePosWriteOnCloud,
+  requireCorePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, ticketId } = voidKitchenTicket.params.parse(req.params);
@@ -347,7 +350,7 @@ kdsRouter.post(
 kdsRouter.patch(
   "/tickets/:ticketId/priority",
   processTicket,
-  requirePosWriteOnCloud,
+  requireCorePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, ticketId } = setKitchenTicketPriority.params.parse(
@@ -372,7 +375,7 @@ kdsRouter.patch(
 kdsRouter.post(
   "/ticket-items/:itemId/status",
   processTicket,
-  requirePosWriteOnCloud,
+  requireCoreKitchenItemWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, itemId } = updateKitchenTicketItem.params.parse(

@@ -288,6 +288,16 @@ const schema = z
       .enum(["true", "false", "1", "0"])
       .optional()
       .transform((value) => value === "true" || value === "1"),
+    // Kill switch of the edge -> cloud failover (1271 D6). Off by default and
+    // fail closed: opening a failover window answers 403 FAILOVER_DISABLED and
+    // the cloud refuses every POS write of an edge outlet as before, also while
+    // a window is still open. Cancel and return stay possible, so a manager can
+    // always hand the outlet back to its edge. The edge refuses its own POS
+    // writes while its window copy is open, whatever this value.
+    EDGE_FAILOVER_ENABLED: z
+      .enum(["true", "false", "1", "0"])
+      .optional()
+      .transform((value) => value === "true" || value === "1"),
     // Gate for the DOIT recurring billing back office, /api/payments/recurring
     // (legend-6c6). Off by default: the adapter calls /v1/recurring/*, but the
     // DOIT docs publish /v1/billing/*, so a live call would hit a path DOIT does

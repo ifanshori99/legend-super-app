@@ -44,7 +44,7 @@ import {
 } from "../middleware/acting-staff.ts";
 import { requireAuthAllowSharedDevice } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
-import { requirePosWriteOnCloud } from "../middleware/pos-on-cloud.ts";
+import { requireCorePosWriteOnCloud } from "../middleware/pos-on-cloud.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
   getScopedTenantContext,
@@ -133,7 +133,7 @@ async function caller(req: Request): Promise<shifts.ShiftCaller> {
 posShiftRouter.post(
   "/shifts",
   operate,
-  requirePosWriteOnCloud,
+  requireCorePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId } = openPosShift.params.parse(req.params);
@@ -181,7 +181,7 @@ posShiftRouter.get("/shifts/:shiftId", readShift, async (req, res) => {
 posShiftRouter.post(
   "/shifts/:shiftId/counts",
   operateOrApproveClose,
-  requirePosWriteOnCloud,
+  requireCorePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, shiftId } = submitPosShiftCount.params.parse(req.params);
@@ -213,7 +213,7 @@ posShiftRouter.get("/shifts/:shiftId/counts", readShift, async (req, res) => {
 posShiftRouter.post(
   "/shifts/:shiftId/close",
   operate,
-  requirePosWriteOnCloud,
+  requireCorePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, shiftId } = closePosShift.params.parse(req.params);
@@ -233,7 +233,7 @@ posShiftRouter.post(
 posShiftRouter.post(
   "/shifts/:shiftId/force-close",
   approveClose,
-  requirePosWriteOnCloud,
+  requireCorePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, shiftId } = forceClosePosShift.params.parse(req.params);
@@ -255,7 +255,7 @@ posShiftRouter.post(
 posShiftRouter.post(
   "/shifts/:shiftId/cash-movements",
   operate,
-  requirePosWriteOnCloud,
+  requireCorePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, shiftId } = recordPosCashMovement.params.parse(
@@ -295,7 +295,7 @@ posShiftRouter.get(
 posShiftRouter.post(
   "/shifts/:shiftId/cash-movements/:movementId/decision",
   decideHeldCash,
-  requirePosWriteOnCloud,
+  requireCorePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, shiftId, movementId } =

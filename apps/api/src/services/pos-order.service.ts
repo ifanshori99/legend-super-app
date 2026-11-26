@@ -167,6 +167,10 @@ import {
   issuePosTicketsForPaidOrder,
   releasePosTicketsOfVoidedLines,
 } from "./facility-pos-tickets.ts";
+import {
+  posWriteFailoverWindowId,
+  type PosWriteGateOptions,
+} from "./pos-edge-outlet.ts";
 
 type CreateInput = z.output<typeof createPosOrderEndpoint.body>;
 type SubmitInput = z.output<typeof submitEndpoint.body>;
@@ -318,6 +322,20 @@ export async function mutatePosOrder<T>(
           input.outletId,
           input.orderId,
         );
+        // 1271 F3: the gate again inside the write transaction (the window
+        // row share-locked, so a cancel or return waits for this write). On
+        // an edge outlet the cloud writes only orders of the active window.
+        const failoverWindowId = await posWriteFailoverWindowId(
+          tx,
+          context.tenant.tenantId,
+          input.outletId,
+          { failover: "core" },
+        );
+        if (
+          failoverWindowId !== null &&
+          locked.pos.failoverWindowId !== failoverWindowId
+        )
+          throw new PosError("POS_WRITE_ON_EDGE");
         assertCaptainOnly(caller, locked.order.channel);
         if (caller.captainOnly === true) {
           const session = await captainSessionOf(tx, context, locked.order);
@@ -844,7 +862,10 @@ export async function createPosOrder(
         target: outletId,
         request,
       },
-      () => createPosOrderInTx(tx, context, caller, outletId, input, now),
+      () =>
+        createPosOrderInTx(tx, context, caller, outletId, input, now, {
+          failover: "core",
+        }),
     ),
   );
 }
@@ -854,7 +875,8 @@ export async function createPosOrder(
  * scope (the callback `createPosOrder` runs under `posIdempotent`). Exported so
  * the facility ticket sale (936 part D) can hold the slot and open the bill in
  * one transaction. The caller has already checked the channel / service-type
- * rules and refreshed pacing.
+ * rules and refreshed pacing. `gate`: the POS write gate of the caller's path
+ * (1271 F3; only the cashier/captain order is a core failover path).
  */
 export async function createPosOrderInTx(
   tx: Tx,
@@ -863,6 +885,7 @@ export async function createPosOrderInTx(
   outletId: OutletId,
   input: CreateInput,
   now: Date,
+  gate: PosWriteGateOptions = {},
 ): Promise<PosOrderDetail> {
   const tableSessionId = input.tableSessionId ?? null;
   const externalRef = input.externalRef ?? null;
@@ -870,6 +893,15 @@ export async function createPosOrderInTx(
   // under a held catalog is refused before any write.
   assertCatalogSalesAllowed();
   const tenantId = context.tenant.tenantId;
+  // 1271 F3: in the write transaction, before any write. A cloud order of an
+  // edge outlet exists only inside its active failover window and carries it
+  // for good (failover_window_id is fixed at insert).
+  const failoverWindowId = await posWriteFailoverWindowId(
+    tx,
+    tenantId,
+    outletId,
+    gate,
+  );
   const outlet = await loadOutlet(tx, context, outletId);
   if (tableSessionId !== null) {
     const [found] = await tx
@@ -1100,6 +1132,7 @@ export async function createPosOrderInTx(
     cashierId: caller.userId,
     holdItems: input.holdItems ?? false,
     isTraining,
+    failoverWindowId,
     createdAt: now,
     updatedAt: now,
   });

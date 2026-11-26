@@ -58,7 +58,7 @@ import {
 } from "../middleware/acting-staff.ts";
 import { requireAuthAllowSharedDevice } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
-import { requirePosWriteOnCloud } from "../middleware/pos-on-cloud.ts";
+import { requireCorePosWriteOnCloud } from "../middleware/pos-on-cloud.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
   getAccessSnapshot,
@@ -259,7 +259,7 @@ posOrderRouter.get("/orders", view, async (req, res) => {
 posOrderRouter.post(
   "/orders",
   sellOrCaptain,
-  requirePosWriteOnCloud,
+  requireCorePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId } = createPosOrder.params.parse(req.params);
@@ -290,7 +290,7 @@ posOrderRouter.get("/orders/:orderId", view, async (req, res) => {
 posOrderRouter.post(
   "/orders/:orderId/submit",
   sellOrCaptain,
-  requirePosWriteOnCloud,
+  requireCorePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId } = submitPosOrder.params.parse(req.params);
@@ -309,7 +309,7 @@ posOrderRouter.post(
 posOrderRouter.post(
   "/orders/:orderId/fire",
   sellOrCaptain,
-  requirePosWriteOnCloud,
+  requireCorePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId } = firePosOrderItems.params.parse(req.params);
@@ -328,7 +328,7 @@ posOrderRouter.post(
 posOrderRouter.post(
   "/orders/:orderId/complete",
   sell,
-  requirePosWriteOnCloud,
+  requireCorePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId } = completePosOrder.params.parse(req.params);
@@ -347,7 +347,7 @@ posOrderRouter.post(
 posOrderRouter.post(
   "/orders/:orderId/void",
   voids,
-  requirePosWriteOnCloud,
+  requireCorePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId } = voidPosOrder.params.parse(req.params);
@@ -366,7 +366,7 @@ posOrderRouter.post(
 posOrderRouter.post(
   "/orders/:orderId/items/:itemId/void",
   voids,
-  requirePosWriteOnCloud,
+  requireCorePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId, itemId } = voidPosOrderItem.params.parse(
@@ -416,7 +416,7 @@ posOrderRouter.get("/orders/:orderId/actions", view, async (req, res) => {
 posOrderRouter.post(
   "/orders/:orderId/tenders",
   pay,
-  requirePosWriteOnCloud,
+  requireCorePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId } = addPosTender.params.parse(req.params);
@@ -489,7 +489,7 @@ posOrderRouter.get("/qris/reconciliations", reconcile, async (req, res) => {
 posOrderRouter.post(
   "/orders/:orderId/qris/cancel",
   pay,
-  requirePosWriteOnCloud,
+  requireCorePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId } = cancelPosQris.params.parse(req.params);
@@ -509,7 +509,7 @@ posOrderRouter.post(
 posOrderRouter.post(
   "/orders/:orderId/qris/release",
   pay,
-  requirePosWriteOnCloud,
+  requireCorePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId } = releasePosQris.params.parse(req.params);
@@ -531,7 +531,7 @@ posOrderRouter.post(
 posOrderRouter.post(
   "/orders/:orderId/payment-intents/resolve",
   pay,
-  requirePosWriteOnCloud,
+  requireCorePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId } = resolvePosPaymentIntent.params.parse(
@@ -553,7 +553,7 @@ posOrderRouter.post(
 posOrderRouter.post(
   "/orders/:orderId/va/release",
   pay,
-  requirePosWriteOnCloud,
+  requireCorePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId } = releasePosVa.params.parse(req.params);
@@ -573,7 +573,7 @@ posOrderRouter.post(
 posOrderRouter.post(
   "/orders/:orderId/discounts",
   discount,
-  requirePosWriteOnCloud,
+  requireCorePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId } = applyPosDiscount.params.parse(req.params);
@@ -592,7 +592,7 @@ posOrderRouter.post(
 posOrderRouter.delete(
   "/orders/:orderId/discounts/:discountId",
   discount,
-  requirePosWriteOnCloud,
+  requireCorePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId, discountId } = removePosDiscount.params.parse(
@@ -616,7 +616,7 @@ posOrderRouter.delete(
 posOrderRouter.post(
   "/orders/:orderId/corrections/void",
   voids,
-  requirePosWriteOnCloud,
+  requireCorePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId } = voidPosOrderCorrection.params.parse(
@@ -638,7 +638,7 @@ posOrderRouter.post(
 posOrderRouter.post(
   "/orders/:orderId/corrections/refund",
   refund,
-  requirePosWriteOnCloud,
+  requireCorePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
     const { outletId, orderId } = refundPosOrder.params.parse(req.params);
