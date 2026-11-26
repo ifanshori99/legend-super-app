@@ -440,6 +440,15 @@ const parkedOf = (world: World, intentId: string) =>
     [intentId],
   );
 
+const auditCount = async (world: World, action: string, objectId: string) =>
+  (
+    await owner.query(
+      `SELECT 1 FROM audit_logs
+        WHERE tenant_id = $1 AND event->>'action' = $2 AND event->>'objectId' = $3`,
+      [world.tenantId, action, objectId],
+    )
+  ).rowCount ?? 0;
+
 const total = (rows: { amount_idr: string }[]) =>
   rows.reduce((sum, row) => sum + Number(row.amount_idr), 0);
 
@@ -1009,6 +1018,28 @@ describe("settlement", () => {
     });
   });
 
+  it("the code that paid for a seat never gets the automatic late refund, even after a cancellation", async () => {
+    const s = await shop();
+    const { claim, linkId, intentId } = await hold(s);
+    await pay(s.world, intentId);
+    expect(await settle(s.world, intentId, linkId)).toBe("confirmed");
+    // A later cancellation before the start (W3: its own money rule).
+    await q(
+      s.world,
+      "UPDATE wfc_seat_reservations SET status = 'cancelled' WHERE id = $1",
+      [claim.id],
+    );
+    expect(await settle(s.world, intentId, linkId)).toBe("unchanged");
+    expect(
+      await sweepWfcHolds(s.world.context, new Date(Date.now() + 16 * MINUTE)),
+    ).toMatchObject({ settled: 0 });
+    expect(
+      (await refundsOf(s.world, linkId)).filter(
+        (r) => r.requested_by === "system:wfc",
+      ),
+    ).toEqual([]);
+  });
+
   it("a refund that fails: claim cancelled with its money, event done, member free; the sweep files it once", async () => {
     const s = await shop();
     const { claim, scope, linkId, intentId } = await hold(s);
@@ -1025,10 +1056,24 @@ describe("settlement", () => {
       productId: s.reservation,
       startsAt: tomorrowAt("12:00"),
     });
-    refundFault.fail = false;
     // Inside the grace a redelivery may still come: the sweep waits.
     expect(await sweepWfcHolds(s.world.context)).toMatchObject({ settled: 0 });
     const later = new Date(Date.now() + 16 * MINUTE);
+    // Still failing: audited each time and moved to the back of the queue.
+    expect(await sweepWfcHolds(s.world.context, later)).toMatchObject({
+      settled: 0,
+      skipped: 1,
+    });
+    expect(await auditCount(s.world, "wfc.late_refund_failed", claim.id)).toBe(
+      2,
+    );
+    const [moved] = await q<{ updated_at: Date }>(
+      s.world,
+      "SELECT updated_at FROM wfc_seat_reservations WHERE id = $1",
+      [claim.id],
+    );
+    expect(moved!.updated_at.getTime()).toBe(later.getTime());
+    refundFault.fail = false;
     expect(await sweepWfcHolds(s.world.context, later)).toMatchObject({
       settled: 1,
     });

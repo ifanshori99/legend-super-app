@@ -118,6 +118,33 @@ async function linkRefundsIdr(
   return BigInt(String(result.rows[0]?.total ?? "0"));
 }
 
+/** The request a late refund key stands for (one fingerprint everywhere). */
+const lateRefundRequest = (intentId: string) => ({
+  paymentIntentId: intentId,
+  reason: "wfc_late_payment",
+});
+
+/**
+ * Closes the late refund key of the code that paid for a seat (W2 re-review
+ * P2): a pass that is cancelled later (W3) never gets a full automatic refund
+ * from a replayed event or the sweep; its money follows the cancellation rule.
+ */
+async function closeLateRefund(
+  tx: Tx,
+  context: ScopedTenantContext,
+  intentId: string,
+): Promise<void> {
+  await idempotentPaymentAdminWrite(
+    tx,
+    context,
+    WFC_SYSTEM_ACTOR,
+    wfcLateRefundKey(intentId),
+    "refund.create",
+    lateRefundRequest(intentId),
+    () => Promise.resolve({ refundId: null as string | null }),
+  );
+}
+
 /**
  * Files the full refund of a paid code of a claim that never got (or lost) its
  * seat. Idempotent per code (a replay returns null). Runs under the claim
@@ -155,7 +182,7 @@ async function requestLateRefund(
     WFC_SYSTEM_ACTOR,
     wfcLateRefundKey(intent.id),
     "refund.create",
-    { paymentIntentId: intent.id, reason: "wfc_late_payment" },
+    lateRefundRequest(intent.id),
     async () => {
       const { cap, reserved } = await refundableBalance(tx, intent);
       const free = cap - reserved;
@@ -351,6 +378,7 @@ export async function settleWfcIntent(
       before: { status: claim.status },
       after: { status: row.status, priceIdr: row.priceIdr },
     });
+    await closeLateRefund(tx, context, intent.id);
     return "confirmed";
   }
   if (claim.status === "pending_payment")
@@ -380,6 +408,17 @@ export async function settleWfcIntent(
       },
       "WFC late refund not filed; the hold sweep retries it",
     );
+    // Seen by the audit trail, and moved to the back of the sweep's retry
+    // queue so a refund that keeps failing never holds the others.
+    await setClaim(tx, context, claim.id, { updatedAt: now });
+    await auditFacility(tx, context, null, now, {
+      action: "wfc.late_refund_failed",
+      objectType: "wfc_seat_reservation",
+      objectId: claim.id,
+      outletId: claim.outletId,
+      before: null,
+      after: { status: claim.status, source: "late_payment" },
+    });
     return "late_refund_failed";
   }
   if (refundId === null) return "unchanged";
