@@ -26,3 +26,6 @@ Wajib sebelum web:
 - P3 `pos-order-support.ts:537`: hapus `if (!charge) return false;` ganda.
 - P3 test: approved tanpa tanda (jawaban tidak sampai kasir) = `recorded` sekali, ulang tetap sekali; 404 outlet lain untuk `method: "edc"`.
 Cek fix: satu reviewer sonnet atas diff fix.
+
+## Cek fix (d) 27 Nov (b64ba29c3): LULUS (reviewer sonnet)
+P2 nominal beda 409 + tagihan open, alert di luar transaksi rollback, dua test baru benar. P3 sisa (kerjakan bersama bagian web): `order-recovery-charge-pos-resolve.ts:276` mismatch dari `resolveEdcReconciliation` (slip sama, sale unknown beda) tidak dikenali catch `:424-428`, alert tidak terkirim; tambah test outbox.
