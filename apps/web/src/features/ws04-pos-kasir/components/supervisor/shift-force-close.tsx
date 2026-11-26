@@ -553,7 +553,9 @@ function ReadyStage({
       <Dialog open={confirming} onOpenChange={setConfirming}>
         <DialogContent role="alertdialog" className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>{t("posKasirSupervisor.force.confirmTitle")}</DialogTitle>
+            <DialogTitle>
+              {t("posKasirSupervisor.force.confirmTitle")}
+            </DialogTitle>
             <DialogDescription>
               {t("posKasirSupervisor.force.confirmBody", {
                 shiftNo: view.shiftNo,

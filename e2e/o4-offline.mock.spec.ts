@@ -100,6 +100,14 @@ for (const viewport of VIEWPORTS) {
         .getByRole("button", { name: "Tutup paksa shift" })
         .last()
         .click();
+      // The confirmation shows the variance and the reason before it closes.
+      const confirm = page.getByRole("alertdialog");
+      await expect(confirm).toBeVisible();
+      await expect(confirm).toContainText("Tablet kasir rusak");
+      // Let the dialog finish its 300 ms entrance before the shot.
+      await page.waitForTimeout(500);
+      await shot(page, "paksa-konfirmasi");
+      await confirm.getByRole("button", { name: "Tutup paksa shift" }).click();
       await expect(page.getByText("Shift ditutup paksa").first()).toBeVisible();
       await shot(page, "paksa-selesai");
     });
