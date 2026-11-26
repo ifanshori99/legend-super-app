@@ -37,3 +37,6 @@ Wajib sebelum gabung (keputusan CTO):
 5. P3 `offline-queue-sheet.tsx:41-44` jam pakai zona outlet; live region hanya pesan status (`:238`). `offline-banner.tsx:69-86` warning `role="status"`.
 6. P3 `ForceCloseLink` di `offline-close-block.tsx:72-81`: tampil hanya bila izin `shift.cash.approve_close`; route tanpa izin tampil alasan jelas (bukan 404).
 Ke O5: screenshot bayar/tersimpan/antrean/tutup/keluar + 320 px + dark + axe.
+
+## Gabung 27 Nov (926cfed93)
+ui-audit 1-6 dibetulkan (1f51b6fd2). Gate: typecheck api 0 / web 0, 6 file 61 test lulus, teks 19/19, drizzle kosong, e2e mock O4 8 lulus. Item 6: route supervisor via URL langsung tetap 404 (diterima: tautan diganti teks alasan). Sisa ke O5: axe, 320 px, dark, adegan bayar/antrean, browser nyata dengan domain tenant uji.
