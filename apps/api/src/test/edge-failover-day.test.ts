@@ -85,6 +85,8 @@ const menuItemId = randomUUID();
 const cashierId = randomUUID();
 const supervisorId = randomUUID();
 const closerRoleId = randomUUID();
+const ownerUserId = randomUUID();
+const ownerRoleId = randomUUID();
 let node: AuthenticatedEdgeNode;
 
 const scopeOf = (outletIds: string[]): ScopedTenantContext =>
@@ -169,6 +171,7 @@ async function createFixture() {
   for (const [id, name] of [
     [cashierId, "Kasir Failover"],
     [supervisorId, "Manajer Failover"],
+    [ownerUserId, "Pemilik Failover"],
   ] as const)
     await owner.query(
       `INSERT INTO "user" (id, name, email) VALUES ($1, $2, $3)`,
@@ -185,6 +188,18 @@ async function createFixture() {
        (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
      VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 minute', $2)`,
     [tenantId, supervisorId, closerRoleId],
+  );
+  // The owner receives the F-gap alert.
+  await owner.query(
+    `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
+     VALUES ($1, $2, 'Owner', true, 'owner', '[]'::jsonb, false, '["tenant"]')`,
+    [ownerRoleId, tenantId],
+  );
+  await owner.query(
+    `INSERT INTO role_assignments
+       (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+     VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 minute', $2)`,
+    [tenantId, ownerUserId, ownerRoleId],
   );
 }
 
@@ -637,6 +652,8 @@ afterAll(async () => {
       "edge_pos_ingests",
       "pos_daily_closes",
       "receipt_number_writeoffs",
+      "pos_receipts",
+      "notifications",
       "receipt_sequences",
       "cash_movement_outcomes",
       "cash_movements",
@@ -676,7 +693,7 @@ afterAll(async () => {
       ]);
     await client.query("DELETE FROM tenants WHERE id = $1", [tenantId]);
     await client.query('DELETE FROM "user" WHERE id = ANY($1::text[])', [
-      [cashierId, supervisorId],
+      [cashierId, supervisorId, ownerUserId],
     ]);
     await client.query("COMMIT");
   } catch (error) {
@@ -800,6 +817,27 @@ describe("1271 F5 edge day close of a date with failover rows", () => {
 });
 
 describe("1271 F5 cloud close during the window", () => {
+  it("a window opened with a live edge blocks the cloud close too, with FAILOVER_ACTIVE", async () => {
+    const date = freshDate();
+    await q(
+      `UPDATE edge_nodes SET last_heartbeat_at = now() WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, node.scope.edgeNodeId],
+    );
+    await openWindow(date);
+    await expect(
+      closePosDay(
+        scopeOf([outletA]),
+        { userId: userIdSchema.parse(supervisorId) },
+        outletIdSchema.parse(outletA),
+        closeInput(date),
+      ),
+    ).rejects.toMatchObject({
+      code: "FAILOVER_ACTIVE",
+      message: expect.stringContaining("Kembali ke edge"),
+    });
+    expect(await closesOf(date)).toHaveLength(0);
+  });
+
   it("the cloud's stale close stays; a later edge close is day_already_closed and a pre-outage edge sale is a late adjustment", async () => {
     const date = freshDate();
     const deviceId = randomUUID();
@@ -847,15 +885,112 @@ describe("1271 F5 cloud close during the window", () => {
   });
 });
 
-describe("1271 F5 F-run numbers (review K F1)", () => {
-  it("an F-run number is never written off; its gap is reported at Tutup Hari", async () => {
+/** One day after `date` (freshDate leaves four free days between tests). */
+function nextDay(date: string): string {
+  const day = new Date(`${date}T00:00:00.000Z`);
+  day.setUTCDate(day.getUTCDate() + 1);
+  return day.toISOString().slice(0, 10);
+}
+
+describe("1271 F5 failover sales after the cloud closed a date (review F5 #5)", () => {
+  it("land on the next date: the frozen close stays, the next edge close counts them once", async () => {
+    const date = freshDate();
+    const next = nextDay(date);
+    const deviceId = randomUUID();
     await q(
-      `INSERT INTO receipt_sequences
-         (tenant_id, outlet_id, device_id, prefix, series, last_number)
-       VALUES ($1, $2, $3, 'F1', 'failover', 1)`,
-      [tenantId, outletB, randomUUID()],
+      `UPDATE edge_nodes SET last_heartbeat_at = now() - interval '2 hours'
+        WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, node.scope.edgeNodeId],
+    );
+    const windowId = await openWindow(date);
+    await failoverSale(windowId, date, deviceId);
+    await closePosDay(
+      scopeOf([outletA]),
+      { userId: userIdSchema.parse(supervisorId) },
+      outletIdSchema.parse(outletA),
+      closeInput(date),
+    );
+    const frozen = await closesOf(date);
+    expect(frozen[0]?.total_sales_idr).toBe("30000");
+
+    // The window goes on past midnight: the edge's day and more cloud sales.
+    await deliver([...edgeShift(next, deviceId), edgeSale(next, deviceId)]);
+    const edgeNext = await edgeRecap(next);
+    await failoverSale(windowId, next, deviceId);
+    await closeWindow(windowId, next);
+    const event = dayClosed(next, edgeNext);
+    await deliver([event]);
+    expect(await ledger("day", event.aggregateId)).toMatchObject({
+      state: "ingested",
+    });
+    expect(await closesOf(next)).toEqual([
+      expect.objectContaining({ order_count: 2, total_sales_idr: "80000" }),
+    ]);
+    expect(await closesOf(date)).toEqual(frozen);
+  });
+});
+
+/** An F run of outletB with receipts 1 and 3 on `date` and number 2 missing. */
+async function seedFailoverGap(date: string): Promise<void> {
+  const deviceId = randomUUID();
+  const [sequence] = await q<{ id: string }>(
+    `INSERT INTO receipt_sequences
+       (tenant_id, outlet_id, device_id, prefix, series, last_number)
+     VALUES ($1, $2, $3, 'F1', 'failover', 3) RETURNING id`,
+    [tenantId, outletB, deviceId],
+    { replica: true },
+  );
+  for (const ordinal of [1, 3]) {
+    const orderId = randomUUID();
+    await q(
+      `INSERT INTO orders
+         (id, tenant_id, outlet_id, number, channel, service_type, payment_mode,
+          subtotal_idr, discount_idr, service_charge_idr, tax_idr, rounding_idr, total_idr,
+          status, business_date, placed_at)
+       VALUES ($1, $2, $3, $4, 'pos', 'takeaway', 'pay_first', 0, 0, 0, 0, 0, 0,
+               'completed', $5, $6)`,
+      [
+        orderId,
+        tenantId,
+        outletB,
+        `FG-${orderId.slice(0, 8)}`,
+        date,
+        at(date, "05:00"),
+      ],
       { replica: true },
     );
+    await q(
+      `INSERT INTO pos_receipts
+         (tenant_id, outlet_id, order_id, sequence_id, device_id, number, sequence_number,
+          status, issued_at, outlet_snapshot)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'issued', $8, '{}'::jsonb)`,
+      [
+        tenantId,
+        outletB,
+        orderId,
+        sequence!.id,
+        deviceId,
+        `F1-00000${ordinal}`,
+        ordinal,
+        at(date, "05:00"),
+      ],
+      { replica: true },
+    );
+  }
+}
+
+const closeB = (businessDate: string) =>
+  closePosDay(
+    scopeOf([outletB]),
+    { userId: userIdSchema.parse(supervisorId) },
+    outletIdSchema.parse(outletB),
+    closeInput(businessDate),
+  );
+
+describe("1271 F5 F-run numbers (review K F1, CTO 27 Nov)", () => {
+  it("an F number is never written off; its gap counts on its own date only, alerts the owner and blocks no Tutup Hari", async () => {
+    const gapDate = freshDate();
+    await seedFailoverGap(gapDate);
     await expect(
       writeOffReceiptNumber(
         scopeOf([outletB]),
@@ -863,7 +998,7 @@ describe("1271 F5 F-run numbers (review K F1)", () => {
         outletIdSchema.parse(outletB),
         {
           prefix: "F1",
-          sequenceNumber: 1,
+          sequenceNumber: 2,
           reason: "Struk hilang saat mode cloud",
         },
       ),
@@ -888,19 +1023,25 @@ describe("1271 F5 F-run numbers (review K F1)", () => {
         receiptGapsForOutletFast(tx, scopeOf([outletB]), outletB),
       );
       expect(gaps).toEqual([
-        expect.objectContaining({ prefix: "F1", missing: [1] }),
+        expect.objectContaining({ prefix: "F1", missing: [2] }),
       ]);
-      await expect(
-        closePosDay(
-          scopeOf([outletB]),
-          { userId: userIdSchema.parse(supervisorId) },
-          outletIdSchema.parse(outletB),
-          closeInput(freshDate()),
-        ),
-      ).rejects.toMatchObject({
-        code: "RECEIPT_SEQUENCE_GAP",
-        message: expect.stringContaining("F1-000001"),
-      });
+
+      // The gap's own date: closed, the gap counted, the owner alerted.
+      const closed = await closeB(gapDate);
+      expect(closed.unsyncedReceiptCount).toBe(1);
+      const alerts = await q<{ user_id: string; title: string }>(
+        "SELECT user_id, title FROM notifications WHERE tenant_id = $1 AND title LIKE '%mode cloud%'",
+        [tenantId],
+      );
+      expect(alerts.map((row) => row.user_id)).toContain(ownerUserId);
+
+      // Another date: the old F gap is not counted again.
+      const later = await closeB(freshDate());
+      expect(later.unsyncedReceiptCount).toBe(0);
+
+      // Review F5 #2: the edge's Tutup Hari is not blocked by an F gap either.
+      const onEdge = await asEdge(() => closeB(freshDate()));
+      expect(onEdge.status).toBe("closed");
     } finally {
       setPosOutletReceiptGapsPort(null);
     }
