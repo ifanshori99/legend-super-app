@@ -7,6 +7,7 @@
 //   with at least one channel; the channels are listed for the cashier's pick.
 //   Online card stays locked (no chargeback procedure or journal yet).
 // - ECR (1269 E7) is on only where this process runs the outlet's EDC agent
+//   (edge, or B2 the cloud agent with a live bridge lease on the terminal)
 //   and an active terminal's bank has an adapter; otherwise EDC is keyed by
 //   hand with a supervisor approval (EDC-04). Production has no adapter until
 //   legend-vpx, so ECR stays locked there.
@@ -26,7 +27,7 @@ import {
 import { db } from "../db/index.ts";
 import { paymentEdcTerminals } from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
-import { getEdgeEdcAgent } from "../edge/edc/runtime.ts";
+import { resolveEdcAgent } from "../edge/edc/resolver.ts";
 import { logger } from "../lib/logger.ts";
 import { selectGatewayForNewIntent } from "./payment-gateway-select.ts";
 import {
@@ -171,12 +172,9 @@ export async function getPosPaymentOptions(
     edc_card: edc("card"),
     edc_qris: edc("qris"),
   };
-  const agent = getEdgeEdcAgent();
+  const resolved = resolveEdcAgent(context.tenant.tenantId, outletId);
   const ecrEnabled =
-    agent !== null &&
-    terminals.some((row) =>
-      agent.canSell(context.tenant.tenantId, outletId, row.bankCode),
-    );
+    resolved !== null && terminals.some((row) => resolved.terminalReady(row));
   return posPaymentOptionsSchema.parse({
     outletId,
     methods: POS_PAYMENT_OPTION_METHODS.map((method) => ({

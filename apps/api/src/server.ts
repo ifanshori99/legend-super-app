@@ -2,6 +2,13 @@ import "./load-env";
 import { createApp } from "./app";
 import { guardEdgeUpgrades } from "./edge/mode.ts";
 import { attachEmergencyRealtime } from "./edge/panic-relay-realtime.ts";
+import {
+  cloudEdcShutdownForceMs,
+  getCloudEdcRuntime,
+  startCloudEdcRuntime,
+  stopCloudEdcRuntime,
+} from "./edge/edc/cloud-runtime.ts";
+import { attachEdcBridgeRealtime } from "./routes/edc-bridge.routes.ts";
 import { expressClientAddress } from "./lib/client-address.ts";
 import { env } from "./config/env";
 import { checkDatabase, db, pool } from "./db";
@@ -166,6 +173,15 @@ const emergencyRealtime = attachEmergencyRealtime(server, {
   trustedOrigins: env.trustedOrigins,
 });
 
+// EDC agent in the cloud (B2 legend-wasr7.21): bridge tablets connect on
+// /api/edc-bridge. Cloud only, off unless EDC_BRIDGE_ENABLED; without a bank
+// codec (B5) every terminal is refused and ECR stays locked.
+const cloudEdc =
+  !env.EDGE_MODE && env.EDC_BRIDGE_ENABLED ? startCloudEdcRuntime() : null;
+const edcBridgeRealtime = cloudEdc
+  ? attachEdcBridgeRealtime(server, { runtime: getCloudEdcRuntime })
+  : null;
+
 // WS-02 edge mode (legend-2pi). The cloud accepts edge links on
 // /api/edge-link; an edge node runs its boot guards and opens the link to the
 // cloud. A misconfigured or unprovisioned edge node refuses to keep running.
@@ -230,7 +246,10 @@ async function shutdown(signal: string) {
   logger.info({ signal }, "Shutting down");
   // 5 s normally; with the EDC agent on, long enough for a sale on the wire
   // (its approval evidence is written before stop() returns).
-  const forceMs = edgeShutdownForceMs();
+  const forceMs = Math.max(
+    edgeShutdownForceMs(),
+    cloudEdcShutdownForceMs(cloudEdc !== null),
+  );
   const force = setTimeout(() => {
     logger.warn({ forceMs }, "Forcing exit after the shutdown timer");
     process.exit(1);
@@ -246,6 +265,9 @@ async function shutdown(signal: string) {
   )();
   await kdsRealtime.close();
   await emergencyRealtime.close();
+  // Commands still waiting become `unknown`; the agent writes them first.
+  await edcBridgeRealtime?.close();
+  await stopCloudEdcRuntime();
   await (
     await stopKdsWakeups
   )();

@@ -13,7 +13,21 @@ const allBanks = [
   "bri",
 ] as const satisfies readonly EdcBank[];
 
-export class EdcProviderRegistry {
+/** The terminal row a lookup is for (B2): a cloud registry picks the
+ * provider per terminal (`connection_kind`), and refuses a terminal whose
+ * transport is not here (`EDC_AGENT_NOT_READY`). The edge ignores it. */
+export type EdcProviderTarget = {
+  readonly id: string;
+  readonly tenantId: string;
+  readonly outletId: string;
+  readonly connectionKind: string;
+};
+
+export type EdcProviderLookup = {
+  get(bank: string, target?: EdcProviderTarget): EdcProvider;
+};
+
+export class EdcProviderRegistry implements EdcProviderLookup {
   readonly #providers = new Map<string, EdcProvider>();
 
   register(provider: EdcProvider): this {
@@ -23,8 +37,9 @@ export class EdcProviderRegistry {
     return this;
   }
 
-  /** `bank` comes from a database row or a request: never trusted. */
-  get(bank: string): EdcProvider {
+  /** `bank` comes from a database row or a request: never trusted. The edge
+   * has one provider per bank, whatever the terminal. */
+  get(bank: string, _target?: EdcProviderTarget): EdcProvider {
     const provider = this.#providers.get(bank);
     if (!provider) throw new EdcError("EDC_PROVIDER_UNKNOWN");
     return provider;

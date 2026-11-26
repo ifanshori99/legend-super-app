@@ -46,6 +46,7 @@ import {
 } from "@starter/shared/payment/admin";
 import { guardDataImport } from "../config/data-import.ts";
 import { db } from "../db/index.ts";
+import { getCloudEdcRuntime } from "../edge/edc/cloud-runtime.ts";
 import { edcTransactions } from "../db/schema/edc.ts";
 import {
   edcSettlementFiles,
@@ -513,6 +514,11 @@ export async function importEdcSettlementCsv(
   });
   // After the import committed, in their own transactions; never throws.
   if (!result.replayed) {
+    // B2: bridge tablets may drop the sale records of matched traces.
+    await getCloudEdcRuntime()?.settlementMatched(
+      context.tenant.tenantId,
+      outletId,
+    );
     for (const alert of alerts)
       await alertEdcReconciliationMismatch(context, alert, now);
     if (unknownTerminals.count > 0)
