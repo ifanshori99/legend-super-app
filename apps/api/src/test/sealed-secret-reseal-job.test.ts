@@ -397,6 +397,29 @@ const SPECS: Spec[] = [
     aad: (c) => `order-issue-charge-link:${c.tenant}:${c.id}`,
   },
   {
+    // wfc-sale.service.ts wfcLinkSealAad(); a token-only update passes the
+    // claim guard (not a frozen column, status unchanged).
+    table: "wfc_seat_reservations",
+    column: "payment_link_token_sealed",
+    defaults: () => ({
+      kind: "day_pass",
+      access: "all_day",
+      status: "pending_payment",
+      business_date: "2098-01-01",
+      slot: "[2098-01-01T01:00:00Z,2098-01-01T02:00:00Z)",
+      seat_fee_idr: 50_000,
+      credit_idr: 20_000,
+      price_idr: 70_000,
+      paid_idr: 0,
+      refunded_idr: 0,
+      floor_per_hour_idr: 1,
+      hold_expires_at: new Date(Date.now() + 45 * 60_000),
+    }),
+    scope: "tenant",
+    encoding: "text",
+    aad: (c) => `wfc-payment-link:${c.tenant}:${c.id}`,
+  },
+  {
     // lib/push-subscription.ts associatedData(); key_version is kept in step by the job.
     table: "push_subscriptions",
     column: "subscription_ciphertext",
@@ -718,10 +741,10 @@ describe("[legend-tetyr] registry", () => {
     });
   });
 
-  it("covers the 18 sealed columns, each once", () => {
+  it("covers the 19 sealed columns, each once", () => {
     const keys = SEALED_SECRET_COLUMNS.map(keyOf).sort();
     expect(keys).toEqual(SPECS.map(keyOf).sort());
-    expect(new Set(keys).size).toBe(18);
+    expect(new Set(keys).size).toBe(19);
   });
 
   it("every registry column exists with the declared type, and tenant tables have tenant_id", async () => {

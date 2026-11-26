@@ -29,7 +29,7 @@ CREATE TABLE "outlet_failover_switchover_counts" (
 	CONSTRAINT "outlet_failover_switchover_counts_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
--- 1271 F3 switchover counts (0530). Tenant RLS (TEN-01/02) plus the outlet
+-- 1271 F3 switchover counts (0532). Tenant RLS (TEN-01/02) plus the outlet
 -- backstop (TEN-03), like the other edge tables.
 SELECT app.enforce_tenant_rls('public.outlet_failover_switchover_counts'::regclass);
 --> statement-breakpoint

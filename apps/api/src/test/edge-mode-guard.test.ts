@@ -308,6 +308,27 @@ describe("legend-zinn edge allowlist for /api/auth and /api/outlets", () => {
     ).toBe(200);
   });
 
+  it("the edge refuses the paid WFC sale (brief 1270 W2: cloud only)", async () => {
+    const edge = app(true);
+    for (const [method, path] of [
+      ["get", "/api/wfc/products"],
+      ["get", "/api/wfc/claims"],
+      ["post", "/api/wfc/claims"],
+      ["get", `/api/wfc/claims/${OUTLET}`],
+      ["post", `/api/wfc/claims/${OUTLET}/payment`],
+    ] as const) {
+      expect(classifyApiPath(path, method.toUpperCase()), path).toBe(
+        "cloud_only",
+      );
+      const res = await request(edge)[method](path);
+      expect(res.status, `${method} ${path}`).toBe(404);
+      expect(res.body.code, path).toBe("CLOUD_ONLY_ROUTE");
+    }
+    expect((await request(app(false)).post("/api/wfc/claims")).status).toBe(
+      200,
+    );
+  });
+
   it("the cloud still serves every auth and outlet path", async () => {
     const cloud = app(false);
     expect((await request(cloud).post("/api/auth/sign-up/email")).status).toBe(

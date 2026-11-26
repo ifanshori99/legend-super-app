@@ -322,6 +322,14 @@ export const SEALED_SECRET_COLUMNS: readonly SealedSecretColumn[] = [
     aad: (r) => [`order-issue-charge-link:${r.tenantId}:${r.id}`],
   },
   {
+    // wfc-sale.service.ts wfcLinkSealAad()
+    table: "wfc_seat_reservations",
+    column: "payment_link_token_sealed",
+    scope: "tenant",
+    encoding: "text",
+    aad: (r) => [`wfc-payment-link:${r.tenantId}:${r.id}`],
+  },
+  {
     // lib/push-subscription.ts associatedData(); `key_version` (`v<byte>`) is a
     // label the subscribe upsert writes, so it moves with the ciphertext.
     table: "push_subscriptions",

@@ -1,5 +1,5 @@
 -- Custom SQL migration file, put your code below! ---
--- 1271 F3 switchover counts (0530). Tenant RLS (TEN-01/02) plus the outlet
+-- 1271 F3 switchover counts (0532). Tenant RLS (TEN-01/02) plus the outlet
 -- backstop (TEN-03), like the other edge tables.
 SELECT app.enforce_tenant_rls('public.outlet_failover_switchover_counts'::regclass);
 --> statement-breakpoint
