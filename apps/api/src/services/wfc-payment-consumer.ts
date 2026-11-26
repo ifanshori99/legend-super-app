@@ -16,8 +16,14 @@
 //   own flow) and by the price less what the link already has in refunds.
 // - A second paid code of a confirmed claim changes nothing: the payment layer
 //   parks it as unallocated money (one pass, the rest parked).
+// - Both paths share `settleWfcIntent`. The refund is filed in a savepoint: a
+//   refund that fails is logged and the claim stays cancelled with its money
+//   recorded, so the event never stalls (W2 review no. 1); only lock errors
+//   throw (retried).
 // - Sweep: a pending claim past its hold is cancelled and its link closed,
-//   unless a code of the link already holds money (the consumer decides it).
+//   unless a code of the link already holds money: then the consumer settles
+//   it, and past a 15 minute grace the sweep does. Cancelled claims with a paid
+//   code and no late refund request yet get that request.
 import { and, asc, eq, inArray, isNotNull, lte, sql } from "drizzle-orm";
 import {
   createUlid,
@@ -48,11 +54,15 @@ import { wfcSalesEnabled } from "./wfc-sales-gate.ts";
 /** Requester of every WFC refund the system files (listed in the contract). */
 export const WFC_SYSTEM_ACTOR: SystemRefundActor = "system:wfc";
 /** Idempotency key of the late refund of one paid code (reserved prefix). */
+const WFC_LATE_REFUND_PREFIX = "wfc-late-refund:";
 export const wfcLateRefundKey = (intentId: string) =>
-  `wfc-late-refund:${intentId}`;
+  `${WFC_LATE_REFUND_PREFIX}${intentId}`;
+/** How long after a hold ends the sweep leaves a paid code to the consumer. */
+export const WFC_SETTLE_GRACE_MS = 15 * 60_000;
 
 const PAID_INTENT_STATUSES = ["paid", "partially_refunded"] as const;
 const LOCK_NOT_AVAILABLE = "55P03";
+const DEADLOCK_DETECTED = "40P01";
 const SWEEP_BATCH = 100;
 
 const paymentPaidPayloadSchema = z.object({
@@ -61,7 +71,12 @@ const paymentPaidPayloadSchema = z.object({
 });
 
 export type WfcPaymentOutcome =
-  "ignored" | "confirmed" | "unchanged" | "late_refund_requested";
+  | "ignored"
+  | "confirmed"
+  | "unchanged"
+  | "late_refund_requested"
+  /** Claim cancelled and its money recorded; the refund is left to the sweep. */
+  | "late_refund_failed";
 
 type IntentRow = typeof paymentIntents.$inferSelect;
 type LinkRow = typeof paymentLinks.$inferSelect;
@@ -280,9 +295,109 @@ function onTime(
   );
 }
 
+/** Lock errors are retried (event redelivery, next sweep); never swallowed. */
+function isLockError(error: unknown): boolean {
+  const code = pgErrorCode(error);
+  return code === LOCK_NOT_AVAILABLE || code === DEADLOCK_DETECTED;
+}
+
+/**
+ * Settles one paid code of a claim the caller locked (`lockWfcClaim`): the one
+ * decision shared by the consumer and the sweep. On time: the seat is issued.
+ * Otherwise the claim is (or stays) cancelled, its money recorded, and the
+ * refund filed in a savepoint: a refund that fails is logged and left for the
+ * sweep (no throw), so the event and the claim never stall. Lock errors throw.
+ */
+export async function settleWfcIntent(
+  tx: Tx,
+  context: ScopedTenantContext,
+  locked: WfcClaimRow,
+  intentId: string,
+  now: Date,
+): Promise<WfcPaymentOutcome> {
+  let claim = locked;
+  if (claim.paymentLinkId === null) return "unchanged";
+  const link = await loadLink(tx, context, claim.paymentLinkId);
+  const [intent] = await tx
+    .select()
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, context.tenant.tenantId),
+        eq(paymentIntents.id, intentId),
+        eq(paymentIntents.paymentLinkId, claim.paymentLinkId),
+      ),
+    )
+    .limit(1);
+  if (
+    !link ||
+    !intent ||
+    !intent.paidAt ||
+    !(PAID_INTENT_STATUSES as readonly string[]).includes(intent.status)
+  )
+    return "unchanged";
+  if (onTime(claim, link, intent, now)) {
+    const row = await setClaim(tx, context, claim.id, {
+      status: "confirmed",
+      paidIdr: claim.priceIdr,
+      holdExpiresAt: null,
+      updatedAt: now,
+    });
+    await auditFacility(tx, context, null, now, {
+      action: "wfc.claim_confirmed",
+      objectType: "wfc_seat_reservation",
+      objectId: claim.id,
+      outletId: claim.outletId,
+      before: { status: claim.status },
+      after: { status: row.status, priceIdr: row.priceIdr },
+    });
+    return "confirmed";
+  }
+  if (claim.status === "pending_payment")
+    claim = await cancelPending(tx, context, claim, "wfc_late_payment", now);
+  if (claim.status !== "cancelled") return "unchanged";
+  // The money of a claim that never got its seat: recorded once (when the
+  // link holds the full price), then refunded in full.
+  const linkNow = await loadLink(tx, context, claim.paymentLinkId);
+  if (claim.paidIdr === 0 && linkNow && linkNow.paidIdr === linkNow.totalIdr)
+    claim = await setClaim(tx, context, claim.id, {
+      paidIdr: claim.priceIdr,
+      updatedAt: now,
+    });
+  const cancelled = claim;
+  let refundId: string | null;
+  try {
+    refundId = await tx.transaction((savepoint) =>
+      requestLateRefund(savepoint, context, cancelled, intent.id, now),
+    );
+  } catch (error) {
+    if (isLockError(error)) throw error;
+    logger.error(
+      {
+        claimId: claim.id,
+        intentId: intent.id,
+        code: pgErrorCode(error) ?? (error as { code?: unknown }).code,
+      },
+      "WFC late refund not filed; the hold sweep retries it",
+    );
+    return "late_refund_failed";
+  }
+  if (refundId === null) return "unchanged";
+  await auditFacility(tx, context, null, now, {
+    action: "wfc.late_payment_refund",
+    objectType: "wfc_seat_reservation",
+    objectId: claim.id,
+    outletId: claim.outletId,
+    before: null,
+    after: { status: claim.status, source: "late_payment" },
+  });
+  return "late_refund_requested";
+}
+
 /**
  * `payment.paid` consumer of WFC links. Idempotent and replay safe; ignores
- * other events, other tenants and links that fund no claim.
+ * other events, other tenants and links that fund no claim. Throws only on
+ * lock errors (redelivered); a failed refund is left to the sweep.
  */
 export async function handleWfcPaymentPaid(
   context: ScopedTenantContext,
@@ -309,87 +424,96 @@ export async function handleWfcPaymentPaid(
     return row ?? null;
   });
   if (!found) return "ignored";
-  return withTenant(db, context, async (tx) => {
-    let claim = await lockWfcClaim(tx, context, found.id);
-    const link = await loadLink(tx, context, paymentLinkId);
-    const [intent] = await tx
-      .select()
-      .from(paymentIntents)
-      .where(
-        and(
-          eq(paymentIntents.tenantId, context.tenant.tenantId),
-          eq(paymentIntents.id, intentId),
-          eq(paymentIntents.paymentLinkId, paymentLinkId),
-        ),
-      )
-      .limit(1);
-    if (
-      !link ||
-      !intent ||
-      !intent.paidAt ||
-      !(PAID_INTENT_STATUSES as readonly string[]).includes(intent.status)
-    )
-      return "unchanged";
-    if (onTime(claim, link, intent, now)) {
-      const row = await setClaim(tx, context, claim.id, {
-        status: "confirmed",
-        paidIdr: claim.priceIdr,
-        holdExpiresAt: null,
-        updatedAt: now,
-      });
-      await auditFacility(tx, context, null, now, {
-        action: "wfc.claim_confirmed",
-        objectType: "wfc_seat_reservation",
-        objectId: claim.id,
-        outletId: claim.outletId,
-        before: { status: claim.status },
-        after: { status: row.status, priceIdr: row.priceIdr },
-      });
-      return "confirmed";
-    }
-    if (claim.status === "pending_payment")
-      claim = await cancelPending(tx, context, claim, "wfc_late_payment", now);
-    if (claim.status !== "cancelled") return "unchanged";
-    // The money of a claim that never got its seat: recorded once (when the
-    // link holds the full price), then refunded in full.
-    const linkNow = await loadLink(tx, context, paymentLinkId);
-    if (claim.paidIdr === 0 && linkNow && linkNow.paidIdr === linkNow.totalIdr)
-      claim = await setClaim(tx, context, claim.id, {
-        paidIdr: claim.priceIdr,
-        updatedAt: now,
-      });
-    const refundId = await requestLateRefund(
+  return withTenant(db, context, async (tx) =>
+    settleWfcIntent(
       tx,
       context,
-      claim,
-      intent.id,
+      await lockWfcClaim(tx, context, found.id),
+      intentId,
       now,
-    );
-    if (refundId === null) return "unchanged";
-    await auditFacility(tx, context, null, now, {
-      action: "wfc.late_payment_refund",
-      objectType: "wfc_seat_reservation",
-      objectId: claim.id,
-      outletId: claim.outletId,
-      before: null,
-      after: { status: claim.status, source: "late_payment" },
-    });
-    return "late_refund_requested";
-  });
+    ),
+  );
+}
+
+export type WfcSweepResult = {
+  /** Unpaid holds past their hold, cancelled and their link closed. */
+  released: number;
+  /** Paid codes the consumer left (lost event, failed refund) settled now. */
+  settled: number;
+  /** Rows left for the next run (locked, within the grace, or failed). */
+  skipped: number;
+};
+
+/** Paid code of the claim's link the sweep should settle, oldest first. */
+async function unsettledPaidCode(
+  tx: Tx,
+  context: ScopedTenantContext,
+  claim: WfcClaimRow,
+  before: Date,
+): Promise<string | null> {
+  if (claim.paymentLinkId === null) return null;
+  const result = await tx.execute(sql`
+    SELECT i.id::text AS id
+      FROM payment_intents i
+     WHERE i.tenant_id = ${context.tenant.tenantId}
+       AND i.payment_link_id = ${claim.paymentLinkId}::uuid
+       AND i.status IN ('paid', 'partially_refunded')
+       AND i.paid_at IS NOT NULL
+       AND i.paid_at <= ${before.toISOString()}::timestamptz
+       AND NOT EXISTS (
+             SELECT 1 FROM payment_admin_idempotency k
+              WHERE k.tenant_id = i.tenant_id
+                AND k.key = ${WFC_LATE_REFUND_PREFIX} || i.id::text)
+     ORDER BY i.paid_at, i.id
+     LIMIT 1
+  `);
+  const id = result.rows[0]?.id;
+  return typeof id === "string" ? id : null;
+}
+
+/** Does a code of the claim's link hold money? */
+async function linkHasPaidCode(
+  tx: Tx,
+  context: ScopedTenantContext,
+  claim: WfcClaimRow,
+): Promise<boolean> {
+  if (claim.paymentLinkId === null) return false;
+  const [paid] = await tx
+    .select({ id: paymentIntents.id })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, context.tenant.tenantId),
+        eq(paymentIntents.paymentLinkId, claim.paymentLinkId),
+        inArray(paymentIntents.status, [...PAID_INTENT_STATUSES]),
+      ),
+    )
+    .limit(1);
+  return paid !== undefined;
 }
 
 /**
- * Releases pending claims whose hold ran out (bounded batch, oldest first).
+ * The hold sweep (bounded batches, oldest first):
+ * - a pending claim past its hold with no paid code is cancelled and its link
+ *   closed;
+ * - a pending claim whose code took money and whose hold ended more than
+ *   `WFC_SETTLE_GRACE_MS` ago (the consumer never settled it) is settled by
+ *   `settleWfcIntent`: a seat when paid on time, else a refund;
+ * - a cancelled claim with a paid code older than the grace and no late refund
+ *   request yet (a refund that failed, or an event never delivered) is settled
+ *   again, which files that refund.
  * A claim another transaction holds is left for the next run.
  */
 export async function sweepWfcHolds(
   context: ScopedTenantContext,
   now: Date = new Date(),
   limit = SWEEP_BATCH,
-): Promise<{ released: number; skipped: number }> {
-  if (wfcEdgeProcess()) return { released: 0, skipped: 0 };
-  const due = await withTenant(db, context, (tx) =>
-    tx
+): Promise<WfcSweepResult> {
+  const result: WfcSweepResult = { released: 0, settled: 0, skipped: 0 };
+  if (wfcEdgeProcess()) return result;
+  const graceEnd = new Date(now.getTime() - WFC_SETTLE_GRACE_MS);
+  const { lapsed, unrefunded } = await withTenant(db, context, async (tx) => {
+    const lapsedRows = await tx
       .select({ id: wfcSeatReservations.id })
       .from(wfcSeatReservations)
       .where(
@@ -401,44 +525,73 @@ export async function sweepWfcHolds(
         ),
       )
       .orderBy(asc(wfcSeatReservations.holdExpiresAt))
-      .limit(limit),
-  );
-  let released = 0;
-  let skipped = 0;
-  for (const { id } of due) {
+      .limit(limit);
+    const unrefundedRows = await tx.execute(sql`
+      SELECT c.id::text AS id
+        FROM wfc_seat_reservations c
+       WHERE c.tenant_id = ${context.tenant.tenantId}
+         AND c.status = 'cancelled'
+         AND c.payment_link_id IS NOT NULL
+         AND EXISTS (
+               SELECT 1 FROM payment_intents i
+                WHERE i.tenant_id = c.tenant_id
+                  AND i.payment_link_id = c.payment_link_id
+                  AND i.status IN ('paid', 'partially_refunded')
+                  AND i.paid_at IS NOT NULL
+                  AND i.paid_at <= ${graceEnd.toISOString()}::timestamptz
+                  AND NOT EXISTS (
+                        SELECT 1 FROM payment_admin_idempotency k
+                         WHERE k.tenant_id = i.tenant_id
+                           AND k.key = ${WFC_LATE_REFUND_PREFIX} || i.id::text))
+       ORDER BY c.updated_at, c.id
+       LIMIT ${limit}
+    `);
+    return {
+      lapsed: lapsedRows.map((row) => row.id),
+      unrefunded: unrefundedRows.rows.map((row) => String(row.id)),
+    };
+  });
+  const visit = async (
+    id: string,
+    step: (tx: Tx, claim: WfcClaimRow) => Promise<keyof WfcSweepResult>,
+  ) => {
     try {
-      const done = await withTenant(db, context, async (tx) => {
-        const claim = await lockWfcClaim(tx, context, id);
-        if (
-          claim.status !== "pending_payment" ||
-          claim.holdExpiresAt === null ||
-          claim.holdExpiresAt > now
-        )
-          return false;
-        if (claim.paymentLinkId !== null) {
-          const [paid] = await tx
-            .select({ id: paymentIntents.id })
-            .from(paymentIntents)
-            .where(
-              and(
-                eq(paymentIntents.tenantId, context.tenant.tenantId),
-                eq(paymentIntents.paymentLinkId, claim.paymentLinkId),
-                inArray(paymentIntents.status, [...PAID_INTENT_STATUSES]),
-              ),
-            )
-            .limit(1);
-          if (paid) return false;
-        }
-        await cancelPending(tx, context, claim, "wfc_hold_lapsed", now);
-        return true;
-      });
-      if (done) released += 1;
-      else skipped += 1;
+      const outcome = await withTenant(db, context, async (tx) =>
+        step(tx, await lockWfcClaim(tx, context, id)),
+      );
+      result[outcome] += 1;
     } catch (error) {
-      skipped += 1;
-      if (pgErrorCode(error) !== LOCK_NOT_AVAILABLE)
+      result.skipped += 1;
+      if (!isLockError(error))
         logger.warn({ claimId: id }, "WFC hold sweep failed for a claim");
     }
-  }
-  return { released, skipped };
+  };
+  for (const id of lapsed)
+    await visit(id, async (tx, claim) => {
+      if (
+        claim.status !== "pending_payment" ||
+        claim.holdExpiresAt === null ||
+        claim.holdExpiresAt > now
+      )
+        return "skipped";
+      if (await linkHasPaidCode(tx, context, claim)) {
+        // The consumer's turn first; past the grace the sweep settles it.
+        if (claim.holdExpiresAt > graceEnd) return "skipped";
+        const code = await unsettledPaidCode(tx, context, claim, now);
+        if (code === null) return "skipped";
+        const outcome = await settleWfcIntent(tx, context, claim, code, now);
+        return outcome === "unchanged" ? "skipped" : "settled";
+      }
+      await cancelPending(tx, context, claim, "wfc_hold_lapsed", now);
+      return "released";
+    });
+  for (const id of unrefunded)
+    await visit(id, async (tx, claim) => {
+      if (claim.status !== "cancelled") return "skipped";
+      const code = await unsettledPaidCode(tx, context, claim, graceEnd);
+      if (code === null) return "skipped";
+      const outcome = await settleWfcIntent(tx, context, claim, code, now);
+      return outcome === "late_refund_requested" ? "settled" : "skipped";
+    });
+  return result;
 }

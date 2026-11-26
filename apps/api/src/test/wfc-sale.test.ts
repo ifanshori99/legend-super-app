@@ -16,8 +16,10 @@ import {
   describe,
   expect,
   it,
+  vi,
 } from "vitest";
 import { env } from "../config/env.ts";
+import type * as RefundService from "../services/payment-refund.service.ts";
 import { memberTenantContext, type MemberScope } from "../db/member-scope.ts";
 import {
   setPaymentGateway,
@@ -48,6 +50,23 @@ import {
   short,
   type World,
 } from "./member-loyalty-helpers.ts";
+
+// A refund request the payment layer refuses (W2 review no. 1): the opening
+// of the approval chain throws while `fail` is set.
+const refundFault = vi.hoisted(() => ({ fail: false }));
+vi.mock("../services/payment-refund.service.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof RefundService>();
+  return {
+    ...actual,
+    openRefundChainSafely: (
+      ...args: Parameters<typeof actual.openRefundChainSafely>
+    ) => {
+      if (refundFault.fail)
+        throw Object.assign(new Error("refund refused"), { code: "23514" });
+      return actual.openRefundChainSafely(...args);
+    },
+  };
+});
 
 const flag = env as unknown as { WFC_SALES_ENABLED?: boolean };
 const was = flag.WFC_SALES_ENABLED;
@@ -98,6 +117,7 @@ beforeEach(() => {
   flag.WFC_SALES_ENABLED = true;
 });
 afterEach(() => {
+  refundFault.fail = false;
   flag.WFC_SALES_ENABLED = was;
   delete process.env.EDGE_MODE;
 });
@@ -529,6 +549,7 @@ describe("the sale gate", () => {
     expect(await settle(s.world, randomUUID(), randomUUID())).toBe("ignored");
     expect(await sweepWfcHolds(s.world.context)).toEqual({
       released: 0,
+      settled: 0,
       skipped: 0,
     });
   });
@@ -857,15 +878,19 @@ describe("settlement", () => {
     ).toHaveLength(0);
   });
 
-  it("a payment under the price never issues the seat nor refunds more than paid", async () => {
+  it("a payment under the price is refused: no seat, no money taken, no refund", async () => {
     const s = await shop();
-    const { linkId, intentId } = await hold(s);
-    await pay(s.world, intentId, PRICE - 1).catch(() => null);
-    expect(await settle(s.world, intentId, linkId)).not.toBe("confirmed");
-    expect((await claimsOf(s.world))[0]!.status).not.toBe("confirmed");
-    expect(total(await refundsOf(s.world, linkId))).toBeLessThanOrEqual(
-      PRICE - 1,
-    );
+    const { claim, linkId, intentId } = await hold(s);
+    // The payment layer refuses the short amount: the code is never paid.
+    await expect(pay(s.world, intentId, PRICE - 1)).rejects.toMatchObject({
+      decisionCode: "AMOUNT_MISMATCH",
+    });
+    expect(await settle(s.world, intentId, linkId)).toBe("unchanged");
+    expect(await claimsOf(s.world)).toEqual([
+      { id: claim.id, status: "pending_payment", paid_idr: "0" },
+    ]);
+    expect((await intentsOf(s.world, linkId))[0]!.status).toBe("pending");
+    expect(await refundsOf(s.world, linkId)).toEqual([]);
   });
 
   it("paid after the hold ran out: no seat, one full refund, a replay files nothing more", async () => {
@@ -983,4 +1008,113 @@ describe("settlement", () => {
       released: 0,
     });
   });
+
+  it("a refund that fails: claim cancelled with its money, event done, member free; the sweep files it once", async () => {
+    const s = await shop();
+    const { claim, scope, linkId, intentId } = await hold(s);
+    await expireHold(s, claim.id);
+    await pay(s.world, intentId);
+    refundFault.fail = true;
+    expect(await settle(s.world, intentId, linkId)).toBe("late_refund_failed");
+    expect(await claimsOf(s.world)).toEqual([
+      { id: claim.id, status: "cancelled", paid_idr: "120000" },
+    ]);
+    expect(await refundsOf(s.world, linkId)).toHaveLength(0);
+    // The one-hold index no longer locks the member out.
+    await holdWfcSeat(scope, {
+      productId: s.reservation,
+      startsAt: tomorrowAt("12:00"),
+    });
+    refundFault.fail = false;
+    // Inside the grace a redelivery may still come: the sweep waits.
+    expect(await sweepWfcHolds(s.world.context)).toMatchObject({ settled: 0 });
+    const later = new Date(Date.now() + 16 * MINUTE);
+    expect(await sweepWfcHolds(s.world.context, later)).toMatchObject({
+      settled: 1,
+    });
+    expect(await sweepWfcHolds(s.world.context, later)).toMatchObject({
+      settled: 0,
+    });
+    expect(await refundsOf(s.world, linkId)).toEqual([
+      {
+        amount_idr: "120000",
+        requested_by: "system:wfc",
+        payment_intent_id: intentId,
+      },
+    ]);
+    expect(await settle(s.world, intentId, linkId)).toBe("unchanged");
+    expect(await refundsOf(s.world, linkId)).toHaveLength(1);
+  });
+
+  it("an event never delivered, paid on time: the sweep issues the seat after the grace", async () => {
+    const s = await shop();
+    const { claim, intentId, linkId } = await hold(s);
+    await pay(s.world, intentId);
+    const holdEnd = Date.parse(claim.holdExpiresAt!);
+    expect(
+      await sweepWfcHolds(s.world.context, new Date(holdEnd + MINUTE)),
+    ).toMatchObject({ released: 0, settled: 0 });
+    expect((await claimsOf(s.world))[0]!.status).toBe("pending_payment");
+    expect(
+      await sweepWfcHolds(s.world.context, new Date(holdEnd + 16 * MINUTE)),
+    ).toMatchObject({ released: 0, settled: 1 });
+    expect(await claimsOf(s.world)).toEqual([
+      { id: claim.id, status: "confirmed", paid_idr: "120000" },
+    ]);
+    expect(await refundsOf(s.world, linkId)).toHaveLength(0);
+    expect(await settle(s.world, intentId, linkId)).toBe("unchanged");
+  });
+
+  it("an event never delivered, paid late: the sweep refunds once after the grace", async () => {
+    const s = await shop();
+    const { claim, intentId, linkId } = await hold(s);
+    await expireHold(s, claim.id);
+    await pay(s.world, intentId);
+    expect(await sweepWfcHolds(s.world.context)).toMatchObject({
+      released: 0,
+      settled: 0,
+    });
+    const later = new Date(Date.now() + 16 * MINUTE);
+    expect(await sweepWfcHolds(s.world.context, later)).toMatchObject({
+      settled: 1,
+    });
+    expect(await sweepWfcHolds(s.world.context, later)).toMatchObject({
+      settled: 0,
+    });
+    expect(await claimsOf(s.world)).toEqual([
+      { id: claim.id, status: "cancelled", paid_idr: "120000" },
+    ]);
+    expect(total(await refundsOf(s.world, linkId))).toBe(PRICE);
+    expect(await settle(s.world, intentId, linkId)).toBe("unchanged");
+    expect(total(await refundsOf(s.world, linkId))).toBe(PRICE);
+  });
+});
+
+// Today's day pass starts "now"; near midnight WIB there is no slot left.
+const lateInWibDay =
+  Number(
+    new Intl.DateTimeFormat("en-GB", {
+      timeZone: WIB,
+      hour: "2-digit",
+      hourCycle: "h23",
+    }).format(new Date()),
+  ) >= 22;
+
+describe("day pass retry", () => {
+  it.skipIf(lateInWibDay)(
+    "today's day pass asked again a few minutes later is the same hold",
+    async () => {
+      const s = await shop();
+      const who = await member(s.world);
+      const input = { productId: s.dayPass, date: wibDate(0) };
+      const first = await holdWfcSeat(who, input);
+      const again = await holdWfcSeat(
+        who,
+        input,
+        new Date(Date.now() + 2 * MINUTE),
+      );
+      expect(again.id).toBe(first.id);
+      expect(await claimsOf(s.world)).toHaveLength(1);
+    },
+  );
 });

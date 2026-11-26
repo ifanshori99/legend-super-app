@@ -868,9 +868,15 @@ async function insertHold(
     const slot = planSlot(product, input, hours, clock, now);
     const open = await openHoldOf(tx, context, profileId);
     if (open) {
+      // A day pass of today starts "now", which moves every minute: its retry
+      // is the same product on the same day.
+      const sameSlot =
+        product.wfcKind === "day_pass"
+          ? localDate(open.startsAt, clock.timeZone) === hoursDate
+          : open.startsAt.getTime() === slot.startsAt.getTime();
       if (
         open.productId === product.id &&
-        open.startsAt.getTime() === slot.startsAt.getTime() &&
+        sameSlot &&
         (input.seatId === undefined || input.seatId === open.seatId)
       )
         return { claim: open, replay: true };
