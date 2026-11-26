@@ -178,6 +178,9 @@ export const posCorrectionMessages = {
     itemLine: "{quantity} × {name}",
     printedTitle: "Struk dikirim ke printer",
     printedBody: "Struk {receiptNo} masuk antrean cetak.",
+    notPrintedTitle: "Struk tidak tercetak",
+    notPrintedBody:
+      "Server tidak punya printer untuk struk {receiptNo}. Percobaan cetak berikutnya ditandai CETAK ULANG.",
   },
   method: {
     cash: "Tunai",

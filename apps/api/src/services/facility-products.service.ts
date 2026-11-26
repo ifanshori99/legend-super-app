@@ -368,6 +368,32 @@ export async function createFacilityProduct(
   });
 }
 
+/**
+ * Brief 1270 W1: the price, quota and till link of a WFC product are set only
+ * by `setWfcProduct`, and switching it on needs the price floor (W1b), so this
+ * editor may rename it, change its tax rule or switch it off, nothing else.
+ */
+function assertWfcProductUntouched(
+  existing: ProductRow,
+  input: UpdateProductInput,
+): void {
+  if (existing.wfcKind === null) return;
+  const changes = (key: "priceIdr" | "sessions" | "maxPerDay" | "menuItemId") =>
+    input[key] !== undefined && input[key] !== existing[key];
+  if (
+    changes("priceIdr") ||
+    changes("sessions") ||
+    changes("maxPerDay") ||
+    changes("menuItemId") ||
+    (input.isActive === true && !existing.isActive)
+  )
+    throw new HttpError(
+      409,
+      "WFC_PRODUCT_MANAGED",
+      "Harga, kuota, dan status jual produk WFC diatur di pengaturan WFC.",
+    );
+}
+
 export async function updateFacilityProduct(
   context: ScopedTenantContext,
   actorUserId: string,
@@ -388,6 +414,7 @@ export async function updateFacilityProduct(
     await lockConfigRow(tx, "facility_products", context, productId);
     const existing = await loadProduct(tx, context, productId);
     assertConfigFresh(existing.updatedAt, input.expectedUpdatedAt);
+    assertWfcProductUntouched(existing, input);
     await assertTaxRuleRef(tx, context, existing.outletId, input.taxRuleId);
     await assertMenuItemRef(tx, context, input.menuItemId);
     const [row] = await tx

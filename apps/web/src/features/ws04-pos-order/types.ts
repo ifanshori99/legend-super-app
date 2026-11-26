@@ -105,6 +105,8 @@ export interface OrderLine extends Omit<
 
 export interface PosOrderView {
   orderId: string;
+  /** The server's status (real contract only); fire states it back. */
+  status?: "draft" | "awaiting_payment" | "sent" | "completed" | "voided";
   number: string;
   channel: SaleChannel;
   tableLabel: string | null;
@@ -134,11 +136,33 @@ export interface CaptainTable {
   qrSessionActive: boolean;
   sessionId: string | null;
   hasOpenCall: boolean;
+  /**
+   * A reservation still holds this unseated table (time and party size only).
+   * `null` = none; undefined = the server did not say (soft warning).
+   */
+  hold?: TableHold | null;
+  /** The open session's payment mode; pay first is the cashier's table. */
+  paymentMode?: "pay_first" | "open_bill" | null;
+}
+
+export interface TableHold {
+  startsAt: string;
+  endsAt: string;
+  pax: number;
 }
 
 export interface TableOrderView {
   table: CaptainTable;
   order: PosOrderView | null;
+}
+
+/**
+ * A table's orders on the real contract: one order per send, oldest first,
+ * never merged. Empty while the table has no session.
+ */
+export interface TableOrdersView {
+  table: CaptainTable;
+  orders: PosOrderView[];
 }
 
 export type ServiceCallType = "call_waiter" | "request_bill" | "complaint";
@@ -183,6 +207,8 @@ export interface OrderSnapshot {
 
 export interface SubmitOrderInput {
   channel: SaleChannel;
+  /** A dine-in order taken by the captain: sent on the `captain` channel. */
+  captain?: boolean;
   /** The open table session of the chosen table (dine-in); never the label. */
   tableSessionId: string | null;
   ojol: OjolInput | null;
@@ -209,6 +235,17 @@ export interface ParkDraftInput {
 export interface AddToTableInput {
   tableId: string;
   lines: CartLine[];
+}
+
+/** What the captain sends for a table: its session, never its label alone. */
+export interface CaptainSendInput {
+  tableId: string;
+  /** The open session of the table; no session, no order. */
+  tableSessionId: string | null;
+  tableLabel: string;
+  lines: CartLine[];
+  /** Pay-first table: held back here before anything is sent. */
+  payFirst?: boolean;
 }
 
 export interface AddToTableRequest extends AddToTableInput {

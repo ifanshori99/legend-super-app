@@ -44,6 +44,7 @@ import {
   releasePosQris,
   releasePosVa,
   removePosDiscount,
+  resolvePosPaymentIntent,
   submitPosOrder,
   voidPosOrder,
   voidPosOrderCorrection,
@@ -63,6 +64,8 @@ import {
   getAccessSnapshot,
   getScopedTenantContext,
   requireOutletPermission,
+  requireOutletPermissionOrFallback,
+  usedFallbackPermission,
 } from "../middleware/permissions.ts";
 import {
   getTenantContext,
@@ -75,6 +78,7 @@ import * as discounts from "../services/pos-order-discounts.ts";
 import { addPosTender as addPosTenderService } from "../services/pos-order-payment.ts";
 import * as pos from "../services/pos-order.service.ts";
 import { getPosPaymentOptions as getPosPaymentOptionsService } from "../services/pos-payment-options.service.ts";
+import { resolvePosPaymentIntent as resolvePosPaymentIntentService } from "../services/pos-payment-intent-resolve.ts";
 import * as qrisHold from "../services/pos-qris-hold.ts";
 import * as vaRelease from "../services/payment-va-release.ts";
 import { listPosQrisReconciliations as listPosQrisReconciliationsService } from "../services/pos-qris-release-recon.ts";
@@ -99,6 +103,13 @@ const can = (permission: PermissionCode) =>
 
 const view = can("order.view");
 const sell = can("pos.sale.create");
+// Create, submit and fire: a waiter or captain (`order.create`) may only touch
+// `captain` orders; the service enforces that (PosCaller.captainOnly).
+const sellOrCaptain = requireOutletPermissionOrFallback(
+  "pos.sale.create",
+  "order.create",
+  outletOf,
+);
 const pay = can("pos.payment.accept");
 const discount = can("pos.discount.apply");
 const voids = can("pos.void.request");
@@ -144,6 +155,7 @@ async function caller(
     userId: userIdSchema.parse(actorOf(req)),
     deviceId: await currentDeviceIdOf(req),
     expectedVersion: fromBody ?? fromHeader,
+    captainOnly: usedFallbackPermission(req),
   };
 }
 
@@ -246,7 +258,7 @@ posOrderRouter.get("/orders", view, async (req, res) => {
 
 posOrderRouter.post(
   "/orders",
-  sell,
+  sellOrCaptain,
   requirePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
@@ -277,7 +289,7 @@ posOrderRouter.get("/orders/:orderId", view, async (req, res) => {
 
 posOrderRouter.post(
   "/orders/:orderId/submit",
-  sell,
+  sellOrCaptain,
   requirePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
@@ -296,7 +308,7 @@ posOrderRouter.post(
 
 posOrderRouter.post(
   "/orders/:orderId/fire",
-  sell,
+  sellOrCaptain,
   requirePosWriteOnCloud,
   jsonBody,
   async (req, res) => {
@@ -501,6 +513,29 @@ posOrderRouter.post(
     const body = releasePosQris.body.parse(req.body);
     res.json({
       data: await qrisHold.releasePosQris(
+        getScopedTenantContext(req),
+        await caller(req),
+        outletId,
+        orderId,
+        body,
+      ),
+    });
+  },
+);
+
+// 1268 W2: a payment request without a known answer, settled by a supervisor's
+// PIN. The outlet is the caller's own (session and path, TEN-02).
+posOrderRouter.post(
+  "/orders/:orderId/payment-intents/resolve",
+  pay,
+  jsonBody,
+  async (req, res) => {
+    const { outletId, orderId } = resolvePosPaymentIntent.params.parse(
+      req.params,
+    );
+    const body = resolvePosPaymentIntent.body.parse(req.body);
+    res.json({
+      data: await resolvePosPaymentIntentService(
         getScopedTenantContext(req),
         await caller(req),
         outletId,

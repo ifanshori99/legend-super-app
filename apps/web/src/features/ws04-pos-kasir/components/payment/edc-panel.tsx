@@ -78,6 +78,7 @@ export function EdcPanel({
         bill={bill}
         attempt={attempt}
         receiptNo={session.receiptNo}
+        completion={session.completion}
       />
     );
   if (attempt?.status === "declined")
@@ -105,6 +106,7 @@ export function EdcPanel({
         orderId={orderId}
         bill={bill}
         terminal={terminal}
+        mode={mode}
         onBack={() => setStandalone(false)}
       />
     );

@@ -29,9 +29,81 @@ export const posCaptainOrderMessages = {
     fireFailed:
       "Item belum terkirim ke dapur. Item tetap ditahan, coba kirim lagi.",
     fireAll: "Kirim {course} ke dapur ({count} item)",
+    fireItems: "Kirim {count} item ke dapur",
+    orderNumber: "Pesanan {number}",
     notFoundTitle: "Meja tidak ditemukan",
     notFoundHint: "Meja ini tidak ada atau sudah dihapus. Pilih meja lain.",
     backToTables: "Kembali ke daftar meja",
+  },
+  noSession: {
+    title: "Meja ini belum punya sesi",
+    hint: "Tanpa sesi meja tidak ada pesanan. Dudukkan tamu dulu.",
+    action: "Kembali ke meja",
+  },
+  payFirst: {
+    title: "Meja ini bayar di muka",
+    hint: "Meja ini bayar di muka. Arahkan tamu ke kasir.",
+  },
+  draft: {
+    title: "Pesanan ini belum terkirim ke dapur",
+    body: "Pesanan sudah tercatat di meja, tetapi belum dikirim. Lanjutkan kirim memakai pesanan yang sama; tidak dibuat pesanan kedua.",
+    continue: "Lanjutkan kirim",
+    failed: "Belum berhasil dikirim. Coba lagi, atau periksa pesanan meja.",
+  },
+  locked: {
+    title: "Keranjang dikunci",
+    body: "Pesanan sedang dikirim atau belum jelas hasilnya. Keranjang tidak bisa diubah sampai ada jawaban.",
+  },
+  pending: {
+    title: "Pesanan belum jelas terkirim",
+    body: "Jawaban dari server belum diterima. Kirim ulang akan memakai isi dan kunci yang sama, jadi tidak jadi dua pesanan. Atau tutup setelah Anda memeriksa pesanan meja ini.",
+    resend: "Kirim ulang",
+    restore: "Kembalikan pesanan tertunda",
+    close: "Sudah saya periksa, tutup",
+  },
+  refused: {
+    title: "Server menolak kunci pesanan ini",
+    body: "Belum diketahui apakah pesanan sebelumnya masuk. Periksa pesanan meja ini, lalu tutup peringatan ini.",
+  },
+  fire: {
+    pendingTitle: "Pengiriman ke dapur belum jelas",
+    pendingBody:
+      "Jawaban server belum diterima. Kirim ulang memakai kunci yang sama, atau tutup setelah memeriksa pesanan meja.",
+    refusedBody:
+      "Server menolak kunci pengiriman ini. Periksa pesanan meja, lalu tutup.",
+    resend: "Kirim ulang ({count} item)",
+    close: "Sudah saya periksa, tutup",
+  },
+  unclear: {
+    title: "Pengiriman yang belum jelas",
+    body: "Jawaban server belum diterima, dan mejanya mungkin sudah ditutup. Kirim ulang memakai kunci yang sama, atau tutup setelah memeriksa pesanan meja.",
+    order: "Pesanan meja {table}: {count} item",
+    seat: "Dudukkan {count} tamu di meja {table}",
+    fire: "Kirim {count} item ke dapur",
+    resend: "Kirim ulang",
+    close: "Sudah saya periksa, tutup",
+    failed:
+      "Pengiriman ulang belum berhasil. Coba lagi, atau periksa pesanan meja.",
+    refused:
+      "Server menolak kunci pengiriman ini. Periksa pesanan meja, lalu tutup.",
+  },
+  seat: {
+    title: "Dudukkan tamu di meja {table}",
+    hint: "Meja kosong belum punya sesi. Catat jumlah tamu untuk membuka sesi.",
+    pax: "Jumlah tamu",
+    submit: "Dudukkan tamu",
+    confirmHold: "Tetap dudukkan walk-in",
+    resend: "Kirim ulang dudukkan",
+    close: "Sudah saya periksa, tutup",
+    failed: "Tamu belum bisa didudukkan.",
+    holdTitle: "Meja ini ditahan reservasi",
+    holdBody:
+      "Reservasi {pax} tamu dijadwalkan pukul {time}. Bila walk-in didudukkan, reservasi itu bisa ditolak saat tamunya datang.",
+    holdUnknown:
+      "Reservasi meja ini tidak bisa diperiksa. Tanyakan ke host sebelum mendudukkan.",
+    pendingTitle: "Dudukkan sebelumnya belum jelas",
+    pendingBody:
+      "Jawaban server belum diterima untuk {count} tamu. Kirim ulang memakai kunci yang sama.",
   },
   add: {
     title: "Tambah pesanan",

@@ -20,7 +20,13 @@ type StorageLike = Pick<
   "getItem" | "setItem" | "removeItem" | "key" | "length"
 >;
 
-export type IntentKind = "create" | "submit" | "park" | "resume";
+export type IntentKind =
+  | "create"
+  | "submit"
+  | "park"
+  | "resume"
+  | "open"
+  | "fire";
 
 export type IntentScope = {
   outletId: string;

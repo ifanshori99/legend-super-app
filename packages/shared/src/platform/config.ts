@@ -59,6 +59,7 @@ import {
   taxTypeSchema,
 } from "../tax/schemas.ts";
 import { textOverrideSetSchema } from "../text/index.ts";
+import { wfcProductSplitSchema } from "../wfc/index.ts";
 import { itemKey, wifiPolicyItemSchema } from "./config-items.ts";
 import { loyaltyPolicyConfigItemSchema } from "../crm/config-codec.ts";
 import { payrollSettingsConfigItemSchema } from "../hris/payroll/config-codec.ts";
@@ -344,6 +345,8 @@ const facilityItemSchema = z.discriminatedUnion("kind", [
     /** A `tax_rules` rule key; null = default tax. */
     taxRuleKey: itemKey.nullable(),
     maxPerDay,
+    /** Present only for a WFC product (1270); older exports omit it. */
+    wfc: wfcProductSplitSchema.optional(),
   }),
   z.strictObject({
     key: itemKey,

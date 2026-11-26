@@ -73,6 +73,9 @@ export const posKasirEdcMessages = {
     noTerminal: "Belum ada terminal EDC yang siap",
     noTerminalHint:
       "Nyalakan mesin EDC dan pastikan terhubung, lalu muat ulang. Atau pilih metode lain.",
+    manualTitle: "Nominal diketik di mesin EDC",
+    manualBody:
+      "Terima pembayaran di mesin EDC, lalu catat dari struk bank dengan persetujuan supervisor.",
     autoTitle: "Nominal dikirim otomatis",
     autoBody:
       "Setelah dikirim, nominal terkunci. Jangan ketik ulang nominal di mesin EDC.",
@@ -149,21 +152,25 @@ export const posKasirEdcMessages = {
     bankRef: "Referensi bank",
     approval: "Kode persetujuan",
     posRef: "Referensi POS",
-    receiptTitle: "Struk sudah dicetak",
+    receiptTitle: "Struk sudah terbit",
     receiptBody: "Nomor struk {receiptNo}",
     receiptDeposit: "Nomor struk {receiptNo} · DP {deposit} + EDC {amount}",
     reconcileTitle: "Perlu rekonsiliasi",
     reconcileBody:
       "Pembayaran ini ditandai belum cocok dengan laporan bank sampai direkonsiliasi saat tutup hari.",
+    print: "Cetak struk",
     reprint: "Cetak ulang struk",
     reprinting: "Mencetak…",
-    reprinted: "Struk dicetak ulang.",
+    reprinted: "Struk dikirim ke printer.",
     reprintError: "Struk belum bisa dicetak",
     back: "Kembali ke kasir",
   },
   standalone: {
     title: "Verifikasi bukti & supervisor",
     pill: "Belum dicatat",
+    noApprover: "Supervisor belum bisa dimuat",
+    noApproverHint:
+      "Daftar supervisor yang boleh menyetujui kosong atau gagal dimuat.",
     noticeTitle: "Koneksi ECR tidak tersedia",
     noticeBody:
       "Hanya jika belum ada permintaan pembayaran atau transaksi sebelumnya dipastikan gagal/batal. Jangan catat ulang transaksi berhasil.",

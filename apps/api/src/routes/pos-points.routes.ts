@@ -123,13 +123,15 @@ posPointsRouter.post(
   onCloud,
   async (req, res) => {
     const { orderId } = redeemPosOrderPoints.params.parse(req.params);
-    const body = redeemPosOrderPoints.body.parse(req.body);
+    const { expectedVersion, ...body } = redeemPosOrderPoints.body.parse(
+      req.body,
+    );
     const detail = await points.redeemPosOrderPoints(
       getScopedTenantContext(req),
       {
         userId: userIdSchema.parse(actorOf(req)),
         deviceId: await currentDeviceIdOf(req),
-        expectedVersion: null,
+        expectedVersion: expectedVersion ?? null,
       },
       outletOf(req),
       orderId,

@@ -10,6 +10,7 @@
 // the same adapter the POS, QR and website checkouts call in their order
 // transaction (`redeemPromotions` / `releasePromotions`).
 
+import { isDeepStrictEqual } from "node:util";
 import { randomInt } from "node:crypto";
 import { and, desc, eq, lt, or, sql, type SQL } from "drizzle-orm";
 import type { AccessTarget, PermissionCode } from "@starter/shared/access";
@@ -77,6 +78,7 @@ import {
 } from "./crm-promo-engine";
 import { promoIdempotentCommand } from "./crm-promo-idempotency";
 import { assertFacilityProductOpen } from "./facility-shower-gate";
+import { assertPromoBenefitNotWfc } from "./wfc-product-guard";
 import { promotionDisabledAtOutlet } from "./crm-promo-outlets";
 import {
   loadTenantAccessInTransaction,
@@ -371,6 +373,11 @@ async function insertPromotion(
       updatedAt: now.toISOString(),
     });
     await assertNoShowerPromoActive(tx, context, promotion);
+    await assertPromoBenefitNotWfc(
+      tx,
+      context.tenant.tenantId,
+      promotion.benefit,
+    );
     if (promotion.codeHash !== null)
       await assertCodeFree(tx, context, promotion.codeHash);
     let row: PromotionRow | undefined;
@@ -464,6 +471,12 @@ export async function updatePromotion(
     });
     assertStatusChange(current.status, next.status);
     await assertNoShowerPromoActive(tx, context, next);
+    // A promotion saved before its product became WFC may still be switched off.
+    if (
+      next.status === "active" ||
+      !isDeepStrictEqual(next.benefit, current.benefit)
+    )
+      await assertPromoBenefitNotWfc(tx, context.tenant.tenantId, next.benefit);
     if (next.quotaTotal !== null && next.quotaTotal < row.usesTotal)
       throw new HttpError(
         422,

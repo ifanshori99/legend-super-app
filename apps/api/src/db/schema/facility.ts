@@ -37,6 +37,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  smallint,
   text,
   timestamp,
   unique,
@@ -63,6 +64,7 @@ import type {
   SubscriptionInterval,
   TicketAddon,
 } from "@starter/shared/facility";
+import type { WfcAccess, WfcProductKind } from "@starter/shared/wfc";
 import {
   idrColumn,
   outletIdColumn,
@@ -476,6 +478,19 @@ export const facilityProducts = pgTable(
     maxPerDay: integer("max_per_day"),
     /** Menu package that carries this component (WS-03). */
     menuItemId: uuid("menu_item_id"),
+    /**
+     * Paid WFC product (brief 1270 W1): only a `single` product of a coworking
+     * facility may carry a kind (the service enforces the facility type); null
+     * = ordinary product. `facility_products_wfc_check` ties the columns
+     * together: price = seat fee + credit, and no menu item, so no till, package
+     * or ticket door can sell it.
+     */
+    wfcKind: varchar("wfc_kind", { length: 20 }).$type<WfcProductKind>(),
+    wfcAccess: varchar("wfc_access", { length: 10 }).$type<WfcAccess>(),
+    seatFeeIdr: idrColumn("seat_fee_idr"),
+    creditIdr: idrColumn("credit_idr"),
+    /** Slot length of a seat reservation in minutes (1..1440), else null. */
+    durationMinutes: smallint("duration_minutes"),
     isActive: boolean("is_active").notNull().default(true),
     createdAt,
     updatedAt,
@@ -500,6 +515,11 @@ export const facilityProducts = pgTable(
     check(
       "facility_products_type_check",
       sql`${table.type} IN ('single', 'package_component', 'subscription_plan')`,
+    ),
+    // IS NOT NULL is spelled out: a NULL comparison would pass a CHECK.
+    check(
+      "facility_products_wfc_check",
+      sql`(${table.wfcKind} IS NULL AND ${table.wfcAccess} IS NULL AND ${table.seatFeeIdr} IS NULL AND ${table.creditIdr} IS NULL AND ${table.durationMinutes} IS NULL) OR (${table.wfcKind} IS NOT NULL AND ${table.wfcKind} IN ('day_pass', 'seat_reservation') AND ${table.wfcAccess} IS NOT NULL AND ${table.wfcAccess} IN ('off_peak', 'all_day') AND ${table.type} = 'single' AND ${table.menuItemId} IS NULL AND ${table.sessions} = 1 AND ${table.maxPerDay} IS NULL AND ${table.seatFeeIdr} IS NOT NULL AND ${table.seatFeeIdr} > 0 AND ${table.creditIdr} IS NOT NULL AND ${table.creditIdr} > 0 AND ${table.priceIdr} = ${table.seatFeeIdr} + ${table.creditIdr} AND (${table.wfcKind} = 'seat_reservation') = (${table.durationMinutes} IS NOT NULL) AND (${table.durationMinutes} IS NULL OR ${table.durationMinutes} BETWEEN 1 AND 1440))`,
     ),
     check(
       "facility_products_amount_check",

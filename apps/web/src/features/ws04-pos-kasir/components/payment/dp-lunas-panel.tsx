@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Notice, PosPanel, StateBlock, StatusPill } from "../shared";
 import { ORDER_COMPLETE_FAILED } from "../../api";
 import { usePaymentSession, usePrintReceipt } from "../../hooks";
+import { ReceiptNotPrinted, wasQueued } from "./receipt-result-notice";
 
 // The reservation DP covered the whole bill (legend-p7lx): no method, no cash,
 // no change. The cashier only prints the receipt and starts the next
@@ -19,8 +20,11 @@ export function DpLunasPanel({
 }) {
   const t = useT();
   const navigate = useNavigate();
-  const { receiptNo } = usePaymentSession(orderId);
+  const { receiptNo, completion } = usePaymentSession(orderId);
   const print = usePrintReceipt();
+  const notPrinted =
+    print.data && !wasQueued(print.data) ? print.data : undefined;
+  const held = completion === "held";
   const toNewTransaction = () => void navigate({ to: "/pos/meja" });
 
   return (
@@ -42,10 +46,17 @@ export function DpLunasPanel({
           </Button>
           <Button
             type="button"
-            disabled={print.isPending}
+            disabled={print.isPending || held}
             aria-busy={print.isPending}
             onClick={() =>
-              print.mutate({ orderId }, { onSuccess: toNewTransaction })
+              print.mutate(
+                { orderId },
+                {
+                  onSuccess: (result) => {
+                    if (wasQueued(result)) toNewTransaction();
+                  },
+                },
+              )
             }
           >
             {print.isPending
@@ -83,12 +94,25 @@ export function DpLunasPanel({
           {(receiptNo || print.data?.receiptNo) && (
             <p className="text-base text-muted-foreground">
               {t(
-                print.isSuccess
-                  ? "posKasirPayment.success.receiptPrinted"
-                  : "posKasirPayment.success.receipt",
+                notPrinted
+                  ? "posKasirPayment.success.receiptNotPrinted"
+                  : print.isSuccess
+                    ? "posKasirPayment.success.receiptPrinted"
+                    : "posKasirPayment.success.receipt",
                 { receiptNo: print.data?.receiptNo ?? receiptNo ?? "" },
               )}
             </p>
+          )}
+          {held && (
+            <Notice
+              tone="warning"
+              title={t("posKasirPayment.success.heldTitle")}
+            >
+              {t("posKasirPayment.success.heldHint")}
+            </Notice>
+          )}
+          {notPrinted && (
+            <ReceiptNotPrinted result={notPrinted} onSkip={toNewTransaction} />
           )}
           {print.isError &&
             (print.error.code === ORDER_COMPLETE_FAILED ? (

@@ -6,6 +6,11 @@
 // Assumptions: the state comes from usePaymentSession().activeAttempt with
 // status "declined" and edc.declineReason / edc.responseCode (shared contract
 // in the brief); the screen under test is EdcPanel.
+// Vite injects this build flag; the unit config does not.
+vi.hoisted(() => {
+  (globalThis as { __WEB_DEV_SERVER__?: boolean }).__WEB_DEV_SERVER__ = false;
+});
+
 import { createElement, type ReactNode } from "react";
 import { renderToString } from "react-dom/server";
 import {
