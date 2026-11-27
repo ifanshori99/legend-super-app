@@ -111,6 +111,7 @@ export const AREA_MANIFEST: Readonly<
   aiSettingsCustom: "kelola",
   edcRecon: "kelola",
   edcSettlementCsv: "kelola",
+  gatewaySettlement: "kelola",
   financeExceptions: "kelola",
   floorEditor: "kelola",
   crm360: "kelola",

@@ -6,6 +6,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
+import type { OutletId } from "@starter/shared/core";
 import { orgEndpoints } from "@starter/shared/platform";
 import type {
   ApproveRefundInput,
@@ -16,6 +17,7 @@ import type {
   RejectRefundInput,
   RetryRefundPayoutInput,
   ResolveReconciliationCaseInput,
+  ImportGatewaySettlementCsvInput,
   ResolveRefundReconHoldInput,
   ResolveUnallocatedFundInput,
   RoutedPaymentMethod,
@@ -29,6 +31,7 @@ import {
   getReconciliationSummary as getReconciliationSummaryEndpoint,
   listEdcTerminals as listEdcTerminalsEndpoint,
   listReconciliationCases as listReconciliationCasesEndpoint,
+  listSettlements as listSettlementsEndpoint,
   listRefundReconHolds as listRefundReconHoldsEndpoint,
   listRefunds as listRefundsEndpoint,
   listUnallocatedFunds as listUnallocatedFundsEndpoint,
@@ -42,6 +45,7 @@ import {
   releaseQuarantinedRefund,
   reopenQuarantinedRefund,
   resolveReconciliationCase,
+  submitGatewaySettlementCsv,
   resolveRefundReconHold,
   resolveUnallocatedFund,
   retryRefundPayout,
@@ -54,6 +58,7 @@ import {
   cashierDefaultsQuery,
   reconciliationCasesQuery,
   reconciliationSummaryQuery,
+  settlementsQuery,
   refundablePaymentsQuery,
   refundReconHoldsQuery,
   refundsQuery,
@@ -334,6 +339,40 @@ export function useResolveReconciliationCase() {
       ),
     onSuccess: () =>
       Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: [listReconciliationCasesEndpoint.id],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: [getReconciliationSummaryEndpoint.id],
+        }),
+      ]),
+  });
+}
+
+/** One outlet's imported settlement reports, newest first (C4b). */
+export function useSettlements(outletId: string | null, limit = 10) {
+  return useQuery({
+    ...settlementsQuery({ outletId: (outletId ?? "") as OutletId, limit }),
+    enabled: outletId !== null,
+  });
+}
+
+/**
+ * Duitku settlement CSV upload. An import opens and closes reconciliation
+ * cases, so the cases, the summary and the settlement list are refreshed.
+ */
+export function useImportGatewaySettlementCsv() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: {
+      body: ImportGatewaySettlementCsvInput;
+      idempotencyKey: string;
+    }) => submitGatewaySettlementCsv(input.body, input.idempotencyKey),
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: [listSettlementsEndpoint.id],
+        }),
         queryClient.invalidateQueries({
           queryKey: [listReconciliationCasesEndpoint.id],
         }),

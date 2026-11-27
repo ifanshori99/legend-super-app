@@ -3,12 +3,15 @@
 // data and RECORDS differences as reconciliation cases: it never creates
 // payouts, refunds, journals or unallocated funds.
 import { createHash } from "node:crypto";
-import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { alias, type AnyPgColumn } from "drizzle-orm/pg-core";
 import {
   assertTrustedScopedContext,
   createUlid,
+  decodeCursor,
+  encodeCursor,
   idr,
+  uuidSchema,
   type OutletId,
   type ScopedTenantContext,
   type TenantId,
@@ -16,9 +19,14 @@ import {
 import { eventEnvelopeSchema } from "@starter/shared/events";
 import { GATEWAY_SETTLEMENT_PROVIDERS } from "@starter/shared/payment";
 import {
+  importGatewaySettlementCsv as csvEndpoint,
   importSettlement as importEndpoint,
+  listSettlements as listEndpoint,
   settlementImportViewSchema,
+  settlementListItemSchema,
+  type ImportGatewaySettlementCsvInput,
 } from "@starter/shared/payment/admin";
+import { AccessError } from "@starter/shared/access";
 import { guardDataImport } from "../config/data-import.ts";
 import { db } from "../db/index.ts";
 import { edcTransactions } from "../db/schema/edc.ts";
@@ -33,7 +41,7 @@ import {
 } from "../db/schema/payment-settlement.ts";
 import { paymentIntents } from "../db/schema/payment.ts";
 import { withTenant } from "../db/tenant.ts";
-import { HttpError } from "../lib/http-error.ts";
+import { HttpError, RowErrorsHttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { idempotentPaymentAdminWrite } from "./payment-admin-idempotency.ts";
@@ -45,6 +53,11 @@ import {
   assertPaymentPermission,
   EVENT_DESTINATION,
 } from "./payment-support.ts";
+import {
+  GatewaySettlementCsvError,
+  parseGatewaySettlementCsv,
+  type GatewaySettlementCsvLine,
+} from "./payment-settlement-csv-parse.ts";
 import { openLateFundsCorrection } from "./payment-reconciliation-correction.service.ts";
 import { cancelApprovalRequest } from "./platform-approval.service.ts";
 import type { Tx } from "./permission-resolver.ts";
@@ -344,16 +357,24 @@ function view(
   });
 }
 
-export async function importSettlement(
+/** Who is asking: set by the route from the session, never by the body. */
+export type SettlementImportOptions = { readonly mfaVerified: boolean };
+
+/**
+ * One import, whatever its body (JSON lines or a CSV file). The outlet
+ * permission and the second factor are checked first; only then is the report
+ * read (`readInput`), so a caller who may not import learns nothing about it.
+ */
+async function importChecked(
   context: ScopedTenantContext,
   actorId: string,
-  body: unknown,
+  outletId: OutletId,
+  readInput: () => Input,
   key: string,
+  operation: string,
+  request: unknown,
+  options: SettlementImportOptions,
 ) {
-  assertTrustedScopedContext(context);
-  // Data import guard: classify the upload before any write.
-  guardDataImport("payment-settlement.import");
-  const input = importEndpoint.body.parse(body);
   const tenantId = context.tenant.tenantId;
   return withTenant(db, context, async (tx) => {
     const now = new Date();
@@ -362,9 +383,14 @@ export async function importSettlement(
       context,
       actorId,
       "payment.reconcile",
-      { type: "outlet", id: input.outletId },
+      { type: "outlet", id: outletId },
       now,
     );
+    // A settlement import opens and closes reconciliation cases (money
+    // differences): the session must be MFA-verified (any time while it
+    // lives, the same session check as the X2 EDC CSV), always.
+    if (!options.mfaVerified) throw new AccessError("MFA_REQUIRED");
+    const input = readInput();
     // The provider and terminal must be real before anything is recorded.
     if (input.source === "gateway") {
       if (
@@ -727,8 +753,8 @@ export async function importSettlement(
       context,
       actorId,
       key,
-      "reconciliation.import_settlement",
-      input,
+      operation,
+      request,
       async () => {
         try {
           return await run();
@@ -738,5 +764,195 @@ export async function importSettlement(
         }
       },
     );
+  });
+}
+
+export async function importSettlement(
+  context: ScopedTenantContext,
+  actorId: string,
+  body: unknown,
+  key: string,
+  options: SettlementImportOptions,
+) {
+  assertTrustedScopedContext(context);
+  // Data import guard: classify the upload before any write.
+  guardDataImport("payment-settlement.import");
+  const input = importEndpoint.body.parse(body);
+  return importChecked(
+    context,
+    actorId,
+    input.outletId,
+    () => input,
+    key,
+    "reconciliation.import_settlement",
+    input,
+    options,
+  );
+}
+
+/**
+ * The CSV as an import body. Every amount comes from the file and every total
+ * is summed here; the browser sends none. Unreadable lines refuse the file
+ * with their row number and a reason code (never the content).
+ */
+function readGatewayCsv(input: ImportGatewaySettlementCsvInput): Input {
+  let lines: GatewaySettlementCsvLine[];
+  try {
+    lines = parseGatewaySettlementCsv(input.format, input.csv);
+  } catch (error) {
+    if (error instanceof GatewaySettlementCsvError) {
+      if (error.rowErrors.length > 0)
+        throw new RowErrorsHttpError(
+          "VALIDATION_ERROR",
+          error.message,
+          error.rowErrors,
+        );
+      throw new HttpError(422, "VALIDATION_ERROR", error.message);
+    }
+    throw error;
+  }
+  const grossIdr = lines.reduce((sum, line) => sum + line.amountIdr, 0);
+  const feeIdr = lines.reduce((sum, line) => sum + line.feeIdr, 0);
+  return importEndpoint.body.parse({
+    outletId: input.outletId,
+    source: "gateway",
+    provider: input.provider,
+    reference: input.reference,
+    periodStart: input.periodStart,
+    periodEnd: input.periodEnd,
+    grossIdr,
+    feeIdr,
+    netIdr: grossIdr - feeIdr,
+    lines,
+  });
+}
+
+/** C4b: a gateway (Duitku) settlement CSV, imported exactly like importSettlement. */
+export async function importGatewaySettlementCsv(
+  context: ScopedTenantContext,
+  actorId: string,
+  body: unknown,
+  key: string,
+  options: SettlementImportOptions,
+) {
+  assertTrustedScopedContext(context);
+  // Data import guard: classify the upload before any write.
+  guardDataImport("payment-settlement.csv-import");
+  const input = csvEndpoint.body.parse(body);
+  return importChecked(
+    context,
+    actorId,
+    input.outletId,
+    () => readGatewayCsv(input),
+    key,
+    "reconciliation.import_settlement_csv",
+    input,
+    options,
+  );
+}
+
+/**
+ * C4b: one outlet's imported reports, newest first. Same access as the import
+ * (payment.reconcile at the outlet); tenant and outlet are filtered in SQL.
+ * Amounts are the stored report totals, the counts come from lines and cases.
+ */
+export async function listSettlements(
+  context: ScopedTenantContext,
+  actorId: string,
+  input: unknown,
+) {
+  assertTrustedScopedContext(context);
+  const query = listEndpoint.query.parse(input);
+  if (
+    query.periodFrom !== undefined &&
+    query.periodTo !== undefined &&
+    query.periodTo < query.periodFrom
+  )
+    throw new HttpError(
+      422,
+      "VALIDATION_ERROR",
+      "periodTo must not be before periodFrom.",
+    );
+  const tenantId = context.tenant.tenantId;
+  return withTenant(db, context, async (tx) => {
+    await assertPaymentPermission(
+      tx,
+      context,
+      actorId,
+      "payment.reconcile",
+      { type: "outlet", id: query.outletId },
+      new Date(),
+    );
+    let cursor = sql`TRUE`;
+    if (query.cursor) {
+      let keys: unknown[];
+      try {
+        keys = decodeCursor(query.cursor);
+      } catch {
+        keys = [];
+      }
+      const [createdAt, id] = keys;
+      if (
+        typeof createdAt !== "string" ||
+        !uuidSchema.safeParse(id).success ||
+        !Number.isFinite(Date.parse(createdAt))
+      )
+        throw new HttpError(422, "VALIDATION_ERROR", "Invalid cursor.");
+      cursor = sql`(${settlements.createdAt}, ${settlements.id}) < (${createdAt}::timestamptz, ${id}::uuid)`;
+    }
+    const rows = await tx
+      .select()
+      .from(settlements)
+      .where(
+        and(
+          eq(settlements.tenantId, tenantId),
+          eq(settlements.outletId, query.outletId),
+          query.source ? eq(settlements.source, query.source) : sql`TRUE`,
+          query.provider ? eq(settlements.provider, query.provider) : sql`TRUE`,
+          // Reports whose period overlaps the window.
+          query.periodFrom
+            ? sql`${settlements.periodEnd} >= ${query.periodFrom}::date`
+            : sql`TRUE`,
+          query.periodTo
+            ? sql`${settlements.periodStart} <= ${query.periodTo}::date`
+            : sql`TRUE`,
+          cursor,
+        ),
+      )
+      .orderBy(desc(settlements.createdAt), desc(settlements.id))
+      .limit(query.limit + 1);
+    const page = rows.slice(0, query.limit);
+    const data = [];
+    for (const row of page)
+      data.push(
+        settlementListItemSchema.parse({
+          id: row.id,
+          outletId: row.outletId,
+          source: row.source,
+          provider: row.provider,
+          reference: row.reference,
+          terminalId: row.terminalId,
+          batchNo: row.batchNo,
+          periodStart: row.periodStart,
+          periodEnd: row.periodEnd,
+          grossIdr: row.grossIdr,
+          feeIdr: row.feeIdr,
+          netIdr: row.netIdr,
+          lineCount: row.lineCount,
+          ...(await countsOf(tx, tenantId, row.id)),
+          createdAt: row.createdAt.toISOString(),
+        }),
+      );
+    const last = page.at(-1);
+    return {
+      data,
+      meta: {
+        limit: query.limit,
+        nextCursor:
+          rows.length > query.limit && last
+            ? encodeCursor([last.createdAt.toISOString(), last.id])
+            : null,
+      },
+    };
   });
 }

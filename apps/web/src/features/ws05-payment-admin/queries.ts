@@ -8,6 +8,7 @@ import {
   getReconciliationSummary,
   listEdcTerminals,
   listReconciliationCases,
+  listSettlements,
   listRefundablePayments,
   listRefundReconHolds,
   listRefunds,
@@ -78,5 +79,10 @@ export const reconciliationSummaryQuery = (
   query: Query<typeof getReconciliationSummary>,
 ) => ({
   ...endpointQueryOptions(getReconciliationSummary, { query }),
+  ...RETRY,
+});
+
+export const settlementsQuery = (query: Query<typeof listSettlements>) => ({
+  ...endpointQueryOptions(listSettlements, { query }),
   ...RETRY,
 });

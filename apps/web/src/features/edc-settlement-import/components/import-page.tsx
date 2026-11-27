@@ -185,77 +185,97 @@ export function EdcSettlementImportPage() {
         />
       </div>
     ) : (
-      <form
-        aria-label={t("edcSettlementCsv.form.label")}
-        className="grid gap-4 rounded-container border-(length:--border-w) bg-card p-card shadow-hairline"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void send();
-        }}
-      >
-        <div className="grid gap-3 md:grid-cols-2">
-          <FormField label={t("edcSettlementCsv.form.outlet")} required>
-            <Select
-              value={selectedOutletId ?? undefined}
-              onValueChange={(value) => {
-                setOutletId(value);
-                setError(null);
-              }}
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {outlets.map((outlet) => (
-                  <SelectItem key={outlet.id} value={outlet.id}>
-                    {outlet.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </FormField>
-          <FormField label={t("edcSettlementCsv.form.bank")} required>
-            <Select
-              value={bank}
-              onValueChange={(value) => {
-                setBank(value as EdcBank);
-                setError(null);
-              }}
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {EDC_BANKS.map((code) => (
-                  <SelectItem key={code} value={code}>
-                    {t(`edcSettlementCsv.bank.${code}`)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </FormField>
-        </div>
-        <FormField
-          label={t("edcSettlementCsv.form.file")}
-          required
-          hint={
-            picked && fileHintKind(true, error) === "count"
-              ? t("edcSettlementCsv.form.fileChosen", {
-                  name: picked.name,
-                  count: picked.lines,
-                })
-              : t("edcSettlementCsv.form.fileHint")
-          }
-          error={check ? t(`edcSettlementCsv.checks.${check}`) : undefined}
+      // The step-up is its own form beside the upload form, never inside it:
+      // a submit in the panel bubbles and must not send the upload.
+      <div className="grid gap-4 rounded-container border-(length:--border-w) bg-card p-card shadow-hairline">
+        <form
+          aria-label={t("edcSettlementCsv.form.label")}
+          className="grid gap-4"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void send();
+          }}
         >
-          <Input
-            key={fileKey}
-            type="file"
-            accept=".csv,.txt,text/csv,text/plain"
-            onChange={(event) => void pick(event.target.files?.[0])}
-          />
-        </FormField>
+          <div className="grid gap-3 md:grid-cols-2">
+            <FormField label={t("edcSettlementCsv.form.outlet")} required>
+              <Select
+                value={selectedOutletId ?? undefined}
+                onValueChange={(value) => {
+                  setOutletId(value);
+                  setError(null);
+                }}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {outlets.map((outlet) => (
+                    <SelectItem key={outlet.id} value={outlet.id}>
+                      {outlet.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </FormField>
+            <FormField label={t("edcSettlementCsv.form.bank")} required>
+              <Select
+                value={bank}
+                onValueChange={(value) => {
+                  setBank(value as EdcBank);
+                  setError(null);
+                }}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {EDC_BANKS.map((code) => (
+                    <SelectItem key={code} value={code}>
+                      {t(`edcSettlementCsv.bank.${code}`)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </FormField>
+          </div>
+          <FormField
+            label={t("edcSettlementCsv.form.file")}
+            required
+            hint={
+              picked && fileHintKind(true, error) === "count"
+                ? t("edcSettlementCsv.form.fileChosen", {
+                    name: picked.name,
+                    count: picked.lines,
+                  })
+                : t("edcSettlementCsv.form.fileHint")
+            }
+            error={check ? t(`edcSettlementCsv.checks.${check}`) : undefined}
+          >
+            <Input
+              key={fileKey}
+              type="file"
+              accept=".csv,.txt,text/csv,text/plain"
+              onChange={(event) => void pick(event.target.files?.[0])}
+            />
+          </FormField>
 
+          {error && !stepUp.active && <ErrorNotice view={error} />}
+
+          {!stepUp.active && (
+            <div>
+              <Button
+                type="submit"
+                loading={importCsv.isPending}
+                disabled={!picked || importCsv.isPending}
+              >
+                <Upload aria-hidden="true" />
+                {importCsv.isPending
+                  ? t("edcSettlementCsv.form.submitting")
+                  : t("edcSettlementCsv.form.submit")}
+              </Button>
+            </div>
+          )}
+        </form>
         {stepUp.active && (
           <VerifyPanel
             key={stepUp.round}
@@ -269,23 +289,7 @@ export function EdcSettlementImportPage() {
             onCancel={() => stepUp.reset()}
           />
         )}
-        {error && !stepUp.active && <ErrorNotice view={error} />}
-
-        {!stepUp.active && (
-          <div>
-            <Button
-              type="submit"
-              loading={importCsv.isPending}
-              disabled={!picked || importCsv.isPending}
-            >
-              <Upload aria-hidden="true" />
-              {importCsv.isPending
-                ? t("edcSettlementCsv.form.submitting")
-                : t("edcSettlementCsv.form.submit")}
-            </Button>
-          </div>
-        )}
-      </form>
+      </div>
     );
 
   return (
