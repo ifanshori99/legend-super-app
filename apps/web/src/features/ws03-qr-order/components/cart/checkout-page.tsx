@@ -6,6 +6,7 @@
 // the kitchen and is paid at the end. Menu prices exclude tax and service
 // charge, so the breakdown shows both (owner rule, ORD-03).
 import { useRef, useState, type ReactNode } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useRouteContext } from "@tanstack/react-router";
 import { ChevronLeft, ChevronRight, Clock, ShoppingBasket } from "lucide-react";
 import { formatRupiah } from "@starter/shared/i18n";
@@ -17,7 +18,10 @@ import { Money } from "@/components/ui/money";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
-import { FeeNoRefund } from "@/features/ws05-payment/components/fee-parts";
+import {
+  FeeNoRefund,
+  hasGuestFee,
+} from "@/features/ws05-payment/components/fee-parts";
 import { WaiterOrderNotice } from "@/features/ws02-edge/components/waiter-order-notice";
 import { useTableJourney } from "../../context";
 import { orderHasPaidShare } from "../../domain.ts";
@@ -29,6 +33,7 @@ import {
   useSessionBill,
   useStartPayment,
 } from "../../hooks";
+import { paymentOptionsQuery } from "../../queries";
 import { idempotencyKey } from "../../lib/ids.ts";
 import { gatewayUnreachable } from "../../lib/pay-failure.ts";
 import { formatAvailableFrom } from "../../lib/item-options.ts";
@@ -44,6 +49,7 @@ import { Notice } from "../notice";
 import { SessionEnded } from "../session-states";
 import { CartLineRow } from "./cart-line-row";
 import { CodeField } from "./code-field";
+import { FeeConfirm } from "./fee-confirm";
 import { GatewayOpenFailed } from "./gateway-opening";
 import {
   PICK_WALLET_ID,
@@ -171,6 +177,16 @@ export function CheckoutPage() {
     orderId: OrderId;
     amountIdr: number;
   } | null>(null);
+  // 1272 K3: an e-wallet or card with a service fee waits here, after the
+  // order is placed and before Duitku's page opens, until the guest has seen
+  // the fee and the total.
+  const [confirm, setConfirm] = useState<{
+    orderId: OrderId;
+    amountIdr: number;
+    feeIdr: number;
+    chargedIdr: number;
+  } | null>(null);
+  const queryClient = useQueryClient();
   const codes = code
     ? VOUCHER.test(code)
       ? { voucherCode: code }
@@ -320,6 +336,71 @@ export function CheckoutPage() {
       },
     );
   };
+
+  // 1272 K3: pay the order that was just placed. An e-wallet or card is priced
+  // for that order first: with a service fee the guest confirms it before the
+  // gateway opens; without one (or QRIS) it goes straight on, as before. A
+  // method that left the options, or a list that cannot be read, never opens
+  // the gateway: the guest lands on the placed order's method list.
+  const payPlaced = async (orderId: OrderId, amountIdr: number) => {
+    if (method !== "ewallet" && method !== "card") {
+      payOrder(orderId, amountIdr);
+      return;
+    }
+    try {
+      const options = await queryClient.fetchQuery({
+        ...paymentOptionsQuery(sessionId, { orderId }),
+        staleTime: 0,
+      });
+      const entry = options.data.methods.find((item) => item.method === method);
+      const priced =
+        method === "ewallet"
+          ? entry?.banks.find((bank) => bank.code === choice.wallet)
+          : entry;
+      // The method vanished: the placed order's list shows it as off.
+      if (!entry?.enabled || !priced) return;
+      if (hasGuestFee(priced.guestFeeIdr) && priced.chargedIdr !== null) {
+        setConfirm({
+          orderId,
+          amountIdr,
+          feeIdr: priced.guestFeeIdr,
+          chargedIdr: priced.chargedIdr,
+        });
+        return;
+      }
+      payOrder(orderId, amountIdr);
+    } catch {
+      toast({
+        title: t("payment.redirect.fee.checkFailed"),
+        tone: "danger",
+      });
+    }
+  };
+
+  if (confirm && (method === "ewallet" || method === "card"))
+    return (
+      <Shell qrToken={qrToken}>
+        <FeeConfirm
+          method={method}
+          walletName={walletName}
+          orderId={confirm.orderId}
+          amountIdr={confirm.amountIdr}
+          feeIdr={confirm.feeIdr}
+          chargedIdr={confirm.chargedIdr}
+          onPay={() => {
+            const { orderId, chargedIdr } = confirm;
+            setConfirm(null);
+            payOrder(orderId, chargedIdr);
+          }}
+          onOtherMethod={() => {
+            setConfirm(null);
+            requestAnimationFrame(() =>
+              document.getElementById("method-title")?.focus(),
+            );
+          }}
+        />
+      </Shell>
+    );
 
   // C2b: Duitku's page could not be opened. Nothing was paid; the order and
   // the cart stay as they are (design/mockups/c2b-tamu-bayar "membuka-gagal").
@@ -529,7 +610,7 @@ export function CheckoutPage() {
             return;
           }
           if (data.kitchenFire === "held_for_payment")
-            payOrder(data.order.id, data.order.totalIdr);
+            void payPlaced(data.order.id, data.order.totalIdr);
           else {
             toast({
               title: t("qrCart.checkout.sentToast"),

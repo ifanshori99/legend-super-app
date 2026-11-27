@@ -157,3 +157,69 @@ test("K3 without the fee on, no screen mentions a service fee", async ({
   await page.getByRole("radio", { name: /^Mandiri/ }).click();
   await expect(page.getByText(/Biaya layanan/)).toHaveCount(0);
 });
+
+test("K3 fresh cart, e-wallet with a fee: the guest confirms fee and total before Duitku opens", async ({
+  page,
+}) => {
+  await setDuitku(page, "fee");
+  await openCheckout(page);
+  await radio(page, /^E-wallet/).click();
+  await radio(page, /^DANA/).click();
+  await button(page, /^Bayar Rp.* dengan DANA$/).click();
+  // The order is placed, but the gateway page has not been opened.
+  await expect(
+    page.getByRole("heading", { name: "Ada biaya layanan" }),
+  ).toBeVisible();
+  await expect(page).not.toHaveURL(/bayar\/kembali/);
+  await expect(page.getByText("Biaya layanan", { exact: true })).toBeVisible();
+  await expect(page.getByText(NO_REFUND)).toBeVisible();
+  await axe(page);
+  await shot(page, "konfirmasi");
+  await page.getByRole("button", { name: /^Bayar Rp[\s\d.]+$/ }).click();
+  await page.waitForURL(/\/bayar\/kembali\?merchantOrderId=.*resultCode=00/);
+  await expect(page.getByText("Biaya layanan", { exact: true })).toBeVisible();
+});
+
+test("K3 fresh cart, e-wallet with a fee: another method returns to the placed order's list, fee already shown", async ({
+  page,
+}) => {
+  await setDuitku(page, "fee");
+  await openCheckout(page);
+  await radio(page, /^E-wallet/).click();
+  await radio(page, /^DANA/).click();
+  await button(page, /^Bayar Rp.* dengan DANA$/).click();
+  await expect(
+    page.getByRole("heading", { name: "Ada biaya layanan" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Pilih metode lain" }).click();
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Keranjang & bayar" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Metode bayar" }),
+  ).toBeFocused();
+  // The placed order's list is priced: the fee shows before any choice.
+  await radio(page, /^E-wallet/).click();
+  await expect(page.getByText(/^Biaya layanan Rp/).first()).toBeVisible();
+  await expect(page).not.toHaveURL(/bayar\/kembali/);
+});
+
+test("K3 fresh cart, card without a fee: straight to Duitku, no confirm step", async ({
+  page,
+}) => {
+  await setDuitku(page, "fee");
+  await openCheckout(page);
+  await radio(page, /^Kartu kredit atau debit/).click();
+  await button(page, /^Bayar Rp.* dengan kartu$/).click();
+  await page.waitForURL(/\/bayar\/kembali\?merchantOrderId=.*resultCode=00/);
+});
+
+test("K3 fresh cart, e-wallet while the fee is off: straight to Duitku, no confirm step", async ({
+  page,
+}) => {
+  await openCheckout(page);
+  await radio(page, /^E-wallet/).click();
+  await radio(page, /^DANA/).click();
+  await button(page, /^Bayar Rp.* dengan DANA$/).click();
+  await page.waitForURL(/\/bayar\/kembali\?merchantOrderId=.*resultCode=00/);
+});

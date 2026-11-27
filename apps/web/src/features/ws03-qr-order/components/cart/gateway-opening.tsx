@@ -57,7 +57,7 @@ export function useRedirectNames(
     : { title: wallet, page: wallet };
 }
 
-function useOrderRow(orderId: string | null) {
+export function useOrderRow(orderId: string | null) {
   const t = useT();
   const { menu, view } = useTableJourney();
   const number = orderId

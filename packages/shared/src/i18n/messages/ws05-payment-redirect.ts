@@ -11,6 +11,14 @@ export const paymentRedirectMessages = {
     totalLabel: "Total dibayar",
     noRefund: "Biaya layanan tidak dikembalikan bila pesanan dibatalkan.",
     billRow: "Tagihan",
+    // The step before Duitku's page when the method carries a fee (1272 K3).
+    confirmPill: "Periksa dulu",
+    confirmTitle: "Ada biaya layanan",
+    confirmLead:
+      "Pembayaran dengan {method} dikenai biaya layanan. Pesanan Anda tersimpan dan belum dibayar.",
+    confirmPay: "Bayar {total}",
+    checkFailed:
+      "Biaya layanan belum bisa diperiksa, jadi pembayaran belum dibuka. Pesanan Anda tersimpan, coba bayar lagi dari sini.",
   },
   method: {
     ewallet: "E-wallet",
