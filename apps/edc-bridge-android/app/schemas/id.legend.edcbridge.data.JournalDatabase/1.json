@@ -1,0 +1,136 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 1,
+    "identityHash": "33b765bf9773820e78aef03090e8e9c3",
+    "entities": [
+      {
+        "tableName": "sale_records",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`key` TEXT NOT NULL, `command_id` TEXT NOT NULL, `terminal_id` TEXT NOT NULL, `trace` TEXT NOT NULL, `frame_sha256` TEXT NOT NULL, `state` TEXT NOT NULL, `answer_json` TEXT, `stored_at_wall_ms` INTEGER NOT NULL, `stored_at_mono_ms` INTEGER NOT NULL, `released` INTEGER NOT NULL, PRIMARY KEY(`key`))",
+        "fields": [
+          {
+            "fieldPath": "key",
+            "columnName": "key",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "commandId",
+            "columnName": "command_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "terminalId",
+            "columnName": "terminal_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "trace",
+            "columnName": "trace",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "frameSha256",
+            "columnName": "frame_sha256",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "state",
+            "columnName": "state",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "answerJson",
+            "columnName": "answer_json",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "storedAtWallMs",
+            "columnName": "stored_at_wall_ms",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "storedAtMonoMs",
+            "columnName": "stored_at_mono_ms",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "released",
+            "columnName": "released",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "key"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_sale_records_stored_at_mono_ms",
+            "unique": false,
+            "columnNames": [
+              "stored_at_mono_ms"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sale_records_stored_at_mono_ms` ON `${TABLE_NAME}` (`stored_at_mono_ms`)"
+          }
+        ]
+      },
+      {
+        "tableName": "unacked_results",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`seq` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `command_id` TEXT NOT NULL, `result_json` TEXT NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "seq",
+            "columnName": "seq",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "commandId",
+            "columnName": "command_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "resultJson",
+            "columnName": "result_json",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "seq"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_unacked_results_command_id",
+            "unique": true,
+            "columnNames": [
+              "command_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_unacked_results_command_id` ON `${TABLE_NAME}` (`command_id`)"
+          }
+        ]
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '33b765bf9773820e78aef03090e8e9c3')"
+    ]
+  }
+}
