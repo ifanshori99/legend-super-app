@@ -158,7 +158,7 @@ test("C2b e-wallet apps sit in one column at 320 px and no name is cut off (re-a
     await expect(item).toBeVisible();
     // The name is not truncated by an ellipsis or a clipped box.
     const clipped = await item.evaluate((node) =>
-      [node, ...node.querySelectorAll("span")].some(
+      [node, ...Array.from(node.querySelectorAll("span"))].some(
         (el) => el.scrollWidth > el.clientWidth + 1,
       ),
     );
