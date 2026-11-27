@@ -11,6 +11,7 @@ export const paymentRedirectMessages = {
     card: "Kartu kredit atau debit",
     cardHint: "Visa atau Mastercard",
     ewalletHint: "Bayar lewat aplikasi e-wallet",
+    pickWallet: "Pilih aplikasi e-wallet dulu.",
     cardNote:
       "Nomor kartu diisi di halaman pembayaran Duitku. {place} tidak melihat atau menyimpan data kartu Anda.",
     cardNoteNoPlace:

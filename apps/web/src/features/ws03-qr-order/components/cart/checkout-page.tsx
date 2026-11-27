@@ -150,6 +150,8 @@ export function CheckoutPage() {
   });
   const method = choice.method;
   const walletName = useWalletName(choice.wallet);
+  // An e-wallet needs an app picked by the guest (nothing is preselected).
+  const needsWallet = method === "ewallet" && !choice.wallet;
   // C2b: Duitku's page for e-wallet or card could not be opened for this order.
   const [openFailed, setOpenFailed] = useState<{
     orderId: OrderId;
@@ -358,6 +360,7 @@ export function CheckoutPage() {
           size="lg"
           className="w-full"
           loading={start.isPending}
+          disabled={needsWallet}
           onClick={() => payOrder(awaitingOrder.id, awaitingOrder.totalIdr)}
         >
           {ctaLabel(choice, awaitingOrder.totalIdr, walletName)}
@@ -566,7 +569,7 @@ export function CheckoutPage() {
         size="lg"
         className="w-full"
         loading={busy || (payFirst && payable === null && !base.isError)}
-        disabled={blocked}
+        disabled={blocked || needsWallet}
         onClick={() => submit()}
       >
         {payFirst

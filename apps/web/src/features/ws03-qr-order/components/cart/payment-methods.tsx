@@ -21,6 +21,7 @@ import { cn } from "cn";
 import { formatRupiah, type MessageKey } from "@starter/shared/i18n";
 import type { GuestPaymentOptions } from "@starter/shared/qr-order";
 import { useT } from "@/components/i18n";
+import { Skeleton } from "@/components/ui/skeleton";
 import { useTableJourney } from "../../context";
 import { useGuestPaymentOptions } from "../../hooks";
 
@@ -183,12 +184,12 @@ function WalletChoices({
           </RadioGroup.Item>
         ))}
       </RadioGroup.Root>
-      {name && (
-        <p className="flex items-start gap-2 text-sm leading-5 text-muted-foreground">
-          <ExternalLink className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-          {t("payment.redirect.method.ewalletNote", { wallet: name })}
-        </p>
-      )}
+      <p className="flex items-start gap-2 text-sm leading-5 text-muted-foreground">
+        <ExternalLink className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+        {name
+          ? t("payment.redirect.method.ewalletNote", { wallet: name })
+          : t("payment.redirect.method.pickWallet")}
+      </p>
     </div>
   );
 }
@@ -228,13 +229,21 @@ export function PaymentMethods({
   useEffect(() => {
     if (chosenOff) onChange({ method: "qris", wallet: null });
   }, [chosenOff, onChange]);
-  // A wallet that left the list is dropped; the first one is preselected.
+  // A wallet that left the list is dropped; the guest picks the app
+  // explicitly (no preselected one, so no payment opens in the wrong app).
   const walletOk = wallets.some((item) => item.code === value.wallet);
   useEffect(() => {
-    if (method === "ewallet" && !walletOk && wallets[0])
-      onChange({ method, wallet: wallets[0].code });
-  }, [method, walletOk, wallets, onChange]);
-  const shown = METHODS.filter((entry) => !hidden.has(entry.value));
+    if (method === "ewallet" && value.wallet && !walletOk && wallets.length > 0)
+      onChange({ method, wallet: null });
+  }, [method, value.wallet, walletOk, wallets, onChange]);
+  const loading = options.data === undefined && !options.isError;
+  // While the options load, e-wallet and card keep their place as skeleton
+  // rows, so the list does not jump when they appear.
+  const placeholder = (option: PayMethod) =>
+    loading && (option === "ewallet" || option === "card");
+  const shown = METHODS.filter(
+    (entry) => !hidden.has(entry.value) || placeholder(entry.value),
+  );
   const resetLabel =
     reset === null
       ? null
@@ -245,23 +254,38 @@ export function PaymentMethods({
           });
 
   return (
-    <section aria-labelledby="method-title" className="grid gap-2">
-      <h2 id="method-title" className="type-heading">
+    <section
+      aria-labelledby="method-title"
+      aria-busy={loading}
+      className="grid gap-2"
+    >
+      <h2
+        id="method-title"
+        tabIndex={-1}
+        className="type-heading outline-none"
+      >
         {t("qrGlass.checkout.method.title")}
       </h2>
       <RadioGroup.Root
         value={method}
         disabled={disabled}
-        onValueChange={(next) =>
-          onChange({
-            method: next as PayMethod,
-            wallet: next === "ewallet" ? (wallets[0]?.code ?? null) : null,
-          })
-        }
+        onValueChange={(next) => {
+          // A new choice ends the "switched to QRIS" notice.
+          setReset(null);
+          onChange({ method: next as PayMethod, wallet: null });
+        }}
         aria-labelledby="method-title"
         className="grid gap-2"
       >
         {shown.map(({ value: option, icon: Icon, label, hint }) => {
+          if (placeholder(option))
+            return (
+              <Skeleton
+                key={option}
+                aria-hidden="true"
+                className="h-14 w-full rounded-xl"
+              />
+            );
           const selected = option === method;
           return (
             <div
@@ -296,7 +320,10 @@ export function PaymentMethods({
                 <WalletChoices
                   wallets={wallets}
                   value={walletOk ? value.wallet : null}
-                  onChange={(wallet) => onChange({ method, wallet })}
+                  onChange={(wallet) => {
+                    setReset(null);
+                    onChange({ method, wallet });
+                  }}
                   disabled={disabled}
                 />
               )}
