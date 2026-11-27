@@ -40,6 +40,7 @@ import {
 import { pointClaimFixture } from "@starter/shared/qr-order/sample";
 import {
   createEngine,
+  type MockDuitkuMode,
   type MockEngine,
   type QrEngineSnapshot,
 } from "./mock-engine.ts";
@@ -122,6 +123,20 @@ function vaDown(): boolean {
   );
 }
 
+/** Cookie `legend-mock-duitku=<mode>`: see MockDuitkuMode (C2b). */
+function duitkuMode(): MockDuitkuMode {
+  if (typeof document === "undefined") return "normal";
+  const match = /(?:^|;\s*)legend-mock-duitku=([a-z-]+)/.exec(document.cookie);
+  const mode = match?.[1];
+  return mode === "partial" ||
+    mode === "open-fail" ||
+    mode === "pending" ||
+    mode === "failed" ||
+    mode === "expired"
+    ? mode
+    : "normal";
+}
+
 handle(getQrMenu, ({ params, scenario }) => {
   const menu = store().menuFor(params.qrToken);
   if (scenario === "empty")
@@ -179,13 +194,16 @@ handle(getGuestPaymentOptions, ({ params, scenario }) => ({
   data: store().paymentOptions(params.sessionId, {
     vaDown: vaDown(),
     emptyBanks: scenario === "empty",
+    duitku: duitkuMode(),
   }),
 }));
 handle(createGuestPayment, ({ params, body }) => ({
-  data: store().startPayment(params.sessionId, body),
+  data: store().startPayment(params.sessionId, body, { duitku: duitkuMode() }),
 }));
 handle(getGuestPayment, ({ params }) => ({
-  data: store().getPayment(params.sessionId, params.paymentId),
+  data: store().getPayment(params.sessionId, params.paymentId, {
+    duitku: duitkuMode(),
+  }),
 }));
 handle(getSplitClaim, ({ params, body }) => ({
   data: store().splitClaim(params.sessionId, params.splitId, body),

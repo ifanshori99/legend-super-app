@@ -21,7 +21,8 @@ import {
   qrTextLink,
 } from "../glass/qr-primitives";
 
-export type PaymentSuccessMethod = "qris" | "va" | "ewallet" | "card" | "cashier";
+export type PaymentSuccessMethod =
+  "qris" | "va" | "ewallet" | "card" | "cashier";
 
 function Points({
   sessionId,

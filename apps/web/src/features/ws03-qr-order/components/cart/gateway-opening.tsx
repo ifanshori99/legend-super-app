@@ -6,7 +6,12 @@
 // Nothing here marks anything paid (ORD-02): the return page asks the server.
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { ChevronLeft, ExternalLink, RefreshCw, TriangleAlert } from "lucide-react";
+import {
+  ChevronLeft,
+  ExternalLink,
+  RefreshCw,
+  TriangleAlert,
+} from "lucide-react";
 import { formatRupiah } from "@starter/shared/i18n";
 import type { GuestPayment } from "@starter/shared/qr-order";
 import { useT } from "@/components/i18n";

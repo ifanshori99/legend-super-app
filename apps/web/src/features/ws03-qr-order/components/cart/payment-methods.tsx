@@ -144,10 +144,7 @@ function RadioMark({ small = false }: { small?: boolean }) {
       )}
     >
       <RadioGroup.Indicator
-        className={cn(
-          "rounded-full bg-primary",
-          small ? "size-2.5" : "size-3",
-        )}
+        className={cn("rounded-full bg-primary", small ? "size-2.5" : "size-3")}
       />
     </span>
   );

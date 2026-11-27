@@ -50,7 +50,9 @@ export function PaymentPaid({
   const t = useT();
   const labelKey = paymentMethodLabelKey(intent.method);
   const channel =
-    intent.instructions.method === "qris"
+    // A card names no channel to the guest (the gateway's code stays internal).
+    intent.instructions.method === "qris" ||
+    intent.instructions.method === "card"
       ? null
       : intent.instructions.channelName;
   return (
@@ -74,8 +76,8 @@ export function PaymentPaid({
           <Money amount={intent.amountIdr} size="sm" />
         </DetailRow>
         <DetailRow label={t("payment.methodLegend")}>
-          {labelKey !== null ? t(labelKey) : ""}
-          {channel ? `${labelKey !== null ? " · " : ""}${channel}` : ""}
+          {t(labelKey)}
+          {channel ? ` · ${channel}` : ""}
         </DetailRow>
         {intent.paidAt && (
           <DetailRow label={t("payment.paidAtLabel")}>

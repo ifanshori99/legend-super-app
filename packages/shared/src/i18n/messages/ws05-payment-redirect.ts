@@ -15,8 +15,7 @@ export const paymentRedirectMessages = {
       "Nomor kartu diisi di halaman pembayaran Duitku. {place} tidak melihat atau menyimpan data kartu Anda.",
     cardNoteNoPlace:
       "Nomor kartu diisi di halaman pembayaran Duitku. Outlet tidak melihat atau menyimpan data kartu Anda.",
-    reset:
-      "{method} sedang tidak tersedia, jadi metode bayar diganti ke QRIS.",
+    reset: "{method} sedang tidak tersedia, jadi metode bayar diganti ke QRIS.",
     ctaWallet: "Bayar {total} dengan {wallet}",
     ctaCard: "Bayar {total} dengan kartu",
   },

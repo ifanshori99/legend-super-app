@@ -350,9 +350,7 @@ export function CheckoutPage() {
           size="lg"
           className="w-full"
           loading={start.isPending}
-          onClick={() =>
-            payOrder(awaitingOrder.id, awaitingOrder.totalIdr)
-          }
+          onClick={() => payOrder(awaitingOrder.id, awaitingOrder.totalIdr)}
         >
           {ctaLabel(choice, awaitingOrder.totalIdr, walletName)}
           <ChevronRight aria-hidden="true" />

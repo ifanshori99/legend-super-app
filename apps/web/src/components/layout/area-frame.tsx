@@ -444,6 +444,11 @@ function AreaFrameBody({
       </Button>
     ));
 
+  // The Duitku return page (C2b, legend-osqou.4) renders its own QR-themed
+  // frame: no shell nav, since the browser history after the gateway cannot
+  // be trusted and every way home is a button on the page.
+  if (area === "customer" && pathname === "/bayar/kembali") return body;
+
   // A table QR journey (/t/$token/*, PRD §3 F10) brings its own shell parts:
   // the tenant brand, "Meja A03 · 4 tamu" and the Menu/Keranjang/Pesanan/Tagihan nav.
   if (area === "customer" && token !== undefined && pathname.startsWith("/t/"))

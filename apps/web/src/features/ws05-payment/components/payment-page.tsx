@@ -127,7 +127,9 @@ export function PaymentPage({ token }: { token: string }) {
   const selectedOption =
     methods.find((method) => method.method === selectedMethod) ?? null;
   const selectedChannel =
-    selectedOption && selectedOption.method !== "qris"
+    selectedOption &&
+    selectedOption.method !== "qris" &&
+    selectedOption.method !== "card"
       ? selection.channelCode
       : null;
 
@@ -155,7 +157,8 @@ export function PaymentPage({ token }: { token: string }) {
     const method = intent?.method ?? selectedMethod;
     if (!method) return;
     const channel = intent
-      ? intent.instructions.method === "qris"
+      ? intent.instructions.method === "qris" ||
+        intent.instructions.method === "card"
         ? null
         : intent.instructions.channelCode
       : selectedChannel;
@@ -259,6 +262,7 @@ export function PaymentPage({ token }: { token: string }) {
 
       {(phase === "pending" || showPreviousCode) && intent && (
         <PaymentCode
+          token={token}
           intent={intent}
           remaining={remaining}
           refreshing={refresh.isPending}

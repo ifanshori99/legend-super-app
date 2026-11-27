@@ -22,6 +22,7 @@ import type { CustomerPaymentIntent } from "@starter/shared/payment";
 import { paymentMethodLabelKey } from "../labels";
 import { formatCountdown } from "../status";
 import { CopyField } from "./copy-field";
+import { LinkGatewayOpening } from "./link-gateway";
 
 /** QRIS needs black-on-white to scan in both themes; the shared renderer plate does. */
 function QrisCode({
@@ -52,12 +53,15 @@ function QrisCode({
 }
 
 export function PaymentCode({
+  token,
   intent,
   remaining,
   refreshing,
   onChangeMethod,
   referenceOnly = false,
 }: {
+  /** The payment link token, stored for the Duitku return page (C2b). */
+  token: string;
   intent: CustomerPaymentIntent;
   /** Milliseconds left on the code, server-clock corrected. */
   remaining: number;
@@ -69,13 +73,10 @@ export function PaymentCode({
   const t = useT();
   const time = formatCountdown(remaining);
   const instructions = intent.instructions;
-  const labelKey = paymentMethodLabelKey(intent.method);
   const methodLabel =
-    labelKey !== null
-      ? t(labelKey)
-      : instructions.method === "ewallet" || instructions.method === "card"
-        ? instructions.channelName
-        : "";
+    instructions.method === "ewallet"
+      ? instructions.channelName
+      : t(paymentMethodLabelKey(intent.method));
 
   return (
     <Card>
@@ -119,6 +120,16 @@ export function PaymentCode({
           </div>
         </>
       )}
+
+      {(instructions.method === "ewallet" || instructions.method === "card") &&
+        !referenceOnly && (
+          <LinkGatewayOpening
+            token={token}
+            intentId={intent.id}
+            amountIdr={intent.amountIdr}
+            instructions={instructions}
+          />
+        )}
 
       {instructions.method === "va" && (
         <div className="grid gap-3">

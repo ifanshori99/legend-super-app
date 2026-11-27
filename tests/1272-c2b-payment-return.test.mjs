@@ -131,13 +131,19 @@ test("C2b the phase comes only from the server answer (fail-first)", () => {
   assert.equal(phase({}), "checking");
   assert.equal(phase({ errorStatus: null }), "checking");
   assert.equal(phase({ errorStatus: 503 }), "checking");
-  assert.equal(phase({ errorStatus: 503, waitedMs: LONG_WAIT_MS * 3 }), "checking");
+  assert.equal(
+    phase({ errorStatus: 503, waitedMs: LONG_WAIT_MS * 3 }),
+    "checking",
+  );
   // The server does not know this payment for this guest.
   for (const code of [400, 401, 403, 404, 422])
     assert.equal(phase({ errorStatus: code }), "invalid", String(code));
 
   assert.equal(phase({ status: "pending" }), "waiting");
-  assert.equal(phase({ status: "pending", waitedMs: LONG_WAIT_MS - 1 }), "waiting");
+  assert.equal(
+    phase({ status: "pending", waitedMs: LONG_WAIT_MS - 1 }),
+    "waiting",
+  );
   assert.equal(phase({ status: "pending", waitedMs: LONG_WAIT_MS }), "slow");
   for (const status of ["paid", "partially_refunded", "refunded"])
     assert.equal(phase({ status }), "paid", status);

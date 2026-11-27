@@ -53,7 +53,11 @@ export function saveReturnRecord(
     prune(storage, nowMs);
     storage.setItem(
       PREFIX + record.paymentId,
-      serializeReturnRecord({ ...record, v: 1, savedAt: nowMs } as ReturnRecord),
+      serializeReturnRecord({
+        ...record,
+        v: 1,
+        savedAt: nowMs,
+      } as ReturnRecord),
     );
     storage.setItem(LAST_KEY, record.paymentId);
   } catch {

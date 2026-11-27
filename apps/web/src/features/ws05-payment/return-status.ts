@@ -73,8 +73,7 @@ export type LinkReturnRecord = RecordBase & {
 
 export type ReturnRecord = TableReturnRecord | LinkReturnRecord;
 
-const UUID =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const isString = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0 && value.length <= 2000;
@@ -166,13 +165,7 @@ export function pickReturnRecord(
 }
 
 export type ReturnPhase =
-  | "invalid"
-  | "checking"
-  | "waiting"
-  | "slow"
-  | "paid"
-  | "failed"
-  | "expired";
+  "invalid" | "checking" | "waiting" | "slow" | "paid" | "failed" | "expired";
 
 const SETTLED: readonly PaymentStatus[] = [
   "paid",

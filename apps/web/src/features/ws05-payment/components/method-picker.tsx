@@ -3,7 +3,15 @@
 // cards are native inputs whose invisible control fills the card, so the whole
 // card is a 48px+ touch target and keyboard focus rings the card itself.
 import { useId, useState } from "react";
-import { Building2, Landmark, QrCode, ShieldCheck } from "lucide-react";
+import {
+  Building2,
+  CreditCard,
+  ExternalLink,
+  Landmark,
+  QrCode,
+  ShieldCheck,
+  Wallet,
+} from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -29,6 +37,8 @@ const METHOD_ICON = {
   qris: QrCode,
   va: Landmark,
   bank_transfer: Building2,
+  ewallet: Wallet,
+  card: CreditCard,
 } as const;
 
 function MethodOption({
@@ -111,7 +121,14 @@ export function MethodPicker({
   const selectId = useId();
   const [touched, setTouched] = useState(false);
   const selected = methods.find((option) => option.method === method) ?? null;
-  const needsChannel = selected !== null && selected.method !== "qris";
+  const needsChannel =
+    selected !== null &&
+    selected.method !== "qris" &&
+    selected.method !== "card";
+  const ewallet = selected?.method === "ewallet";
+  const walletName = ewallet
+    ? selected.channels.find((channel) => channel.code === channelCode)?.name
+    : undefined;
   const ready = canSubmit(selected?.method ?? null, channelCode);
   const showError = error !== null && error !== undefined;
 
@@ -133,7 +150,9 @@ export function MethodPicker({
             checked={option.method === method}
             disabled={
               !option.enabled ||
-              (option.method !== "qris" && option.channels.length === 0)
+              (option.method !== "qris" &&
+                option.method !== "card" &&
+                option.channels.length === 0)
             }
             onSelect={() => onMethod(option.method)}
           />
@@ -143,7 +162,11 @@ export function MethodPicker({
       {needsChannel && (
         <FormField
           id={selectId}
-          label={t("payment.bankLabel")}
+          label={
+            ewallet
+              ? t("payment.redirect.method.ewalletLegend")
+              : t("payment.bankLabel")
+          }
           required
           error={touched && !ready ? t("payment.methodInvalid") : undefined}
         >
@@ -156,7 +179,11 @@ export function MethodPicker({
           >
             <SelectTrigger
               id={selectId}
-              aria-label={t("payment.bankLabel")}
+              aria-label={
+                ewallet
+                  ? t("payment.redirect.method.ewalletLegend")
+                  : t("payment.bankLabel")
+              }
               className="w-full"
             >
               <SelectValue placeholder={t("payment.bankPlaceholder")} />
@@ -170,6 +197,19 @@ export function MethodPicker({
             </SelectContent>
           </Select>
         </FormField>
+      )}
+
+      {walletName && (
+        <p className="flex items-start gap-2 text-sm leading-5 text-muted-foreground">
+          <ExternalLink className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+          {t("payment.redirect.method.ewalletNote", { wallet: walletName })}
+        </p>
+      )}
+      {selected?.method === "card" && (
+        <p className="flex items-start gap-2 text-sm leading-5 text-muted-foreground">
+          <ShieldCheck className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+          {t("payment.redirect.method.cardNoteNoPlace")}
+        </p>
       )}
 
       {showError && (
