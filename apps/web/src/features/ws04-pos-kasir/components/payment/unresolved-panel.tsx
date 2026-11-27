@@ -9,7 +9,10 @@ import type {
   UnresolvedPayment,
 } from "../../hooks";
 import { Notice, PosPanel, StateBlock, StatusPill } from "../shared";
-import { EDC_APPROVAL_REQUIRED } from "../../payment-intent-store";
+import {
+  EDC_APPROVAL_REQUIRED,
+  EDC_SLIP_REF_USED,
+} from "../../payment-intent-store";
 import { ResolveDialog } from "./resolve-dialog";
 
 const dialogKind = (payment: UnresolvedPayment) =>
@@ -100,6 +103,13 @@ export function UnresolvedPanel({
     edc &&
     replay.error instanceof ApiError &&
     replay.error.code === EDC_APPROVAL_REQUIRED;
+  // 1273: the slip number already paid a bill. The same request is refused
+  // every time; only a supervisor can let it through.
+  const slipUsed =
+    edc &&
+    ((payment.status === "pending" && payment.slipUsed) ||
+      (replay.error instanceof ApiError &&
+        replay.error.code === EDC_SLIP_REF_USED));
   return (
     <PosPanel
       title={t("posKasirPayment.unresolved.panelTitle")}
@@ -126,10 +136,14 @@ export function UnresolvedPanel({
               disabled={replay.isPending}
               onClick={() => setResolving(true)}
             >
-              {t("posKasirPayment.unresolved.resolve")}
+              {t(
+                slipUsed
+                  ? "posKasirPayment.unresolved.askSupervisor"
+                  : "posKasirPayment.unresolved.resolve",
+              )}
             </Button>
           )}
-          {((mine && !spent) || (sending && replay.isPending)) && (
+          {((mine && !spent && !slipUsed) || (sending && replay.isPending)) && (
             <Button
               type="button"
               loading={replay.isPending}
@@ -178,6 +192,14 @@ export function UnresolvedPanel({
               )}
             </Notice>
           )}
+          {slipUsed && (
+            <Notice
+              tone="danger"
+              title={t("posKasirPayment.unresolved.slipUsedTitle")}
+            >
+              {t("posKasirPayment.unresolved.slipUsedBody")}
+            </Notice>
+          )}
           {payment.status === "pending" && !mine && (
             <Notice
               tone="info"
@@ -186,7 +208,7 @@ export function UnresolvedPanel({
               {t("posKasirPayment.unresolved.otherBody")}
             </Notice>
           )}
-          {replay.error != null && !sending && (
+          {replay.error != null && !sending && !slipUsed && (
             <Notice
               tone="danger"
               title={t("posKasirPayment.unresolved.errorTitle")}

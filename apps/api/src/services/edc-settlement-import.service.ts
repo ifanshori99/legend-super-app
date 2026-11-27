@@ -312,6 +312,29 @@ export async function importEdcSettlementCsv(
               )
           ).flatMap((row) => (row.id ? [row.id.toLowerCase()] : [])),
     );
+    // 1273: a slip number the tenant booked on more than one sale (a supervisor
+    // let a repeat through) clears nothing by itself: a person decides.
+    const sharedRrns = new Set(
+      (
+        await tx
+          .select({ rrn: rrnSql })
+          .from(edcTransactions)
+          .where(
+            and(
+              eq(edcTransactions.tenantId, tenantId),
+              eq(edcTransactions.type, "sale"),
+              inArray(edcTransactions.status, [
+                "approved",
+                "pending",
+                "unknown",
+              ]),
+              inArray(rrnSql, rrns),
+            ),
+          )
+          .groupBy(rrnSql)
+          .having(sql`count(*) > 1`)
+      ).map((row) => row.rrn),
+    );
     // X2 review P3 5: two amounts for one terminal + RRN in the same file
     // hold the clear, like a void does.
     const amountsOf = new Map<string, Set<number>>();
@@ -447,6 +470,11 @@ export async function importEdcSettlementCsv(
       decision.status = "matched";
       decision.edcTransactionId = exact.id;
       if (!exact.needsReconciliation) continue;
+      if (sharedRrns.has(line.rrn)) {
+        decision.reason =
+          "Cocok, tetapi nomor slip ini dipakai lebih dari satu transaksi; tanda perlu dicek tetap.";
+        continue;
+      }
       if (!live.has(exact.id.toLowerCase())) {
         decision.reason =
           "Cocok, tetapi transaksi belum menjadi pembayaran di tagihan; tanda perlu dicek tetap.";

@@ -28,13 +28,21 @@
 //   the supervisor, who can see the slip. The ledger key is the slip number
 //   (`standalone:slip:<ref>`), so the unique (tenant, idempotency_key) index
 //   backs the check: one slip is one manual entry, whatever the lock does.
+// - 1273: a used slip is still refused (409 `EDC_SLIP_REF_USED`), but a
+//   supervisor may let it through when the till sends `allowDuplicateSlip`
+//   with the override. The kafe is never locked out of a real card charge; the
+//   row stays flagged, its ledger key and message carry the duplicate mark, an
+//   audit row names the supervisor, the slip and the first bill, and the bank
+//   file import never clears a flag whose slip number is shared.
 
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq, inArray, or, sql } from "drizzle-orm";
 import {
   CoreError,
+  createUlid,
   idr,
   outletIdSchema,
+  toIsoDateTime,
   ulidSchema,
   type OutletId,
   type ScopedTenantContext,
@@ -45,6 +53,7 @@ import { emitEdcTransactionEvent } from "../edge/edc/events.ts";
 import { edcTransactions } from "../db/schema/edc.ts";
 import { paymentEdcTerminals, posOverrides } from "../db/schema/index.ts";
 import type { Tx } from "./menu-internals.ts";
+import { recordAudit } from "./core-audit.ts";
 import { consumeApproval } from "./pos-order-support.ts";
 
 const METHOD_OF_TENDER = { edc_card: "card", edc_qris: "qris" } as const;
@@ -64,6 +73,8 @@ export type PosStandaloneEdcInput = {
   readonly approvalCode: string | null;
   /** Optional since X1: the slip reference alone books a manual payment. */
   readonly overrideId: string | null;
+  /** The till asked to book a slip number that already paid a bill. */
+  readonly allowDuplicateSlip?: boolean;
   readonly cashierId: UserId;
   readonly deviceId: string | null;
   readonly at: Date;
@@ -138,7 +149,10 @@ export async function settlePosEdcStandalone(
     sql`SELECT pg_advisory_xact_lock(hashtext(${tenantId}), hashtext(${`edc-slip:${slip}`}))`,
   );
   const sameSlip = await tx
-    .select({ id: edcTransactions.id })
+    .select({
+      id: edcTransactions.id,
+      reference: edcTransactions.reference,
+    })
     .from(edcTransactions)
     .where(
       and(
@@ -148,13 +162,18 @@ export async function settlePosEdcStandalone(
         sql`upper(replace(${edcTransactions.rrn}, '-', '')) = ${slip}`,
       ),
     )
+    .orderBy(edcTransactions.createdAt, edcTransactions.id)
     .limit(1);
-  if (sameSlip.length > 0)
-    throw new CoreError(
-      "CONFLICT",
-      "Slip EDC ini sudah dipakai untuk tagihan lain. Periksa nomor referensi di slip.",
-    );
+  const firstUse = sameSlip[0] ?? null;
+  // A used slip passes only with the cashier's explicit ask AND an override;
+  // the override is verified and spent below like any other.
+  if (
+    firstUse &&
+    (input.allowDuplicateSlip !== true || input.overrideId === null)
+  )
+    throw new PosError("EDC_SLIP_REF_USED");
   let approvedBy: UserId | null = null;
+  let overrideUsed: string | null = null;
   if (input.overrideId !== null) {
     // The approver comes from the override row, never from the client; the
     // shared check below still requires it to be someone other than the
@@ -191,6 +210,7 @@ export async function settlePosEdcStandalone(
     // less, and a smaller one never reaches here (minValueIdr).
     if (override.valueIdr !== input.amountIdr) throw refuse();
     approvedBy = stored.approvedBy as UserId;
+    overrideUsed = overrideUlid.data;
   }
   const row = {
     id: randomUUID(),
@@ -199,8 +219,12 @@ export async function settlePosEdcStandalone(
     terminalId: terminal.id,
     bank: terminal.bankCode,
     reference: input.orderNumber,
-    // One slip, one entry: the unique (tenant, key) index backs the check.
-    idempotencyKey: `standalone:slip:${slip}`,
+    // One slip, one entry: the unique (tenant, key) index backs the check. A
+    // supervisor-approved repeat of a used slip carries its override id, so it
+    // does not collide and a retry of the same approval still does.
+    idempotencyKey: firstUse
+      ? `standalone:slip:${slip}:dup:${overrideUsed}`
+      : `standalone:slip:${slip}`,
     requestFingerprint: createHash("sha256")
       .update(
         `${input.orderNumber}:${input.amountIdr}:${edcMethod}:${input.bankRef}`,
@@ -214,6 +238,12 @@ export async function settlePosEdcStandalone(
     trace: randomUUID().replaceAll("-", "").slice(0, 12).toUpperCase(),
     approvalCode: input.approvalCode,
     rrn: input.bankRef,
+    message: firstUse
+      ? `Ref ganda disetujui supervisor; slip sama dengan tagihan ${firstUse.reference}`.slice(
+          0,
+          200,
+        )
+      : null,
     needsReconciliation: true,
     completedAt: input.at,
     createdAt: input.at,
@@ -226,6 +256,45 @@ export async function settlePosEdcStandalone(
     row: inserted,
     now: input.at,
   });
+  if (firstUse) {
+    await recordAudit(
+      tx,
+      context,
+      {
+        id: createUlid(input.at.getTime()),
+        tenantId,
+        outletId,
+        actorType: "user",
+        actorId: input.cashierId,
+        deviceId: input.deviceId,
+        action: "edc_transaction.duplicate_slip_approved",
+        objectType: "edc_transaction",
+        objectId: inserted.id,
+        reason: "Slip EDC ganda disetujui supervisor",
+        maskedChanges: {
+          before: null,
+          after: {
+            approvedBy,
+            overrideId: overrideUsed,
+            slipRef: input.bankRef,
+            orderNumber: input.orderNumber,
+            firstOrderNumber: firstUse.reference,
+          },
+        },
+        ipHash: null,
+        sensitiveAccess: false,
+        retentionClass: "audit_2y",
+        createdAt: toIsoDateTime(input.at),
+      },
+      [
+        "approvedBy",
+        "overrideId",
+        "slipRef",
+        "orderNumber",
+        "firstOrderNumber",
+      ],
+    );
+  }
   return {
     reference: input.bankRef,
     approvedBy,

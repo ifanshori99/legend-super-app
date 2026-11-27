@@ -23,6 +23,8 @@ export const posErrorHttpStatus = {
   REFUND_APPROVAL_REQUIRED: 403,
   /** EDC-04: a standalone EDC payment always carries a verified approval. */
   EDC_STANDALONE_APPROVAL_REQUIRED: 403,
+  /** X1 1273: the slip number already paid a bill; a supervisor may allow it. */
+  EDC_SLIP_REF_USED: 409,
   /** A refund may not exceed what is still refundable on the order. */
   REFUND_EXCEEDS_PAID: 422,
   /** POS-04: corrections (void/refund records) only target final orders. */
@@ -115,6 +117,8 @@ const defaultMessages: Record<PosErrorCode, string> = {
   REFUND_APPROVAL_REQUIRED: "Refund memerlukan persetujuan supervisor.",
   EDC_STANDALONE_APPROVAL_REQUIRED:
     "Pembayaran EDC standalone memerlukan persetujuan supervisor.",
+  EDC_SLIP_REF_USED:
+    "Nomor referensi slip EDC ini sudah dipakai untuk tagihan lain. Periksa nomor di slip, atau minta persetujuan supervisor bila slip memang benar.",
   REFUND_EXCEEDS_PAID: "Refund melebihi nominal yang masih dapat direfund.",
   CORRECTION_TARGET_NOT_FINAL: "Koreksi hanya untuk transaksi final.",
   TENDER_TOTAL_MISMATCH: "Pembayaran belum menutup seluruh tagihan.",

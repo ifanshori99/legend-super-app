@@ -1331,6 +1331,271 @@ describe("POS standalone EDC tender (legend-m4fv, EDC-04)", () => {
     });
   });
 
+  // 1273 (second opinion EDC P2): a used slip number must not lock the cafe
+  // out of a real card charge. The cashier alone is refused; a supervisor can
+  // let it through, and the row stays flagged and visibly marked.
+  describe("a used slip number needs a supervisor (1273)", () => {
+    const slipOverride = async (order: Awaited<ReturnType<typeof newOrder>>) =>
+      standaloneOverride({
+        objectId: order.orderId,
+        valueIdr: order.totalIdr,
+      });
+    const spent = async (overrideId: string) =>
+      (
+        await owner.query(
+          `SELECT 1 FROM pos_order_approval_uses WHERE override_id = $1::uuid`,
+          [ulidToUuid(overrideId)],
+        )
+      ).rows.length;
+    const slipRows = async (slip: string) =>
+      (
+        await owner.query<{
+          reference: string;
+          needs_reconciliation: boolean;
+          idempotency_key: string;
+          message: string | null;
+        }>(
+          `SELECT reference, needs_reconciliation, idempotency_key, message
+           FROM edc_transactions
+           WHERE tenant_id = $1 AND upper(replace(rrn, '-', '')) = $2
+           ORDER BY created_at, id`,
+          [tenant.tenantId, slip],
+        )
+      ).rows;
+
+    it("refuses a used slip for the cashier, with or without a plain override", async () => {
+      const first = await newOrder();
+      const paid = await payStandalone(first, {
+        terminalId,
+        bankRef: "DUP1273A0001",
+      });
+      expect(paid.status, JSON.stringify(paid.body)).toBe(201);
+      const second = await newOrder();
+      const plain = await payStandalone(second, {
+        terminalId,
+        bankRef: "dup1273-a0001",
+      });
+      expect(plain.status, JSON.stringify(plain.body)).toBe(409);
+      expect(plain.body.error.code).toBe("EDC_SLIP_REF_USED");
+      // A supervisor approval alone is not the ask: the till must say so, and
+      // the refusal leaves the approval unspent.
+      const overrideId = await slipOverride(second);
+      const withOverride = await payStandalone(second, {
+        terminalId,
+        bankRef: "DUP1273A0001",
+        overrideId,
+      });
+      expect(withOverride.status, JSON.stringify(withOverride.body)).toBe(409);
+      expect(withOverride.body.error.code).toBe("EDC_SLIP_REF_USED");
+      // The ask without an approval is refused the same way.
+      const askOnly = await payStandalone(second, {
+        terminalId,
+        bankRef: "DUP1273A0001",
+        acknowledgeDuplicateSlip: true,
+      });
+      expect(askOnly.status, JSON.stringify(askOnly.body)).toBe(409);
+      expect(askOnly.body.error.code).toBe("EDC_SLIP_REF_USED");
+      expect(await spent(overrideId)).toBe(0);
+      await noTender(second.orderId);
+      expect(await slipRows("DUP1273A0001")).toHaveLength(1);
+    });
+
+    it("lets a used slip through with a supervisor: flagged, marked, audited", async () => {
+      const first = await newOrder();
+      expect(
+        (await payStandalone(first, { terminalId, bankRef: "DUP1273B0002" }))
+          .status,
+      ).toBe(201);
+      const second = await newOrder();
+      const overrideId = await slipOverride(second);
+      const paid = await payStandalone(second, {
+        terminalId,
+        bankRef: "DUP1273B0002",
+        overrideId,
+        acknowledgeDuplicateSlip: true,
+      });
+      expect(paid.status, JSON.stringify(paid.body)).toBe(201);
+      expect(paid.body.data.remainingIdr).toBe(0);
+      expect(await spent(overrideId)).toBe(1);
+      const rows = await slipRows("DUP1273B0002");
+      expect(rows.map((row) => row.needs_reconciliation)).toEqual([true, true]);
+      expect(rows[0]?.idempotency_key).toBe("standalone:slip:DUP1273B0002");
+      expect(rows[1]?.reference).toBe(second.number);
+      expect(rows[1]?.idempotency_key).toBe(
+        `standalone:slip:DUP1273B0002:dup:${overrideId}`,
+      );
+      expect(rows[1]?.message).toContain(first.number);
+      const tender = await owner.query<{ approved_by: string; status: string }>(
+        `SELECT approved_by, status FROM pos_order_tenders WHERE order_id = $1`,
+        [ulidToUuid(second.orderId)],
+      );
+      expect(tender.rows).toEqual([
+        { approved_by: supervisor.userId, status: "captured" },
+      ]);
+      const audit = await owner.query<{
+        event: {
+          actorId: string;
+          maskedChanges: { after: Record<string, unknown> };
+        };
+      }>(
+        `SELECT event FROM audit_logs
+         WHERE tenant_id = $1
+           AND event->>'action' = 'edc_transaction.duplicate_slip_approved'`,
+        [tenant.tenantId],
+      );
+      const mine = audit.rows.filter(
+        (row) => row.event.maskedChanges.after.orderNumber === second.number,
+      );
+      expect(mine).toHaveLength(1);
+      expect(mine[0]?.event.actorId).toBe(cashier.userId);
+      expect(mine[0]?.event.maskedChanges.after).toMatchObject({
+        approvedBy: supervisor.userId,
+        overrideId,
+        slipRef: "DUP1273B0002",
+        firstOrderNumber: first.number,
+      });
+    });
+
+    it("a wrong PIN, a missing, foreign or underqualified approval never lets it through", async () => {
+      const first = await newOrder();
+      expect(
+        (await payStandalone(first, { terminalId, bankRef: "DUP1273C0003" }))
+          .status,
+      ).toBe(201);
+      const second = await newOrder();
+      // Wrong PIN: no approval is even created.
+      const wrongPin = await cashier.client
+        .post("/api/pos-overrides")
+        .set(headers)
+        .set(originHeader)
+        .send({
+          outletId: tenant.outletId,
+          action: "edc_standalone",
+          valueIdr: second.totalIdr,
+          reason: "Slip ganda, supervisor menyetujui",
+          objectType: "pos_order",
+          objectId: second.orderId,
+          approval: {
+            method: "supervisor_pin",
+            approverUserId: supervisor.userId,
+            pin: "000000",
+          },
+        });
+      expect(wrongPin.status, JSON.stringify(wrongPin.body)).toBe(401);
+      // A colleague without the approve permission cannot approve.
+      await expect(
+        createPosOverride(
+          establishTenantContext({
+            tenantId: tenantIdSchema.parse(tenant.tenantId),
+            brandId: null,
+            source: "session",
+          }),
+          cashier.userId,
+          {
+            outletId: tenant.outletId,
+            action: "edc_standalone",
+            valueIdr: second.totalIdr,
+            reason: "Slip ganda, supervisor menyetujui",
+            objectType: "pos_order",
+            objectId: second.orderId,
+            approval: {
+              method: "supervisor_pin",
+              approverUserId: cashier.userId,
+              pin: PIN,
+            },
+          } as Parameters<typeof createPosOverride>[2],
+          { idempotencyKey: randomUUID() },
+        ),
+      ).rejects.toBeDefined();
+      // An invented override id and one made for another bill are refused.
+      const other = await newOrder();
+      const foreign = await slipOverride(other);
+      for (const overrideId of [createUlid(Date.now()), foreign]) {
+        const res = await payStandalone(second, {
+          terminalId,
+          bankRef: "DUP1273C0003",
+          overrideId,
+          acknowledgeDuplicateSlip: true,
+        });
+        expect(res.status, JSON.stringify(res.body)).toBe(403);
+        expect(res.body.error.code).toBe("EDC_STANDALONE_APPROVAL_REQUIRED");
+      }
+      expect(await spent(foreign)).toBe(0);
+      await noTender(second.orderId);
+      expect(await slipRows("DUP1273C0003")).toHaveLength(1);
+    });
+
+    it("another tenant's slip number does not touch this tenant", async () => {
+      const elsewhere = await createIsolatedTenant(
+        `dup-${randomUUID().slice(0, 6)}`,
+      );
+      const otherTerminal = randomUUID();
+      await asOwnerTenant(elsewhere.tenantId, async (client) => {
+        await client.query(
+          `INSERT INTO payment_edc_terminals
+             (id, tenant_id, outlet_id, bank_code, terminal_id, merchant_id, model,
+              connection, ip_address, supported_methods, status)
+           VALUES ($1, $2, $3, 'bca', 'TID-DUPX', 'MID-DUPX', 'Test EDC', 'lan',
+                   '10.0.0.9', ARRAY['card'], 'active')`,
+          [otherTerminal, elsewhere.tenantId, elsewhere.outletId],
+        );
+        await client.query(
+          `INSERT INTO edc_transactions
+             (id, tenant_id, outlet_id, terminal_id, bank, reference, idempotency_key,
+              request_fingerprint, amount_idr, method, status, type, mode, trace,
+              needs_reconciliation, completed_at, rrn)
+           VALUES ($1, $2, $3, $4, 'bca', 'OTHER-1', $5, 'fp', 10000, 'card',
+                   'approved', 'sale', 'standalone', $6, true, now(), 'DUP1273D0004')`,
+          [
+            randomUUID(),
+            elsewhere.tenantId,
+            elsewhere.outletId,
+            otherTerminal,
+            "standalone:slip:DUP1273D0004",
+            randomUUID().slice(0, 12),
+          ],
+        );
+      });
+      const order = await newOrder();
+      const paid = await payStandalone(order, {
+        terminalId,
+        bankRef: "DUP1273D0004",
+      });
+      expect(paid.status, JSON.stringify(paid.body)).toBe(201);
+      const mine = await slipRows("DUP1273D0004");
+      expect(mine).toHaveLength(1);
+      expect(mine[0]?.idempotency_key).toBe("standalone:slip:DUP1273D0004");
+    });
+
+    it("a retry of the approved repeat answers the same payment and books once", async () => {
+      const first = await newOrder();
+      expect(
+        (await payStandalone(first, { terminalId, bankRef: "DUP1273E0005" }))
+          .status,
+      ).toBe(201);
+      const second = await newOrder();
+      const overrideId = await slipOverride(second);
+      const standalone = {
+        terminalId,
+        bankRef: "DUP1273E0005",
+        overrideId,
+        acknowledgeDuplicateSlip: true,
+      };
+      const key = { idempotencyKey: randomUUID() };
+      const paid = await payStandalone(second, standalone, key);
+      expect(paid.status, JSON.stringify(paid.body)).toBe(201);
+      const again = await payStandalone(second, standalone, key);
+      expect(again.status, JSON.stringify(again.body)).toBe(201);
+      expect(again.body.data.tender.id).toBe(paid.body.data.tender.id);
+      expect(await slipRows("DUP1273E0005")).toHaveLength(2);
+      const tenders = await owner.query(
+        `SELECT 1 FROM pos_order_tenders WHERE order_id = $1`,
+        [ulidToUuid(second.orderId)],
+      );
+      expect(tenders.rows).toHaveLength(1);
+    });
+  });
+
   it("one EDC row backs at most one live tender (partial unique index)", async () => {
     const { rows } = await owner.query<{ indexdef: string }>(
       `SELECT indexdef FROM pg_indexes

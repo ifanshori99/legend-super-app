@@ -130,7 +130,7 @@ export const posIssueChargeMessages = {
     otherDevice:
       "Transaksi ini dimulai dari perangkat lain. Selesaikan dari perangkat itu, atau minta bagian keuangan memeriksanya.",
     notReady:
-      "Mesin EDC tidak terhubung ke kasir ini. Periksa status dulu; bila tidak ada transaksi, minta supervisor menutup pembayaran tadi.",
+      "Mesin EDC tidak terhubung ke kasir ini, jadi kartu belum bisa dimulai dari sini. Periksa status dulu; bila tidak ada transaksi, minta supervisor menutup pembayaran tadi, lalu terima dengan QRIS atau tunai. Bila kartu sudah terdebit di mesin, supervisor mencatat slipnya lewat penyelesaian.",
     status: {
       approved: "Disetujui",
       pending: "Diproses mesin",
