@@ -5,10 +5,10 @@
 // state comes from the polled payment, never from `resultCode`: the failed,
 // expired and pending runs all return with `resultCode=00`.
 // `pnpm test:e2e:mock e2e/legend-1272-c2b-return.mock.spec.ts`
-// Screenshots: C2B_SHOTS=docs/review/img.
+// Screenshots: LEGEND_CAPTURE_SCREENSHOTS=1 refreshes the tracked evidence (e2e/screenshots.ts).
 import { createRequire } from "node:module";
-import { join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
+import { captureScreenshot } from "./screenshots.ts";
 
 const baseURL =
   process.env.LEGEND_MOCK_WEB_URL ?? process.env.E2E_MOCK_BASE_URL;
@@ -19,18 +19,16 @@ test.skip(
 );
 test.use({ baseURL, viewport: { width: 390, height: 844 } });
 
-const SHOT = process.env.C2B_SHOTS;
+const BEAD = "legend-osqou-4";
 const freeTable = `v1.${"C".repeat(40)}.${"D".repeat(43)}`; // A01, pay-first
 
 async function shot(page: Page, name: string, wide = false) {
-  if (!SHOT) return;
-  await page.screenshot({
-    path: join(SHOT, `c2b-${name}-390.png`),
-    fullPage: true,
-  });
+  await captureScreenshot(page, `${BEAD}/c2b-${name}-390.png`);
   if (!wide) return;
   await page.setViewportSize({ width: 1280, height: 800 });
-  await page.screenshot({ path: join(SHOT, `c2b-${name}-1280.png`) });
+  await captureScreenshot(page, `${BEAD}/c2b-${name}-1280.png`, {
+    fullPage: false,
+  });
   await page.setViewportSize({ width: 390, height: 844 });
 }
 
@@ -185,11 +183,7 @@ test("C2b e-wallet apps sit in one column at 320 px and no name is cut off (re-a
   await expect(page.locator("#pay-pick-wallet")).toHaveText(
     "Pilih aplikasi e-wallet dulu.",
   );
-  if (SHOT)
-    await page.screenshot({
-      path: join(SHOT, "c2b-metode-320.png"),
-      fullPage: true,
-    });
+  await captureScreenshot(page, `${BEAD}/c2b-metode-320.png`);
 });
 
 test("C2b an outlet with only some methods on shows only those", async ({
