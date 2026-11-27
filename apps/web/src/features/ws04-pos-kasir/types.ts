@@ -10,6 +10,7 @@ import type {
   PosPaymentUnavailableReason,
   PrintPayload,
 } from "@starter/shared/pos";
+import type { EdcTerminalSettlement } from "./edc-settlement-view";
 
 /**
  * One EDC request of a bill as `getPosOrder` lists it (`edcAttempts`, newest
@@ -446,9 +447,9 @@ export type DayCloseRecap = {
   totalNetIdr: number | null;
   /** Blind view: the caller ran a shift today, so drawer figures are null. */
   drawerFiguresHidden?: boolean;
-  /** EDC settled by the bank CSV per terminal (X2); null when the server has none. */
-  settlement: { bank: string; amountIdr: number }[] | null;
-  /** Standalone EDC transactions that still need reconciliation. */
+  /** EDC per terminal against the bank CSV (X2); null when the server has none. */
+  settlement: EdcTerminalSettlement[] | null;
+  /** EDC sales still "perlu dicek" on terminals the bank file has reached. */
   standaloneUnmatched: number | null;
   /** Receipt numbers the cloud sequence issued but has not received (legend-21c8n). */
   unsyncedReceiptCount?: number;

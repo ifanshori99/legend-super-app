@@ -280,7 +280,33 @@ export const dayFixture = {
     { bank: "BCA", amountIdr: 1_600_000 },
     { bank: "Mandiri", amountIdr: 800_000 },
   ],
-  standaloneUnmatched: 2,
+  // X2-UI: per terminal against the bank file. BCA's file is in (one sale not
+  // confirmed yet); Mandiri's has not arrived.
+  edcTerminals: [
+    {
+      terminalId: "00000000-0000-4000-8000-0000000000b1",
+      terminalCode: "EDC-SNP-01",
+      bank: "bca",
+      receiptIdr: 1_600_000,
+      receiptCount: 4,
+      settledIdr: 1_200_000,
+      settledCount: 3,
+      flaggedCount: 1,
+      mismatchCount: 0,
+    },
+    {
+      terminalId: "00000000-0000-4000-8000-0000000000b2",
+      terminalCode: "EDC-SNP-02",
+      bank: "mandiri",
+      receiptIdr: 800_000,
+      receiptCount: 2,
+      settledIdr: 0,
+      settledCount: 0,
+      flaggedCount: 0,
+      mismatchCount: 0,
+    },
+  ],
+  standaloneUnmatched: 1,
   stockDeductionAvailable: true,
   managerName: "Manajer outlet",
 } as const;

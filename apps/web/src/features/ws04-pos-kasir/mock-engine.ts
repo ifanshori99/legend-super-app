@@ -1247,7 +1247,7 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
           },
       netPayments: empty ? [] : clone([...dayFixture.netPayments]),
       totalNetIdr: empty ? 0 : dayFixture.totalNetIdr,
-      settlement: empty ? [] : clone([...dayFixture.settlement]),
+      settlement: empty ? [] : clone([...dayFixture.edcTerminals]),
       standaloneUnmatched: day.standaloneUnmatched,
       stockDeduction: {
         available: dayFixture.stockDeductionAvailable,
