@@ -895,6 +895,14 @@ export async function cancelSupersededAtGateway(
 export type CreateIntentOptions = {
   orderLockedByCaller?: boolean;
   /**
+   * 1272 fee second opinion P2-2: a guest-facing caller (QR order, payment
+   * link, cashier) must send the total the payer saw (`expectedChargedIdr`)
+   * for a method with a guest fee; without it the code is refused (409
+   * FEE_CHANGED). Any caller that sends it gets 409 FEE_CHANGED when the price
+   * differs.
+   */
+  requireExpectedCharged?: boolean;
+  /**
    * 1269 C3a review P3 2: the code may come from this provider only. The rule
    * must name it and its fallback is never used; anything else is refused
    * before the provider is called (the cashier VA / e-wallet: Duitku).
@@ -1269,7 +1277,21 @@ async function createIntentCore(
   options: CreateIntentOptions = {},
 ): Promise<CustomerPaymentIntent> {
   const plan = await readIntentPlan(context, token, parsed, now, part);
-  if (plan.existing) return toCustomerIntent(plan.existing);
+  if (plan.existing) {
+    // Fee second opinion re-review P3-c: a replay that names a different
+    // total than the stored code was priced at is a payer who saw another
+    // price; the old code is not handed back as if it matched.
+    if (
+      parsed.expectedChargedIdr !== undefined &&
+      parsed.expectedChargedIdr !== Number(plan.existing.chargedIdr)
+    )
+      throw new HttpError(
+        409,
+        "FEE_CHANGED",
+        "Biaya layanan pembayaran berubah. Muat ulang lalu pilih metode lagi.",
+      );
+    return toCustomerIntent(plan.existing);
+  }
   const amountIdr = part ? part.amountIdr : outstandingIdr(plan.link);
   if (amountIdr <= 0)
     throw new HttpError(409, "CONFLICT", "This bill is already paid.");
@@ -1436,6 +1458,23 @@ async function createIntentCore(
       422,
       "VALIDATION_ERROR",
       "This payment method is not available.",
+    );
+  // 1272 fee second opinion P2-2: the payer confirmed a total; a different
+  // price now (rate, remaining balance) is never charged unseen.
+  // A caller that saw no total for a method that now carries a fee saw a
+  // different price too (the fee is new): the same 409.
+  if (
+    guestFeeIdr > 0
+      ? parsed.expectedChargedIdr === undefined
+        ? options.requireExpectedCharged === true
+        : parsed.expectedChargedIdr !== amountIdr + guestFeeIdr
+      : parsed.expectedChargedIdr !== undefined &&
+        parsed.expectedChargedIdr !== amountIdr
+  )
+    throw new HttpError(
+      409,
+      "FEE_CHANGED",
+      "Biaya layanan pembayaran berubah. Muat ulang lalu pilih metode lagi.",
     );
   const created: GatewayIntent = await selected.port.createIntent({
     context,
@@ -1957,17 +1996,18 @@ export async function recordUnsettledGatewayFunds(
 
 /**
  * 1272 K1 (design duitku-fee-passthrough §4): the guest fee is never paid
- * back. A second payment of the same code at its charged amount carried the
- * fee too and the gateway keeps its MDR, so only the bill part is parked
- * (refundable); the fee part offsets the MDR in the receipt journal. Any other
- * amount is parked whole.
+ * back. A second payment of the same code at its charged amount or more
+ * carried the fee too and the gateway keeps its MDR, so what is parked
+ * (refundable) is the payment less the fee; the fee part offsets the MDR in
+ * the receipt journal (fee second opinion P3-1: also above the charged
+ * amount). A payment below the charged amount is parked whole.
  */
 export function guestFeeWithheldOf(
   intent: Pick<PaymentIntentRow, "guestFeeIdr" | "chargedIdr">,
   paidIdr: number,
 ): number {
   const fee = Number(intent.guestFeeIdr);
-  return fee > 0 && paidIdr === Number(intent.chargedIdr) ? fee : 0;
+  return fee > 0 && paidIdr >= Number(intent.chargedIdr) ? fee : 0;
 }
 
 /** The same recording inside the caller's transaction (and lock order).
@@ -2769,6 +2809,12 @@ export async function refreshIntent(
       0,
       100,
     );
+  // Fee second opinion re-review P2: a code with a guest fee is replaced only
+  // at the total the guest saw on the old one; another price is 409
+  // FEE_CHANGED (the guest sees the new price and chooses again). A code
+  // without a fee that would now carry one is refused too (a priced create
+  // needs the total, and none was seen); QRIS and unpriced codes are unchanged.
+  const priced = Number(current.guestFeeIdr) > 0;
   return createIntent(
     context,
     parsedToken,
@@ -2776,8 +2822,10 @@ export async function refreshIntent(
       method,
       channelCode: current.channelCode,
       idempotencyKey,
+      ...(priced ? { expectedChargedIdr: Number(current.chargedIdr) } : {}),
     }),
     now,
+    { requireExpectedCharged: true },
   );
 }
 

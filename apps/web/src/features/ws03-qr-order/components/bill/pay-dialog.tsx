@@ -41,6 +41,7 @@ import {
 } from "@/features/ws05-payment/components/fee-parts";
 import { useGuestPaymentOptions, useStartPayment } from "../../hooks";
 import { idempotencyKey } from "../../lib/ids";
+import { feeChanged } from "../../lib/pay-failure";
 
 // Keyed by plain string on purpose: an unknown method falls back below.
 const METHOD_ICON: Record<string, LucideIcon> = {
@@ -211,9 +212,15 @@ export function PayDialog({
         target,
         method: current.method,
         ...(bankCode ? { bankCode } : {}),
+        // 1272 P2-2: the total the guest sees on this button.
+        ...(chosenFee !== null ? { expectedChargedIdr: payAmount } : {}),
         idempotencyKey: key,
       },
       {
+        // The price changed: read it again so the button shows the new total.
+        onError: (error) => {
+          if (feeChanged(error)) void options.refetch();
+        },
         onSuccess: (result) => {
           onOpenChange(false);
           const redirect = safeRedirectUrl(result.data.redirectUrl);
@@ -369,7 +376,9 @@ export function PayDialog({
                 className="mt-0.5 size-4 shrink-0 text-danger"
                 aria-hidden="true"
               />
-              {t("qrOrders.bill.payFailed")}
+              {feeChanged(start.error)
+                ? t("payment.redirect.fee.changed")
+                : t("qrOrders.bill.payFailed")}
             </p>
           )}
         </div>

@@ -73,6 +73,7 @@ paymentRouter.post("/links/:token/intents", jsonBody, async (req, res) => {
   const context = await paymentLinkContext(token);
   // legend-9vmit: a guest who switches method or bank voids the old code.
   const intent = await createIntent(context, token, input, new Date(), {
+    requireExpectedCharged: true,
     voidLiveCodesForChange: (scope) =>
       voidLiveCodesForMethodChange(context, scope),
   });

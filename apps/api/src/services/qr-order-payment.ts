@@ -1265,6 +1265,9 @@ export async function createGuestPayment(
             {
               method: parsed.method,
               channelCode: bankCode,
+              ...(parsed.expectedChargedIdr !== undefined
+                ? { expectedChargedIdr: parsed.expectedChargedIdr }
+                : {}),
               idempotencyKey: partIntentKey(order.id, part.id, idempotencyKey),
               expiresAt: tableSessionTokenExpiresAt({
                 openedAt: session.openedAt.toISOString(),
@@ -1273,7 +1276,7 @@ export async function createGuestPayment(
             },
             { billSplitId: part.id, amountIdr: part.amountIdr },
             now,
-            { orderLockedByCaller: true },
+            { orderLockedByCaller: true, requireExpectedCharged: true },
           );
           if (parsed.method === "qris")
             await openSplitQrisHold(tx, {
@@ -1378,6 +1381,9 @@ export async function createGuestPayment(
           {
             method: parsed.method,
             channelCode: bankCode,
+            ...(parsed.expectedChargedIdr !== undefined
+              ? { expectedChargedIdr: parsed.expectedChargedIdr }
+              : {}),
             idempotencyKey: orderIntentKey(order.id, idempotencyKey),
             // A code never outlives the guest's session credential; WS-05
             // caps it at the method default (VA 180 minutes).
@@ -1387,7 +1393,7 @@ export async function createGuestPayment(
             }),
           },
           now,
-          { orderLockedByCaller: true },
+          { orderLockedByCaller: true, requireExpectedCharged: true },
         );
         if (parsed.method === "qris")
           await openGuestQrisHold(tx, {

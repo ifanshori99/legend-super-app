@@ -11,6 +11,7 @@ import {
   requestCashierPayment,
   startPaymentIntent,
 } from "./api";
+import { isFeeChangedError } from "./errors";
 import {
   paymentIntentKey,
   paymentIntentQuery,
@@ -59,6 +60,15 @@ export function useRefreshIntent(token: string) {
       return queryClient.invalidateQueries({
         queryKey: paymentLinkKey(token),
       });
+    },
+    // 1272 fee second opinion re-review P2: a code that would be replaced at
+    // another price is refused (409 FEE_CHANGED); load the new prices so the
+    // guest sees them before choosing again.
+    onError: (error) => {
+      if (isFeeChangedError(error))
+        return queryClient.invalidateQueries({
+          queryKey: paymentLinkKey(token),
+        });
     },
   });
 }
@@ -121,6 +131,11 @@ export function useAutoRefreshIntent(
     );
     state.current.inFlight = true;
     mutate(intentId, {
+      onError: (error) => {
+        // A changed price is not retried by the clock: the guest chooses.
+        if (isFeeChangedError(error))
+          state.current.refreshes = MAX_AUTO_REFRESHES;
+      },
       onSettled: () => {
         state.current.inFlight = false;
       },

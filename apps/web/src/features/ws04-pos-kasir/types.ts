@@ -209,6 +209,8 @@ export type StartPaymentInput = {
   bankCode?: string;
   /** E-wallet code (see useEwallets). */
   walletCode?: string;
+  /** 1272 P2-2: the total (bill + fee) the cashier screen showed; sent for a VA or e-wallet with a fee. */
+  expectedChargedIdr?: number;
   /** EDC terminal id (see useEdcTerminals). */
   terminalId?: string;
   edcMode?: EdcMode;

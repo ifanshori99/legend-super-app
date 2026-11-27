@@ -343,6 +343,8 @@ export const createGuestPaymentInputSchema = clientInputSchema({
   /** Required for a `split` target; ignored by `order`. */
   payerSecret: payerSecretSchema.optional(),
   idempotencyKey: idempotencyKeySchema,
+  /** The total (bill + fee) the guest saw; required for a method with a guest fee, else may be left out (409 FEE_CHANGED when the price is now different). */
+  expectedChargedIdr: positiveIdr.optional(),
 }).superRefine((input, ctx) => {
   if (input.target.kind === "split" && input.payerSecret === undefined)
     ctx.addIssue({
@@ -446,6 +448,8 @@ export const createIssueChargePaymentInputSchema = clientInputSchema({
   method: z.enum(["qris", "va"]),
   bankCode: guestPaymentBankCodeSchema.nullable().optional(),
   idempotencyKey: idempotencyKeySchema,
+  /** The total (bill + fee) the guest saw; required for a VA with a guest fee (409 FEE_CHANGED), QRIS carries none. */
+  expectedChargedIdr: positiveIdr.optional(),
 }).superRefine(requireBankForChannelMethods);
 
 export const listSessionIssueCharges = defineEndpoint({

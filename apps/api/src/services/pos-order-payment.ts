@@ -627,6 +627,9 @@ export async function addPosTender(
             {
               method: input.method,
               channelCode,
+              ...(input.expectedChargedIdr !== undefined
+                ? { expectedChargedIdr: idr(input.expectedChargedIdr) }
+                : {}),
               idempotencyKey: `pos-${createHash("sha256")
                 // legend-yhia9 QH-17: bound to the link too. A POS transaction
                 // that rolled back after the provider made the intent leaves
@@ -649,6 +652,8 @@ export async function addPosTender(
             now,
             {
               orderLockedByCaller: true,
+              // 1272 fee second opinion P2-2: the cashier confirmed a total.
+              requireExpectedCharged: true,
               // Review P3 2: createIntent selects again; never a fallback.
               ...(input.method === "qris"
                 ? {}

@@ -18,6 +18,11 @@ export function isNotFoundError(error: unknown): boolean {
   );
 }
 
+/** 1272 P2-2: the price the payer saw is no longer the price; show the new one. */
+export function isFeeChangedError(error: unknown): boolean {
+  return error instanceof ApiError && error.code === "FEE_CHANGED";
+}
+
 export function paymentErrorKey(error: unknown): MessageKey {
   if (error instanceof ApiError) {
     if (isOfflineError(error)) return "payment.offlineHint";
@@ -32,6 +37,8 @@ export function paymentErrorKey(error: unknown): MessageKey {
         return "payment.codeStillActive";
       case "FUNDS_UNRESOLVED":
         return "payment.fundsUnresolved";
+      case "FEE_CHANGED":
+        return "payment.redirect.fee.changed";
       case "VALIDATION_ERROR":
         return "payment.methodInvalid";
       case "SERVICE_UNAVAILABLE":

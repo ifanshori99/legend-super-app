@@ -516,6 +516,8 @@ export const addPosTender = defineEndpoint({
     memberToken: z.string().min(1).max(512).optional(),
     /** 1269 C3a: the bank / e-wallet code of a VA or e-wallet tender. */
     channelCode: z.string().min(1).max(40).optional(),
+    /** The total (bill + fee) the cashier showed; required for VA and e-wallet (409 FEE_CHANGED when the price is now different). */
+    expectedChargedIdr: z.number().int().positive().optional(),
     ...expectedStatus,
   })
     .refine(

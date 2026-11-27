@@ -22,6 +22,10 @@ export const paymentRedirectMessages = {
     loadFailed:
       "Biaya layanan pembayaran belum bisa dimuat, jadi metode ini belum bisa dibayar.",
     reload: "Muat ulang",
+    // The server refused a code because the price the payer saw is no longer
+    // the price (1272 fee second opinion P2-2): the new price is shown again.
+    changed:
+      "Biaya layanan pembayaran berubah. Periksa harga baru, lalu bayar lagi.",
     checkFailed:
       "Biaya layanan pembayaran belum bisa diperiksa, jadi pembayaran belum dibuka. Pesanan Anda tersimpan, coba bayar lagi dari sini.",
   },

@@ -172,12 +172,33 @@ async function orderStatus(orderId: string) {
   return read.body.data.status as string;
 }
 
-async function issue(orderId: string, method: "va" | "ewallet") {
+/** The total the cashier screen shows for this bill (fee on top), or none. */
+function shownCharged(
+  method: "va" | "ewallet",
+  remainingIdr: number,
+): number | undefined {
+  const fee = guestFeeFor({
+    method,
+    channelCode: CHANNELS[method][0].code,
+    baseIdr: remainingIdr,
+    rates: RATES,
+    feeMethods: fx.gateway.feeMethods,
+  });
+  return fee ? remainingIdr + fee : undefined;
+}
+
+async function issue(
+  orderId: string,
+  method: "va" | "ewallet",
+  remainingIdr: number = BILL_IDR,
+  expectedChargedIdr: number | undefined = shownCharged(method, remainingIdr),
+) {
   const res = await fx.post(`${fx.base}/${orderId}/tenders`, {
     expectedStatus: await orderStatus(orderId),
     idempotencyKey: randomUUID(),
     method,
     channelCode: CHANNELS[method][0].code,
+    ...(expectedChargedIdr === undefined ? {} : { expectedChargedIdr }),
   });
   expect(res.status, JSON.stringify(res.body)).toBe(201);
   const tender = res.body.data.tender as {
@@ -585,7 +606,28 @@ describe("1272 K4 cashier guest service fee", () => {
       fx.gateway.feeMethods = ["va", "ewallet"];
     }
   });
-  it("negative side: a fee code paid with the bill only, or any other amount, parks in full (AMOUNT_MISMATCH): no tender captured, nothing refunded by the POS", async () => {
+  it("P2-2: a total the cashier did not see, or none, is 409 FEE_CHANGED and issues nothing", async () => {
+    const order = await newSubmittedOrder(fx, 0);
+    const issuedBefore = fx.gateway.requests.length;
+    for (const body of [
+      { expectedChargedIdr: BILL_IDR + VA_FEE + 1 },
+      { expectedChargedIdr: BILL_IDR },
+      {},
+    ]) {
+      const res = await fx.post(`${fx.base}/${order.id}/tenders`, {
+        expectedStatus: await orderStatus(order.id),
+        idempotencyKey: randomUUID(),
+        method: "va",
+        channelCode: CHANNELS.va[0].code,
+        ...body,
+      });
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(res.body.error.code).toBe("FEE_CHANGED");
+    }
+    expect(fx.gateway.requests).toHaveLength(issuedBefore);
+    await issue(order.id, "va");
+  });
+  it("negative side: a fee code paid with the bill only, or any other amount, parks in full (AMOUNT_MISMATCH; the fee is withheld from a payment of the charged amount or more): no tender captured, nothing refunded by the POS", async () => {
     for (const paid of [
       BILL_IDR,
       BILL_IDR + VA_FEE - 1,
@@ -607,7 +649,10 @@ describe("1272 K4 cashier guest service fee", () => {
         ["authorized"],
       );
       const parked = await unallocatedFunds(fx, va.intentId);
-      expect(parked.map((row) => row.amountIdr)).toEqual([paid]);
+      // Fee second opinion P3-1: a payment at the charged amount or more
+      // carried the fee, which is withheld (never parked, never refunded).
+      const withheld = paid >= BILL_IDR + VA_FEE ? VA_FEE : 0;
+      expect(parked.map((row) => row.amountIdr)).toEqual([paid - withheld]);
       expect(await refundsOfIntent(fx, va.intentId)).toEqual([]);
       await assertInvariants(fx, order.id);
     }
@@ -631,7 +676,7 @@ describe("1272 K4 cashier guest service fee", () => {
       guestFeeIdr: fee,
       totalIdr: REMAINING + fee,
     });
-    const va = await issue(order.id, "va");
+    const va = await issue(order.id, "va", REMAINING);
     expect(va.tender.amountIdr).toBe(REMAINING);
     expect(va.intent).toEqual({
       amountIdr: REMAINING,

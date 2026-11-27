@@ -36,7 +36,7 @@ import {
 } from "../../hooks";
 import { paymentOptionsQuery } from "../../queries";
 import { idempotencyKey } from "../../lib/ids.ts";
-import { gatewayUnreachable } from "../../lib/pay-failure.ts";
+import { feeChanged, gatewayUnreachable } from "../../lib/pay-failure.ts";
 import { formatAvailableFrom } from "../../lib/item-options.ts";
 import { outletTimeZone } from "../../lib/outlet-time-zone.ts";
 import { CompanionOffer, useCompanion } from "../glass/companion-offer";
@@ -289,7 +289,13 @@ export function CheckoutPage() {
   // cashier code screen for "Bayar di kasir", the VA screen for Virtual
   // Account (it lists the provider's banks and opens the VA itself, since
   // the VA needs a bank before useStartPayment can run).
-  const payOrder = (orderId: OrderId, amountIdr: number, fresh = false) => {
+  const payOrder = (
+    orderId: OrderId,
+    amountIdr: number,
+    fresh = false,
+    // 1272 P2-2: what the guest confirmed (bill and the total with the fee).
+    priced?: { billIdr: number; chargedIdr: number },
+  ) => {
     if (method === "va") {
       void navigate({
         to: "/t/$token/bayar/$orderId",
@@ -317,10 +323,19 @@ export function CheckoutPage() {
         ...(method === "ewallet" && choice.wallet
           ? { bankCode: choice.wallet }
           : {}),
+        ...(priced ? { expectedChargedIdr: priced.chargedIdr } : {}),
         idempotencyKey: payKey(orderId, keyMethod),
       },
       {
         onError: (error) => {
+          // The price changed since it was confirmed (or a fee is new): back
+          // to the confirmation step with the price read again.
+          if (feeChanged(error) && redirect) {
+            forgetPayKey(orderId, keyMethod);
+            toast({ title: t("payment.redirect.fee.changed"), tone: "danger" });
+            void payPlaced(orderId, priced?.billIdr ?? amountIdr);
+            return;
+          }
           // Only "no answer" or a gateway outage is "could not be opened";
           // a refusal (409, 422) shows the ordinary failure notice.
           if (redirect && gatewayUnreachable(error))
@@ -335,7 +350,7 @@ export function CheckoutPage() {
               result.data.status === "failed")
           ) {
             forgetPayKey(orderId, keyMethod);
-            payOrder(orderId, amountIdr, true);
+            payOrder(orderId, amountIdr, true, priced);
             return;
           }
           setOpenFailed(null);
@@ -421,9 +436,9 @@ export function CheckoutPage() {
           feeIdr={confirm.feeIdr}
           chargedIdr={confirm.chargedIdr}
           onPay={() => {
-            const { orderId, chargedIdr } = confirm;
+            const { orderId, chargedIdr, amountIdr: billIdr } = confirm;
             setConfirm(null);
-            payOrder(orderId, chargedIdr);
+            payOrder(orderId, chargedIdr, false, { billIdr, chargedIdr });
           }}
           onOtherMethod={() => {
             setConfirm(null);

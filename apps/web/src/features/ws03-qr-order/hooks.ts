@@ -314,6 +314,7 @@ export function useStartPayment(sessionId: string) {
       target: GuestPaymentTarget;
       method: GuestPaymentMethod;
       bankCode?: string;
+      expectedChargedIdr?: number;
       idempotencyKey: string;
     }) => startPayment(sessionId, input),
   });

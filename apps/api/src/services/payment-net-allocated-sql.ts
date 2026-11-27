@@ -5,12 +5,29 @@ import { sql, type SQL } from "drizzle-orm";
 import { providerRefundedForeignIdrSql } from "./payment-provider-refunded-foreign-sql.ts";
 
 /**
- * SQL: the bill an intent with a guest fee may put toward its bill at most
- * (1272 K1): its `amount_idr`, the bill without the fee. NULL for an intent
- * without a fee, so `least(x, <this>)` leaves that intent's amount as it was.
+ * SQL: the bill part of what an intent brought in (`grossSql`: its evidence
+ * less the funds parked). 1272 K1 and the fee second opinion (P2-1): the
+ * guest fee is taken off ONCE, never capped away. An intent with a fee counts
+ * `greatest(least(gross - fees, amount_idr), 0)`: a code paid late after the
+ * bill was covered parked the bill (not the fee), so evidence - funds - fee is
+ * 0 and the fee does not turn into refundable bill money. Each payment at or
+ * above the charged amount carried the fee and withheld it from what it parked
+ * (`guestFeeWithheldOf`), so `fees` is the fee times the count of such
+ * evidence (fee second opinion re-review P3-b: a code paid late twice has net
+ * 0, not one fee). An intent without a fee counts `grossSql` as it was.
  */
-export function guestFeeBillCapSql(tenantIdSql: SQL, intentIdSql: SQL): SQL {
-  return sql`(SELECT CASE WHEN pi.guest_fee_idr > 0 THEN pi.amount_idr END
+export function guestFeeBillSql(
+  tenantIdSql: SQL,
+  intentIdSql: SQL,
+  grossSql: SQL,
+): SQL {
+  return sql`(SELECT CASE WHEN pi.guest_fee_idr > 0
+                          THEN greatest(least((${grossSql}) - pi.guest_fee_idr * (
+                                 SELECT count(*) FROM payment_evidence fe
+                                  WHERE fe.tenant_id = pi.tenant_id
+                                    AND fe.payment_intent_id = pi.id
+                                    AND fe.amount_idr >= pi.charged_idr), pi.amount_idr), 0)
+                          ELSE (${grossSql}) END
                FROM payment_intents pi
               WHERE pi.tenant_id = ${tenantIdSql} AND pi.id = ${intentIdSql})`;
 }
@@ -22,9 +39,8 @@ export function guestFeeBillCapSql(tenantIdSql: SQL, intentIdSql: SQL): SQL {
  * (`providerRefundedForeignIdrSql`; refunds that fit in the parked excess of
  * the same transaction are not taken off, legend-g6ept). Never below 0.
  * 1272 K1: an intent with a guest fee brought bill + fee, but the fee is not
- * parked and not bill money: its evidence less funds counts at most the bill
- * (`guestFeeBillCapSql`) before the provider refunds are taken off, so a
- * refund within the fee is not lost in it.
+ * parked and not bill money: `guestFeeBillSql` takes it off once before the
+ * provider refunds are taken off, so a refund within the fee is not lost in it.
  * Restrictive on doubt: a partly refunded code never counts as paid in full.
  * `providerRefundsOnlyIf` (legend-tlm3h) limits the provider refunds taken off
  * to those a predicate over alias `pr` keeps (see
@@ -35,14 +51,13 @@ export function netAllocatedIdrSql(
   intentIdSql: SQL,
   providerRefundsOnlyIf?: SQL,
 ): SQL {
-  return sql`greatest(
-    least(
-      coalesce((SELECT sum(e.amount_idr) FROM payment_evidence e
+  const gross = sql`coalesce((SELECT sum(e.amount_idr) FROM payment_evidence e
                  WHERE e.tenant_id = ${tenantIdSql}
                    AND e.payment_intent_id = ${intentIdSql}), 0)
       - coalesce((SELECT sum(f.amount_idr) FROM payment_unallocated_funds f
                    WHERE f.tenant_id = ${tenantIdSql}
-                     AND f.payment_intent_id = ${intentIdSql}), 0),
-      ${guestFeeBillCapSql(tenantIdSql, intentIdSql)})
+                     AND f.payment_intent_id = ${intentIdSql}), 0)`;
+  return sql`greatest(
+    ${guestFeeBillSql(tenantIdSql, intentIdSql, gross)}
     - ${providerRefundedForeignIdrSql(tenantIdSql, intentIdSql, providerRefundsOnlyIf)}, 0)`;
 }

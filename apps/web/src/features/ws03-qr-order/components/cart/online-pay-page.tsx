@@ -39,6 +39,7 @@ import {
   useStartPayment,
 } from "../../hooks";
 import { idempotencyKey } from "../../lib/ids.ts";
+import { feeChanged } from "../../lib/pay-failure.ts";
 import { Notice } from "../notice";
 import {
   QrFooter,
@@ -210,6 +211,7 @@ function PillHeader({
 
 function startErrorText(t: ReturnType<typeof useT>, error: unknown) {
   if (error instanceof ApiError) {
+    if (feeChanged(error)) return t("payment.redirect.fee.changed");
     if (error.status === 409) return t("qrGlass.pay.va.errorConflict");
     if (error.status === 422) return t("qrGlass.pay.va.errorBank");
   }
@@ -639,11 +641,20 @@ function VaFlow({
     const saved = readChoice(order.id);
     if (saved?.key !== key)
       writeChoice(order.id, { bankCode, key, active: false });
+    // 1272 P2-2: the total the guest saw for this bank (when it has a fee).
+    const priced = options.data?.data.methods
+      .find((item) => item.method === "va")
+      ?.banks.find((item) => item.code === bankCode);
+    const expectedChargedIdr =
+      priced && hasGuestFee(priced.guestFeeIdr) && priced.chargedIdr !== null
+        ? priced.chargedIdr
+        : undefined;
     start.mutate(
       {
         target: { kind: "order", orderId: order.id },
         method: "va",
         bankCode,
+        ...(expectedChargedIdr === undefined ? {} : { expectedChargedIdr }),
         idempotencyKey: key,
       },
       {
@@ -656,6 +667,13 @@ function VaFlow({
           if (!(error instanceof ApiError) || error.status >= 500) return;
           // A refused key must not come back on the next tap or refresh.
           writeChoice(order.id, null);
+          // The price changed: back to the bank list with the new price.
+          if (feeChanged(error)) {
+            setBank(null);
+            setPaymentId(null);
+            void options.refetch();
+            return;
+          }
           // 409: the order is no longer waiting (paid elsewhere, voided):
           // reload so the page shows where it went.
           if (error.status === 409) void refresh();

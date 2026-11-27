@@ -360,24 +360,37 @@ describe("PAY-01 server-priced intents behind a payment link", () => {
       outstandingIdr: 144_375,
     });
     expect(view.timeZone).toBe("Asia/Jakarta");
+    // 1272 K1 (34f592b7d): every method and channel carries its price. No
+    // fee here (DOIT, no guest fee schedule): a method with channels has no
+    // price of its own (null), each channel is the bill (fee 0).
     expect(view.methods).toEqual([
       {
         method: "qris",
         enabled: true,
         unavailableReason: null,
+        guestFeeIdr: 0,
+        totalIdr: 144_375,
         channels: [],
       },
       {
         method: "va",
         enabled: true,
         unavailableReason: null,
-        channels: [{ code: "bca", name: "BCA" }],
+        guestFeeIdr: null,
+        totalIdr: null,
+        channels: [
+          { code: "bca", name: "BCA", guestFeeIdr: 0, totalIdr: 144_375 },
+        ],
       },
       {
         method: "bank_transfer",
         enabled: true,
         unavailableReason: null,
-        channels: [{ code: "bca", name: "BCA" }],
+        guestFeeIdr: null,
+        totalIdr: null,
+        channels: [
+          { code: "bca", name: "BCA", guestFeeIdr: 0, totalIdr: 144_375 },
+        ],
       },
     ]);
     expect(view.activeIntent).toBeNull();
@@ -550,6 +563,30 @@ describe("PAY-01 server-priced intents behind a payment link", () => {
     expect(await intentRowsOf(linkId)).toEqual([
       { id: firstRef, provider_ref: madeRef },
     ]);
+  });
+
+  it("1272 P2-2 a total the payer did not see is 409 FEE_CHANGED and nothing is issued; the seen total is accepted", async () => {
+    const { token, linkId } = await openBill();
+    const stale = await agent(app)
+      .post(`/api/payments/links/${token}/intents`)
+      .send({
+        method: "qris",
+        channelCode: null,
+        idempotencyKey: "seen-total-stale",
+        expectedChargedIdr: 100_000,
+      });
+    expect(stale.status).toBe(409);
+    expect(stale.body.error.code).toBe("FEE_CHANGED");
+    expect(await intentRowsOf(linkId)).toHaveLength(0);
+    const seen = await agent(app)
+      .post(`/api/payments/links/${token}/intents`)
+      .send({
+        method: "qris",
+        channelCode: null,
+        idempotencyKey: "seen-total-ok",
+        expectedChargedIdr: 144_375,
+      });
+    expect(seen.status).toBe(201);
   });
 
   it("P1 a create whose local write failed after DOIT accepted it binds that payment on retry", async () => {
