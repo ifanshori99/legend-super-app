@@ -374,12 +374,15 @@ qrOrderRouter.post(
 
 qrOrderRouter.get("/:sessionId/payment-options", ...read, async (req, res) => {
   const { sessionId } = getGuestPaymentOptions.params.parse(req.params);
+  // 1272 K1: the order or split part to price; never an amount.
+  const query = getGuestPaymentOptions.query.parse(req.query);
   const credential = sessionCredential(req);
   res.json({
     data: await getGuestPaymentOptionsService(
       await guestContext(req, credential),
       credential,
       sessionId,
+      query,
     ),
   });
 });

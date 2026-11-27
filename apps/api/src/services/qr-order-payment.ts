@@ -46,6 +46,7 @@ import {
   type GuestPayment,
   type GuestPaymentMethod,
   type GuestPaymentOptions,
+  type GuestPaymentOptionsQuery,
 } from "@starter/shared/qr-order";
 import { z } from "@starter/shared/core";
 import { orderNetSubtotalIdr } from "@starter/shared/tax";
@@ -58,7 +59,8 @@ import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { openSecret, sealSecret } from "../lib/secrets.ts";
 import type { Tx } from "./menu-internals.ts";
-import { paymentGatewayFor } from "./payment-gateway.ts";
+import { NO_GUEST_FEE, paymentGatewayFor } from "./payment-gateway.ts";
+import { priceForGuest } from "./payment-guest-fee.ts";
 import { liveCodeWhere } from "./payment-live-code.ts";
 import { outstandingIdr } from "./payment-support.ts";
 import {
@@ -386,15 +388,63 @@ function methodNotOffered(): CoreError {
 }
 
 /**
+ * 1272 K1: the bill a quote prices, read the way the create call reads it
+ * (an order pays its link's outstanding, or the order's payable before the
+ * link exists; a split pays its part). Nothing left to pay: 0. A target
+ * outside this session is NOT_FOUND.
+ */
+async function quoteBaseIdrTx(
+  tx: Tx,
+  context: ScopedTenantContext,
+  sessionId: string,
+  query: GuestPaymentOptionsQuery,
+): Promise<number | null> {
+  if (query.billSplitId !== undefined) {
+    const part = await lockSplitPartTx(
+      tx,
+      context,
+      sessionId,
+      query.billSplitId,
+    );
+    return part.status === "paid" || part.status === "voided"
+      ? 0
+      : part.amountIdr;
+  }
+  if (query.orderId === undefined) return null;
+  const order = await lockSessionOrder(tx, context, sessionId, query.orderId);
+  if (order.status !== "awaiting_payment") return 0;
+  if (order.paymentLinkId === null)
+    return order.totalIdr - order.depositAppliedIdr;
+  const [link] = await tx
+    .select()
+    .from(paymentLinks)
+    .where(
+      and(
+        eq(paymentLinks.tenantId, context.tenant.tenantId),
+        eq(paymentLinks.id, order.paymentLinkId),
+      ),
+    );
+  if (!link) throw new CoreError("NOT_FOUND", "Tagihan tidak ditemukan.");
+  return outstandingIdr(link);
+}
+
+/**
  * GET /api/table-sessions/:sessionId/payment-options (contract guest.ts).
  * Every guest method with the outlet's routing and the gateway's health; a
  * method is on only if the gateway lists it. VA and e-wallet list the channels
  * the gateway offers and are off when it offers none.
+ *
+ * 1272 K1: with a target (an order or split part of this session) each bank,
+ * and each method without banks, carries the guest fee and the charged total,
+ * priced by the gateway's own schedule (the gross-up the create call uses;
+ * the create call recomputes, it never reads this quote). A channel without a
+ * usable rate is left out, never shown at fee 0. Without a target: no fees.
  */
 export async function getGuestPaymentOptions(
   context: ScopedTenantContext,
   credential: string,
   sessionId: string,
+  query: GuestPaymentOptionsQuery = {},
   now = new Date(),
 ): Promise<GuestPaymentOptions> {
   const routed = await withTenant(db, context, async (tx) => {
@@ -406,6 +456,7 @@ export async function getGuestPaymentOptions(
       now,
       "none",
     );
+    const baseIdr = await quoteBaseIdrTx(tx, context, session.id, query);
     const rules = [];
     for (const method of GUEST_PAYMENT_METHODS) {
       const rule = await resolveRoutingRule(
@@ -416,8 +467,9 @@ export async function getGuestPaymentOptions(
       );
       rules.push({ method, routing: rule });
     }
-    return { outletId: session.outletId, rules };
+    return { outletId: session.outletId, rules, baseIdr };
   });
+  const baseIdr = routed.baseIdr;
   const methods = [];
   for (const entry of routed.rules) {
     const selected = await selectGatewayForNewIntent(
@@ -427,10 +479,28 @@ export async function getGuestPaymentOptions(
     );
     const gatewayUsable = selected.provider !== null;
     const entryMethod = entry.method;
-    const banks =
+    const schedule =
+      baseIdr !== null && selected.provider && selected.port.guestFeeSchedule
+        ? await selected.port.guestFeeSchedule(context, routed.outletId)
+        : NO_GUEST_FEE;
+    const listedBanks =
       namesChannel(entryMethod) && entry.routing.enabled && selected.provider
         ? await selected.port.channels(context, entryMethod, routed.outletId)
         : [];
+    const banks = [];
+    for (const bank of listedBanks) {
+      if (baseIdr === null) {
+        banks.push({ ...bank, guestFeeIdr: null, chargedIdr: null });
+        continue;
+      }
+      const price = priceForGuest(schedule, entryMethod, bank.code, baseIdr);
+      if (price)
+        banks.push({
+          ...bank,
+          guestFeeIdr: price.guestFeeIdr,
+          chargedIdr: price.totalIdr,
+        });
+    }
     const listed =
       entry.routing.enabled && selected.provider !== null
         ? await gatewayListsMethod(
@@ -440,8 +510,15 @@ export async function getGuestPaymentOptions(
             routed.outletId,
           )
         : false;
+    const methodPrice =
+      baseIdr === null || namesChannel(entryMethod)
+        ? null
+        : priceForGuest(schedule, entryMethod, null, baseIdr);
+    const priced =
+      baseIdr === null ||
+      (namesChannel(entryMethod) ? true : methodPrice !== null);
     const configured =
-      listed && (!namesChannel(entryMethod) || banks.length > 0);
+      listed && priced && (!namesChannel(entryMethod) || banks.length > 0);
     const enabled = entry.routing.enabled && gatewayUsable && configured;
     methods.push({
       method: entry.method,
@@ -454,6 +531,8 @@ export async function getGuestPaymentOptions(
             ? ("gateway_down" as const)
             : ("no_channels" as const),
       banks,
+      guestFeeIdr: enabled && methodPrice ? methodPrice.guestFeeIdr : null,
+      chargedIdr: enabled && methodPrice ? methodPrice.totalIdr : null,
     });
   }
   return guestPaymentOptionsSchema.parse({ methods });
