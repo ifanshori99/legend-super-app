@@ -513,6 +513,15 @@ export async function listIntegrations(
   });
 }
 
+/** The `maxFee*` keys of a config (C4a fee caps), for comparison. */
+function feeCapKeys(config: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(config)
+      .filter(([key]) => key.startsWith("maxFee"))
+      .sort(([a], [b]) => (a < b ? -1 : 1)),
+  );
+}
+
 /**
  * PUT /api/org/integrations: idempotent upsert keyed by (tenant, outlet,
  * provider). A new row starts as `draft`. `credentials` omitted keeps the
@@ -523,6 +532,7 @@ export async function upsertIntegration(
   context: ScopedTenantContext,
   rawInput: UpsertIntegrationInput,
   actorUserId: string,
+  options: { readonly platform?: boolean } = {},
 ): Promise<TenantIntegration> {
   const input =
     rawInput.provider === "whatsapp"
@@ -547,6 +557,20 @@ export async function upsertIntegration(
       );
     }
     await assertProviderAvailable(tx, tenantId, input.provider);
+    let current = await lockByKey(tx, tenantId, input.outletId, input.provider);
+    // 1272 K5 P2: the C4a fee caps (`maxFee*`) are the platform's. A tenant or
+    // outlet admin saves them as stored, so the cap check below reads the
+    // stored value and a request body cannot raise its own limit.
+    if (
+      options.platform !== true &&
+      canonicalJson(feeCapKeys(current?.config ?? {})) !==
+        canonicalJson(feeCapKeys(input.config))
+    )
+      throw new HttpError(
+        403,
+        "DUITKU_FEE_CAP_PLATFORM_ONLY",
+        "Batas biaya gateway hanya bisa diubah oleh platform.",
+      );
     // Field names only: a refused body must not echo a value (PAY-06).
     const issues = gatewayCredentialIssues(
       input.provider,
@@ -588,7 +612,6 @@ export async function upsertIntegration(
       };
     };
 
-    let current = await lockByKey(tx, tenantId, input.outletId, input.provider);
     if (!current) {
       const id = randomUUID();
       const [inserted] = await tx

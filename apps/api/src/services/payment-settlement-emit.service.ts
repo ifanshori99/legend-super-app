@@ -32,6 +32,7 @@ import {
 } from "@starter/shared/core";
 import { eventEnvelopeSchema } from "@starter/shared/events";
 import { settlementReconciledPayloadSchema } from "@starter/shared/payment";
+import { duitkuGuestFeeCap } from "@starter/shared/platform";
 import {
   reconcileSettlements as reconcileEndpoint,
   settlementReconciledViewSchema,
@@ -83,16 +84,6 @@ const refuse = (message: string) =>
 
 type FeeCap = { bps: number; flatIdr: number };
 
-/** A whole number in [0, max]; anything else is no number at all. */
-function capNumber(value: unknown, max: number): number | null {
-  return typeof value === "number" &&
-    Number.isInteger(value) &&
-    value >= 0 &&
-    value <= max
-    ? value
-    : null;
-}
-
 /**
  * The fee cap of one payment method for one outlet's report: the outlet's
  * active integration config of the provider, per key falling back to the
@@ -108,12 +99,15 @@ function feeCapOf(
       if (config && key in config) return config[key];
     return undefined;
   };
-  const bpsRaw = pick(`maxFeeBps_${method}`);
-  const flatRaw = pick(`maxFeeFlatIdr_${method}`);
-  if (bpsRaw === undefined && flatRaw === undefined) return null;
-  const bps = bpsRaw === undefined ? 0 : capNumber(bpsRaw, 10_000);
-  const flatIdr = flatRaw === undefined ? 0 : capNumber(flatRaw, 1_000_000_000);
-  return bps === null || flatIdr === null ? null : { bps, flatIdr };
+  // Per key, the outlet's config first, then the tenant's; the shared reader
+  // (also used for guest fee rates) judges the merged numbers.
+  return duitkuGuestFeeCap(
+    {
+      [`maxFeeBps_${method}`]: pick(`maxFeeBps_${method}`),
+      [`maxFeeFlatIdr_${method}`]: pick(`maxFeeFlatIdr_${method}`),
+    },
+    method,
+  );
 }
 
 const todayOf = (now: Date) =>

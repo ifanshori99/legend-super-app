@@ -30,6 +30,7 @@ import { requireSessionMfa } from "../middleware/identity.ts";
 import { requireBackOfficeSurface } from "../middleware/identity-surface.ts";
 import { noStore } from "../middleware/no-store.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
+import { supportSessionOf } from "../middleware/support-session.ts";
 import {
   getScopedTenantContext,
   requireTenantPermission,
@@ -93,6 +94,8 @@ orgIntegrationsRouter.put(
         getScopedTenantContext(req),
         input,
         getAuth(req).user.id,
+        // Fee caps are the platform's: only a support session may change them.
+        { platform: (await supportSessionOf(req)) !== null },
       ),
     });
   },

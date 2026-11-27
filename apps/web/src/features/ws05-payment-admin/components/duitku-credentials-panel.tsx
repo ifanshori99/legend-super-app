@@ -87,6 +87,8 @@ function duitkuErrorMessage(
       return t("paymentAdmin.duitku.errors.invalid");
     case "FORBIDDEN":
       return t("paymentAdmin.duitku.errors.forbidden");
+    case "DUITKU_FEE_CAP_PLATFORM_ONLY":
+      return t("paymentAdmin.duitku.errors.feeCapPlatformOnly");
     case "NOT_FOUND":
       return t("paymentAdmin.duitku.errors.notFound");
     case "NOT_SUPPORTED":

@@ -58,6 +58,16 @@ describe("1272 K5 guest fee config contract", () => {
       expect(issues({ ...BASE, guestFees })).toEqual(["guestFees"]);
   });
 
+  it("keeps guestFees to Duitku", () => {
+    const config = { guestFees: { BC: { bps: 0, flatIdr: 1 } } };
+    expect(gatewayCredentialIssues("doit", config as never, undefined)).toEqual(
+      ["guestFees"],
+    );
+    expect(
+      gatewayCredentialIssues("email", config as never, undefined),
+    ).toEqual(["guestFees"]);
+  });
+
   it("lets only guestFees hold a nested value", () => {
     expect(integrationConfigSchema.safeParse({ other: { a: 1 } }).success).toBe(
       false,

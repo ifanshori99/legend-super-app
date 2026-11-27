@@ -135,6 +135,8 @@ export const paymentDuitkuMessages = {
     generic: "Permintaan belum bisa diproses. Coba lagi.",
     invalid: "Isian belum sesuai. Periksa kolom yang ditandai.",
     forbidden: "Akun ini tidak punya izin mengelola integrasi.",
+    feeCapPlatformOnly:
+      "Batas biaya gateway hanya bisa diubah oleh platform. Muat ulang halaman, lalu simpan tanpa mengubah batas.",
     notFound: "Kredensial tidak ditemukan. Muat ulang halaman.",
     notSupported: "Tes koneksi belum tersedia untuk gateway ini.",
     offline: "Tidak ada koneksi. Periksa jaringan, lalu coba lagi.",

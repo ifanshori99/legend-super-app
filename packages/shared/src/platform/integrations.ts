@@ -146,7 +146,7 @@ function wholeUpTo(value: unknown, max: number): number | null {
  */
 export function duitkuGuestFeeCap(
   config: Readonly<Record<string, unknown>>,
-  method: DuitkuGuestFeeMethod,
+  method: string,
 ): { readonly bps: number; readonly flatIdr: number } | null {
   const bpsRaw = config[`maxFeeBps_${method}`];
   const flatRaw = config[`maxFeeFlatIdr_${method}`];
@@ -359,6 +359,20 @@ const duitkuConfigSchema = z.object({
  * `credentials` undefined = "keep the stored secret".
  */
 export function gatewayCredentialIssues(
+  provider: IntegrationProvider,
+  config: IntegrationConfig,
+  credentials: Record<string, string> | undefined,
+): string[] {
+  // 1272 K5: the guest service fee is a Duitku setting, no other provider's.
+  if (provider !== "duitku" && "guestFees" in config) {
+    return isGatewayProvider(provider)
+      ? [...gatewayIssues(provider, config, credentials), "guestFees"].sort()
+      : ["guestFees"];
+  }
+  return gatewayIssues(provider, config, credentials);
+}
+
+function gatewayIssues(
   provider: IntegrationProvider,
   config: IntegrationConfig,
   credentials: Record<string, string> | undefined,
