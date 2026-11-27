@@ -284,6 +284,15 @@ const shot = (page: Page, scene: string, fullPage = false) =>
     fullPage,
   });
 
+/** Both widths of the same screen (phone first, then the tablet). */
+async function shotBoth(page: Page, scene: string, fullPage = false) {
+  for (const viewport of VIEWPORTS) {
+    await page.setViewportSize(viewport);
+    await page.waitForTimeout(400);
+    await shot(page, scene, fullPage);
+  }
+}
+
 async function offlineSales(): Promise<
   { state: string; flags: string[]; totalIdr: string }[]
 > {
@@ -388,7 +397,7 @@ test("the offline till: sell, queue, close refused, ingest once, sign out", asyn
   await expect(
     page.getByText("Penjualan offline di tablet ini").first(),
   ).toBeVisible();
-  await shot(page, "antrean");
+  await shotBoth(page, "antrean");
   await page.keyboard.press("Escape");
   // Nothing reached the cloud while the tablet was offline.
   expect(await offlineSales()).toEqual([]);
@@ -404,12 +413,20 @@ test("the offline till: sell, queue, close refused, ingest once, sign out", asyn
   await expect(page.getByText("Shift belum bisa ditutup").first()).toBeVisible({
     timeout: 30_000,
   });
-  await shot(page, "tutup", true);
+  await shotBoth(page, "tutup", true);
+  // The till frame has no sign-out button; a cashier signs out from the member
+  // page, which holds the same queue guard.
+  await page.goto("/member");
+  await expect(
+    page.getByRole("button", { name: "Sign out" }).first(),
+  ).toBeVisible({ timeout: 15_000 });
   await page.getByRole("button", { name: "Sign out" }).first().click();
   await expect(page.getByText("Belum bisa keluar").first()).toBeVisible();
-  await shot(page, "keluar");
+  await shotBoth(page, "keluar");
   await page.getByRole("button", { name: "Tetap di sini" }).click();
   expect(await offlineSales()).toEqual([]);
+  // Back at the till the queue sends itself once the link works.
+  await page.goto("/pos/kasir");
   await context.unroute("**/api/outlets/*/pos/offline-batch");
 
   // The internet is back: the queue sends itself, the cloud holds each sale
@@ -442,5 +459,5 @@ test("the offline till: sell, queue, close refused, ingest once, sign out", asyn
     timeout: 30_000,
   });
   await expect(page.getByText("Shift belum bisa ditutup")).toHaveCount(0);
-  await shot(page, "tutup-bebas", true);
+  await shotBoth(page, "tutup-bebas", true);
 });
