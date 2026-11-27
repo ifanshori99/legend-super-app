@@ -1297,7 +1297,8 @@ export function createEngine(
       now - entry.createdMs >= MOCK_PAYMENT_SETTLE_MS
     ) {
       settle(rec, entry, now);
-      entry.payment = { ...entry.payment, status: "refunded" };
+      // Like the API: `paidAt` goes with `paid` only (guestPaymentSchema).
+      entry.payment = { ...entry.payment, status: "refunded", paidAt: null };
       return paymentView(entry);
     }
     if (

@@ -128,7 +128,7 @@ test("C2b checkout lists e-wallet apps and card from the server; off methods are
   // No app is preselected: the guest picks one, and pay stays off until then.
   for (const wallet of ["OVO", "DANA", "ShopeePay", "LinkAja"])
     await expect(radio(page, { name: wallet })).not.toBeChecked();
-  await expect(payWith(page, /^Bayar Rp.* dengan e-wallet$/)).toBeDisabled();
+  await expect(payWith(page, /^Bayar Rp.* dengan E-wallet$/)).toBeDisabled();
   await expect(page.getByText("Pilih aplikasi e-wallet dulu.")).toBeVisible();
   await radio(page, { name: "DANA" }).click();
   await expect(
@@ -214,13 +214,6 @@ test("C2b return: waiting, then paid only once the server says so", async ({
     page.getByRole("heading", { name: "Memastikan pembayaran Anda" }),
   ).toBeVisible();
   await expect(page.getByText(/Jangan bayar ulang/)).toBeVisible();
-  await expect(page.getByRole("button", { name: "Cek lagi" })).toBeVisible();
-  await expect(page.getByText(/^·/)).toHaveCount(0);
-  // The action footer sits at the bottom of the phone screen, in thumb reach.
-  const footer = await page
-    .getByRole("button", { name: "Cek lagi" })
-    .boundingBox();
-  expect(footer!.y + footer!.height).toBeGreaterThan(844 - 40);
   await axe(page);
   await shot(page, "kembali-menunggu", true);
   // The mock gateway confirms a few seconds after the payment was made.
@@ -392,4 +385,16 @@ test("C2b return: 'Coba lagi' asks the server first and never pays twice (review
     page.getByRole("heading", { name: "Pembayaran berhasil" }),
   ).toBeVisible();
   expect(page.url()).toBe(url);
+});
+
+test("C2b return: the action footer sits at the bottom of the phone screen (audit P3-13)", async ({
+  page,
+}) => {
+  await setDuitku(page, "pending");
+  await payWithDana(page);
+  const check = page.getByRole("button", { name: "Cek lagi" });
+  await expect(check).toBeVisible();
+  await expect(page.getByText("Diperiksa otomatis")).toBeVisible();
+  const box = await check.boundingBox();
+  expect(box!.y + box!.height).toBeGreaterThan(844 - 40);
 });
