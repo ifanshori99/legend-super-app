@@ -53,6 +53,7 @@ import {
   dpLunasOrderPatch,
   edcTerminals,
   ewallets,
+  mockGuestFeeRates,
   paymentMethods,
   registeredTerminals,
   supervisorOptions,
@@ -190,6 +191,22 @@ export function depositSurplusIdr(
   depositIdr: number,
 ): number {
   return Math.max(depositIdr - totalIdr, 0);
+}
+
+/**
+ * 1272 K4 demo: smallest g with ceil((B + g) * bps / 10000) + flat <= g, the
+ * gross-up the server uses (payment-guest-fee.ts); 0 without a rate.
+ */
+export function mockGuestFeeIdr(code: string, baseIdr: number): number {
+  const rate = mockGuestFeeRates[code];
+  if (!rate || baseIdr <= 0) return 0;
+  const fee = (amount: number) =>
+    Math.ceil((amount * rate.bps) / 10_000) + rate.flatIdr;
+  let g = Math.ceil(
+    (baseIdr * rate.bps + rate.flatIdr * 10_000) / (10_000 - rate.bps),
+  );
+  while (fee(baseIdr + g) > g) g += 1;
+  return g;
 }
 
 /** What is still to pay: total - deposit used - confirmed payments. */
@@ -423,6 +440,8 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
             number: "7001 2345 6789",
             deadline: iso(now + VA_TTL_MS),
           },
+          guestFeeIdr: mockGuestFeeIdr("bca", 148_000),
+          chargedIdr: 148_000 + mockGuestFeeIdr("bca", 148_000),
         });
         break;
       case "edc-menunggu":
@@ -814,6 +833,15 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
       paidIdr(order),
     );
 
+  function priced(channels: VaBank[], orderId?: string): VaBank[] {
+    if (orderId === undefined) return channels;
+    const base = remainingOf(orderOf(orderId));
+    return channels.map((channel) => {
+      const fee = mockGuestFeeIdr(channel.code, base);
+      return { ...channel, guestFeeIdr: fee, totalIdr: base + fee };
+    });
+  }
+
   /** Resolves what time decides: an EDC answer after a few seconds. */
   function settle(order: EngineOrder) {
     const now = clock();
@@ -920,6 +948,9 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
       ...(attempt.expiresAt ? { expiresAt: attempt.expiresAt } : {}),
       ...(attempt.va ? { va: attempt.va } : {}),
       ...(attempt.ewallet ? { ewallet: attempt.ewallet } : {}),
+      ...(attempt.guestFeeIdr && attempt.chargedIdr
+        ? { guestFeeIdr: attempt.guestFeeIdr, chargedIdr: attempt.chargedIdr }
+        : {}),
       ...(attempt.edc ? { edc: attempt.edc } : {}),
       ...(attempt.cardMasked ? { cardMasked: attempt.cardMasked } : {}),
       ...(attempt.bankRef ? { bankRef: attempt.bankRef } : {}),
@@ -1285,11 +1316,12 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
     edcTerminals(): EdcTerminal[] {
       return scenario() === "empty" ? [] : clone(edcTerminals);
     },
-    vaBanks(): VaBank[] {
-      return scenario() === "empty" ? [] : clone(vaBanks);
+    // 1272 K4: priced for the order like the server (fee and guest total).
+    vaBanks(orderId?: string): VaBank[] {
+      return scenario() === "empty" ? [] : priced(clone(vaBanks), orderId);
     },
-    ewallets(): Ewallet[] {
-      return scenario() === "empty" ? [] : clone(ewallets);
+    ewallets(orderId?: string): Ewallet[] {
+      return scenario() === "empty" ? [] : priced(clone(ewallets), orderId);
     },
 
     session(orderId: string): PaymentSession {
@@ -1436,6 +1468,16 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
           deadline: iso(now + VA_TTL_MS),
         };
         attempt.expiresAt = iso(now + VA_TTL_MS);
+      }
+      // 1272 K4: the code charges bill + fee; the attempt stays the bill.
+      const channelCode = input.bankCode ?? input.walletCode;
+      const fee =
+        (input.method === "va" || input.method === "ewallet") && channelCode
+          ? mockGuestFeeIdr(channelCode, input.amountIdr)
+          : 0;
+      if (fee > 0) {
+        attempt.guestFeeIdr = fee;
+        attempt.chargedIdr = input.amountIdr + fee;
       }
       if (input.method === "ewallet") {
         const wallet = ewallets.find((item) => item.code === input.walletCode);

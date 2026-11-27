@@ -509,6 +509,8 @@ export type EngineAttempt = {
   expiresAt?: string;
   va?: { bank: string; number: string; deadline: string };
   ewallet?: { code: string; label: string; paymentUrl?: string };
+  guestFeeIdr?: number;
+  chargedIdr?: number;
   edc?: PaymentAttempt["edc"];
   cardMasked?: string;
   bankRef?: string;

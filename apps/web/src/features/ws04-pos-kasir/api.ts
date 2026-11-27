@@ -720,14 +720,14 @@ export const fetchVaBanks = (
   orderId?: string,
 ): Promise<VaBank[]> =>
   API_MOCK
-    ? local("bank Virtual Account", (engine) => engine.vaBanks())
+    ? local("bank Virtual Account", (engine) => engine.vaBanks(orderId))
     : fetchChannels(outletId, "va", orderId);
 export const fetchEwallets = (
   outletId: string,
   orderId?: string,
 ): Promise<Ewallet[]> =>
   API_MOCK
-    ? local("dompet digital", (engine) => engine.ewallets())
+    ? local("dompet digital", (engine) => engine.ewallets(orderId))
     : fetchChannels(outletId, "ewallet", orderId);
 
 // ---- Payment requests (1268 W2) ----------------------------------------------
