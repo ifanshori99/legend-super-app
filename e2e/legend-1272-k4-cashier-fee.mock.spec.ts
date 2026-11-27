@@ -1,4 +1,4 @@
-// 1272 K4 (legend-osqou.59): the guest service fee ("Biaya layanan") on the
+// 1272 K4 (legend-osqou.59): the guest service fee ("Biaya layanan pembayaran") on the
 // cashier's VA and e-wallet screens and on the customer display. The cookie
 // `legend-mock-duitku=fee` turns the mock fee on (same switch as K3): each
 // bank and wallet shows its fee and what the guest pays, the live code shows
@@ -24,7 +24,8 @@ test.use({ baseURL, viewport: { width: 1280, height: 800 } });
 const BEAD = "legend-osqou-59";
 // Kasir demo order POS-0048: remaining Rp148.000 after its DP.
 const DEMO_ORDER_ID = "0b0b0048-0000-4000-8000-000000000048";
-const NO_REFUND = "Biaya layanan tidak dikembalikan bila pesanan dibatalkan.";
+const NO_REFUND =
+  "Biaya layanan pembayaran tidak dikembalikan bila pesanan dibatalkan.";
 const rp = (amount: string) =>
   new RegExp(`Rp\\s*${amount.replace(/\./g, "\\.")}`);
 
@@ -74,7 +75,7 @@ test("K4 VA: each bank shows its service fee and guest total; the live code show
   ).toBeVisible();
   const bca = page.getByRole("radio", { name: /Bank BCA/ });
   await expect(page.locator("label", { has: bca })).toContainText(
-    /Biaya layanan Rp\s*4\.000/,
+    /Biaya layanan pembayaran Rp\s*4\.000/,
   );
   await expect(page.locator("label", { has: bca })).toContainText(
     /Total dibayar tamu Rp\s*152\.000/,
@@ -100,7 +101,7 @@ test("K4 e-wallet: the percentage fee is shown per wallet before the request", a
   const ovo = page.getByRole("radio", { name: /OVO/ });
   // 1.5% gross-up on Rp148.000: Rp2.254 (outlet keeps at least the bill).
   await expect(page.locator("label", { has: ovo })).toContainText(
-    /Biaya layanan Rp\s*2\.254/,
+    /Biaya layanan pembayaran Rp\s*2\.254/,
   );
   await page.locator("label", { has: ovo }).click();
   await expect(page.locator("#main-content")).toContainText(NO_REFUND);
@@ -115,7 +116,7 @@ test("K4 without the fee switch: banks show no fee lines (as before)", async ({
     page.getByRole("heading", { name: "Pilih bank Virtual Account" }).first(),
   ).toBeVisible();
   await expect(page.locator("#main-content")).not.toContainText(
-    "Biaya layanan",
+    "Biaya layanan pembayaran",
   );
 });
 
@@ -133,7 +134,7 @@ test("K4 customer display: a VA with a fee lists the bill, the fee and the total
   await expect(panel).toBeVisible();
   const main = page.locator("main");
   await expect(main).toContainText("8808123456789012");
-  await expect(main).toContainText("Biaya layanan");
+  await expect(main).toContainText("Biaya layanan pembayaran");
   await expect(main).toContainText("Total dibayar");
   await expect(main).toContainText(NO_REFUND);
   await shot(page, "layar-pelanggan-va-biaya", [1366, 1280, 390]);

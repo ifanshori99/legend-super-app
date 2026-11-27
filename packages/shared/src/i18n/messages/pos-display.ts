@@ -95,9 +95,10 @@ export const posDisplayMessages = {
     walletHint: "Pindai kode ini dengan ponsel Anda untuk membuka {wallet}.",
     walletAlt: "Kode halaman pembayaran {wallet}",
     bill: "Tagihan",
-    fee: "Biaya layanan",
+    fee: "Biaya layanan pembayaran",
     total: "Total dibayar",
-    noRefund: "Biaya layanan tidak dikembalikan bila pesanan dibatalkan.",
+    noRefund:
+      "Biaya layanan pembayaran tidak dikembalikan bila pesanan dibatalkan.",
   },
   orderingHint:
     "Kasir masih mencatat pesanan. Total diperbarui saat item ditambahkan.",

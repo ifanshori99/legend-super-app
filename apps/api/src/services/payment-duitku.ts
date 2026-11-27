@@ -141,7 +141,7 @@ const feeChanged = () =>
   new HttpError(
     409,
     "FEE_CHANGED",
-    "Biaya layanan berubah. Muat ulang lalu pilih metode lagi.",
+    "Biaya layanan pembayaran berubah. Muat ulang lalu pilih metode lagi.",
   );
 
 type Resolved = {
