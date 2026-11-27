@@ -7,10 +7,10 @@ import {
   printFromCloud,
   wasSentToPrinter,
   type CloudPrintLoader,
-} from "./cloud-print";
-import { readTabletPrinter } from "./printer-settings";
-import type { TabletPrintOutcome } from "./send-to-printer";
-import { TabletPrinterSettings } from "./tablet-printer-settings";
+} from "./cloud-print.ts";
+import { readTabletPrinter } from "./printer-settings.ts";
+import type { TabletPrintOutcome } from "./send-to-printer.ts";
+import { TabletPrinterSettings } from "./tablet-printer-settings.tsx";
 
 type Status =
   | { kind: TabletPrintOutcome; reprint: boolean }

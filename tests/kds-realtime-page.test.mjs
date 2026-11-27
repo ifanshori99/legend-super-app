@@ -27,7 +27,8 @@ const harness = componentHarness((specifier, parent) => {
       export const useBoard = () => ({isPending: false, isError: false, data: {generatedAt: "2026-11-17T01:00:00Z", allDay: {rows: []}, tickets: []}});
       export const useKdsActions = () => ({isPending: false, isError: false, mutate() {}});
       export const useKdsHeartbeat = () => {};
-      export const useScannerStatus = () => ({data: {status: "unknown"}});`;
+      export const useScannerStatus = () => ({data: {status: "unknown"}});
+      export const ticketPrintLoader = () => () => Promise.resolve({});`;
   // Same key shapes as queries.ts (kdsKeys.board / kdsKeys.stationSummary).
   if (specifier === "../queries.ts")
     return `export const kdsKeys = {

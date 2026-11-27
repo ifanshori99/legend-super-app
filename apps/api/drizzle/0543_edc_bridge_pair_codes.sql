@@ -15,7 +15,11 @@ CREATE TABLE "edc_bridge_pair_codes" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "edc_bridge_pair_codes_selector_check" CHECK ("edc_bridge_pair_codes"."code_selector" ~ '^[2-9A-HJKMNP-Z]{4}$'),
 	CONSTRAINT "edc_bridge_pair_codes_hash_check" CHECK ("edc_bridge_pair_codes"."code_hash" ~ '^[0-9a-f]{64}$'),
-	CONSTRAINT "edc_bridge_pair_codes_failed_attempts_check" CHECK ("edc_bridge_pair_codes"."failed_attempts" BETWEEN 0 AND 5)
+	CONSTRAINT "edc_bridge_pair_codes_failed_attempts_check" CHECK ("edc_bridge_pair_codes"."failed_attempts" BETWEEN 0 AND 5),
+	CONSTRAINT "edc_bridge_pair_codes_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "edc_bridge_pair_codes_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "edc_bridge_pair_codes_device_fk" FOREIGN KEY ("tenant_id","outlet_id","device_id") REFERENCES "public"."edc_bridge_devices"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "edc_bridge_pair_codes_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 CREATE TABLE "edc_bridge_pair_ip_slots" (
@@ -25,10 +29,6 @@ CREATE TABLE "edc_bridge_pair_ip_slots" (
 	CONSTRAINT "edc_bridge_pair_ip_slots_hash_check" CHECK ("edc_bridge_pair_ip_slots"."ip_hash" ~ '^[0-9a-f]{64}$')
 );
 --> statement-breakpoint
-ALTER TABLE "edc_bridge_pair_codes" ADD CONSTRAINT "edc_bridge_pair_codes_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "edc_bridge_pair_codes" ADD CONSTRAINT "edc_bridge_pair_codes_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "edc_bridge_pair_codes" ADD CONSTRAINT "edc_bridge_pair_codes_device_fk" FOREIGN KEY ("tenant_id","outlet_id","device_id") REFERENCES "public"."edc_bridge_devices"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "edc_bridge_pair_codes" ADD CONSTRAINT "edc_bridge_pair_codes_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE UNIQUE INDEX "edc_bridge_pair_codes_live_device_key" ON "edc_bridge_pair_codes" USING btree ("tenant_id","device_id") WHERE "edc_bridge_pair_codes"."used_at" IS NULL AND "edc_bridge_pair_codes"."revoked_at" IS NULL;--> statement-breakpoint
 CREATE INDEX "edc_bridge_pair_codes_live_selector_idx" ON "edc_bridge_pair_codes" USING btree ("code_selector") WHERE "edc_bridge_pair_codes"."used_at" IS NULL AND "edc_bridge_pair_codes"."revoked_at" IS NULL;--> statement-breakpoint
 CREATE INDEX "edc_bridge_pair_ip_slots_ip_idx" ON "edc_bridge_pair_ip_slots" USING btree ("ip_hash","taken_at");--> statement-breakpoint

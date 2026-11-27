@@ -15,7 +15,7 @@ const harness = componentHarness((specifier, parent) => {
     return `export const useStations = () => ({data: [{stationId: "bar", isActive: true, displayOrder: 0}, {stationId: "kitchen", isActive: true, displayOrder: 1}]});
       export const useStationLabels = () => ({data: [{stationId: "bar", name: "Bar kopi"}, {stationId: "kitchen", name: "Dapur panas"}]});
       export const useStationSummary = () => ({data: {stations: [{stationId: "bar", openTickets: 7}, {stationId: "kitchen", openTickets: 3}]}});
-      export const useBoard = () => ({isPending: true}); export const useKdsActions = () => ({}); export const useKdsHeartbeat = () => {}; export const useScannerStatus = () => ({});`;
+      export const useBoard = () => ({isPending: true}); export const useKdsActions = () => ({}); export const useKdsHeartbeat = () => {}; export const useScannerStatus = () => ({}); export const ticketPrintLoader = () => () => Promise.resolve({});`;
   if (specifier === "../queries.ts" && parent.includes("ws04-kds"))
     return "export const boardQuery = () => ({}); export const kdsKeys = {board: () => [], stationSummary: () => []};";
   // The page opens the realtime feed (legend-t0m89); no socket in this render.

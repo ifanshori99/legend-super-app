@@ -14,7 +14,10 @@ CREATE TABLE "edc_bridge_devices" (
 	CONSTRAINT "edc_bridge_devices_token_hash_key" UNIQUE("token_hash"),
 	CONSTRAINT "edc_bridge_devices_tenant_id_key" UNIQUE("tenant_id","id"),
 	CONSTRAINT "edc_bridge_devices_tenant_outlet_id_key" UNIQUE("tenant_id","outlet_id","id"),
-	CONSTRAINT "edc_bridge_devices_token_hash_check" CHECK ("edc_bridge_devices"."token_hash" ~ '^[0-9a-f]{64}$')
+	CONSTRAINT "edc_bridge_devices_token_hash_check" CHECK ("edc_bridge_devices"."token_hash" ~ '^[0-9a-f]{64}$'),
+	CONSTRAINT "edc_bridge_devices_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "edc_bridge_devices_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "edc_bridge_devices_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 CREATE TABLE "edc_bridge_commands" (
@@ -33,7 +36,12 @@ CREATE TABLE "edc_bridge_commands" (
 	"release_sent_at" timestamp with time zone,
 	CONSTRAINT "edc_bridge_commands_op_check" CHECK ("edc_bridge_commands"."op" IN ('sale','cancel','inquiry','void')),
 	CONSTRAINT "edc_bridge_commands_outcome_check" CHECK ("edc_bridge_commands"."result_outcome" IS NULL OR "edc_bridge_commands"."result_outcome" IN ('response','transport_error','refused')),
-	CONSTRAINT "edc_bridge_commands_result_check" CHECK (("edc_bridge_commands"."result_outcome" IS NULL) = ("edc_bridge_commands"."result_at" IS NULL))
+	CONSTRAINT "edc_bridge_commands_result_check" CHECK (("edc_bridge_commands"."result_outcome" IS NULL) = ("edc_bridge_commands"."result_at" IS NULL)),
+	CONSTRAINT "edc_bridge_commands_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "edc_bridge_commands_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "edc_bridge_commands_device_fk" FOREIGN KEY ("tenant_id","outlet_id","device_id") REFERENCES "public"."edc_bridge_devices"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "edc_bridge_commands_terminal_fk" FOREIGN KEY ("tenant_id","outlet_id","terminal_id") REFERENCES "public"."payment_edc_terminals"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "edc_bridge_commands_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 CREATE TABLE "edc_bridge_terminal_leases" (
@@ -44,7 +52,12 @@ CREATE TABLE "edc_bridge_terminal_leases" (
 	"lease_id" uuid NOT NULL,
 	"issued_at" timestamp with time zone NOT NULL,
 	"ttl_ms" integer NOT NULL,
-	CONSTRAINT "edc_bridge_terminal_leases_ttl_check" CHECK ("edc_bridge_terminal_leases"."ttl_ms" BETWEEN 10000 AND 600000)
+	CONSTRAINT "edc_bridge_terminal_leases_ttl_check" CHECK ("edc_bridge_terminal_leases"."ttl_ms" BETWEEN 10000 AND 600000),
+	CONSTRAINT "edc_bridge_terminal_leases_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "edc_bridge_terminal_leases_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "edc_bridge_terminal_leases_device_fk" FOREIGN KEY ("tenant_id","outlet_id","device_id") REFERENCES "public"."edc_bridge_devices"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "edc_bridge_terminal_leases_terminal_fk" FOREIGN KEY ("tenant_id","outlet_id","terminal_id") REFERENCES "public"."payment_edc_terminals"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "edc_bridge_terminal_leases_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 ALTER TABLE "payment_edc_terminals" DROP CONSTRAINT "payment_edc_terminals_bank_check";--> statement-breakpoint
@@ -54,19 +67,6 @@ ALTER TABLE "payment_edc_terminals" ADD COLUMN "connection_kind" varchar(20) DEF
 ALTER TABLE "payment_edc_terminals" ADD COLUMN "bridge_device_id" uuid;--> statement-breakpoint
 ALTER TABLE "payment_edc_terminals" ADD COLUMN "link_port" integer;--> statement-breakpoint
 ALTER TABLE "payment_edc_terminals" ADD COLUMN "link_baud_rate" integer;--> statement-breakpoint
-ALTER TABLE "edc_bridge_devices" ADD CONSTRAINT "edc_bridge_devices_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "edc_bridge_devices" ADD CONSTRAINT "edc_bridge_devices_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "edc_bridge_devices" ADD CONSTRAINT "edc_bridge_devices_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "edc_bridge_commands" ADD CONSTRAINT "edc_bridge_commands_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "edc_bridge_commands" ADD CONSTRAINT "edc_bridge_commands_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "edc_bridge_commands" ADD CONSTRAINT "edc_bridge_commands_device_fk" FOREIGN KEY ("tenant_id","outlet_id","device_id") REFERENCES "public"."edc_bridge_devices"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "edc_bridge_commands" ADD CONSTRAINT "edc_bridge_commands_terminal_fk" FOREIGN KEY ("tenant_id","outlet_id","terminal_id") REFERENCES "public"."payment_edc_terminals"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "edc_bridge_commands" ADD CONSTRAINT "edc_bridge_commands_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "edc_bridge_terminal_leases" ADD CONSTRAINT "edc_bridge_terminal_leases_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "edc_bridge_terminal_leases" ADD CONSTRAINT "edc_bridge_terminal_leases_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "edc_bridge_terminal_leases" ADD CONSTRAINT "edc_bridge_terminal_leases_device_fk" FOREIGN KEY ("tenant_id","outlet_id","device_id") REFERENCES "public"."edc_bridge_devices"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "edc_bridge_terminal_leases" ADD CONSTRAINT "edc_bridge_terminal_leases_terminal_fk" FOREIGN KEY ("tenant_id","outlet_id","terminal_id") REFERENCES "public"."payment_edc_terminals"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "edc_bridge_terminal_leases" ADD CONSTRAINT "edc_bridge_terminal_leases_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "edc_bridge_commands_trace_idx" ON "edc_bridge_commands" USING btree ("tenant_id","terminal_id","trace");--> statement-breakpoint
 CREATE INDEX "edc_bridge_commands_device_release_idx" ON "edc_bridge_commands" USING btree ("tenant_id","device_id","release_sent_at");--> statement-breakpoint
 ALTER TABLE "payment_edc_terminals" ADD CONSTRAINT "payment_edc_terminals_bridge_device_fk" FOREIGN KEY ("tenant_id","outlet_id","bridge_device_id") REFERENCES "public"."edc_bridge_devices"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint

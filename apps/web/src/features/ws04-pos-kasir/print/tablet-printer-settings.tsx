@@ -18,10 +18,10 @@ import {
   writeTabletPrinter,
   type PrinterMethod,
   type TabletPrinter,
-} from "./printer-settings";
-import { deliverToTabletPrinter } from "./send-to-printer";
-import { testPrintPayload } from "./test-page";
-import { useTabletPrinter } from "./use-tablet-printer";
+} from "./printer-settings.ts";
+import { deliverToTabletPrinter } from "./send-to-printer.ts";
+import { testPrintPayload } from "./test-page.ts";
+import { useTabletPrinter } from "./use-tablet-printer.ts";
 
 type T = ReturnType<typeof useT>;
 

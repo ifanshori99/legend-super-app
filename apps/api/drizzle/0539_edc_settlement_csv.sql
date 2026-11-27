@@ -20,7 +20,10 @@ CREATE TABLE "edc_settlement_files" (
 	CONSTRAINT "edc_settlement_files_tenant_id_outlet_key" UNIQUE("tenant_id","id","outlet_id"),
 	CONSTRAINT "edc_settlement_files_hash_key" UNIQUE("tenant_id","outlet_id","file_hash"),
 	CONSTRAINT "edc_settlement_files_bank_check" CHECK ("edc_settlement_files"."bank" IN ('bca','mandiri','bni','bjb')),
-	CONSTRAINT "edc_settlement_files_count_check" CHECK ("edc_settlement_files"."row_count" >= 0 AND "edc_settlement_files"."matched_count" >= 0 AND "edc_settlement_files"."cleared_count" >= 0 AND "edc_settlement_files"."cleared_count" <= "edc_settlement_files"."matched_count" AND "edc_settlement_files"."mismatch_count" >= 0 AND "edc_settlement_files"."unmatched_count" >= 0 AND "edc_settlement_files"."duplicate_count" >= 0 AND "edc_settlement_files"."matched_count" + "edc_settlement_files"."mismatch_count" + "edc_settlement_files"."unmatched_count" + "edc_settlement_files"."duplicate_count" = "edc_settlement_files"."row_count")
+	CONSTRAINT "edc_settlement_files_count_check" CHECK ("edc_settlement_files"."row_count" >= 0 AND "edc_settlement_files"."matched_count" >= 0 AND "edc_settlement_files"."cleared_count" >= 0 AND "edc_settlement_files"."cleared_count" <= "edc_settlement_files"."matched_count" AND "edc_settlement_files"."mismatch_count" >= 0 AND "edc_settlement_files"."unmatched_count" >= 0 AND "edc_settlement_files"."duplicate_count" >= 0 AND "edc_settlement_files"."matched_count" + "edc_settlement_files"."mismatch_count" + "edc_settlement_files"."unmatched_count" + "edc_settlement_files"."duplicate_count" = "edc_settlement_files"."row_count"),
+	CONSTRAINT "edc_settlement_files_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "edc_settlement_files_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "edc_settlement_files_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 CREATE TABLE "edc_settlement_rows" (
@@ -46,16 +49,13 @@ CREATE TABLE "edc_settlement_rows" (
 	CONSTRAINT "edc_settlement_rows_status_check" CHECK ("edc_settlement_rows"."match_status" IN ('matched','mismatch','unmatched')),
 	CONSTRAINT "edc_settlement_rows_amount_check" CHECK ("edc_settlement_rows"."amount_idr" > 0),
 	CONSTRAINT "edc_settlement_rows_link_check" CHECK (("edc_settlement_rows"."match_status" = 'matched') <= ("edc_settlement_rows"."matched_edc_transaction_id" IS NOT NULL) AND ("edc_settlement_rows"."match_status" = 'unmatched') <= ("edc_settlement_rows"."matched_edc_transaction_id" IS NULL)),
-	CONSTRAINT "edc_settlement_rows_cleared_check" CHECK (NOT "edc_settlement_rows"."cleared_flag" OR "edc_settlement_rows"."match_status" = 'matched')
+	CONSTRAINT "edc_settlement_rows_cleared_check" CHECK (NOT "edc_settlement_rows"."cleared_flag" OR "edc_settlement_rows"."match_status" = 'matched'),
+	CONSTRAINT "edc_settlement_rows_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "edc_settlement_rows_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "edc_settlement_rows_file_fk" FOREIGN KEY ("tenant_id","file_id","outlet_id") REFERENCES "public"."edc_settlement_files"("tenant_id","id","outlet_id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "edc_settlement_rows_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
-ALTER TABLE "edc_settlement_files" ADD CONSTRAINT "edc_settlement_files_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "edc_settlement_files" ADD CONSTRAINT "edc_settlement_files_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "edc_settlement_files" ADD CONSTRAINT "edc_settlement_files_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "edc_settlement_rows" ADD CONSTRAINT "edc_settlement_rows_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "edc_settlement_rows" ADD CONSTRAINT "edc_settlement_rows_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "edc_settlement_rows" ADD CONSTRAINT "edc_settlement_rows_file_fk" FOREIGN KEY ("tenant_id","file_id","outlet_id") REFERENCES "public"."edc_settlement_files"("tenant_id","id","outlet_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "edc_settlement_rows" ADD CONSTRAINT "edc_settlement_rows_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE UNIQUE INDEX "edc_settlement_rows_row_key" ON "edc_settlement_rows" USING btree ("tenant_id","outlet_id","row_key") WHERE "edc_settlement_rows"."match_status" <> 'unmatched';--> statement-breakpoint
 CREATE UNIQUE INDEX "edc_settlement_rows_matched_txn_key" ON "edc_settlement_rows" USING btree ("tenant_id","matched_edc_transaction_id") WHERE "edc_settlement_rows"."match_status" = 'matched';--> statement-breakpoint
 CREATE INDEX "edc_settlement_rows_txn_idx" ON "edc_settlement_rows" USING btree ("tenant_id","matched_edc_transaction_id");

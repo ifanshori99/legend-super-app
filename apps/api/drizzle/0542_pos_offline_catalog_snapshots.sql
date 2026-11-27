@@ -20,16 +20,13 @@ CREATE TABLE "pos_offline_catalog_snapshots" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "pos_offline_catalog_snapshots_version_key" UNIQUE("tenant_id","outlet_id","catalog_version"),
 	CONSTRAINT "pos_offline_catalog_snapshots_version_check" CHECK ("pos_offline_catalog_snapshots"."catalog_version" ~ '^[0-9a-f]{64}$'),
-	CONSTRAINT "pos_offline_catalog_snapshots_snapshot_check" CHECK (jsonb_typeof("pos_offline_catalog_snapshots"."snapshot") = 'object')
+	CONSTRAINT "pos_offline_catalog_snapshots_snapshot_check" CHECK (jsonb_typeof("pos_offline_catalog_snapshots"."snapshot") = 'object'),
+	CONSTRAINT "pos_offline_catalog_snapshots_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "pos_offline_catalog_snapshots_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "pos_offline_catalog_snapshots_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 ALTER TABLE "pos_offline_kits" ALTER COLUMN "snapshot" DROP NOT NULL;
---> statement-breakpoint
-ALTER TABLE "pos_offline_catalog_snapshots" ADD CONSTRAINT "pos_offline_catalog_snapshots_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;
---> statement-breakpoint
-ALTER TABLE "pos_offline_catalog_snapshots" ADD CONSTRAINT "pos_offline_catalog_snapshots_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;
---> statement-breakpoint
-ALTER TABLE "pos_offline_catalog_snapshots" ADD CONSTRAINT "pos_offline_catalog_snapshots_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;
 --> statement-breakpoint
 -- One snapshot per (outlet, version): the earliest kit's copy (same prices and
 -- rules by construction: the version hashes the content; only read stamps may
