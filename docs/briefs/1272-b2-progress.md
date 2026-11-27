@@ -25,3 +25,11 @@ Brief: `legend/docs/briefs/1272-b2-brief.md`. Cabang `ws/1272-b2`, migrasi 0541 
 - Keputusan CTO (kunci outlet hilang di cloud): proses API tidak dimatikan; hanya outlet itu berhenti (socket jembatan ditutup `goodbye server_shutdown`, lease lepas dari memori, perintah di kabel jalan sampai tenggat lalu `unknown`, hasil sesudahnya = hasil terlambat), permintaan baru `EDC_AGENT_NOT_READY`, ambil ulang kunci dengan backoff 1 s..30 s, log `alert: edc_cloud_outlet_lock_lost`. Edge tetap fail-stop. Test b2-12 gagal-dulu dengan runtime lama (`process.exit called`), lulus sesudahnya; B2 12/12, regresi EDC 6 file 104 test lulus, typecheck api lulus.
 - Selesai; menunggu review K xhigh.
 - Sisa / di luar B2: kode pasang 8 karakter + batas salah per IP (protokol "Token perangkat", sisa B4), UI BRI di `edc-panel.tsx` (B4), codec bank (B5), `bca_cloud` (B5a).
+
+## Review K (docs/qa/1272-b2-review.md, Keputusan CTO 27 Nov)
+
+- Selesai:
+  - P2-1 (072249822): terminal dengan sale pending/unknown/wire terbuka tidak bisa pindah tablet, ganti port/baud, atau dilepas (`EDC_TERMINAL_BUSY`). Test b2-13 gagal-dulu lalu lulus.
+  - P2-2 (072249822): test API perangkat b2-14 (403 per outlet, 404 lintas outlet/tenant, no-store, token tidak di log/audit, cabut lewat route menutup socket). Lulus juga di kode lama: tidak ada bug, cakupan saja.
+  - P2-3 (1ba5f343a): `ensureOutlet` publik, `startOutlets` saat boot, `prepareSale` lazily; `CloudEdcProvider.outlets()`; doc "Provider cloud". Test b2-15 gagal-dulu lalu lulus.
+- Belum: P3-1 (send lalu error = jangan null), P3-2 (renew satu per sesi), P3-3 (insert perintah coba ulang 3x, ack hanya sesudah tersimpan, alert `edc_cloud_result_persist_failed`), P3-4 (hasil telat simpan field tanpa PAN), P3-5 (catat di protocol doc), P3-6 (test A2 lintas outlet; CSV BRI ditolak `EDC_SETTLEMENT_FORMAT_UNVERIFIED`).
