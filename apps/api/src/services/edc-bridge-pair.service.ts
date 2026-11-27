@@ -42,6 +42,8 @@ import {
   tenantWideContext,
 } from "../edge/edc/cloud-runtime.ts";
 import { identityDigest } from "../lib/identity-digest.ts";
+import { logger } from "../lib/logger.ts";
+import { toLoggableError } from "../lib/safe-error.ts";
 import { recordAudit } from "./core-audit.ts";
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -140,6 +142,7 @@ export type EdcBridgePairOutcome =
 
 async function consume(
   code: string,
+  ipDigest: string,
 ): Promise<(PairedEdcBridgeDevice & { tenantId: string }) | null> {
   const hash = edcBridgePairCodeDigest(code);
   const resolved = await db.execute<{ id: string; tenant_id: string }>(
@@ -243,7 +246,7 @@ async function consume(
         objectId: device.id,
         reason: null,
         maskedChanges: { before: null, after: { paired: true } },
-        ipHash: null,
+        ipHash: ipDigest,
         sensitiveAccess: false,
         retentionClass: "audit_2y",
         createdAt: now.toISOString(),
@@ -274,11 +277,20 @@ export async function redeemEdcBridgePairCode(
       kind: "rate_limited",
       retryAfterSeconds: Math.max(1, Number(slot?.retry_after_seconds ?? 1)),
     };
-  const paired = await consume(input.code);
+  const paired = await consume(input.code, ipDigest);
   if (!paired) return { kind: "invalid" };
-  await db.execute(
-    sql`SELECT app.edc_bridge_pair_release_ip_slot(${slot.slot_id})`,
-  );
+  // Best effort: the token is already issued and committed; a slot not given
+  // back only ages out of the window.
+  try {
+    await db.execute(
+      sql`SELECT app.edc_bridge_pair_release_ip_slot(${slot.slot_id})`,
+    );
+  } catch (error) {
+    logger.warn(
+      { err: toLoggableError(error) },
+      "EDC bridge pair IP slot release failed",
+    );
+  }
   // A tablet still connected with the replaced token is told and closed.
   getCloudEdcRuntime()?.revoked(paired.tenantId, paired.deviceId);
   return {

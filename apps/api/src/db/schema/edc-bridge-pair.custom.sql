@@ -13,6 +13,9 @@ REVOKE DELETE, TRUNCATE ON TABLE public.edc_bridge_pair_codes FROM legend_app;
 -- The app role never touches the table; the two functions below do.
 REVOKE ALL ON TABLE public.edc_bridge_pair_ip_slots FROM legend_app;
 --> statement-breakpoint
+-- The 5 below (and in the failed_attempts CHECK) is
+-- EDC_BRIDGE_PAIRING_MAX_ATTEMPTS: change them together, in a new migration
+-- (edc-bridge-contract.test.ts pins them).
 -- Pre-auth redeem lookup (as app.edc_bridge_resolve_token, 0541). Returns the
 -- id and tenant of the live, unlocked code whose selector AND keyed hash both
 -- match, or nothing. On no match, every live code of that selector counts one

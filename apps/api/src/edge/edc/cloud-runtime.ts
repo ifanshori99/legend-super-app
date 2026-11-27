@@ -117,6 +117,11 @@ export type EdcBridgeDevice = {
   readonly id: string;
   readonly tenantId: TenantId;
   readonly outletId: OutletId;
+  /** SHA-256 of the token the socket authenticated with. Lease renewal
+   * requires it to be still the device's (B4 review P2): re-pairing on any
+   * API instance replaces it, so the old tablet is ended at its next renewal
+   * even where `revoked()` was never called. */
+  readonly tokenHash: string;
 };
 
 type Lease = { leaseId: string; issuedAt: Date; ttlMs: number };
@@ -496,7 +501,12 @@ export class CloudEdcRuntime {
       return null;
     // The token names its device: a hash hit for another id is refused.
     if (token.slice(5, 31) !== row.id.toUpperCase()) return null;
-    return { id: row.id, tenantId: row.tenantId, outletId: row.outletId };
+    return {
+      id: row.id,
+      tenantId: row.tenantId,
+      outletId: row.outletId,
+      tokenHash: row.tokenHash,
+    };
   }
 
   // -------------------------------------------------------- sessions
@@ -667,6 +677,8 @@ export class CloudEdcRuntime {
             eq(edcBridgeDevices.tenantId, device.tenantId),
             eq(edcBridgeDevices.id, device.id),
             isNull(edcBridgeDevices.revokedAt),
+            // Re-paired (token replaced) counts as revoked for this socket.
+            eq(edcBridgeDevices.tokenHash, device.tokenHash),
           ),
         )
         .returning({ id: edcBridgeDevices.id });

@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { EcrTransportError } from "@starter/shared/edc";
 import {
@@ -498,5 +501,26 @@ describe("EDC bridge contract: device token and pairing code", () => {
 
   it("pairing allows at most 5 wrong attempts", () => {
     expect(EDC_BRIDGE_PAIRING_MAX_ATTEMPTS).toBe(5);
+  });
+
+  it("the per-code lock in SQL (0543 and its custom.sql) is EDC_BRIDGE_PAIRING_MAX_ATTEMPTS", () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    for (const file of [
+      "../../drizzle/0543_edc_bridge_pair_codes.sql",
+      "../db/schema/edc-bridge-pair.custom.sql",
+    ]) {
+      const text = readFileSync(resolve(here, file), "utf8").replace(
+        /--[^\n]*/g,
+        "",
+      );
+      const limits = [
+        ...text.matchAll(/failed_attempts"?\s*<\s*(\d+)/g),
+        ...text.matchAll(/failed_attempts"?\s+BETWEEN\s+0\s+AND\s+(\d+)/g),
+      ].map((match) => Number(match[1]));
+      // The lookup's two WHERE clauses, plus the CHECK in the migration.
+      expect(limits.length, file).toBeGreaterThanOrEqual(2);
+      for (const limit of limits)
+        expect(limit, file).toBe(EDC_BRIDGE_PAIRING_MAX_ATTEMPTS);
+    }
   });
 });
