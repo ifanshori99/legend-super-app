@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { useOutletClock } from "@/lib/tenant-context";
 import { useStartPayment, useVaBanks } from "../../hooks";
 import { FailedPanel } from "./failed-panel";
+import { FeeNoRefund, FeeQuote } from "./fee-lines";
 import {
   ChoiceGroup,
   ExpiredPanel,
@@ -46,7 +47,7 @@ export function VaPanel(props: PaymentPanelProps) {
     orderId,
     "va",
   );
-  const banks = useVaBanks();
+  const banks = useVaBanks(orderId);
   const start = useStartPayment();
   const [bankCode, setBankCode] = useState<string | null>(null);
 
@@ -73,7 +74,11 @@ export function VaPanel(props: PaymentPanelProps) {
           onChangeMethod={onChangeMethod}
         />
       );
-    const options = banks.data ?? [];
+    const options = (banks.data ?? []).map((option) => ({
+      ...option,
+      hint: <FeeQuote feeIdr={option.guestFeeIdr} totalIdr={option.totalIdr} />,
+    }));
+    const chosen = options.find((option) => option.code === bankCode);
     if (options.length === 0)
       return (
         <PosPanel
@@ -120,6 +125,7 @@ export function VaPanel(props: PaymentPanelProps) {
             value={bankCode}
             onChange={setBankCode}
           />
+          <FeeNoRefund feeIdr={chosen?.guestFeeIdr} className="max-w-3xl" />
         </StartPanel>
       </LiveRegion>
     );

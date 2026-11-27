@@ -144,6 +144,10 @@ export type PaymentAttempt = {
   va?: { bank: string; number: string; deadline: string };
   /** `paymentUrl`: the Duitku payment page the customer opens (1269 C3a). */
   ewallet?: { code: string; label: string; paymentUrl?: string };
+  /** 1272 K4: the code's guest service fee and what the guest pays the
+   * gateway (`amountIdr` + fee). Absent for a code without a fee. */
+  guestFeeIdr?: number;
+  chargedIdr?: number;
   edc?: {
     terminalId: string;
     terminalLabel: string;
@@ -243,8 +247,15 @@ export type EdcTerminal = {
   modes?: readonly EdcMode[];
 };
 
-export type VaBank = { code: string; label: string };
-export type Ewallet = { code: string; label: string };
+/** 1272 K4: priced for the bill, the guest service fee and what the guest
+ * pays; absent when the server did not price the channel. */
+export type VaBank = {
+  code: string;
+  label: string;
+  guestFeeIdr?: number;
+  totalIdr?: number;
+};
+export type Ewallet = VaBank;
 
 export type ReceiptResult = {
   receiptNo: string;

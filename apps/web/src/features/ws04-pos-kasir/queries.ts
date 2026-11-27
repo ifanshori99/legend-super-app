@@ -43,8 +43,10 @@ export const posKasirKeys = {
     ["pos-kasir", outletId, "edc-terminals"] as const,
   edcApprovers: (outletId: string) =>
     ["pos-kasir", outletId, "edc-approvers"] as const,
-  vaBanks: (outletId: string) => ["pos-kasir", outletId, "va-banks"] as const,
-  ewallets: (outletId: string) => ["pos-kasir", outletId, "ewallets"] as const,
+  vaBanks: (outletId: string, orderId?: string) =>
+    ["pos-kasir", outletId, "va-banks", orderId ?? null] as const,
+  ewallets: (outletId: string, orderId?: string) =>
+    ["pos-kasir", outletId, "ewallets", orderId ?? null] as const,
   shift: (outletId: string) => ["pos-kasir", outletId, "shift"] as const,
   movements: (outletId: string, shiftId: string) =>
     ["pos-kasir", outletId, "movements", shiftId] as const,
@@ -122,17 +124,17 @@ export const resolveApproversQuery = (
     retry: false,
   });
 
-export const vaBanksQuery = (outletId: string) =>
+export const vaBanksQuery = (outletId: string, orderId?: string) =>
   queryOptions({
-    queryKey: posKasirKeys.vaBanks(outletId),
-    queryFn: () => fetchVaBanks(outletId),
+    queryKey: posKasirKeys.vaBanks(outletId, orderId),
+    queryFn: () => fetchVaBanks(outletId, orderId),
     retry: false,
   });
 
-export const ewalletsQuery = (outletId: string) =>
+export const ewalletsQuery = (outletId: string, orderId?: string) =>
   queryOptions({
-    queryKey: posKasirKeys.ewallets(outletId),
-    queryFn: () => fetchEwallets(outletId),
+    queryKey: posKasirKeys.ewallets(outletId, orderId),
+    queryFn: () => fetchEwallets(outletId, orderId),
     retry: false,
   });
 

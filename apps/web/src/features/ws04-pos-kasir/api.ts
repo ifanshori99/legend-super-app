@@ -277,6 +277,12 @@ function liveQrisAttempt(
         ? qris.qrPayload !== null
         : (qris.instructions ?? null) !== null,
     ...(method === "qris" ? {} : onlineCodeOf(qris)),
+    ...(qris.guestFeeIdr !== undefined && qris.chargedIdr !== undefined
+      ? {
+          guestFeeIdr: Number(qris.guestFeeIdr),
+          chargedIdr: Number(qris.chargedIdr),
+        }
+      : {}),
     cancellable: qris.tenderId !== null && qris.state === "open",
   };
 }
@@ -613,9 +619,11 @@ export function fetchPaymentSession(
   );
 }
 
-async function fetchPaymentOptions(outletId: string) {
+async function fetchPaymentOptions(outletId: string, orderId?: string) {
   const { data } = await callEndpoint(getPosPaymentOptions, {
     params: { outletId },
+    // 1272 K4: the order prices each channel (the server reads its bill).
+    ...(orderId ? { query: { orderId } } : {}),
   });
   return data;
 }
@@ -691,23 +699,36 @@ export async function fetchEdcTerminals(
 async function fetchChannels(
   outletId: string,
   method: "va" | "ewallet",
-): Promise<{ code: string; label: string }[]> {
-  const { methods } = await fetchPaymentOptions(outletId);
+  orderId?: string,
+): Promise<VaBank[]> {
+  const { methods } = await fetchPaymentOptions(outletId, orderId);
   const row = methods.find((item) => item.method === method && item.enabled);
   return (row?.channels ?? []).map((channel) => ({
     code: channel.code,
     label: channel.name,
+    ...(channel.guestFeeIdr !== undefined && channel.totalIdr !== undefined
+      ? {
+          guestFeeIdr: Number(channel.guestFeeIdr),
+          totalIdr: Number(channel.totalIdr),
+        }
+      : {}),
   }));
 }
 
-export const fetchVaBanks = (outletId: string): Promise<VaBank[]> =>
+export const fetchVaBanks = (
+  outletId: string,
+  orderId?: string,
+): Promise<VaBank[]> =>
   API_MOCK
     ? local("bank Virtual Account", (engine) => engine.vaBanks())
-    : fetchChannels(outletId, "va");
-export const fetchEwallets = (outletId: string): Promise<Ewallet[]> =>
+    : fetchChannels(outletId, "va", orderId);
+export const fetchEwallets = (
+  outletId: string,
+  orderId?: string,
+): Promise<Ewallet[]> =>
   API_MOCK
     ? local("dompet digital", (engine) => engine.ewallets())
-    : fetchChannels(outletId, "ewallet");
+    : fetchChannels(outletId, "ewallet", orderId);
 
 // ---- Payment requests (1268 W2) ----------------------------------------------
 // Every request that takes money is stored with its key and its exact body
