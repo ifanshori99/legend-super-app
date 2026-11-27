@@ -20,6 +20,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createUlid } from "@starter/shared/core";
 import type { PaymentInstructions } from "@starter/shared/payment";
+import { createPaymentLink } from "../services/payment.service.ts";
 import { agent, originHeader } from "./helpers.ts";
 import { endPools } from "./facility-breakfast-helpers.ts";
 import { owner } from "./floor-test-helpers.ts";
@@ -367,5 +368,109 @@ describe("1272 K1 guest options: the target belongs to the session", () => {
     });
     expect(both.status).toBeGreaterThanOrEqual(400);
     expect(both.status).toBeLessThan(500);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fee second opinion re-review: a payment link (the guest page) is price-locked
+// on a replay (P3-c) and on a refresh (P2), like a first create.
+// ---------------------------------------------------------------------------
+
+const LINK_TOTAL = 100_000;
+
+async function openLink() {
+  const opened = await createPaymentLink(
+    fx.context,
+    {
+      outletId: fx.tenant.outletId as never,
+      reference: `K1L-${randomUUID().slice(0, 8)}`,
+      tableLabel: null,
+      pax: null,
+      subtotalIdr: LINK_TOTAL,
+      discountIdr: 0,
+      serviceChargeIdr: 0,
+      taxIdr: 0,
+      roundingIdr: 0,
+      totalIdr: LINK_TOTAL,
+      returnPath: "/t/v1.abc",
+    },
+    "00000000-0000-4000-8000-000000000001",
+  );
+  return opened;
+}
+
+const linkIntent = (token: string, body: Record<string, unknown>) =>
+  agent(fx.app)
+    .post(`/api/payments/links/${token}/intents`)
+    .set(fx.headers)
+    .send({
+      method: "ewallet",
+      channelCode: "OV",
+      idempotencyKey: randomUUID(),
+      ...body,
+    });
+
+describe("1272 re-review P3-c: a replay of a create names the same total", () => {
+  it("the same key with another expected total is 409 FEE_CHANGED, not the old code", async () => {
+    gw.rates = RATES();
+    const { token } = await openLink();
+    const fee = grossUpGuestFee(LINK_TOTAL, { bps: 150, flatIdr: 0 });
+    const key = randomUUID();
+    const first = await linkIntent(token, {
+      idempotencyKey: key,
+      expectedChargedIdr: LINK_TOTAL + fee,
+    });
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    const replay = await linkIntent(token, {
+      idempotencyKey: key,
+      expectedChargedIdr: LINK_TOTAL + fee + 500,
+    });
+    expect(replay.status, JSON.stringify(replay.body)).toBe(409);
+    expect(replay.body.error.code).toBe("FEE_CHANGED");
+    const same = await linkIntent(token, {
+      idempotencyKey: key,
+      expectedChargedIdr: LINK_TOTAL + fee,
+    });
+    expect(same.status, JSON.stringify(same.body)).toBe(201);
+    expect(same.body.data.id).toBe(first.body.data.id);
+  });
+});
+
+describe("1272 re-review P2: a refresh never replaces a priced code at another price", () => {
+  it("a changed rate is 409 FEE_CHANGED and no code is issued; the same rate refreshes at the same total", async () => {
+    gw.rates = RATES();
+    const { token, linkId } = await openLink();
+    const fee = grossUpGuestFee(LINK_TOTAL, { bps: 150, flatIdr: 0 });
+    const first = await linkIntent(token, {
+      expectedChargedIdr: LINK_TOTAL + fee,
+    });
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    const oldId = first.body.data.id as string;
+    await owner.query(
+      "UPDATE payment_intents SET status = 'expired', provider_final_at = now() WHERE tenant_id = $1 AND id = $2",
+      [fx.tenant.tenantId, oldId],
+    );
+
+    gw.rates = new Map([...RATES(), ["OV", { bps: 300, flatIdr: 0 }]]);
+    const before = gw.created.length;
+    const changed = await agent(fx.app)
+      .post(`/api/payments/links/${token}/intents/${oldId}/refresh`)
+      .set(fx.headers);
+    expect(changed.status, JSON.stringify(changed.body)).toBe(409);
+    expect(changed.body.error.code).toBe("FEE_CHANGED");
+    expect(gw.created).toHaveLength(before);
+
+    gw.rates = RATES();
+    const same = await agent(fx.app)
+      .post(`/api/payments/links/${token}/intents/${oldId}/refresh`)
+      .set(fx.headers);
+    expect(same.status, JSON.stringify(same.body)).toBe(200);
+    expect(same.body.data.id).not.toBe(oldId);
+    expect(same.body.data.chargedIdr).toBe(LINK_TOTAL + fee);
+    const { rows } = await owner.query<{ n: string }>(
+      "SELECT count(*)::text AS n FROM payment_intents WHERE tenant_id = $1 AND payment_link_id = $2",
+      [fx.tenant.tenantId, linkId],
+    );
+    expect(Number(rows[0]!.n)).toBe(2);
   });
 });

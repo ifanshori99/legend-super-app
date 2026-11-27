@@ -749,6 +749,48 @@ describe("the fee is taken off once, whatever else parked (fee second opinion P2
   });
 });
 
+describe("the fee is taken off once per payment at or above the charged amount (re-review P3-b)", () => {
+  it("a fee code paid late twice counts nothing and refunds nothing (both fees are withheld)", async () => {
+    const bill = await openFeeIntent();
+    await owner.query("UPDATE payment_links SET paid_idr = $2 WHERE id = $1", [
+      bill.linkId,
+      BILL_TOTAL,
+    ]);
+    await settleAtCharged(bill);
+    await confirmPayment(contextFor("webhook"), bill.intentId, {
+      source: "verified_webhook",
+      method: "ewallet",
+      amountIdr: CHARGED,
+      providerRef: `${bill.reference}-2`,
+      at: new Date().toISOString(),
+    });
+    // Each payment parked the bill, never the fee.
+    expect(await funds(bill.intentId)).toEqual([
+      { amountIdr: BILL_TOTAL, reason: "double_payment" },
+      { amountIdr: BILL_TOTAL, reason: "double_payment" },
+    ]);
+    expect(await netAllocated(bill.intentId)).toBe(0n);
+    const balance = await refundable(bill.intentId);
+    expect(balance.paid).toBe(0n);
+    expect(balance.cap).toBe(0n);
+  });
+
+  it("a payment below the charged amount carried no fee: only the full payment's fee is taken off", async () => {
+    const bill = await openFeeIntent();
+    await settleAtCharged(bill);
+    await confirmPayment(contextFor("webhook"), bill.intentId, {
+      source: "verified_webhook",
+      method: "ewallet",
+      amountIdr: CHARGED - 1,
+      providerRef: `${bill.reference}-3`,
+      at: new Date().toISOString(),
+    });
+    // Parked whole (CHARGED - 1); the first payment alone put the bill toward it.
+    expect(await netAllocated(bill.intentId)).toBe(BigInt(BILL_TOTAL));
+    expect((await refundable(bill.intentId)).paid).toBe(BigInt(BILL_TOTAL));
+  });
+});
+
 describe("payment.paid journal (§3)", () => {
   const roles: PostingAccountRole[] = [
     "gateway_clearing",
