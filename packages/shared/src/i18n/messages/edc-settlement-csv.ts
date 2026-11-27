@@ -30,6 +30,7 @@ export const edcSettlementCsvMessages = {
     mandiri: "Mandiri",
     bni: "BNI",
     bjb: "BJB",
+    bri: "BRI",
   },
   noOutlets: {
     title: "Belum ada outlet",

@@ -7,7 +7,7 @@
 export type EdcTerminalSettlement = {
   terminalId: string;
   terminalCode: string;
-  bank: "bca" | "mandiri" | "bni" | "bjb";
+  bank: "bca" | "mandiri" | "bni" | "bjb" | "bri";
   /** Captured EDC tenders of the day's completed sales on this terminal. */
   receiptIdr: number;
   receiptCount: number;
