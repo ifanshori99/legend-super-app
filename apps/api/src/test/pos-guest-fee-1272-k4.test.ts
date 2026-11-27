@@ -627,7 +627,7 @@ describe("1272 K4 cashier guest service fee", () => {
     expect(fx.gateway.requests).toHaveLength(issuedBefore);
     await issue(order.id, "va");
   });
-  it("negative side: a fee code paid with the bill only, or any other amount, parks in full (AMOUNT_MISMATCH): no tender captured, nothing refunded by the POS", async () => {
+  it("negative side: a fee code paid with the bill only, or any other amount, parks in full (AMOUNT_MISMATCH; the fee is withheld from a payment of the charged amount or more): no tender captured, nothing refunded by the POS", async () => {
     for (const paid of [
       BILL_IDR,
       BILL_IDR + VA_FEE - 1,
@@ -649,7 +649,10 @@ describe("1272 K4 cashier guest service fee", () => {
         ["authorized"],
       );
       const parked = await unallocatedFunds(fx, va.intentId);
-      expect(parked.map((row) => row.amountIdr)).toEqual([paid]);
+      // Fee second opinion P3-1: a payment at the charged amount or more
+      // carried the fee, which is withheld (never parked, never refunded).
+      const withheld = paid >= BILL_IDR + VA_FEE ? VA_FEE : 0;
+      expect(parked.map((row) => row.amountIdr)).toEqual([paid - withheld]);
       expect(await refundsOfIntent(fx, va.intentId)).toEqual([]);
       await assertInvariants(fx, order.id);
     }

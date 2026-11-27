@@ -1982,17 +1982,18 @@ export async function recordUnsettledGatewayFunds(
 
 /**
  * 1272 K1 (design duitku-fee-passthrough §4): the guest fee is never paid
- * back. A second payment of the same code at its charged amount carried the
- * fee too and the gateway keeps its MDR, so only the bill part is parked
- * (refundable); the fee part offsets the MDR in the receipt journal. Any other
- * amount is parked whole.
+ * back. A second payment of the same code at its charged amount or more
+ * carried the fee too and the gateway keeps its MDR, so what is parked
+ * (refundable) is the payment less the fee; the fee part offsets the MDR in
+ * the receipt journal (fee second opinion P3-1: also above the charged
+ * amount). A payment below the charged amount is parked whole.
  */
 export function guestFeeWithheldOf(
   intent: Pick<PaymentIntentRow, "guestFeeIdr" | "chargedIdr">,
   paidIdr: number,
 ): number {
   const fee = Number(intent.guestFeeIdr);
-  return fee > 0 && paidIdr === Number(intent.chargedIdr) ? fee : 0;
+  return fee > 0 && paidIdr >= Number(intent.chargedIdr) ? fee : 0;
 }
 
 /** The same recording inside the caller's transaction (and lock order).

@@ -572,6 +572,48 @@ describe("§4 the guest fee is never refunded", () => {
   });
 });
 
+describe("a second payment above the charged amount still keeps the fee (fee second opinion P3-1)", () => {
+  it("parks what was paid less the fee, the fee is withheld", async () => {
+    const bill = await openFeeIntent();
+    await settleAtCharged(bill);
+    const extra = 5_000;
+    await confirmPayment(contextFor("webhook"), bill.intentId, {
+      source: "verified_webhook",
+      method: "ewallet",
+      amountIdr: CHARGED + extra,
+      providerRef: `${bill.reference}-2`,
+      at: new Date().toISOString(),
+    });
+    expect(await funds(bill.intentId)).toEqual([
+      { amountIdr: BILL_TOTAL + extra, reason: "double_payment" },
+    ]);
+    const [parked] = await eventPayloads(
+      "payment.funds_unallocated",
+      bill.intentId,
+    );
+    expect(parked).toMatchObject({
+      receivedIdr: CHARGED + extra,
+      guestFeeIdr: GUEST_FEE,
+    });
+    expect(await linkPaidIdr(bill.linkId)).toBe(BILL_TOTAL);
+  });
+
+  it("a second payment below the charged amount is parked whole", async () => {
+    const bill = await openFeeIntent();
+    await settleAtCharged(bill);
+    await confirmPayment(contextFor("webhook"), bill.intentId, {
+      source: "verified_webhook",
+      method: "ewallet",
+      amountIdr: CHARGED - 1,
+      providerRef: `${bill.reference}-3`,
+      at: new Date().toISOString(),
+    });
+    expect(await funds(bill.intentId)).toEqual([
+      { amountIdr: CHARGED - 1, reason: "double_payment" },
+    ]);
+  });
+});
+
 async function netAllocated(intentId: string): Promise<bigint> {
   return withTenant(db, contextFor("session"), async (tx) => {
     const result = await tx.execute(
