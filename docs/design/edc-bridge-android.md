@@ -39,13 +39,39 @@ heavy ./gradlew testDebugUnitTest   # unit test JVM
 heavy ./gradlew assembleDebug       # app/build/outputs/apk/debug/app-debug.apk
 ```
 
+Pakai `testDebugUnitTest`, bukan `test`, `check`, `build` atau `lint`: perintah itu ikut menjalankan task rilis dan sengaja gagal tanpa kunci rilis.
+
 Repositori hanya `google()` dan `mavenCentral()` (juga untuk plugin: AGP, KSP, Room ada di sana; tanpa Gradle Plugin Portal). Wrapper memeriksa `distributionSha256Sum` dari checksum resmi Gradle.
 
 Versi: Gradle wrapper 9.9.2, AGP 9.5.3 (Kotlin bawaan, compiler dipin 2.4.21), Room 2.8.5 + KSP 2.3.14, OkHttp 4.12.0 (5.x butuh compileSdk 37), kotlinx-serialization-json 1.13.0 (hanya runtime, tanpa plugin). minSdk 26, targetSdk 35. Hanya repositori `google()` dan `mavenCentral()`.
 
 Fixture kontrak `app/src/test/resources/edc-bridge-contract-fixtures.json` dibuat dari zod: ubah kontrak shared, lalu `UPDATE_EDC_BRIDGE_FIXTURES=1 LEGEND_TEST_FILES="src/test/edc-bridge-tablet.test.ts" heavy pnpm test` dan jalankan ulang test JVM. Test TS gagal bila file usang.
 
-APK rilis: belum ada kunci tanda tangan. Kunci rilis disimpan di luar repo (keputusan founder sebelum B7); APK debug hanya untuk uji.
+## Tanda tangan APK rilis
+
+Kunci rilis dibuat tim (keputusan founder, 27 Nov 2026, legend-wasr7.27) dan disimpan di luar repo.
+
+- Berkas: `~/.legend-release/edc-bridge-release.jks` (folder 700, berkas 600), PKCS12, RSA 4096, berlaku 30 tahun (sampai 19 Nov 2056), alias `legend-edc-bridge`.
+- Password: hanya di Keychain macOS (service `legend-edc-bridge-release`, account `release`). Tidak ada di repo, log, atau chat.
+- Sidik jari sertifikat (SHA-256, publik):
+  `3D:3E:D1:65:8A:25:72:15:33:3E:77:30:1F:A3:2F:C2:66:1A:F2:53:7A:B2:A9:82:24:C9:6E:E6:DC:BA:7A:27`
+- Gradle: build rilis membaca path dan password dari env `LEGEND_EDC_KEYSTORE` dan `LEGEND_EDC_KEYSTORE_PASSWORD` (atau properti dengan nama sama di `~/.gradle/gradle.properties`). Bila tidak ada, build rilis gagal dengan pesan jelas; tidak pernah jatuh ke kunci debug.
+- Build: `apps/edc-bridge-android/scripts/build-release.sh` (baca password dari Keychain, jalan lewat `heavy`). Hasil: `app/build/outputs/apk/release/app-release.apk`. Naikkan `versionCode` di `app/build.gradle.kts` tiap rilis.
+- `*.jks`, `*.keystore`, `*.p12`, `*.pfx` ada di `.gitignore`.
+
+### Cadangkan kunci (founder, sekali, sekarang)
+
+1. Salin `~/.legend-release/edc-bridge-release.jks` ke tempat aman (flash disk terenkripsi atau password manager yang menyimpan berkas), minimal 2 tempat berbeda.
+2. Simpan password dari Keychain (Keychain Access, cari `legend-edc-bridge-release`, "Tampilkan sandi") di password manager, terpisah dari berkas.
+3. Kunci hilang = aplikasi di tablet tidak bisa diperbarui; harus dicopot (jurnal ikut hilang) lalu pasang ulang dengan kunci baru. Jangan kirim berkas atau password lewat chat atau email.
+
+### Pasang APK rilis ke tablet (sideload)
+
+1. Salin `app-release.apk` ke tablet (kabel, atau unduh dari tautan yang diberikan tim).
+2. Di tablet: Setelan > Aplikasi > akses khusus > "Instal aplikasi tak dikenal", izinkan untuk aplikasi yang membuka APK (Berkas atau Chrome). Matikan lagi sesudah selesai.
+3. Buka APK, ketuk Pasang.
+4. Cek keaslian di Mac: `apksigner verify --print-certs app-release.apk` (build-tools Android). Baris "certificate SHA-256 digest" harus sama dengan sidik jari di atas (tanpa titik dua, huruf kecil). Beda = jangan dipasang.
+5. Pembaruan: pasang APK baru di atas yang lama; Android menerimanya hanya bila kuncinya sama dan `versionCode` lebih tinggi. Jurnal dan pairing tetap. APK debug tidak bisa menimpa APK rilis (kunci berbeda): copot dulu, lalu pasang rilis.
 
 ## Emulator Node
 
