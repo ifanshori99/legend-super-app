@@ -43,9 +43,12 @@ function prune(storage: Storage, nowMs: number) {
   }
 }
 
-export function saveReturnRecord(
-  record: Omit<ReturnRecord, "v" | "savedAt">,
-): void {
+/** A record to store; `v` and `savedAt` are set here (and replaced if given). */
+type NewReturnRecord =
+  | Omit<Extract<ReturnRecord, { kind: "table" }>, "v" | "savedAt">
+  | Omit<Extract<ReturnRecord, { kind: "link" }>, "v" | "savedAt">;
+
+export function saveReturnRecord(record: NewReturnRecord | ReturnRecord): void {
   const storage = local();
   if (!storage) return;
   const nowMs = Date.now();
@@ -83,15 +86,33 @@ export function readReturnRecord(search: string): ReturnRecord | null {
 }
 
 /**
+ * useSyncExternalStore snapshot of the current page's record: its checked,
+ * serialized form, or "" when there is none. A string, so it compares equal
+ * between renders.
+ */
+export function readReturnRecordSnapshot(): string {
+  const record = readReturnRecord(window.location.search);
+  return record ? serializeReturnRecord(record) : "";
+}
+
+/** Payments claimed by this page load (keeps a remount's answer the same). */
+const claimedThisLoad = new Set<string>();
+
+/**
  * The gateway page is opened automatically once per payment and tab; coming
  * back with the browser's back button shows the manual button instead of
  * bouncing the guest to the gateway again.
  */
 export function claimAutoOpen(paymentId: string): boolean {
+  if (claimedThisLoad.has(paymentId)) return true;
   const storage = session();
+  claimedThisLoad.add(paymentId);
   if (!storage) return true;
   try {
-    if (storage.getItem(OPENED_PREFIX + paymentId)) return false;
+    if (storage.getItem(OPENED_PREFIX + paymentId)) {
+      claimedThisLoad.delete(paymentId);
+      return false;
+    }
     storage.setItem(OPENED_PREFIX + paymentId, "1");
   } catch {
     // Blocked storage: open it; the manual button covers a second visit.

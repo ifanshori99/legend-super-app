@@ -174,3 +174,12 @@ test("C2b polling backs off and stops once the server's status is final", () => 
   ])
     assert.equal(shouldPollReturn(status), false, status);
 });
+
+test("C2b a payment link card takes no channel, an e-wallet needs one", async () => {
+  const { canSubmit } =
+    await import("../apps/web/src/features/ws05-payment/status.ts");
+  assert.equal(canSubmit("card", null), true);
+  assert.equal(canSubmit("card", "VC"), false);
+  assert.equal(canSubmit("ewallet", null), false);
+  assert.equal(canSubmit("ewallet", "DA"), true);
+});

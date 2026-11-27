@@ -7,7 +7,13 @@
 // page stored in this browser; without one the link is "tidak dikenali". There
 // is no back control: the browser history after the gateway cannot be trusted,
 // so every way home is a button at the bottom.
-import { useEffect, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import {
@@ -35,7 +41,7 @@ import { startPayment as startGuestPayment } from "@/features/ws03-qr-order/api"
 import { fetchPaymentIntent, startPaymentIntent } from "../api";
 import {
   openPaymentUrl,
-  readReturnRecord,
+  readReturnRecordSnapshot,
   saveReturnRecord,
 } from "../return-record";
 import {
@@ -88,6 +94,30 @@ async function askServer(
   };
 }
 
+const noSubscribe = () => () => {};
+
+/**
+ * This browser's record of the payment: undefined on the server and while
+ * hydrating, null when there is none. The snapshot is the stored string
+ * (already checked), so it stays stable between renders.
+ */
+function useReturnRecord(): ReturnRecord | null | undefined {
+  const raw = useSyncExternalStore(
+    noSubscribe,
+    readReturnRecordSnapshot,
+    () => undefined,
+  );
+  return useMemo(
+    () =>
+      raw === undefined
+        ? undefined
+        : raw === ""
+          ? null
+          : (JSON.parse(raw) as ReturnRecord),
+    [raw],
+  );
+}
+
 /** Polls the server with backoff until its status is final. */
 function useReturnAnswer(record: ReturnRecord | null | undefined) {
   return useQuery({
@@ -114,11 +144,14 @@ function useReturnAnswer(record: ReturnRecord | null | undefined) {
   });
 }
 
-/** Ticks once a second while `active`; the clock is read only after mount. */
-function useNow(active: boolean): number | null {
-  const [now, setNow] = useState<number | null>(null);
+/**
+ * Ticks once a second while `active`. The clock only feeds states that need a
+ * server answer, which only the browser has, so server and browser markup
+ * still agree.
+ */
+function useNow(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    setNow(Date.now());
     if (!active) return;
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
@@ -171,21 +204,13 @@ const textLink =
 export function PaymentReturnPage() {
   const t = useT();
   // undefined: not read yet (server render and first browser render agree).
-  const [record, setRecord] = useState<ReturnRecord | null | undefined>(
-    undefined,
-  );
-  useEffect(() => {
-    setRecord(readReturnRecord(window.location.search));
-  }, []);
+  const record = useReturnRecord();
   const answer = useReturnAnswer(record);
-  const [startedAt, setStartedAt] = useState<number | null>(null);
-  useEffect(() => {
-    if (record && startedAt === null) setStartedAt(Date.now());
-  }, [record, startedAt]);
+  const [startedAt] = useState(() => Date.now());
   const status = answer.data?.status;
   const final = status !== undefined && !shouldPollReturn(status);
   const now = useNow(!final);
-  const waitedMs = startedAt !== null && now !== null ? now - startedAt : 0;
+  const waitedMs = now - startedAt;
   const errorStatus = answer.error
     ? answer.error instanceof ApiError
       ? answer.error.status
@@ -235,9 +260,8 @@ export function PaymentReturnPage() {
         };
       }
       if (!next.url) throw new Error("No payment page");
-      const { v: _v, savedAt: _savedAt, ...rest } = current;
       saveReturnRecord({
-        ...rest,
+        ...current,
         paymentId: next.id,
         amountIdr: next.amountIdr,
       });
@@ -325,10 +349,9 @@ export function PaymentReturnPage() {
           : t("payment.redirect.back.waitingLeadWallet", {
               wallet: methodName,
             });
-      const seconds =
-        answer.dataUpdatedAt && now !== null
-          ? Math.max(0, Math.round((now - answer.dataUpdatedAt) / 1000))
-          : null;
+      const seconds = answer.dataUpdatedAt
+        ? Math.max(0, Math.round((now - answer.dataUpdatedAt) / 1000))
+        : null;
       extras = (
         <p className="flex items-center gap-2 text-sm leading-5 font-semibold">
           <Spinner className="size-4.5 border-2" />

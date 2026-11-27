@@ -176,7 +176,13 @@ export function GatewayOpening({ payment }: { payment: GuestPayment }) {
   const orderRow = useOrderRow(orderId);
   const url = payment.redirectUrl;
   const openable = url !== null && isOpenablePaymentUrl(url);
-  const [state, setState] = useState<"opening" | "ready">("opening");
+  // Opened automatically once per payment and tab (never rendered on the
+  // server: the payment is read with the tab's session credential).
+  const [autoOpen] = useState(
+    () => openable && sessionId !== null && claimAutoOpen(payment.id),
+  );
+  const [left, setLeft] = useState(false);
+  const state = autoOpen && !left ? "opening" : "ready";
   const place = menu?.brand.name ?? null;
   const orderNumber = orderId
     ? (view?.orders.find((order) => order.id === orderId)?.number ?? null)
@@ -212,18 +218,14 @@ export function GatewayOpening({ payment }: { payment: GuestPayment }) {
   ]);
 
   useEffect(() => {
-    if (!openable || !url || !sessionId) return;
-    if (!claimAutoOpen(payment.id)) {
-      setState("ready");
-      return;
-    }
+    if (!autoOpen || !url) return;
     // Leaves the app; if the browser stays (blocked), the button remains.
     const timer = window.setTimeout(() => {
       openPaymentUrl(url);
-      setState("ready");
+      setLeft(true);
     }, 600);
     return () => window.clearTimeout(timer);
-  }, [openable, url, payment.id, sessionId]);
+  }, [autoOpen, url]);
 
   if (!openable)
     return (
