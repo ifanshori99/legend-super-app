@@ -384,6 +384,44 @@ describe("guest_fee_shortfall: the gateway took more than the guest fee", () => 
   });
 });
 
+describe("a fee above the line amount is refused, never skipped", () => {
+  it("422 SETTLEMENT_FEE_EXCEEDS_AMOUNT naming the line; nothing is recorded", async () => {
+    const day = nextDay();
+    const ref = `DK-${uid()}`;
+    await seedIntent({ providerRef: ref, day, guestFeeIdr: GUEST_FEE });
+    const reference = `${REF_PREFIX}${uid()}`;
+    const response = await manager
+      .post(IMPORT)
+      .set(originHeader)
+      .set("Idempotency-Key", `k2-${randomUUID()}`)
+      .send({
+        outletId: outletA,
+        source: "gateway",
+        provider: "duitku",
+        reference,
+        periodStart: day,
+        periodEnd: day,
+        grossIdr: 103_000,
+        feeIdr: 3_500,
+        netIdr: 99_500,
+        // The filler keeps the report net non-negative (schema rule).
+        lines: [
+          { reference: ref, amountIdr: 3_000, feeIdr: 3_500 },
+          { reference: `ZZ-${uid()}`, amountIdr: 100_000, feeIdr: 0 },
+        ],
+      });
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(response.body.error.code).toBe("SETTLEMENT_FEE_EXCEEDS_AMOUNT");
+    expect(response.body.error.message).toContain(ref);
+    const stored = await asTenant((c) =>
+      c.query("SELECT 1 FROM payment_settlements WHERE reference = $1", [
+        reference,
+      ]),
+    );
+    expect(stored.rowCount).toBe(0);
+  });
+});
+
 describe("an intent without a guest fee reconciles exactly as before", () => {
   it.each([
     { provider: "duitku" as const, method: "qris" as const },
@@ -456,6 +494,39 @@ describe("an open shortfall locks the channel's guest fee rate", () => {
     expect((await lockedGuestFeeChannels(contextOf())).has(code)).toBe(true);
     await setStatus("resolved");
     expect((await lockedGuestFeeChannels(contextOf())).has(code)).toBe(false);
+  });
+
+  it("the lock is tenant wide: a context of another outlet sees the shortfall of outlet A", async () => {
+    const day = nextDay();
+    const ref = `LB-${uid()}`;
+    const code = `Y${uid().slice(0, 1).toUpperCase()}`;
+    await seedIntent({
+      providerRef: ref,
+      day,
+      guestFeeIdr: GUEST_FEE,
+      channelCode: code,
+    });
+    const report = await importReport(day, [
+      { reference: ref, amountIdr: CHARGED, feeIdr: GUEST_FEE + 1 },
+    ]);
+    const outletBContext = establishScopedTenantContext(
+      establishTenantContext({
+        tenantId: tenantIdSchema.parse(tenantId),
+        brandId: null,
+        source: "session",
+      }),
+      {
+        kind: "outlets",
+        outletIds: [cafeLegendAccessFixtures.outletIds.bandung2],
+      },
+    );
+    expect((await lockedGuestFeeChannels(outletBContext)).has(code)).toBe(true);
+    await asTenant((c) =>
+      c.query(
+        "UPDATE payment_reconciliation_cases SET status = 'resolved' WHERE tenant_id = $1 AND settlement_id = $2",
+        [tenantId, report.id],
+      ),
+    );
   });
 
   it("a locked card intent locks the card code VC", async () => {

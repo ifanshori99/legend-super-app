@@ -54,6 +54,7 @@ import {
   loadIntegrationCredentialsById,
 } from "./platform-integration.service";
 import {
+  CARD_CODE,
   lockedGuestFeeChannels,
   withoutLockedGuestFees,
 } from "./payment-guest-fee-lock";
@@ -62,9 +63,6 @@ const METHODS_CACHE_MS = 60_000;
 /** Amount used to list the merchant's methods when no real amount applies. */
 const PROBE_AMOUNT_IDR = 10_000;
 const DEFAULT_VA_NAME = "Legend";
-/** Duitku's only card code (payment-duitku-wire.ts): a card intent takes no
- * channel, so its guest fee rate is read under this code. */
-const CARD_CODE = "VC";
 
 type Loaded = {
   integration: { config: Record<string, unknown> };
@@ -158,7 +156,8 @@ type Resolved = {
 
 // 1272 K2: a channel with an open guest_fee_shortfall case loses its guest
 // fee rate here, so a guest-fee method hides it and createIntent refuses it
-// (payment-guest-fee-lock.ts). A failed lock read fails the load (closed).
+// (payment-guest-fee-lock.ts). A failed lock read drops every guest fee rate
+// (closed for the fee methods, QRIS stays).
 const defaultLoader: DuitkuCredentialLoader = async (context, outletId) => {
   const loaded = await loadActiveIntegrationCredentials(
     context,
@@ -166,14 +165,18 @@ const defaultLoader: DuitkuCredentialLoader = async (context, outletId) => {
     outletId,
   );
   if (!loaded || env.DUITKU_GUEST_FEE_METHODS.length === 0) return loaded;
-  const locked = await lockedGuestFeeChannels(context);
-  return {
-    ...loaded,
-    integration: {
-      ...loaded.integration,
-      config: withoutLockedGuestFees(loaded.integration.config, locked),
-    },
-  };
+  let config: Record<string, unknown>;
+  try {
+    const locked = await lockedGuestFeeChannels(context);
+    config = withoutLockedGuestFees(loaded.integration.config, locked);
+  } catch (error) {
+    logger.warn(
+      { errName: error instanceof Error ? error.name : "unknown" },
+      "Duitku guest fee locks could not be read; guest fee channels hidden",
+    );
+    config = { ...loaded.integration.config, guestFees: {} };
+  }
+  return { ...loaded, integration: { ...loaded.integration, config } };
 };
 
 // By id = a payment already minted on that integration: no plan check (a

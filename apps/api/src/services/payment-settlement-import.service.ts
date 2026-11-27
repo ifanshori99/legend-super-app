@@ -574,12 +574,15 @@ async function importChecked(
         // settlement journal books the difference to gateway_fee_expense once
         // the case is closed and the report is reconciled. A matched line
         // keeps its status; a mismatched one also keeps its amount case.
-        if (
-          pos &&
-          pos.guestFeeIdr > 0 &&
-          line.feeIdr > pos.guestFeeIdr &&
-          line.amountIdr >= line.feeIdr
-        ) {
+        if (pos && pos.guestFeeIdr > 0 && line.feeIdr > pos.guestFeeIdr) {
+          // A fee above the line itself is an anomaly a person must see, not
+          // a shortfall to skip: refuse the whole report (rolled back).
+          if (line.feeIdr > line.amountIdr)
+            throw new HttpError(
+              422,
+              "SETTLEMENT_FEE_EXCEEDS_AMOUNT",
+              `Biaya gateway lebih besar dari nominal pada baris ${line.reference} (baris ke-${index + 1}). Periksa laporan lalu impor ulang.`,
+            );
           await tx.insert(cases).values({
             ...caseBase,
             settlementLineId: lineRow.id,

@@ -8,20 +8,27 @@
 // serve every outlet, and hiding a channel only sends the guest to QRIS.
 import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import type { ScopedTenantContext } from "@starter/shared/core";
+import { establishScopedTenantContext } from "@starter/shared/core/server";
 import { db } from "../db/index.ts";
 import { paymentReconciliationCases as cases } from "../db/schema/payment-admin.ts";
 import { paymentSettlementLines as lines } from "../db/schema/payment-settlement.ts";
 import { paymentIntents } from "../db/schema/payment.ts";
 import { withTenant } from "../db/tenant.ts";
 
-/** Duitku's one card code (payment-duitku-wire.ts): card intents carry no channel. */
-const CARD_CODE = "VC";
+/** Duitku's only card code (payment-duitku-wire.ts): a card intent takes no
+ * channel, so its guest fee rate is read under this code. */
+export const CARD_CODE = "VC";
 
 /** Duitku channel codes locked by an open or pending shortfall case. */
 export async function lockedGuestFeeChannels(
   context: ScopedTenantContext,
 ): Promise<ReadonlySet<string>> {
-  const rows = await withTenant(db, context, (tx) =>
+  // Read tenant wide whatever outlet the guest came in through (cases are
+  // outlet RLS rows); only channel codes leave this function.
+  const wide = establishScopedTenantContext(context.tenant, {
+    kind: "tenant",
+  });
+  const rows = await withTenant(db, wide, (tx) =>
     tx
       .selectDistinct({
         code: sql<
