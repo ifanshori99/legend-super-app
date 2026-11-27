@@ -312,12 +312,24 @@ export type EngineOptions = {
   readSeed?: () => string | null;
   /** "empty" makes the lists and lookups come back empty. */
   scenario?: () => string;
+  /** 1272 K4: price VA / e-wallet with the guest service fee (cookie
+   * `legend-mock-duitku=fee`, same switch as the guest mock); off = as before. */
+  guestFee?: () => boolean;
 };
+
+/** Cookie `legend-mock-duitku=fee` (shared with the ws03 guest mock). */
+function guestFeeCookie(): boolean {
+  return (
+    typeof document !== "undefined" &&
+    /(?:^|;\s*)legend-mock-duitku=fee(?:;|$)/.test(document.cookie)
+  );
+}
 
 export function createPosKasirEngine(options: EngineOptions = {}) {
   const clock = options.clock ?? Date.now;
   const readSeed = options.readSeed ?? (() => null);
   const scenario = options.scenario ?? (() => "normal");
+  const guestFeeOn = options.guestFee ?? (() => false);
   let state = emptyState();
 
   // Extra shift state (held cash outs, counts, force close) rides on the engine
@@ -440,8 +452,12 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
             number: "7001 2345 6789",
             deadline: iso(now + VA_TTL_MS),
           },
-          guestFeeIdr: mockGuestFeeIdr("bca", 148_000),
-          chargedIdr: 148_000 + mockGuestFeeIdr("bca", 148_000),
+          ...(guestFeeOn()
+            ? {
+                guestFeeIdr: mockGuestFeeIdr("bca", 148_000),
+                chargedIdr: 148_000 + mockGuestFeeIdr("bca", 148_000),
+              }
+            : {}),
         });
         break;
       case "edc-menunggu":
@@ -834,7 +850,7 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
     );
 
   function priced(channels: VaBank[], orderId?: string): VaBank[] {
-    if (orderId === undefined) return channels;
+    if (orderId === undefined || !guestFeeOn()) return channels;
     const base = remainingOf(orderOf(orderId));
     return channels.map((channel) => {
       const fee = mockGuestFeeIdr(channel.code, base);
@@ -1472,7 +1488,9 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
       // 1272 K4: the code charges bill + fee; the attempt stays the bill.
       const channelCode = input.bankCode ?? input.walletCode;
       const fee =
-        (input.method === "va" || input.method === "ewallet") && channelCode
+        guestFeeOn() &&
+        (input.method === "va" || input.method === "ewallet") &&
+        channelCode
           ? mockGuestFeeIdr(channelCode, input.amountIdr)
           : 0;
       if (fee > 0) {
@@ -2339,6 +2357,7 @@ export function getPosKasirEngine(): PosKasirEngine {
   singleton = createPosKasirEngine({
     readSeed: readDemoSeed,
     scenario: getScenario,
+    guestFee: guestFeeCookie,
   });
   const storage = browserStorage();
   if (!storage) return singleton;
