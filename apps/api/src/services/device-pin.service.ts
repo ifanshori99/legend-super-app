@@ -87,10 +87,18 @@ type PinRow = typeof staffPins.$inferSelect;
  * the default answers null and every device pin verify is refused (fail
  * closed): a signed token alone never names an outlet.
  */
-export type DeviceOutletResolver = (input: {
+type DeviceOutletLookup = (input: {
   readonly tenantId: string;
   readonly deviceId: string;
 }) => Promise<string | null>;
+
+export type DeviceOutletResolver = DeviceOutletLookup & {
+  /**
+   * Same answer, but a registry lookup error throws instead of answering null
+   * (unknown device). For callers that must not read an outage as "gone".
+   */
+  readonly strict?: DeviceOutletLookup;
+};
 
 const denyAllDevices: DeviceOutletResolver = async () => null;
 let deviceOutletResolver: DeviceOutletResolver = denyAllDevices;
@@ -107,6 +115,20 @@ export function resolveDeviceOutlet(
   deviceId: string,
 ): Promise<string | null> {
   return deviceOutletResolver({ tenantId, deviceId });
+}
+
+/**
+ * Like `resolveDeviceOutlet`, but a failing registry lookup throws (the
+ * resolver's `strict` form) instead of reading as "no such device".
+ */
+export function resolveDeviceOutletStrict(
+  tenantId: string,
+  deviceId: string,
+): Promise<string | null> {
+  return (deviceOutletResolver.strict ?? deviceOutletResolver)({
+    tenantId,
+    deviceId,
+  });
 }
 
 // ------------------------------------------------------------------ helpers

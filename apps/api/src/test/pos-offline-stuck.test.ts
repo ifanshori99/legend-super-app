@@ -37,7 +37,9 @@ import {
   type PosOfflineKit,
 } from "@starter/shared/pos";
 import { createApp } from "../app.ts";
+import { createDeviceOutletResolver } from "../services/device-outlet-resolver.ts";
 import {
+  type DeviceOutletResolver,
   setDeviceOutletResolver,
   setStaffPin,
 } from "../services/device-pin.service.ts";
@@ -70,6 +72,8 @@ const outletId = outletIdSchema.parse(seededOutletA);
 
 type Till = { cashier: Staff; deviceId: string; shiftId: string };
 const devices = new Set<string>();
+/** Registered devices moved to another outlet (device id -> outlet id). */
+const movedDevices = new Map<string, string>();
 let itemId = "";
 let app: ReturnType<typeof createApp>;
 let supervisor = "";
@@ -94,6 +98,12 @@ async function asOwner<T>(run: (client: PoolClient) => Promise<T>) {
     client.release();
   }
 }
+
+const testResolver: DeviceOutletResolver = async ({ tenantId, deviceId }) =>
+  tenantId === seededTenantId
+    ? (movedDevices.get(deviceId) ??
+      (devices.has(deviceId) ? seededOutletA : null))
+    : null;
 
 const callerOf = (till: Till) => ({
   userId: userIdSchema.parse(till.cashier.userId),
@@ -289,9 +299,7 @@ const lastNumberOf = async (sequenceId: string) => {
 
 beforeAll(async () => {
   app = createApp();
-  setDeviceOutletResolver(async ({ tenantId, deviceId }) =>
-    tenantId === seededTenantId && devices.has(deviceId) ? seededOutletA : null,
-  );
+  setDeviceOutletResolver(testResolver);
   await seedMenu();
   supervisor = await outletSupervisor(app, "Offline Stuck Supervisor");
   await setStaffPin(
@@ -444,16 +452,74 @@ describe("offline stuck report (1273 P2-1)", () => {
         code: "OFFLINE_SALE_NOT_STUCK",
       });
     expect(await rowsOf(next.eventId)).toBe(0);
-    // Without the kit's device (token gone, tablet reinstalled) it holds.
+    // Without a device token (a browser) the kit's device must be gone from
+    // the outlet, or any staff with a PIN could hold a normal sale.
+    for (const stuck of ["kit_unknown", "device_refused"] as const)
+      await expect(
+        report(a, next, stuck, {}, { ...callerOf(a), deviceId: null }),
+      ).rejects.toMatchObject({ status: 409, code: "OFFLINE_SALE_NOT_STUCK" });
+    expect(await rowsOf(next.eventId)).toBe(0);
+  });
+
+  it("without a device token the report holds once the kit's device is no longer registered at the outlet", async () => {
+    const till = await newTill();
+    const kit = await kitFor(till);
+    const next = sale(kit, (await lastNumberOf(kit.receiptRun.sequenceId)) + 1);
+    devices.delete(till.deviceId);
     expect(
       await report(
-        a,
+        till,
         next,
         "kit_unknown",
         {},
-        { ...callerOf(a), deviceId: null },
+        { ...callerOf(till), deviceId: null },
       ),
     ).toMatchObject({ status: "held", reason: "stuck_kit_unknown" });
+  });
+
+  it("a registry lookup error is a 503 to retry, not a missing device: nothing is held", async () => {
+    const till = await newTill();
+    const kit = await kitFor(till);
+    const next = sale(kit, (await lastNumberOf(kit.receiptRun.sequenceId)) + 1);
+    devices.delete(till.deviceId);
+    setDeviceOutletResolver(
+      createDeviceOutletResolver({
+        lookup: async () => {
+          throw new Error("registry down");
+        },
+      }),
+    );
+    try {
+      for (const caller of [
+        { ...callerOf(till), deviceId: null },
+        callerOf(till),
+      ])
+        await expect(
+          report(till, next, "kit_unknown", {}, caller),
+        ).rejects.toMatchObject({ status: 503 });
+      expect(await rowsOf(next.eventId)).toBe(0);
+      expect(await lastNumberOf(kit.receiptRun.sequenceId)).toBe(
+        next.sequenceNumber - 1,
+      );
+    } finally {
+      setDeviceOutletResolver(testResolver);
+    }
+  });
+
+  it("a tablet moved to another outlet is not its own device: its report holds", async () => {
+    const till = await newTill();
+    const kit = await kitFor(till);
+    const next = sale(kit, (await lastNumberOf(kit.receiptRun.sequenceId)) + 1);
+    // Still registered here: it is the kit's holder, nothing is stuck.
+    await expect(report(till, next, "device_refused")).rejects.toMatchObject({
+      status: 409,
+      code: "OFFLINE_SALE_NOT_STUCK",
+    });
+    movedDevices.set(till.deviceId, seededOutletB);
+    expect(await report(till, next, "device_refused")).toMatchObject({
+      status: "held",
+      reason: "stuck_device_refused",
+    });
   });
 
   it("refuses a kit outside the session's tenant, outlet or run", async () => {
@@ -511,6 +577,7 @@ describe("offline stuck report (1273 P2-1)", () => {
     const kit = await kitFor(till);
     const before = await lastNumberOf(kit.receiptRun.sequenceId);
     const event = sale(kit, before + 1);
+    devices.delete(till.deviceId);
     await asOwner((client) =>
       client.query(
         `UPDATE devices SET status = 'revoked', revoked_at = now(), revoked_by = $2,

@@ -35,6 +35,7 @@ import {
   tenantIdSchema,
   uuidSchema,
 } from "@starter/shared/core";
+import { HttpError } from "../lib/http-error.ts";
 import {
   establishScopedTenantContext,
   establishTenantContext,
@@ -143,13 +144,17 @@ export type DeviceOutletResolverOptions = {
 /**
  * The production `DeviceOutletResolver`: registered, active, unrevoked staff
  * terminal of this tenant at an open outlet -> that outlet; otherwise null.
- * Never throws (a lookup failure is "unknown device").
+ * Never throws (a lookup failure is "unknown device"); its `strict` form
+ * throws a 503 on a lookup failure instead (the stuck-sale report).
  */
 export function createDeviceOutletResolver(
   options: DeviceOutletResolverOptions = {},
 ): DeviceOutletResolver {
   const lookup = options.lookup ?? devicesTableLookup;
-  return async (input) => {
+  const resolve = async (
+    input: { readonly tenantId: string; readonly deviceId: string },
+    failClosed: boolean,
+  ): Promise<string | null> => {
     const tenant = tenantIdSchema.safeParse(input.tenantId);
     const device = uuidSchema.safeParse(input.deviceId);
     if (!tenant.success || !device.success) return null;
@@ -161,11 +166,22 @@ export function createDeviceOutletResolver(
       });
     } catch {
       // Never log the device id with the error; the caller answers FORBIDDEN.
-      return null;
+      if (failClosed) return null;
+      throw new HttpError(
+        503,
+        "DEVICE_REGISTRY_UNAVAILABLE",
+        "Daftar perangkat sedang tidak bisa dibaca. Coba lagi sebentar lagi.",
+      );
     }
     // A device id is one registry row. None or several: unknown (fail closed).
     if (entries.length !== 1) return null;
     const [entry] = entries;
     return entry ? outletOf(entry, tenant.data) : null;
   };
+  return Object.assign(
+    (input: Parameters<typeof resolve>[0]) => resolve(input, true),
+    {
+      strict: (input: Parameters<typeof resolve>[0]) => resolve(input, false),
+    },
+  );
 }
