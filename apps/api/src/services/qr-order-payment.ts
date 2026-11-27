@@ -139,6 +139,8 @@ export function guestPaymentDto(
     target,
     method: instructions.method,
     amountIdr: intent.amountIdr,
+    guestFeeIdr: intent.guestFeeIdr,
+    chargedIdr: intent.chargedIdr,
     status: intent.status,
     qrisPayload: instructions.method === "qris" ? instructions.qrPayload : null,
     // legend-kt3t1: a voided, expired or failed code never exposes its pay link.

@@ -359,7 +359,12 @@ export const guestPaymentSchema = z
     id: guestPaymentIntentIdSchema,
     target: guestPaymentTargetSchema,
     method: guestPaymentMethodSchema,
+    /** The bill part (what the order is paid with). */
     amountIdr: positiveIdr,
+    /** 1272 K1: guest service fee on top of the bill, never refunded. */
+    guestFeeIdr: nonnegativeIdr,
+    /** What the guest pays the gateway: amountIdr + guestFeeIdr. */
+    chargedIdr: positiveIdr,
     status: paymentStatusSchema,
     /** QRIS payload to render as a QR code (method qris). */
     qrisPayload: z.string().min(1).max(2000).nullable(),
@@ -377,6 +382,12 @@ export const guestPaymentSchema = z
     paidAt: isoDateTimeSchema.nullable(),
   })
   .superRefine((payment, ctx) => {
+    if (payment.chargedIdr !== payment.amountIdr + payment.guestFeeIdr)
+      ctx.addIssue({
+        code: "custom",
+        path: ["chargedIdr"],
+        message: "The charged amount must be the bill plus the guest fee",
+      });
     if ((payment.status === "paid") !== (payment.paidAt !== null))
       ctx.addIssue({
         code: "custom",
@@ -467,7 +478,9 @@ export const guestPaymentOptionSchema = z
     unavailableReason: z
       .enum(["gateway_down", "routing_disabled", "no_channels"])
       .nullable(),
-    /** Banks for `va`, e-wallets for `ewallet`; empty for `qris` and `card`. */
+    /** Banks for `va`, e-wallets for `ewallet`; empty for `qris` and `card`.
+     * 1272 K1: not priced here (the options name no bill); the guest fee of
+     * the code is on the created payment (`guestFeeIdr`, `chargedIdr`). */
     banks: z.array(paymentChannelSchema),
   })
   .superRefine((option, ctx) => {

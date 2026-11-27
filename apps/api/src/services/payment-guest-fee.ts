@@ -152,3 +152,23 @@ export function guestFeeFor(input: {
 export function feeQuoteAccepted(quoteIdr: number, guestFeeIdr: number): boolean {
   return quoteIdr <= guestFeeIdr && guestFeeIdr - quoteIdr <= 1;
 }
+
+/**
+ * A channel (or a channel-less method, `channelCode` null) priced for the
+ * guest: the fee on top of `baseIdr` and the total charged. Null = hide it (a
+ * fee method without a usable rate). A settled bill (base 0) costs nothing.
+ */
+export function priceForGuest(
+  schedule: (
+    method: string,
+    channelCode: string | null,
+    baseIdr: number,
+  ) => number | null,
+  method: string,
+  channelCode: string | null,
+  baseIdr: number,
+): { readonly guestFeeIdr: number; readonly totalIdr: number } | null {
+  if (baseIdr <= 0) return { guestFeeIdr: 0, totalIdr: 0 };
+  const fee = schedule(method, channelCode, baseIdr);
+  return fee === null ? null : { guestFeeIdr: fee, totalIdr: baseIdr + fee };
+}

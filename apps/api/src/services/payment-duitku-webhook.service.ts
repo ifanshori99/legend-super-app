@@ -386,7 +386,7 @@ async function processStoredCallback(
       // unallocated funds, under the same lock order as a settlement.
       const amountsAgree =
         Number(fields.amount) === answer.amountIdr &&
-        answer.amountIdr === Number(intent.amountIdr);
+        answer.amountIdr === Number(intent.chargedIdr);
       if (!(answer.amountIdr > 0)) {
         // SO-896 P1-2: "paid" without a positive amount proves no money. It is
         // not a mismatch verdict: nothing is held or recorded, the intent stays
@@ -569,7 +569,7 @@ export async function receiveDuitkuCallback(input: {
   const verdict = verifyDuitkuCallback({
     creds: credentials,
     fields,
-    expectedAmountIdr: Number(intent.amountIdr),
+    expectedAmountIdr: Number(intent.chargedIdr),
   });
   if (!verdict.ok && verdict.reason !== "amount_mismatch") return reject();
 
