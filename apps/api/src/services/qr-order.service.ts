@@ -2364,6 +2364,7 @@ async function settlementOf(
     ? await tx
         .select({
           id: paymentLinks.id,
+          grossIdr: paymentLinks.paidIdr,
           // 1273 P2: `paid_idr` is gross and never drops when the provider
           // refunds on its own, so count what the link's settled intents
           // still net (`netAllocatedIdrSql`), capped at `paid_idr` (same rule
@@ -2402,7 +2403,7 @@ async function settlementOf(
         )
     : [];
   const countedLinks = new Set(
-    links.filter((row) => Number(row.paidIdr) > 0).map((row) => row.id),
+    links.filter((row) => row.grossIdr > 0).map((row) => row.id),
   );
   // A POS QRIS tender owns its own WS-05 link. If a link is also present on
   // an order and contributed paid money above, never count it twice.

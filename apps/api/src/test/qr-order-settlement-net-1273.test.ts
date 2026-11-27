@@ -30,19 +30,27 @@ import {
 import { owner } from "./floor-test-helpers.ts";
 
 let w: World;
+let w2: World;
 
 beforeAll(async () => {
   w = await createWorld();
-}, 120_000);
+  w2 = await createWorld();
+}, 240_000);
 
 afterAll(async () => {
+  // Both worlds share the one `owner` pool, which a teardown ends: give the
+  // second tenant its valid creator by hand, then tear down through the first.
+  await owner.query("UPDATE tenants SET created_by = $2 WHERE id = $1", [
+    w2.tenant.tenantId,
+    randomUUID(),
+  ]);
   await w.teardown();
 });
 
-function scopedContext() {
+function scopedContext(x: World = w) {
   return establishScopedTenantContext(
     establishTenantContext({
-      tenantId: tenantIdSchema.parse(w.tenant.tenantId),
+      tenantId: tenantIdSchema.parse(x.tenant.tenantId),
       brandId: null,
       source: "session",
     }),
@@ -50,8 +58,8 @@ function scopedContext() {
   );
 }
 
-async function settlement(sessionId: string) {
-  const context = scopedContext();
+async function settlement(sessionId: string, x: World = w) {
+  const context = scopedContext(x);
   return withTenant(db, context, (tx) =>
     qrOrderSettlementLookup({
       tx,
@@ -64,28 +72,32 @@ async function settlement(sessionId: string) {
 type Paid = Awaited<ReturnType<World["paidOrder"]>>;
 
 /** The order's link and the intent that paid it. */
-async function linkOf(paid: Paid) {
+async function linkOf(paid: Paid, x: World = w) {
   const { rows } = await owner.query<{ link_id: string; intent_id: string }>(
     `SELECT o.payment_link_id AS link_id, i.id AS intent_id
        FROM orders o
        JOIN payment_intents i
          ON i.tenant_id = o.tenant_id AND i.payment_link_id = o.payment_link_id
       WHERE o.tenant_id = $1 AND o.id = $2`,
-    [w.tenant.tenantId, ulidToUuid(paid.order.id)],
+    [x.tenant.tenantId, ulidToUuid(paid.order.id)],
   );
   return { linkId: rows[0]!.link_id, intentId: rows[0]!.intent_id };
 }
 
 /** The provider refunded `amountIdr` of the intent on its own (brief 967). */
-async function providerRefunded(intentId: string, amountIdr: number) {
+async function providerRefunded(
+  intentId: string,
+  amountIdr: number,
+  x: World = w,
+) {
   await owner.query(
     `INSERT INTO payment_provider_refunds
        (tenant_id, outlet_id, payment_intent_id, provider, provider_refund_id,
         provider_payment_ref, amount_idr, source)
      VALUES ($1, $2, $3, 'doit', $4, $5, $6, 'payment_webhook')`,
     [
-      w.tenant.tenantId,
-      w.tenant.outletId,
+      x.tenant.tenantId,
+      x.tenant.outletId,
       intentId,
       `rf_${randomUUID().slice(0, 12)}`,
       `pay_${intentId.slice(0, 12)}`,
@@ -151,6 +163,66 @@ describe("settlement of a session whose link the provider refunded", () => {
   });
 });
 
+/** An old row: the order is a POS order holding a captured tender on its own link. */
+async function oldTenderOnOwnLink(
+  paid: Paid,
+  linkId: string,
+  amountIdr: number,
+  x: World = w,
+) {
+  const orderId = ulidToUuid(paid.order.id);
+  // A tender needs a POS order (channel check), so the old row is a POS order.
+  await owner.query(
+    "UPDATE orders SET channel = 'pos' WHERE tenant_id = $1 AND id = $2",
+    [x.tenant.tenantId, orderId],
+  );
+  await owner.query(
+    `INSERT INTO pos_orders (tenant_id, order_id, outlet_id, channel)
+     SELECT tenant_id, id, outlet_id, channel FROM orders
+      WHERE tenant_id = $1 AND id = $2
+     ON CONFLICT DO NOTHING`,
+    [x.tenant.tenantId, orderId],
+  );
+  await owner.query(
+    `INSERT INTO pos_order_tenders
+       (tenant_id, outlet_id, order_id, method, provider, payment_link_id,
+        payment_link_token_sealed, amount_idr, status, requested_at, resolved_at)
+     VALUES ($1, $2, $3, 'qris', 'duitku', $4, 'test-sealed', $5, 'captured', now(), now())`,
+    [x.tenant.tenantId, x.tenant.outletId, orderId, linkId, amountIdr],
+  );
+}
+
+/** What the open-bill limit sees as owed: the breach's `currentBillIdr`. */
+async function exposureOf(paid: Paid, x: World = w): Promise<number> {
+  const { rows } = await owner.query<{ table_id: string; zone_id: string }>(
+    `SELECT s.table_id, t.zone_id FROM table_sessions s
+       JOIN tables t ON t.tenant_id = s.tenant_id AND t.id = s.table_id
+      WHERE s.tenant_id = $1 AND s.id = $2`,
+    [x.tenant.tenantId, paid.guest.sessionId],
+  );
+  const context = scopedContext(x);
+  // Ask for the whole cap so any exposure at all breaches it.
+  const attempt = withTenant(db, context, (tx) =>
+    assertOpenBillWithinLimit(tx, context, {
+      sessionId: paid.guest.sessionId,
+      outletId: x.tenant.outletId,
+      tableId: rows[0]!.table_id,
+      zoneId: rows[0]!.zone_id,
+      paymentMode: "open_bill",
+      cartVersion: 1,
+      orderTotalIdr: 3_000_000,
+      now: new Date(),
+    }),
+  );
+  try {
+    await attempt;
+  } catch (error) {
+    return (error as { breach: { currentBillIdr: number } }).breach
+      .currentBillIdr;
+  }
+  return 0;
+}
+
 describe("legend-7adhb: a tender on the order's own link is not counted twice", () => {
   it("open-bill exposure keeps the money the link no longer holds", async () => {
     const paid = await w.paidOrder();
@@ -158,51 +230,39 @@ describe("legend-7adhb: a tender on the order's own link is not counted twice", 
     // The provider refunded 40.090: the link still nets 50.000. An old row
     // also holds a captured tender of 40.090 on the very same link.
     await providerRefunded(intentId, 40_090);
-    // A tender needs a POS order (channel check), so the old row is a POS order.
-    await owner.query(
-      "UPDATE orders SET channel = 'pos' WHERE tenant_id = $1 AND id = $2",
-      [w.tenant.tenantId, ulidToUuid(paid.order.id)],
+    await oldTenderOnOwnLink(paid, linkId, 40_090);
+    // 90.090 total less the 50.000 the link nets. Counting the tender too
+    // would make it 0.
+    expect(await exposureOf(paid)).toBe(40_090);
+  });
+
+  it("a link refunded in full counts 0 and its old tender is not added back (review P3-1)", async () => {
+    const paid = await w.paidOrder();
+    const { linkId, intentId } = await linkOf(paid);
+    await providerRefunded(intentId, CART_TOTAL);
+    await oldTenderOnOwnLink(paid, linkId, CART_TOTAL);
+    expect(outstanding(await settlement(paid.guest.sessionId))).toBe(
+      CART_TOTAL,
     );
-    await owner.query(
-      `INSERT INTO pos_orders (tenant_id, order_id, outlet_id, channel)
-       SELECT tenant_id, id, outlet_id, channel FROM orders
-        WHERE tenant_id = $1 AND id = $2
-       ON CONFLICT DO NOTHING`,
-      [w.tenant.tenantId, ulidToUuid(paid.order.id)],
+    expect(await exposureOf(paid)).toBe(CART_TOTAL);
+  });
+});
+
+describe("another tenant's provider refund (review P3-2)", () => {
+  it("changes neither this tenant's settlement nor its exposure", async () => {
+    const mine = await w.paidOrder();
+    const theirs = await w2.paidOrder();
+    const before = await settlement(mine.guest.sessionId);
+    const exposureBefore = await exposureOf(mine);
+    const { intentId } = await linkOf(theirs, w2);
+    await providerRefunded(intentId, CART_TOTAL, w2);
+    // Their own bill did open up ...
+    expect(outstanding(await settlement(theirs.guest.sessionId, w2))).toBe(
+      CART_TOTAL,
     );
-    await owner.query(
-      `INSERT INTO pos_order_tenders
-         (tenant_id, outlet_id, order_id, method, provider, payment_link_id,
-          payment_link_token_sealed, amount_idr, status, requested_at, resolved_at)
-       VALUES ($1, $2, $3, 'qris', 'duitku', $4, 'test-sealed', 40090, 'captured', now(), now())`,
-      [w.tenant.tenantId, w.tenant.outletId, ulidToUuid(paid.order.id), linkId],
-    );
-    const { rows } = await owner.query<{
-      table_id: string;
-      zone_id: string;
-    }>(
-      `SELECT s.table_id, t.zone_id FROM table_sessions s
-         JOIN tables t ON t.tenant_id = s.tenant_id AND t.id = s.table_id
-        WHERE s.tenant_id = $1 AND s.id = $2`,
-      [w.tenant.tenantId, paid.guest.sessionId],
-    );
-    const context = scopedContext();
-    // Exposure is 40.090 (90.090 total less the 50.000 the link nets). Counting
-    // the tender too would make it 0 and let this order pass the 3.000.000 cap.
-    const attempt = withTenant(db, context, (tx) =>
-      assertOpenBillWithinLimit(tx, context, {
-        sessionId: paid.guest.sessionId,
-        outletId: w.tenant.outletId,
-        tableId: rows[0]!.table_id,
-        zoneId: rows[0]!.zone_id,
-        paymentMode: "open_bill",
-        cartVersion: 1,
-        orderTotalIdr: 3_000_000 - 40_090 + 1,
-        now: new Date(),
-      }),
-    );
-    await expect(attempt).rejects.toMatchObject({
-      breach: { currentBillIdr: 40_090 },
-    });
+    // ... mine did not move.
+    expect(await settlement(mine.guest.sessionId)).toEqual(before);
+    expect(outstanding(before)).toBe(0);
+    expect(await exposureOf(mine)).toBe(exposureBefore);
   });
 });

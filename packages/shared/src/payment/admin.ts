@@ -39,6 +39,15 @@ import {
 } from "./index.ts";
 
 const ref = z.string().min(1).max(100);
+/**
+ * 1273 review P3-3: a settlement reference (report or line) that starts like a
+ * spreadsheet formula (`=`, `+`, `-`, `@`, tab, CR) is refused, so it cannot
+ * run as one when an export is opened in a spreadsheet.
+ */
+const settlementReferenceSchema = ref.refine(
+  (value) => !/^[=+\-@\t\r]/.test(value),
+  "Referensi tidak boleh diawali = + - @ (dibaca spreadsheet sebagai rumus).",
+);
 const nonnegativeIdr = idrSchema.refine((n) => n >= 0);
 const positiveIdr = idrSchema.refine((n) => n > 0);
 const noteSchema = z.string().trim().min(4).max(500);
@@ -728,7 +737,7 @@ export type ResolveReconciliationCorrectionInput = z.infer<
 // differences: an import never creates a payout, refund or journal posting.
 
 export const settlementLineInputSchema = z.strictObject({
-  reference: ref,
+  reference: settlementReferenceSchema,
   amountIdr: positiveIdr,
   feeIdr: nonnegativeIdr,
 });
@@ -742,7 +751,7 @@ export const importSettlementInputSchema = clientInputSchema({
   /** "doit"/"duitku" for a gateway, "edc_<bank>" for an EDC batch report. */
   provider: ref,
   /** The report id; with source and provider it identifies the report. */
-  reference: ref,
+  reference: settlementReferenceSchema,
   /** EDC only: the terminal the batch was settled for. */
   terminalId: uuidSchema.optional(),
   /** EDC only: the batch number printed on the settlement report. */
@@ -877,7 +886,7 @@ export const importGatewaySettlementCsvInputSchema = clientInputSchema({
   provider: z.enum(["duitku"]),
   format: gatewaySettlementCsvFormatSchema,
   /** The report id printed by the gateway; with the provider it identifies the report. */
-  reference: ref,
+  reference: settlementReferenceSchema,
   periodStart: businessDateSchema,
   periodEnd: businessDateSchema,
   fileName: z

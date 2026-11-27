@@ -28,7 +28,7 @@ export type GatewaySettlementCsvLine = {
 export type GatewaySettlementRowError = {
   /** 1-based row of the file, header included. */
   row: number;
-  reason: "columns" | "reference" | "amount" | "fee" | "duplicate";
+  reason: "columns" | "reference" | "formula" | "amount" | "fee" | "duplicate";
 };
 
 /** The file as a whole cannot be read (no row to point at). */
@@ -57,7 +57,6 @@ const wholeRupiah = (raw: string, min: number): number | null => {
 const FORMULA_START = /^[=+\-@\t\r]/;
 
 const validReference = (value: string) =>
-  !FORMULA_START.test(value) &&
   value.length >= 1 &&
   value.length <= 100 &&
   [...value].every((ch) => ch.charCodeAt(0) >= 32 && ch.charCodeAt(0) !== 127);
@@ -102,10 +101,11 @@ function parseTemplateV1(text: string): GatewaySettlementCsvLine[] {
       continue;
     }
     const reference = cells[at.reference]!.trim();
-    if (
-      FORMULA_START.test(cells[at.reference]!) ||
-      !validReference(reference)
-    ) {
+    if (FORMULA_START.test(cells[at.reference]!)) {
+      errors.push({ row, reason: "formula" });
+      continue;
+    }
+    if (!validReference(reference)) {
       errors.push({ row, reason: "reference" });
       continue;
     }
