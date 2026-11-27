@@ -470,19 +470,32 @@ function assertStillStuck(
     callerDeviceId: string | null;
     kitDeviceId: string;
     runDeviceId: string | null;
+    /** The outlet the kit's device is registered at now; null: not at all. */
+    kitDeviceOutletId: string | null;
+    outletId: string;
     sequenceNumber: number;
     lastNumber: number;
   },
 ): void {
+  // The kit's device is still registered at this outlet (not revoked, not
+  // moved): only then is it the holder, and only it may say nothing is wrong.
+  const kitDeviceHere =
+    facts.kitDeviceOutletId !== null &&
+    sameId(facts.kitDeviceOutletId, facts.outletId);
   const ownDevice =
     facts.callerDeviceId !== null &&
     sameId(facts.callerDeviceId, facts.kitDeviceId) &&
     facts.runDeviceId !== null &&
-    sameId(facts.callerDeviceId, facts.runDeviceId);
+    sameId(facts.callerDeviceId, facts.runDeviceId) &&
+    kitDeviceHere;
+  // Without a device token (a browser), a kit whose device is still here is
+  // not stuck: the sale would sync on its own.
   const holds =
     stuck === "sequence_gap"
       ? facts.sequenceNumber > facts.lastNumber + 1
-      : !ownDevice;
+      : facts.callerDeviceId === null
+        ? !kitDeviceHere
+        : !ownDevice;
   if (!holds)
     throw new HttpError(
       409,
@@ -555,6 +568,8 @@ async function storeStuckSale(
     callerDeviceId: caller.deviceId,
     kitDeviceId: kit.deviceId,
     runDeviceId: run.deviceId,
+    kitDeviceOutletId: await resolveDeviceOutlet(tenantId, kit.deviceId),
+    outletId,
     sequenceNumber: event.sequenceNumber,
     lastNumber: run.lastNumber,
   });
