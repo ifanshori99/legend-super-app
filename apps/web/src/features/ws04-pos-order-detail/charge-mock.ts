@@ -76,6 +76,8 @@ function qrisWire(
     target: { kind: "issue_charge", chargeId },
     method: "qris",
     amountIdr: AMOUNT_IDR,
+    guestFeeIdr: 0,
+    chargedIdr: AMOUNT_IDR,
     status,
     qrisPayload: `MOCK-QRIS-${chargeId}-${id}`,
     redirectUrl: null,

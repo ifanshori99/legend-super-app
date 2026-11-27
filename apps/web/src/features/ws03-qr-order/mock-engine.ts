@@ -1169,6 +1169,8 @@ export function createEngine(
       target: body.target,
       method: body.method,
       amountIdr: idr(amount),
+      guestFeeIdr: idr(0),
+      chargedIdr: idr(amount),
       status: "pending",
       qrisPayload:
         body.method === "qris"

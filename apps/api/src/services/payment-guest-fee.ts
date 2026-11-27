@@ -8,6 +8,7 @@
 // is never read. A method that should carry a fee and has no usable rate
 // answers null (hidden), never a silent 0.
 
+import { idr, type Idr } from "@starter/shared/core";
 import { duitkuGuestFeesSchema } from "@starter/shared/platform";
 import { duitkuMethodCategory } from "./payment-duitku-wire";
 
@@ -159,17 +160,19 @@ export function feeQuoteAccepted(
  * guest: the fee on top of `baseIdr` and the total charged. Null = hide it (a
  * fee method without a usable rate). A settled bill (base 0) costs nothing.
  */
-export function priceForGuest(
+export function priceForGuest<M extends string>(
   schedule: (
-    method: string,
+    method: M,
     channelCode: string | null,
     baseIdr: number,
   ) => number | null,
-  method: string,
+  method: M,
   channelCode: string | null,
   baseIdr: number,
-): { readonly guestFeeIdr: number; readonly totalIdr: number } | null {
-  if (baseIdr <= 0) return { guestFeeIdr: 0, totalIdr: 0 };
+): { readonly guestFeeIdr: Idr; readonly totalIdr: Idr } | null {
+  if (baseIdr <= 0) return { guestFeeIdr: idr(0), totalIdr: idr(0) };
   const fee = schedule(method, channelCode, baseIdr);
-  return fee === null ? null : { guestFeeIdr: fee, totalIdr: baseIdr + fee };
+  return fee === null
+    ? null
+    : { guestFeeIdr: idr(fee), totalIdr: idr(baseIdr + fee) };
 }
