@@ -152,6 +152,14 @@ try {
       await page.getByRole("button", { name: SUBMIT }).click();
       await page.getByText("Hasil pencocokan").waitFor({ timeout: 15000 });
       await shot("hasil");
+      // The settlement list with a tens-of-millions report (UI audit P2-4):
+      // the page scrolls inside the app shell, so bring the list into view.
+      await page
+        .getByText("STL-20261102", { exact: true })
+        .scrollIntoViewIfNeeded();
+      await page.waitForTimeout(300);
+      await page.screenshot({ path: join(OUT, `c4b-daftar-${vp.w}.png`) });
+      console.log("ok", "daftar", vp.w);
 
       // Reconciliation panel: outlet picker and the settlement list.
       await page.goto(`${URL_BASE}/kelola/pembayaran?tab=reconciliation`, {
