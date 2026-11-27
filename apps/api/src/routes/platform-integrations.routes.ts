@@ -43,6 +43,7 @@ import { requireTenantContext } from "../middleware/tenant.ts";
 import {
   listIntegrations,
   setIntegrationStatus,
+  isPlatformFeeCapWriter,
   upsertIntegration,
 } from "../services/platform-integration.service.ts";
 import { testGatewayConnection } from "../services/payment-gateway-connection.service.ts";
@@ -94,8 +95,8 @@ orgIntegrationsRouter.put(
         getScopedTenantContext(req),
         input,
         getAuth(req).user.id,
-        // Fee caps are the platform's: only a support session may change them.
-        { platform: (await supportSessionOf(req)) !== null },
+        // Fee caps are the platform's: only a read_write support grant.
+        { platform: isPlatformFeeCapWriter(await supportSessionOf(req)) },
       ),
     });
   },

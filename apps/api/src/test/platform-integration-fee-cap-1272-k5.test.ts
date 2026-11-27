@@ -12,7 +12,10 @@ import {
 } from "@starter/shared/core/server";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
-import { upsertIntegration } from "../services/platform-integration.service.ts";
+import {
+  isPlatformFeeCapWriter,
+  upsertIntegration,
+} from "../services/platform-integration.service.ts";
 import { HttpError } from "../lib/http-error.ts";
 
 const tenantId = randomUUID();
@@ -136,6 +139,47 @@ describe("maxFee* caps are platform-only (K5 review P2)", () => {
     expect(over.code).toBe("VALIDATION_ERROR");
     expect((await storedConfig())?.maxFeeBps_va).toBe(0);
     expect((await storedConfig())?.maxFeeFlatIdr_va).toBe(5_000);
+  });
+
+  it("only a read_write support grant counts as the platform", () => {
+    expect(isPlatformFeeCapWriter(null)).toBe(false);
+    expect(isPlatformFeeCapWriter({ accessMode: "read_only" })).toBe(false);
+    expect(isPlatformFeeCapWriter({ accessMode: "read_write" })).toBe(true);
+  });
+
+  it("the audit records the old and new cap values", async () => {
+    await save(
+      { ...BASE, maxFeeFlatIdr_va: 6_000, maxFeeBps_card: 100 },
+      { platform: true },
+    );
+    type Caps = { capKey: string; capValue: number }[];
+    const { rows } = await owner.query<{
+      event: {
+        maskedChanges: {
+          before: { feeCaps: Caps };
+          after: { feeCaps: Caps };
+        };
+      };
+    }>(
+      `SELECT event FROM audit_logs WHERE tenant_id = $1
+       AND event->>'action' = 'integration.config.updated'
+       ORDER BY event->>'createdAt' DESC LIMIT 1`,
+      [tenantId],
+    );
+    const { before, after } = rows[0]!.event.maskedChanges;
+    expect(before.feeCaps).toContainEqual({
+      capKey: "maxFeeFlatIdr_va",
+      capValue: 5_000,
+    });
+    expect(after.feeCaps).toContainEqual({
+      capKey: "maxFeeFlatIdr_va",
+      capValue: 6_000,
+    });
+    expect(after.feeCaps).toContainEqual({
+      capKey: "maxFeeBps_card",
+      capValue: 100,
+    });
+    await save(BASE, { platform: true });
   });
 
   it("guestFees belong to Duitku only", async () => {

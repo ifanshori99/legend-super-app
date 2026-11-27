@@ -249,6 +249,10 @@ function auditSnapshot(row: IntegrationRow): Record<string, unknown> {
     outletId: row.outletId,
     status: row.status,
     configKeys: Object.keys(row.config).sort(),
+    // Fee caps are the platform's and not secret: old and new values show up.
+    feeCaps: Object.entries(feeCapKeys(row.config)).map(
+      ([capKey, capValue]) => ({ capKey, capValue }),
+    ),
     credentialFields: row.credentialFields ?? [],
     credentialsConfigured: row.credentialsEncrypted !== null,
   };
@@ -511,6 +515,13 @@ export async function listIntegrations(
     }
     return { data };
   });
+}
+
+/** Only a read_write support grant is the platform acting; read_only is not. */
+export function isPlatformFeeCapWriter(
+  support: { readonly accessMode: string } | null,
+): boolean {
+  return support?.accessMode === "read_write";
 }
 
 /** The `maxFee*` keys of a config (C4a fee caps), for comparison. */

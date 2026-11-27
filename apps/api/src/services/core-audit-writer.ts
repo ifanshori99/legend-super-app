@@ -21,6 +21,11 @@ import type { AuditEntry, AuditWriter } from "./audit-writer.ts";
  * match the entry snapshots the RBAC service writes; a new action starts with
  * an empty list (fully redacted) until it is added here deliberately.
  */
+// 1272 K5: the C4a fee caps in an integration snapshot are `{capKey, capValue}`
+// entries (a key like `maxFeeBps_card` would be masked as a field name); the
+// numbers are not secret and the platform alone writes them.
+const FEE_CAP_AUDIT_FIELDS = ["capKey", "capValue"] as const;
+
 const SAFE_FIELDS_BY_ACTION: Readonly<Record<string, readonly string[]>> = {
   "print_job.reprinted": ["originalJobId", "kind", "printerId"],
   "print_job.retried": ["status", "kind", "printerId"],
@@ -165,30 +170,40 @@ const SAFE_FIELDS_BY_ACTION: Readonly<Record<string, readonly string[]>> = {
     "method",
     "route",
   ],
-  "integration.created": ["provider", "outletId", "status", "configKeys"],
+  "integration.created": [
+    "provider",
+    "outletId",
+    "status",
+    "configKeys",
+    ...FEE_CAP_AUDIT_FIELDS,
+  ],
   "integration.config.updated": [
     "provider",
     "outletId",
     "status",
     "configKeys",
+    ...FEE_CAP_AUDIT_FIELDS,
   ],
   "integration.credentials.replaced": [
     "provider",
     "outletId",
     "status",
     "configKeys",
+    ...FEE_CAP_AUDIT_FIELDS,
   ],
   "integration.status.changed": [
     "provider",
     "outletId",
     "status",
     "configKeys",
+    ...FEE_CAP_AUDIT_FIELDS,
   ],
   "integration.credentials.rotated": [
     "provider",
     "outletId",
     "status",
     "configKeys",
+    ...FEE_CAP_AUDIT_FIELDS,
   ],
   // sub-302 D16/D17: gateway secret replaced with a grace window; test button.
   "integration.credentials_rotated": ["provider", "previousValidUntil"],
