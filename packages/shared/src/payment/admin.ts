@@ -809,6 +809,32 @@ export const settlementImportViewSchema = z.strictObject({
 });
 export type SettlementImportView = z.infer<typeof settlementImportViewSchema>;
 
+/**
+ * One imported settlement report in the outlet's list (C4b). Amounts are the
+ * stored report totals; the counts are read from its lines and cases.
+ */
+export const settlementListItemSchema = z.strictObject({
+  id: uuidSchema,
+  outletId: outletIdSchema,
+  source: reconciliationSourceSchema,
+  provider: ref,
+  reference: ref,
+  terminalId: uuidSchema.nullable(),
+  batchNo: z.string().min(1).max(20).nullable(),
+  periodStart: businessDateSchema,
+  periodEnd: businessDateSchema,
+  grossIdr: nonnegativeIdr,
+  feeIdr: nonnegativeIdr,
+  netIdr: nonnegativeIdr,
+  lineCount: z.number().int().nonnegative(),
+  matchedLines: z.number().int().nonnegative(),
+  mismatchLines: z.number().int().nonnegative(),
+  unmatchedLines: z.number().int().nonnegative(),
+  casesCreated: z.number().int().nonnegative(),
+  createdAt: isoDateTimeSchema,
+});
+export type SettlementListItem = z.infer<typeof settlementListItemSchema>;
+
 // ---- EDC settlement CSV per bank (X2 legend-wasr7.11) ---------------------
 
 /** Largest CSV text one upload carries (the API caps bodies at 100 kB). */
@@ -1160,6 +1186,23 @@ export const importSettlement = defineEndpoint({
   path: `${ADMIN}/reconciliation/settlements`,
   body: importSettlementInputSchema,
   response: dataResponseSchema(settlementImportViewSchema),
+});
+/**
+ * C4b: the outlet's imported settlement reports, newest first. Same access as
+ * the import (payment.reconcile at the outlet). The period filter keeps the
+ * reports whose period overlaps periodFrom..periodTo (inclusive).
+ */
+export const listSettlements = defineEndpoint({
+  method: "GET",
+  path: `${ADMIN}/reconciliation/settlements`,
+  query: cursorPageQuerySchema.extend({
+    outletId: outletIdSchema,
+    source: reconciliationSourceSchema.optional(),
+    provider: ref.optional(),
+    periodFrom: businessDateSchema.optional(),
+    periodTo: businessDateSchema.optional(),
+  }),
+  response: cursorPageSchema(settlementListItemSchema),
 });
 /**
  * X2: a bank's EDC settlement CSV, matched by terminal + RRN + amount. Needs
