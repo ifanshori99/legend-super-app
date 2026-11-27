@@ -418,7 +418,8 @@ describe("provisioning vs owner writers share one lock", () => {
     const results = await backfillTenantCharts(tenantId);
     expect(results.map((result) => result.status)).toEqual(["provisioned"]);
     const before = await chartState(tenantId, entityId);
-    expect(before.accounts.length).toBe(71);
+    // 75 = 71 + 1205 offline suspense (46904b51f) + 3 F6 finance accounts (511d6ebfc).
+    expect(before.accounts.length).toBe(75);
     expect(before.mappings.length).toBeGreaterThan(0);
 
     // The cloud chart is account 9999 only: no template code is in the
