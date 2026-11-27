@@ -120,7 +120,10 @@ export function PayDialog({
       : target?.kind === "split"
         ? { billSplitId: target.billSplitId }
         : undefined;
-  const options = useGuestPaymentOptions(open ? sessionId : null, optionsTarget);
+  const options = useGuestPaymentOptions(
+    open ? sessionId : null,
+    optionsTarget,
+  );
   const [picked, setPicked] = useState<string | null>(null);
   const [pickedBank, setPickedBank] = useState<string | null>(null);
   // The idempotency key stays with one exact request (target, method, bank,
@@ -167,7 +170,9 @@ export function PayDialog({
   const chosen = needsBank
     ? current?.banks.find((item) => item.code === bank)
     : current;
-  const chosenFee = hasGuestFee(chosen?.guestFeeIdr) ? chosen.guestFeeIdr : null;
+  const chosenFee = hasGuestFee(chosen?.guestFeeIdr)
+    ? chosen.guestFeeIdr
+    : null;
   const payAmount =
     chosenFee !== null && typeof chosen?.chargedIdr === "number"
       ? chosen.chargedIdr

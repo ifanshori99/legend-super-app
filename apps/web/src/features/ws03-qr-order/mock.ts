@@ -136,7 +136,8 @@ function duitkuMode(): MockDuitkuMode {
     mode === "refunded" ||
     mode === "no-login" ||
     mode === "down" ||
-    mode === "expired"
+    mode === "expired" ||
+    mode === "fee"
     ? mode
     : "normal";
 }
@@ -194,12 +195,16 @@ handle(listSessionOrderIssues, ({ params, scenario }) => ({
 handle(chooseOrderIssueResolution, ({ params, body }) => ({
   data: store().chooseResolution(params.orderIssueId, body),
 }));
-handle(getGuestPaymentOptions, ({ params, scenario }) => ({
-  data: store().paymentOptions(params.sessionId, {
-    vaDown: vaDown(),
-    emptyBanks: scenario === "empty",
-    duitku: duitkuMode(),
-  }),
+handle(getGuestPaymentOptions, ({ params, query, scenario }) => ({
+  data: store().paymentOptions(
+    params.sessionId,
+    {
+      vaDown: vaDown(),
+      emptyBanks: scenario === "empty",
+      duitku: duitkuMode(),
+    },
+    query,
+  ),
 }));
 handle(createGuestPayment, ({ params, body }) => ({
   data: store().startPayment(params.sessionId, body, { duitku: duitkuMode() }),

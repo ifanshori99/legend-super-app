@@ -15,7 +15,11 @@ import {
 } from "lucide-react";
 import { RadioGroup } from "radix-ui";
 import { cn } from "cn";
-import type { GuestPaymentOption, QrOrder } from "@starter/shared/qr-order";
+import type {
+  GuestPaymentOption,
+  OrderId,
+  QrOrder,
+} from "@starter/shared/qr-order";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
@@ -259,7 +263,7 @@ function BankPicker({
   error,
 }: {
   sessionId: string;
-  orderId: string;
+  orderId: OrderId;
   qrToken: string;
   bank: string | null;
   onBank: (bankCode: string) => void;

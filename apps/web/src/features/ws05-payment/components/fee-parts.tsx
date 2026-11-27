@@ -33,7 +33,9 @@ export function FeeQuote({
         className,
       )}
     >
-      <span>{t("payment.redirect.fee.line", { fee: formatRupiah(feeIdr) })}</span>
+      <span>
+        {t("payment.redirect.fee.line", { fee: formatRupiah(feeIdr) })}
+      </span>
       <span>
         {t("payment.redirect.fee.total", { total: formatRupiah(chargedIdr) })}
       </span>

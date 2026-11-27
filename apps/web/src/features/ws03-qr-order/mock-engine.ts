@@ -87,10 +87,13 @@ const MOCK_EWALLETS = [
  * what the gateway reports for an e-wallet or card payment instead of paid;
  * `late-paid` = failed first, paid 20 s later (a late settlement), `refunded` =
  * paid then refunded, `no-login` = the guest's session is not in this tab (401),
- * `down` = the payment lookup answers 503.
+ * `down` = the payment lookup answers 503; `fee` = like `normal`, with the
+ * guest service fee on (1272 K3): options named for an order or split part
+ * carry a fee per VA bank and e-wallet, and a payment charges it on top.
  */
 export type MockDuitkuMode =
   | "normal"
+  | "fee"
   | "partial"
   | "open-fail"
   | "pending"
@@ -100,6 +103,19 @@ export type MockDuitkuMode =
   | "refunded"
   | "no-login"
   | "down";
+
+/**
+ * Mock stand-in for the gateway's guest fee schedule (1272 K3): VA a flat
+ * Rp 4.000, an e-wallet 1,5% (rounded up), QRIS and card nothing.
+ */
+export function mockGuestFee(
+  method: GuestPaymentMethod,
+  billIdr: number,
+): number {
+  if (method === "va") return 4000;
+  if (method === "ewallet") return Math.ceil((billIdr * 15) / 1000);
+  return 0;
+}
 
 /** `late-paid`: how long the mock gateway reports "failed" before "paid". */
 export const MOCK_LATE_PAID_AFTER_MS = 20_000;
@@ -1025,6 +1041,25 @@ export function createEngine(
     };
   }
 
+  /** The bill of the order or split part a request names; null if none or not payable. */
+  function billOf(
+    sessionId: string,
+    query: { orderId?: string; billSplitId?: string },
+  ): number | null {
+    const session = sessionOf(sessionId);
+    const target: GuestPaymentTarget | null = query.orderId
+      ? { kind: "order", orderId: query.orderId as never }
+      : query.billSplitId
+        ? { kind: "split", billSplitId: query.billSplitId as never }
+        : null;
+    if (!target) return null;
+    try {
+      return amountFor(session, target);
+    } catch {
+      return null;
+    }
+  }
+
   function paymentOptions(
     sessionId: string,
     flags: {
@@ -1032,6 +1067,7 @@ export function createEngine(
       emptyBanks?: boolean;
       duitku?: MockDuitkuMode;
     } = {},
+    query: { orderId?: string; billSplitId?: string } = {},
   ): GuestPaymentOptions {
     sessionOf(sessionId);
     const partial = flags.duitku === "partial";
@@ -1045,7 +1081,7 @@ export function createEngine(
     const wallets = MOCK_EWALLETS.filter(
       (wallet) => !partial || wallet.code === "DA" || wallet.code === "SA",
     ).map(({ code, name }) => ({ code, name }));
-    return unpriced([
+    const unpricedOptions = unpriced([
       { method: "qris", enabled: true, unavailableReason: null, banks: [] },
       {
         method: "ewallet",
@@ -1075,6 +1111,42 @@ export function createEngine(
             banks: MOCK_VA_BANKS.map(({ code, name }) => ({ code, name })),
           },
     ]);
+    // 1272 K3: with the fee on and a bill named, every VA bank and e-wallet
+    // carries its fee and the charged total; QRIS and card stay at no fee.
+    const bill = flags.duitku === "fee" ? billOf(sessionId, query) : null;
+    if (bill === null) return unpricedOptions;
+    const priced = (method: GuestPaymentMethod, code: string | null) => {
+      const guestFeeIdr = mockGuestFee(method, bill);
+      return {
+        code,
+        guestFeeIdr: idr(guestFeeIdr),
+        chargedIdr: idr(bill + guestFeeIdr),
+      };
+    };
+    return {
+      methods: unpricedOptions.methods.map((option) => {
+        const method = priced(option.method, null);
+        return {
+          ...option,
+          banks: option.banks.map((bank) => {
+            const price = priced(option.method, bank.code);
+            return {
+              ...bank,
+              guestFeeIdr: price.guestFeeIdr,
+              chargedIdr: price.chargedIdr,
+            };
+          }),
+          guestFeeIdr:
+            option.enabled && option.banks.length === 0
+              ? method.guestFeeIdr
+              : null,
+          chargedIdr:
+            option.enabled && option.banks.length === 0
+              ? method.chargedIdr
+              : null,
+        };
+      }),
+    };
   }
 
   /** 16 digits: bank prefix + 12 digits of the target (same order, same number). */
@@ -1148,6 +1220,8 @@ export function createEngine(
         "Halaman pembayaran belum bisa dibuka.",
       );
     const amount = amountFor(session, body.target);
+    const guestFee =
+      flags.duitku === "fee" ? mockGuestFee(body.method, amount) : 0;
     // Like the API: the same VA bank returns the live VA; another choice
     // supersedes it (QRIS after QRIS keeps the older mock behaviour).
     const targetKey = JSON.stringify(body.target);
@@ -1190,8 +1264,8 @@ export function createEngine(
       target: body.target,
       method: body.method,
       amountIdr: idr(amount),
-      guestFeeIdr: idr(0),
-      chargedIdr: idr(amount),
+      guestFeeIdr: idr(guestFee),
+      chargedIdr: idr(amount + guestFee),
       status: "pending",
       qrisPayload:
         body.method === "qris"
