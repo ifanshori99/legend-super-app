@@ -392,6 +392,8 @@ const paymentPaidSchema = z.object({
   intentId: z.string().uuid(),
   receivedIdr: idr,
   paidAt: time.nullable().optional(),
+  /** 1272 K1: trail only; the journal reads the fee from the intent row. */
+  guestFeeIdr: idr.optional(),
 });
 
 const fundsUnallocatedSchema = z.object({
@@ -1841,6 +1843,7 @@ async function intentOf(tx: Tx, tenantId: TenantId, intentId: string) {
     .select({
       outletId: paymentIntents.outletId,
       edcTransactionId: paymentIntents.edcTransactionId,
+      guestFeeIdr: paymentIntents.guestFeeIdr,
     })
     .from(paymentIntents)
     .where(
@@ -3027,9 +3030,24 @@ export async function autoJournalFactOf(
       if (p.receivedIdr <= 0) return null;
       const intent = await intentOf(tx, tenantId, p.intentId);
       if (intent.edcTransactionId !== null) return null;
+      // 1272 K1 (design §3): the guest fee of the intent row leaves the
+      // deposit and offsets the MDR. A payment is settled only at the charged
+      // amount, so the fee is never above what came in.
+      const guestFeeIdr = Number(intent.guestFeeIdr);
+      if (
+        guestFeeIdr > p.receivedIdr ||
+        (p.guestFeeIdr !== undefined && p.guestFeeIdr !== guestFeeIdr)
+      )
+        throw new AutoJournalPayloadInvalid(
+          "Guest fee of the event differs from its payment intent",
+        );
       return {
         ruleEvent: "payment.paid",
-        amounts: { receivedIdr: p.receivedIdr },
+        amounts: {
+          receivedIdr: p.receivedIdr,
+          depositIdr: p.receivedIdr - guestFeeIdr,
+          guestFeeIdr,
+        },
         sourceId: p.intentId,
         outletId: intent.outletId,
         moneyTime: new Date(p.paidAt ?? stored.occurredAt),

@@ -109,6 +109,7 @@ import {
   assertNoActiveQrisHold,
 } from "./pos-qris-hold.ts";
 import {
+  NO_GUEST_FEE,
   paymentGatewayFor,
   registeredGatewayProviders,
   type GatewayCancelRequest,
@@ -1390,6 +1391,23 @@ async function createIntentCore(
   );
   // Same key, same id, same DOIT request: see intentIdFor.
   const intentId = intentIdFor(context.tenant.tenantId, parsed.idempotencyKey);
+  // 1272 K1 (design duitku-fee-passthrough §2): the guest service fee on top
+  // of the bill, from the gateway's own rates (no provider call). A method
+  // that should carry one and has no rate is not offered, never fee 0.
+  const guestFeeSchedule = selected.port.guestFeeSchedule
+    ? await selected.port.guestFeeSchedule(context, plan.link.outletId)
+    : NO_GUEST_FEE;
+  const guestFeeIdr = guestFeeSchedule(
+    parsed.method,
+    parsed.channelCode,
+    amountIdr,
+  );
+  if (guestFeeIdr === null)
+    throw new HttpError(
+      422,
+      "VALIDATION_ERROR",
+      "This payment method is not available.",
+    );
   const created: GatewayIntent = await selected.port.createIntent({
     context,
     outletId: plan.link.outletId,
@@ -1398,6 +1416,7 @@ async function createIntentCore(
     method: parsed.method,
     channelCode: parsed.channelCode,
     amountIdr,
+    guestFeeIdr,
     idempotencyKey: parsed.idempotencyKey,
     expiresAt: requestedExpiry.toISOString(),
   });
@@ -1515,6 +1534,11 @@ async function createIntentCore(
           method: parsed.method,
           provider: selected.provider,
           amountIdr: idr(amountIdr),
+          guestFeeIdr: idr(guestFeeIdr),
+          gatewayFeeQuoteIdr:
+            created.feeQuoteIdr === undefined || created.feeQuoteIdr === null
+              ? null
+              : idr(created.feeQuoteIdr),
           billSplitId: part?.billSplitId ?? null,
           idempotencyKey: parsed.idempotencyKey,
           providerRef: created.providerRef,
@@ -1579,6 +1603,7 @@ async function createIntentCore(
             method: parsed.method,
             provider: selected.provider,
             amountIdr: idr(amountIdr),
+            guestFeeIdr: idr(guestFeeIdr),
             billSplitId: part?.billSplitId ?? null,
             idempotencyKey: parsed.idempotencyKey,
             providerRef: created.providerRef,
