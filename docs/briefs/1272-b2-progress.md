@@ -32,4 +32,8 @@ Brief: `legend/docs/briefs/1272-b2-brief.md`. Cabang `ws/1272-b2`, migrasi 0541 
   - P2-1 (072249822): terminal dengan sale pending/unknown/wire terbuka tidak bisa pindah tablet, ganti port/baud, atau dilepas (`EDC_TERMINAL_BUSY`). Test b2-13 gagal-dulu lalu lulus.
   - P2-2 (072249822): test API perangkat b2-14 (403 per outlet, 404 lintas outlet/tenant, no-store, token tidak di log/audit, cabut lewat route menutup socket). Lulus juga di kode lama: tidak ada bug, cakupan saja.
   - P2-3 (1ba5f343a): `ensureOutlet` publik, `startOutlets` saat boot, `prepareSale` lazily; `CloudEdcProvider.outlets()`; doc "Provider cloud". Test b2-15 gagal-dulu lalu lulus.
-- Belum: P3-1 (send lalu error = jangan null), P3-2 (renew satu per sesi), P3-3 (insert perintah coba ulang 3x, ack hanya sesudah tersimpan, alert `edc_cloud_result_persist_failed`), P3-4 (hasil telat simpan field tanpa PAN), P3-5 (catat di protocol doc), P3-6 (test A2 lintas outlet; CSV BRI ditolak `EDC_SETTLEMENT_FORMAT_UNVERIFIED`).
+  - P3-1..4 (707433ef7): sesudah socket.send tidak pernah "not sent"; satu renew per sesi; tulis perintah/hasil dicoba ulang 3x, ack hanya sesudah tersimpan, alert `edc_cloud_result_persist_failed`; `result_evidence` tanpa PAN (kolom baru di 0541). Test b2-16, b2-18, b2-19 gagal-dulu lalu lulus; b2-17 (renew bertumpuk) lulus juga di kode lama (balapan tidak bisa dipaksa di test), jadi hanya penjaga regresi.
+  - P3-5: dicatat di `edc-bridge-protocol.md`, tidak diubah.
+  - P3-6: test A2 lintas outlet di b2-7 (lulus juga di kode lama, cakupan saja). CSV BRI ditolak `EDC_SETTLEMENT_FORMAT_UNVERIFIED` (file parse ada di diff B2); test di edc-reconciliation gagal-dulu lalu lulus.
+- Bukti akhir: regresi EDC 9 file 190 test lulus; typecheck api dan web lulus; `db:generate` kosong.
+- Menunggu re-review architect (diff perbaikan saja).

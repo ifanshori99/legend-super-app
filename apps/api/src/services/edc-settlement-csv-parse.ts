@@ -97,9 +97,16 @@ const BANK_EXTRA: Record<
     amount: ["nominaltrx"],
     rrn: ["norrn"],
   },
-  // B2: no BRI export sample yet; the common column names apply.
+  // B2: no BRI export sample yet; imports are refused (UNVERIFIED below).
   bri: {},
 };
+
+/** Banks whose export was never checked against a real file: their import
+ * is refused (`EDC_SETTLEMENT_FORMAT_UNVERIFIED`) until a sample from the
+ * bank is verified (CTO, B2 review P3-6). */
+export const EDC_SETTLEMENT_UNVERIFIED_BANKS: ReadonlySet<EdcBank> = new Set([
+  "bri",
+]);
 
 const SALE_TYPES = new Set([
   "",

@@ -38,7 +38,7 @@ import {
   idr,
   type ScopedTenantContext,
 } from "@starter/shared/core";
-import type { EdcBank } from "@starter/shared/edc";
+import { EdcError, type EdcBank } from "@starter/shared/edc";
 import {
   edcSettlementCsvImportViewSchema,
   importEdcSettlementCsvInputSchema,
@@ -66,6 +66,7 @@ import {
 import { resolveEdcReconciliation } from "./edc-reconciliation.service.ts";
 import {
   EdcSettlementCsvError,
+  EDC_SETTLEMENT_UNVERIFIED_BANKS,
   parseEdcSettlementCsv,
   type EdcSettlementCsvLine,
 } from "./edc-settlement-csv-parse.ts";
@@ -130,6 +131,8 @@ export async function importEdcSettlementCsv(
   // Data import guard: classify the upload before any write.
   guardDataImport("edc-settlement.csv-import");
   const input = importEdcSettlementCsvInputSchema.parse(body);
+  if (EDC_SETTLEMENT_UNVERIFIED_BANKS.has(input.bank))
+    throw new EdcError("EDC_SETTLEMENT_FORMAT_UNVERIFIED");
   let lines: EdcSettlementCsvLine[];
   try {
     lines = parseEdcSettlementCsv(input.bank, input.csv);

@@ -452,6 +452,19 @@ describe("B2 result matching", () => {
     const c = command as unknown as DecodedCommand;
     const [row] = await ledgerOf(await numberOf(order.id));
     expect(row).toMatchObject({ status: "unknown", dispatched: true });
+    // Same tenant, other outlet (A2): neither the command's terminal nor
+    // its own terminal makes the late result count (review P3-6).
+    const a2 = await bridge(deviceA2);
+    await a2.hello();
+    a2.send(resultFor(c, approve(c)));
+    a2.send(resultFor(c, approve(c), { terminalId: terminalA2 }));
+    await pause(300);
+    expect(a2.acks()).toEqual([]);
+    const untouched = await owner.query(
+      `SELECT result_outcome FROM edc_bridge_commands WHERE id = $1`,
+      [c.commandId],
+    );
+    expect(untouched.rows).toEqual([{ result_outcome: null }]);
     const b1 = await bridge(deviceB1);
     await b1.hello();
     b1.send(resultFor(c, approve(c)));

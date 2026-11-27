@@ -1530,6 +1530,31 @@ describe("X2 EDC settlement CSV import matches terminal + RRN + amount and never
 
   const rupiah = (value: number) => value.toLocaleString("id-ID");
 
+  it("a BRI file is refused EDC_SETTLEMENT_FORMAT_UNVERIFIED until a real export is checked; nothing is stored (B2 review P3-6)", async () => {
+    const { order, id } = await manualSlip("X2RRNBRI001");
+    const csv = file(
+      line(1, "tid-recon", "X2RRNBRI001", rupiah(order.totalIdr)),
+    );
+    const before = await owner.query(
+      "SELECT count(*)::int AS n FROM edc_settlement_files WHERE tenant_id = $1",
+      [tenant.tenantId],
+    );
+    const res = await importCsv(financeUser, csv, {
+      bank: "bri",
+      fileName: "settlement-bri.csv",
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error.message).toMatch(
+      /^EDC_SETTLEMENT_FORMAT_UNVERIFIED: /,
+    );
+    const after = await owner.query(
+      "SELECT count(*)::int AS n FROM edc_settlement_files WHERE tenant_id = $1",
+      [tenant.tenantId],
+    );
+    expect(after.rows[0]).toEqual(before.rows[0]);
+    expect(await row(id)).toMatchObject({ needs_reconciliation: true });
+  });
+
   it("a line with the slip's own terminal, RRN and amount clears the flag only; amount, status and tender stay", async () => {
     const { order, id } = await manualSlip("X2RRN000001");
     const csv = file(
