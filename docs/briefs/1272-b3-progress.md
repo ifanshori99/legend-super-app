@@ -10,6 +10,11 @@ Brief: `legend/docs/briefs/1272-b3-brief.md`. Cabang `ws/1272-b3` (dari int/rc2 
 5. `docs/design/edc-bridge-android.md`.
 
 ## Status
-- (mulai) 27 Nov.
+- Langkah 1 selesai: kerangka Gradle, `assembleDebug` + `testDebugUnitTest` hijau (AGP 9.5.3, Kotlin 2.4.21 dipin, OkHttp 4.12 karena 5.x butuh compileSdk 37).
+- WIP: inti Kotlin (`protocol/`, `core/`, `link/`), Room, Keystore, service, layar setelan ditulis, belum dibuild. Emulator lengkap `apps/api/src/test/helpers/edc-bridge-tablet.ts` + fixture generator: `src/test/edc-bridge-tablet.test.ts` 13/13 lulus. Fixture tertulis.
+- Berikut: unit test JVM Kotlin, build, dokumen.
 
 ## Pertanyaan untuk CTO
+1. Umur catatan sale (P3): brief menulis `max(monotonik+boot, dinding)`, tetapi alasan di review ("jam dinding bisa dimajukan") hanya tertutup bila diambil yang LEBIH PENDEK. Dengan max, jam dinding dimajukan 30 hari = semua catatan dedupe langsung terhapus. Diterapkan: `min` (hapus hanya bila kedua jam setuju; catatan disimpan lebih lama, aturan "jangan sampai rugi"). Satu fungsi `SaleRecordRetention.ageMs`, mudah dibalik bila CTO memutuskan lain.
+2. usb-serial-for-android hanya ada di JitPack (bukan google()/mavenCentral(), yang diizinkan). USB belum disambung (`LinkConnectors.usb = null` -> `refused link_down`). Pilihan: izinkan JitPack, vendor sumber MIT ke repo, atau tulis driver CDC-ACM sendiri.
+3. Kode pasang 8 karakter belum ada di B2; tablet saat ini menerima token `edcb_...` yang ditempel dari backoffice.
