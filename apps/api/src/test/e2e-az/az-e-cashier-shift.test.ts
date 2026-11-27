@@ -1135,7 +1135,10 @@ describe("Alur W bayar di kasir dengan EDC", () => {
   });
 
   // legend-m4fv: `edc_standalone` override (pos.edc_standalone.approve).
-  it("EDC-04 mode standalone tanpa PIN supervisor dan nomor referensi ditolak", async () => {
+  // X1 (838260a54, legend-wasr7.10): manual EDC is the normal path; the slip
+  // reference is required, the supervisor PIN is optional, and every entry is
+  // flagged for the H+1 reconciliation.
+  it("EDC-04 mode standalone tanpa nomor referensi ditolak; tanpa PIN supervisor dicatat untuk rekonsiliasi", async () => {
     // The fixture only supplies registered terminals; the agent is not used.
     const f = await edcFixture();
     try {
@@ -1149,35 +1152,57 @@ describe("Alur W bayar di kasir dengan EDC", () => {
         standalone: { terminalId },
       });
       expect(noRef.status, JSON.stringify(noRef.body)).toBe(422);
+      expect(
+        (await get(cashier, `/orders/${order.orderId}`)).body.data.status,
+      ).not.toBe("completed");
+
+      // Reference without a PIN: booked at the remaining bill with no
+      // approver, flagged for reconciliation.
       const noApprover = await post(cashier, url, {
         method: "edc_card",
         expectedStatus: order.status,
         standalone: { terminalId, bankRef },
       });
-      expect(noApprover.status, JSON.stringify(noApprover.body)).toBe(422);
-      expect(
-        (await get(cashier, `/orders/${order.orderId}`)).body.data.status,
-      ).not.toBe("completed");
+      expect(noApprover.status, JSON.stringify(noApprover.body)).toBe(201);
+      expect(noApprover.body.data.tender).toMatchObject({
+        method: "edc_card",
+        amountIdr: order.totalIdr,
+        status: "captured",
+        approvedBy: null,
+      });
+      expect(noApprover.body.data.remainingIdr).toBe(0);
+      const manual = await owner.query(
+        `SELECT mode, rrn, needs_reconciliation FROM edc_transactions
+         WHERE tenant_id = $1 AND reference = $2`,
+        [tenant.tenantId, order.number],
+      );
+      expect(manual.rows).toEqual([
+        { mode: "standalone", rrn: bankRef, needs_reconciliation: true },
+      ]);
 
-      // Positive case: supervisor PIN + reference settle it and flag it for
-      // reconciliation: the tender is booked with the supervisor as approver
-      // and an edc_transactions row in standalone mode with
-      // needs_reconciliation set.
+      // Supervisor PIN + reference on another bill: booked with the
+      // supervisor as approver, flagged for reconciliation too.
+      const second = await newOrder();
+      const secondRef = `MANUAL-${randomUUID().slice(0, 8)}`;
       const approval = await pinApproval({
         action: "edc_standalone",
         objectType: "pos_order",
-        objectId: order.orderId,
-        valueIdr: order.totalIdr,
+        objectId: second.orderId,
+        valueIdr: second.totalIdr,
       });
-      const paid = await post(cashier, url, {
+      const paid = await post(cashier, `/orders/${second.orderId}/tenders`, {
         method: "edc_card",
-        expectedStatus: order.status,
-        standalone: { terminalId, bankRef, overrideId: approval.overrideId },
+        expectedStatus: second.status,
+        standalone: {
+          terminalId,
+          bankRef: secondRef,
+          overrideId: approval.overrideId,
+        },
       });
       expect(paid.status, JSON.stringify(paid.body)).toBe(201);
       expect(paid.body.data.tender).toMatchObject({
         method: "edc_card",
-        amountIdr: order.totalIdr,
+        amountIdr: second.totalIdr,
         status: "captured",
         approvedBy: supervisor.userId,
       });
@@ -1185,10 +1210,10 @@ describe("Alur W bayar di kasir dengan EDC", () => {
       const flagged = await owner.query(
         `SELECT mode, rrn, needs_reconciliation FROM edc_transactions
          WHERE tenant_id = $1 AND reference = $2`,
-        [tenant.tenantId, order.number],
+        [tenant.tenantId, second.number],
       );
       expect(flagged.rows).toEqual([
-        { mode: "standalone", rrn: bankRef, needs_reconciliation: true },
+        { mode: "standalone", rrn: secondRef, needs_reconciliation: true },
       ]);
     } finally {
       await f.edc.stop(f.scoped);

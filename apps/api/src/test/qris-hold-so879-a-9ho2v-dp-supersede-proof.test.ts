@@ -237,6 +237,15 @@ async function supersededDp(created: ReservationCreated) {
       idempotencyKey: `rsv-9ho2v-a-${created.reservation.id}`,
     }),
   );
+  // legend-osqou.41 (1bdbf0a8b): a DP link takes no second code while the
+  // first is live; the old superseded state (expired, not final) is built by
+  // closing A just long enough to issue B.
+  await asOwner((client) =>
+    client.query(
+      "UPDATE payment_intents SET status = 'expired', provider_final_at = now() WHERE tenant_id = $1 AND id = $2",
+      [seededTenantId, a.id],
+    ),
+  );
   const b = await createIntent(
     tenantScope(),
     token,
@@ -245,6 +254,12 @@ async function supersededDp(created: ReservationCreated) {
       channelCode: "bmri",
       idempotencyKey: `rsv-9ho2v-b-${created.reservation.id}`,
     }),
+  );
+  await asOwner((client) =>
+    client.query(
+      "UPDATE payment_intents SET provider_final_at = NULL WHERE tenant_id = $1 AND id = $2",
+      [seededTenantId, a.id],
+    ),
   );
   expect(b.id, "the switch must open a second code").not.toBe(a.id);
   expect(

@@ -23,6 +23,7 @@ import type { PaymentGatewayPort } from "../services/payment-gateway.ts";
 import { setPaymentGateway } from "../services/payment-gateway.ts";
 import {
   applyGatewayFailure,
+  cancelSupersededAtGateway,
   createPaymentLink,
   pollPendingGatewayIntents,
 } from "../services/payment.service.ts";
@@ -165,13 +166,32 @@ describe("so-889 P2-2 gateway cancel is not proof", () => {
       const oldId = first.body.data.id as string;
       fx.gateway.script(oldId, answer);
 
-      // A second code supersedes the first and asks the provider to cancel it.
+      // legend-osqou.41 (1bdbf0a8b): the route refuses a second code while the
+      // first is live, so the supersede (expired locally, then the
+      // best-effort cancel after the commit) is applied directly here.
       const second = await agent(fx.app).post(intents).send({
         method: "qris",
         channelCode: null,
         idempotencyKey: randomUUID(),
       });
-      expect(second.status, JSON.stringify(second.body)).toBe(201);
+      expect(second.status, JSON.stringify(second.body)).toBe(409);
+      const { rows: superseded } = await owner.query<{
+        provider: string;
+        provider_ref: string;
+        outlet_id: string;
+      }>(
+        "UPDATE payment_intents SET status = 'expired' WHERE tenant_id=$1 AND id=$2 AND status = 'pending' RETURNING provider, provider_ref, outlet_id",
+        [fx.tenant.tenantId, oldId],
+      );
+      expect(superseded).toHaveLength(1);
+      await cancelSupersededAtGateway(fx.context, [
+        {
+          intentId: oldId,
+          provider: superseded[0]!.provider,
+          providerRef: superseded[0]!.provider_ref,
+          outletId: superseded[0]!.outlet_id,
+        },
+      ]);
 
       expect(cancels, "the gateway cancel ran for the old code").toContain(
         oldId,

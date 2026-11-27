@@ -864,10 +864,22 @@ describe("settlement", () => {
     const s = await shop();
     const { claim, scope, linkId, intentId: first } = await hold(s);
     // The member asks for a new code after the first one lapsed (10 min).
+    // legend-osqou.41 (1bdbf0a8b): a new code is issued only once the provider
+    // says the first is final; it then turns out payable after all (revived).
+    await q(
+      s.world,
+      "UPDATE payment_intents SET status = 'expired', provider_final_at = now() WHERE id = $1",
+      [first],
+    );
     await refreshWfcPayment(
       scope,
       claim.id,
       new Date(Date.now() + 11 * MINUTE),
+    );
+    await q(
+      s.world,
+      "UPDATE payment_intents SET status = 'pending', provider_final_at = NULL WHERE id = $1",
+      [first],
     );
     const codes = await intentsOf(s.world, linkId);
     expect(codes).toHaveLength(2);

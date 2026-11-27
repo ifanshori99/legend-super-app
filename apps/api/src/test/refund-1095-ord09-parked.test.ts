@@ -9,7 +9,9 @@
 // Assumptions (also reported):
 // - An edge node registered in the tenant makes QR ordering answer 503 EDGE_LINK_DOWN, so every
 //   order and every issue is prepared BEFORE the node is registered (beforeAll), and the tests
-//   only deliver edge events and resolve / deliver ORD-09 afterwards.
+//   only deliver edge events and resolve / deliver ORD-09 afterwards. Since E3b the resolve
+//   route answers 409 POS_WRITE_ON_EDGE on an edge outlet, so ORD-09s that must reach money
+//   are resolved in beforeAll too; the tests only deliver them.
 // - "Parked void" = an `order.voided` (voidedFinalOrder = true) sitting in edge_deferred_events
 //   with no pos_order_voids row (the 532b state: the ingest refused it, the event stays parked).
 //   A void for a sale the cloud never ingested is NOT parked by the link at all (verified), so the
@@ -83,6 +85,14 @@ beforeAll(async () => {
     ),
   };
   isolationX = await p.paidPlainOrder();
+  // E3b (c118a25b8): once the outlet has an edge node the cloud resolve route
+  // answers 409 POS_WRITE_ON_EDGE, so the ORD-09 resolves the tests deliver
+  // later are made here, before the node exists (delivery is the worker step).
+  for (const name of ["isolationY", "race"]) {
+    const { issueId, approvalId } = prepared[name]!;
+    const resolved = await p.resolveOrd09(issueId, approvalId);
+    expect(resolved.status, JSON.stringify(resolved.body)).toBe(200);
+  }
 
   const node = await registerNode(p.w.tenant);
   kit = edgeKit(p.w.tenant, node, {
@@ -201,10 +211,8 @@ describe("legend-aja6g parked edge void x ORD-09", () => {
 
   it("isolation: a parked void of order X does not block ORD-09 of order Y", async () => {
     await parkVoid(isolationX);
-    const { paid, issueId, approvalId } = prepared.isolationY!;
+    const { paid, issueId } = prepared.isolationY!;
 
-    const resolved = await p.resolveOrd09(issueId, approvalId);
-    expect(resolved.status, JSON.stringify(resolved.body)).toBe(200);
     const event = await p.ord09Event(issueId);
     expect(event).not.toBeNull();
     await p.deliverOrd09(event!);
@@ -216,9 +224,7 @@ describe("legend-aja6g parked edge void x ORD-09", () => {
   // Regression only: the link never parks a void for a sale the cloud has not ingested, so
   // this race cannot produce a parked void; it checks that the two never both reach money.
   it("ORD-09 delivery racing an edge void delivery: never a void row AND a live ORD-09 refund, total <= paid", async () => {
-    const { paid, issueId, approvalId } = prepared.race!;
-    const resolved = await p.resolveOrd09(issueId, approvalId);
-    expect(resolved.status, JSON.stringify(resolved.body)).toBe(200);
+    const { paid, issueId } = prepared.race!;
     const event = await p.ord09Event(issueId);
     expect(event).not.toBeNull();
     const ulid = toUlid(paid.orderId);

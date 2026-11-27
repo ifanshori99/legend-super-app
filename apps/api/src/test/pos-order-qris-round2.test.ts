@@ -703,6 +703,14 @@ describe("POS createIntent racing a link cancellation (legend-b0au)", () => {
 
     // The guest's page asks for a fresh code (new idempotency key) and the
     // gateway call is held; the plan was read while the link was still open.
+    // legend-osqou.41 (1bdbf0a8b): a link with no order takes a new code only
+    // once the live one is final, so the first code is closed for the issue
+    // check and reopened once the gateway call is held.
+    const firstIntentId = tender.payment_intent_id!;
+    await owner.query(
+      "UPDATE payment_intents SET status = 'expired', provider_final_at = now() WHERE tenant_id = $1 AND id = $2",
+      [tenant.tenantId, firstIntentId],
+    );
     setPaymentGateway(blocking);
     blocking.block = true;
     const key = `race-${randomUUID()}`;
@@ -716,6 +724,10 @@ describe("POS createIntent racing a link cancellation (legend-b0au)", () => {
     );
     try {
       await blocking.hasArrived;
+      await owner.query(
+        "UPDATE payment_intents SET status = 'pending', provider_final_at = NULL WHERE tenant_id = $1 AND id = $2",
+        [tenant.tenantId, firstIntentId],
+      );
 
       // Meanwhile the provider proves the QR dead and the hold check closes
       // it (cash can no longer replace a collectible QR, D-01):

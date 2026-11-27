@@ -541,6 +541,15 @@ describe("legend-m0kqn 4 a paid DP is confirmed even while another code is still
 
     // Code A (the pollable one) and a second code B on the same DP link.
     const pollableId = await openIntent(created);
+    // legend-osqou.41 (48d8794cc, 1bdbf0a8b): a DP link takes no second code
+    // while A is live, so A is closed just long enough to issue B;
+    // shapeUnanswered below reopens it as pending and unanswered.
+    await asOwner((client) =>
+      client.query(
+        "UPDATE payment_intents SET status = 'expired', provider_final_at = now() WHERE id = $1",
+        [pollableId],
+      ),
+    );
     const paidIntent = await createIntent(
       tenantScope(),
       token,

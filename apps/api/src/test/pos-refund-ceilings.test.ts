@@ -513,17 +513,28 @@ describe("POS-04 Q63 cumulative refund ceilings (brief 530)", () => {
     );
   });
 
-  for (const method of ["qris", "points"] as const) {
-    it(`${method} refunds share the same supervisor ceiling and cannot overpay`, async () => {
-      const bill = await sale(300_000, method);
-      await refund(bill, 200_000, "supervisor");
-      await expect(refund(bill, 1, "supervisor")).rejects.toMatchObject({
-        code: "REFUND_APPROVAL_LIMIT_EXCEEDED",
-      });
-      expect(await nativeTotal(bill)).toBe(200_000);
-      expect(bill.paid - (await nativeTotal(bill))).toBe(100_000);
+  it("qris refunds share the same supervisor ceiling and cannot overpay", async () => {
+    const bill = await sale(300_000, "qris");
+    await refund(bill, 200_000, "supervisor");
+    await expect(refund(bill, 1, "supervisor")).rejects.toMatchObject({
+      code: "REFUND_APPROVAL_LIMIT_EXCEEDED",
     });
-  }
+    expect(await nativeTotal(bill)).toBe(200_000);
+    expect(bill.paid - (await nativeTotal(bill))).toBe(100_000);
+  });
+
+  // 1272 V1 P3 (27ed51038): a points tender is never money the guest paid in,
+  // so a points-only bill has nothing a POS refund can pay out.
+  it("points refunds cannot pay out cash for a points tender", async () => {
+    const bill = await sale(300_000, "points");
+    await expect(refund(bill, 200_000, "supervisor")).rejects.toMatchObject({
+      code: "REFUND_EXCEEDS_PAID",
+    });
+    await expect(refund(bill, 1, "supervisor")).rejects.toMatchObject({
+      code: "REFUND_EXCEEDS_PAID",
+    });
+    expect(await nativeTotal(bill)).toBe(0);
+  });
 
   it("cash refunds above the ceiling are refused before accessing the drawer", async () => {
     const bill = await sale(300_000, "cash");

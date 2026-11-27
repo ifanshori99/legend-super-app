@@ -2366,7 +2366,9 @@ describe("PAY-02 a gateway error never closes a lapsed intent", () => {
     await expectPaidOnce(bill);
   });
 
-  it("PAY-02 a new code for the bill leaves the lapsed, unconfirmed code pending for reconciliation", async () => {
+  // legend-osqou.41 (1bdbf0a8b, CTO 27 Nov): a link with no order takes no new
+  // code while the lapsed one is unconfirmed, so the refresh is refused.
+  it("PAY-02 a refresh while the lapsed code is unconfirmed is refused; the code stays pending for reconciliation", async () => {
     const bill = await openIntent();
     await lapse(bill.intentId, "1 hour");
     const refreshed = await withDoitDown(bill, () =>
@@ -2374,9 +2376,8 @@ describe("PAY-02 a gateway error never closes a lapsed intent", () => {
         `/api/payments/links/${bill.token}/intents/${bill.intentId}/refresh`,
       ),
     );
-    expect(refreshed.status).toBe(200);
-    expect(refreshed.body.data.id).not.toBe(bill.intentId);
-    expect(refreshed.body.data.status).toBe("pending");
+    expect(refreshed.status).toBe(409);
+    expect(refreshed.body.error.code).toBe("ORDER_CODE_ACTIVE");
     expect((await intentRow(bill.intentId)).status).toBe("pending");
 
     doit.settle(bill.providerRef);

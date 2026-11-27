@@ -376,7 +376,18 @@ describe("legend-m7tnt DP proof is fail closed: provider pending holds the close
   it("superseded QR (expired locally), provider STILL pending after expiry + margin, new code proven dead: held", async () => {
     const created = await newBooking();
     const a = await openQr(created);
+    // legend-osqou.41 (1bdbf0a8b): a DP link takes no second code while the
+    // first is live; the old superseded state (expired, not final) is built by
+    // closing A just long enough to issue B.
+    await owner.query(
+      "UPDATE payment_intents SET status = 'expired', provider_final_at = now() WHERE tenant_id = $1 AND id = $2",
+      [seededTenantId, a.id],
+    );
     const b = await openVa(created);
+    await owner.query(
+      "UPDATE payment_intents SET provider_final_at = NULL WHERE tenant_id = $1 AND id = $2",
+      [seededTenantId, a.id],
+    );
     expect((await intentInfo(seededTenantId, a.id)).status).toBe("expired");
     await backdateIntentExpiry(seededTenantId, a.id);
     await backdateIntentExpiry(seededTenantId, b.id);

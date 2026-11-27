@@ -349,7 +349,10 @@ afterAll(async () => {
 
 describe("Q63 edge refunds require authoritative cross-channel history", () => {
   it("Refuses an unmaterialized edge refund before a second payout can over-return one tender", async () => {
-    const sale = await saleAndApproval(100_000, supervisor, 200_000, 100_000);
+    // 1272 V1 P3 (27ed51038): the points tender no longer counts as paid, so
+    // the card part is 200.000 here; the deferred points refund plus this
+    // request still fit it, and only the unverified history refuses.
+    const sale = await saleAndApproval(100_000, supervisor, 300_000, 100_000);
     await deferredRefund(sale, 100_000, randomUUID(), false, {
       pointsIdr: 100_000,
     });
