@@ -385,6 +385,7 @@ async function unpaidExposureOfSession(
     ? await tx
         .select({
           id: paymentLinks.id,
+          grossIdr: paymentLinks.paidIdr,
           paidIdr: sql<string>`least(${paymentLinks.paidIdr}, coalesce((
             SELECT sum(${netAllocatedIdrSql(sql`i.tenant_id`, sql`i.id`)})
               FROM payment_intents i
@@ -401,12 +402,31 @@ async function unpaidExposureOfSession(
         )
     : [];
   const linkPaid = new Map(links.map((row) => [row.id, Number(row.paidIdr)]));
+  // Which links took money at all (gross): a link the provider refunded in
+  // full still did, and its old tenders stay skipped (they were the same money).
+  const linksWithMoney = new Set(
+    links.filter((row) => Number(row.grossIdr) > 0).map((row) => row.id),
+  );
   const exposure = live.reduce((sum, order) => {
-    const ofOrder = tenders.filter((tender) => tender.orderId === order.id);
     const viaLink =
       order.paymentLinkId === null
         ? 0
         : (linkPaid.get(order.paymentLinkId) ?? 0);
+    // legend-7adhb: a captured tender that rides the order's own link is the
+    // same money as the link's, already counted in `viaLink`; skip it so an
+    // old row is not counted twice (same rule as `countedLinks` in the QR
+    // order settlement). The skip follows the link's gross `paid_idr`, the sum
+    // its net: a link refunded in full counts 0 and its tender is not added
+    // back (1273 review P3-1).
+    const ofOrder = tenders.filter(
+      (tender) =>
+        tender.orderId === order.id &&
+        !(
+          tender.paymentLinkId !== null &&
+          tender.paymentLinkId === order.paymentLinkId &&
+          linksWithMoney.has(tender.paymentLinkId)
+        ),
+    );
     return sum + Math.max(0, remainingIdr(order, ofOrder) - viaLink);
   }, 0);
   return idr(exposure);

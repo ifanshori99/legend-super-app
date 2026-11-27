@@ -53,6 +53,7 @@ export const SETTLEMENT_ROW_REASONS = [
   "amount",
   "fee",
   "duplicate",
+  "formula",
 ] as const;
 export type SettlementRowReason =
   (typeof SETTLEMENT_ROW_REASONS)[number] | "other";

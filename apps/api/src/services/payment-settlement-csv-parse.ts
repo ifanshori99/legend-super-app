@@ -28,7 +28,7 @@ export type GatewaySettlementCsvLine = {
 export type GatewaySettlementRowError = {
   /** 1-based row of the file, header included. */
   row: number;
-  reason: "columns" | "reference" | "amount" | "fee" | "duplicate";
+  reason: "columns" | "reference" | "formula" | "amount" | "fee" | "duplicate";
 };
 
 /** The file as a whole cannot be read (no row to point at). */
@@ -51,6 +51,10 @@ const wholeRupiah = (raw: string, min: number): number | null => {
   const amount = Number(value);
   return Number.isSafeInteger(amount) && amount >= min ? amount : null;
 };
+
+// 1273 P3-4: a reference that starts like a spreadsheet formula is refused, so
+// it cannot run as one when a later export is opened in a spreadsheet.
+const FORMULA_START = /^[=+\-@\t\r]/;
 
 const validReference = (value: string) =>
   value.length >= 1 &&
@@ -97,6 +101,10 @@ function parseTemplateV1(text: string): GatewaySettlementCsvLine[] {
       continue;
     }
     const reference = cells[at.reference]!.trim();
+    if (FORMULA_START.test(cells[at.reference]!)) {
+      errors.push({ row, reason: "formula" });
+      continue;
+    }
     if (!validReference(reference)) {
       errors.push({ row, reason: "reference" });
       continue;

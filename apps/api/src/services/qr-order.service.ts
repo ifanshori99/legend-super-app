@@ -155,6 +155,7 @@ import { assertNoOpenEdcRequest } from "./pos-order-support.ts";
 import { assertNoActiveQrisHold } from "./pos-qris-hold.ts";
 import { requestRefundsForVoidedQrOrder } from "./qr-order-late-payment.ts";
 import { appendQrOrderPaid } from "./qr-order-paid.ts";
+import { netAllocatedIdrSql } from "./payment-net-allocated-sql.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 import { listSessionDepositSources } from "./reservation-deposit-credit.ts";
 import {
@@ -2361,7 +2362,21 @@ async function settlementOf(
     .filter((id): id is string => id !== null);
   const links = linkIds.length
     ? await tx
-        .select({ id: paymentLinks.id, paidIdr: paymentLinks.paidIdr })
+        .select({
+          id: paymentLinks.id,
+          grossIdr: paymentLinks.paidIdr,
+          // 1273 P2: `paid_idr` is gross and never drops when the provider
+          // refunds on its own, so count what the link's settled intents
+          // still net (`netAllocatedIdrSql`), capped at `paid_idr` (same rule
+          // as legend-9yw78.12 in open-bill-control). The outer columns are
+          // written out: inside the subquery they would bind to the intent.
+          paidIdr: sql<string>`least(${paymentLinks.paidIdr}, coalesce((
+            SELECT sum(${netAllocatedIdrSql(sql`i.tenant_id`, sql`i.id`)})
+              FROM payment_intents i
+             WHERE i.tenant_id = payment_links.tenant_id
+               AND i.payment_link_id = payment_links.id
+               AND i.status IN ('paid', 'partially_refunded', 'refunded')), 0))::text`,
+        })
         .from(paymentLinks)
         .where(
           and(
@@ -2370,7 +2385,7 @@ async function settlementOf(
           ),
         )
     : [];
-  const linkPaid = links.reduce((sum, row) => sum + row.paidIdr, 0);
+  const linkPaid = links.reduce((sum, row) => sum + Number(row.paidIdr), 0);
   const orderIds = liveOrders.map((row) => row.id);
   const capturedTenders = orderIds.length
     ? await tx
@@ -2388,7 +2403,7 @@ async function settlementOf(
         )
     : [];
   const countedLinks = new Set(
-    links.filter((row) => row.paidIdr > 0).map((row) => row.id),
+    links.filter((row) => row.grossIdr > 0).map((row) => row.id),
   );
   // A POS QRIS tender owns its own WS-05 link. If a link is also present on
   // an order and contributed paid money above, never count it twice.
