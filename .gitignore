@@ -34,3 +34,9 @@ coverage/
 # Coordinator-managed git worktrees
 .worktrees/
 .test-shards/
+
+# Kunci tanda tangan rilis (jangan pernah di repo)
+*.jks
+*.keystore
+*.p12
+*.pfx
