@@ -29,6 +29,7 @@ import {
   Undo2,
 } from "lucide-react";
 import { cn } from "cn";
+import { formatRupiah } from "@starter/shared/i18n";
 import { getGuestPayment } from "@starter/shared/qr-order";
 import type { PaymentStatus } from "@starter/shared/payment";
 import { DEFAULT_TIME_ZONE } from "@starter/shared/core";
@@ -73,7 +74,9 @@ import {
 
 type Answer = {
   status: PaymentStatus;
+  /** What the guest pays the gateway: the bill plus the service fee. */
   amountIdr: number;
+  guestFeeIdr: number;
   paidAt: string | null;
 };
 
@@ -89,7 +92,8 @@ async function askServer(
     );
     return {
       status: data.status,
-      amountIdr: data.amountIdr,
+      amountIdr: data.chargedIdr,
+      guestFeeIdr: data.guestFeeIdr,
       paidAt: data.paidAt,
     };
   }
@@ -100,7 +104,8 @@ async function askServer(
   );
   return {
     status: intent.status,
-    amountIdr: intent.amountIdr,
+    amountIdr: intent.chargedIdr,
+    guestFeeIdr: intent.guestFeeIdr,
     paidAt: intent.paidAt,
   };
 }
@@ -295,7 +300,12 @@ export function PaymentReturnPage() {
       const fresh = await askServer(current, new AbortController().signal);
       queryClient.setQueryData(answerKey(current), fresh);
       if (!canStartNewPayment(fresh.status)) return;
-      let next: { id: string; amountIdr: number; url: string | null };
+      let next: {
+        id: string;
+        amountIdr: number;
+        guestFeeIdr: number;
+        url: string | null;
+      };
       if (current.kind === "table") {
         if (!current.orderId) throw new Error("No order to pay");
         const { data } = await startGuestPayment(current.sessionId, {
@@ -308,7 +318,8 @@ export function PaymentReturnPage() {
         });
         next = {
           id: data.id,
-          amountIdr: data.amountIdr,
+          amountIdr: data.chargedIdr,
+          guestFeeIdr: data.guestFeeIdr,
           url: data.redirectUrl,
         };
       } else {
@@ -320,7 +331,8 @@ export function PaymentReturnPage() {
         const instructions = intent.instructions;
         next = {
           id: intent.id,
-          amountIdr: intent.amountIdr,
+          amountIdr: intent.chargedIdr,
+          guestFeeIdr: intent.guestFeeIdr,
           url:
             instructions.method === "ewallet" || instructions.method === "card"
               ? instructions.paymentUrl
@@ -332,6 +344,7 @@ export function PaymentReturnPage() {
         ...current,
         paymentId: next.id,
         amountIdr: next.amountIdr,
+        guestFeeIdr: next.guestFeeIdr,
       });
       if (!openPaymentUrl(next.url)) throw new Error("Payment page refused");
     },
@@ -355,8 +368,22 @@ export function PaymentReturnPage() {
       ? t("payment.redirect.back.placeTable", { place, table })
       : (place ??
         (table ? t("payment.redirect.back.tableOnly", { table }) : null));
+  const amountIdr = answer.data?.amountIdr ?? record?.amountIdr ?? 0;
+  const guestFeeIdr = answer.data?.guestFeeIdr ?? record?.guestFeeIdr ?? 0;
   const rows = [
     { label: t("payment.redirect.back.rowMethod"), value: methodRow },
+    ...(guestFeeIdr > 0 && guestFeeIdr < amountIdr
+      ? [
+          {
+            label: t("payment.redirect.fee.billRow"),
+            value: formatRupiah(amountIdr - guestFeeIdr),
+          },
+          {
+            label: t("payment.redirect.fee.label"),
+            value: formatRupiah(guestFeeIdr),
+          },
+        ]
+      : []),
     ...(orderNumber
       ? [{ label: t("payment.redirect.back.rowOrder"), value: orderNumber }]
       : []),
@@ -364,7 +391,6 @@ export function PaymentReturnPage() {
       ? [{ label: t("payment.redirect.back.rowPlace"), value: placeValue }]
       : []),
   ];
-  const amountIdr = answer.data?.amountIdr ?? record?.amountIdr ?? 0;
   const isTable = record?.kind === "table";
 
   let pill: ReactNode;

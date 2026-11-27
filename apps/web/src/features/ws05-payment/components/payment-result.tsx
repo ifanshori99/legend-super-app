@@ -20,6 +20,7 @@ import type {
   CustomerPaymentIntent,
 } from "@starter/shared/payment";
 import { paymentErrorKey } from "../errors";
+import { hasGuestFee } from "./fee-parts";
 import { paymentMethodLabelKey } from "../labels";
 import { formatTimeInZone, isRefunded } from "../status";
 
@@ -72,8 +73,18 @@ export function PaymentPaid({
       </div>
 
       <dl className="grid gap-1.5 text-sm">
+        {hasGuestFee(intent.guestFeeIdr) && (
+          <>
+            <DetailRow label={t("payment.redirect.fee.billRow")}>
+              <Money amount={intent.amountIdr} size="sm" />
+            </DetailRow>
+            <DetailRow label={t("payment.redirect.fee.label")}>
+              <Money amount={intent.guestFeeIdr} size="sm" />
+            </DetailRow>
+          </>
+        )}
         <DetailRow label={t("payment.amount")}>
-          <Money amount={intent.amountIdr} size="sm" />
+          <Money amount={intent.chargedIdr} size="sm" />
         </DetailRow>
         <DetailRow label={t("payment.methodLegend")}>
           {t(labelKey)}

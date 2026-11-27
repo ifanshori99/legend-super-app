@@ -12,6 +12,7 @@ import {
   ShieldCheck,
   Wallet,
 } from "lucide-react";
+import { formatRupiah } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -32,6 +33,7 @@ import {
   type PickerMethodCode,
 } from "../labels";
 import { canSubmit } from "../status";
+import { FeeNoRefund, FeeQuote, hasGuestFee } from "./fee-parts";
 
 const METHOD_ICON = {
   qris: QrCode,
@@ -84,6 +86,9 @@ function MethodOption({
           {t(PAYMENT_METHOD_LABEL[option.method])}
         </span>
         <span className="text-sm leading-5 text-muted-foreground">{hint}</span>
+        {option.method === "card" && !disabled && (
+          <FeeQuote feeIdr={option.guestFeeIdr} chargedIdr={option.totalIdr} />
+        )}
       </span>
       <span
         aria-hidden="true"
@@ -126,9 +131,17 @@ export function MethodPicker({
     selected.method !== "qris" &&
     selected.method !== "card";
   const ewallet = selected?.method === "ewallet";
-  const walletName = ewallet
-    ? selected.channels.find((channel) => channel.code === channelCode)?.name
-    : undefined;
+  const chosenChannel = selected?.channels.find(
+    (channel) => channel.code === channelCode,
+  );
+  const walletName = ewallet ? chosenChannel?.name : undefined;
+  // 1272 K3: the fee of the chosen bank, e-wallet or card, never of a list.
+  const chosenFee =
+    selected?.method === "card"
+      ? selected.guestFeeIdr
+      : needsChannel
+        ? chosenChannel?.guestFeeIdr
+        : null;
   const ready = canSubmit(selected?.method ?? null, channelCode);
   const showError = error !== null && error !== undefined;
 
@@ -186,18 +199,32 @@ export function MethodPicker({
               }
               className="w-full"
             >
-              <SelectValue placeholder={t("payment.bankPlaceholder")} />
+              <SelectValue placeholder={t("payment.bankPlaceholder")}>
+                {chosenChannel?.name}
+              </SelectValue>
             </SelectTrigger>
             <SelectContent>
               {selected.channels.map((channel) => (
                 <SelectItem key={channel.code} value={channel.code}>
-                  {channel.name}
+                  {hasGuestFee(channel.guestFeeIdr)
+                    ? `${channel.name} · ${t("payment.redirect.fee.line", {
+                        fee: formatRupiah(channel.guestFeeIdr),
+                      })}`
+                    : channel.name}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
         </FormField>
       )}
+
+      {needsChannel && chosenChannel && (
+        <FeeQuote
+          feeIdr={chosenChannel.guestFeeIdr}
+          chargedIdr={chosenChannel.totalIdr}
+        />
+      )}
+      <FeeNoRefund feeIdr={chosenFee} />
 
       {walletName && (
         <p className="flex items-start gap-2 text-sm leading-5 text-muted-foreground">

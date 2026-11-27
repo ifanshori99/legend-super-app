@@ -22,6 +22,7 @@ import type { CustomerPaymentIntent } from "@starter/shared/payment";
 import { paymentMethodLabelKey } from "../labels";
 import { formatCountdown } from "../status";
 import { CopyField } from "./copy-field";
+import { FeeNoRefund, hasGuestFee } from "./fee-parts";
 import { LinkGatewayOpening } from "./link-gateway";
 
 /** QRIS needs black-on-white to scan in both themes; the shared renderer plate does. */
@@ -126,7 +127,8 @@ export function PaymentCode({
           <LinkGatewayOpening
             token={token}
             intentId={intent.id}
-            amountIdr={intent.amountIdr}
+            amountIdr={intent.chargedIdr}
+            guestFeeIdr={intent.guestFeeIdr}
             instructions={instructions}
           />
         )}
@@ -139,12 +141,33 @@ export function PaymentCode({
             })}
             value={instructions.virtualAccountNumber}
           />
+          {hasGuestFee(intent.guestFeeIdr) && (
+            <dl className="grid gap-1 text-sm">
+              <div className="flex items-baseline justify-between gap-3">
+                <dt className="text-muted-foreground">
+                  {t("payment.redirect.fee.billRow")}
+                </dt>
+                <dd>
+                  <Money amount={intent.amountIdr} size="sm" />
+                </dd>
+              </div>
+              <div className="flex items-baseline justify-between gap-3">
+                <dt className="text-muted-foreground">
+                  {t("payment.redirect.fee.label")}
+                </dt>
+                <dd>
+                  <Money amount={intent.guestFeeIdr} size="sm" />
+                </dd>
+              </div>
+            </dl>
+          )}
           <div className="flex items-baseline justify-between gap-3">
             <span className="text-sm text-muted-foreground">
               {t("payment.amount")}
             </span>
-            <Money amount={intent.amountIdr} size="lg" />
+            <Money amount={intent.chargedIdr} size="lg" />
           </div>
+          {!referenceOnly && <FeeNoRefund feeIdr={intent.guestFeeIdr} />}
           {!referenceOnly && (
             <>
               <ol className="grid list-decimal gap-1 pl-5 text-sm leading-5 text-muted-foreground">

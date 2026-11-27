@@ -115,7 +115,10 @@ type RecordBase = {
   channelCode: string | null;
   /** E-wallet name shown to the guest ("DANA"); null for a card. */
   channelName: string | null;
+  /** What the guest pays the gateway: the bill plus `guestFeeIdr`. */
   amountIdr: number;
+  /** 1272 K3: the service fee inside `amountIdr` (absent or 0: none). */
+  guestFeeIdr?: number;
   /** Brand or outlet name for the top bar; null when unknown. */
   placeName: string | null;
   /** The outlet's IANA zone, for the time shown; null when unknown. */
@@ -214,6 +217,13 @@ export function parseReturnRecord(
     channelCode: value.channelCode,
     channelName: value.channelName,
     amountIdr: value.amountIdr,
+    // Records saved before the service fee existed read as "no fee".
+    ...(typeof value.guestFeeIdr === "number" &&
+    Number.isSafeInteger(value.guestFeeIdr) &&
+    value.guestFeeIdr > 0 &&
+    value.guestFeeIdr < value.amountIdr
+      ? { guestFeeIdr: value.guestFeeIdr }
+      : {}),
     placeName: value.placeName,
     // Records saved before these two fields existed read as "unknown".
     timeZone: isString(value.timeZone) ? value.timeZone : null,

@@ -34,6 +34,11 @@ import {
 } from "@/components/ui/dialog";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  FeeNoRefund,
+  FeeQuote,
+  hasGuestFee,
+} from "@/features/ws05-payment/components/fee-parts";
 import { useGuestPaymentOptions, useStartPayment } from "../../hooks";
 import { idempotencyKey } from "../../lib/ids";
 
@@ -108,7 +113,14 @@ export function PayDialog({
   const t = useT();
   const navigate = useNavigate();
   const start = useStartPayment(sessionId);
-  const options = useGuestPaymentOptions(open ? sessionId : null);
+  // 1272 K3: priced for the same order or split part the create call names.
+  const optionsTarget =
+    target?.kind === "order"
+      ? { orderId: target.orderId }
+      : target?.kind === "split"
+        ? { billSplitId: target.billSplitId }
+        : undefined;
+  const options = useGuestPaymentOptions(open ? sessionId : null, optionsTarget);
   const [picked, setPicked] = useState<string | null>(null);
   const [pickedBank, setPickedBank] = useState<string | null>(null);
   // The idempotency key stays with one exact request (target, method, bank,
@@ -151,6 +163,15 @@ export function PayDialog({
   const bank =
     current?.banks.find((item) => item.code === pickedBank)?.code ??
     (current?.banks.length === 1 ? current.banks[0]!.code : null);
+  // What the chosen bank or method adds on top of the bill (null: nothing).
+  const chosen = needsBank
+    ? current?.banks.find((item) => item.code === bank)
+    : current;
+  const chosenFee = hasGuestFee(chosen?.guestFeeIdr) ? chosen.guestFeeIdr : null;
+  const payAmount =
+    chosenFee !== null && typeof chosen?.chargedIdr === "number"
+      ? chosen.chargedIdr
+      : amountIdr;
   // Nothing to choose (options failed or the list is empty): the only honest
   // action is to close, so no disabled pay button is shown.
   const nothingToPay =
@@ -272,6 +293,12 @@ export function PayDialog({
                               : null}
                         </span>
                       )}
+                      {option.enabled && option.banks.length === 0 && (
+                        <FeeQuote
+                          feeIdr={option.guestFeeIdr}
+                          chargedIdr={option.chargedIdr}
+                        />
+                      )}
                     </span>
                     <span
                       aria-hidden="true"
@@ -307,8 +334,12 @@ export function PayDialog({
                       <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-background">
                         <Landmark className="size-5" aria-hidden="true" />
                       </span>
-                      <span className="min-w-0 flex-1 font-semibold">
-                        {item.name}
+                      <span className="grid min-w-0 flex-1">
+                        <span className="font-semibold">{item.name}</span>
+                        <FeeQuote
+                          feeIdr={item.guestFeeIdr}
+                          chargedIdr={item.chargedIdr}
+                        />
                       </span>
                       <span
                         aria-hidden="true"
@@ -334,6 +365,7 @@ export function PayDialog({
             </p>
           )}
         </div>
+        <FeeNoRefund feeIdr={chosenFee} />
         {needsBank && bank === null && (
           <p className="text-sm text-muted-foreground">
             {t("qrOrders.bill.payPickBankFirst")}
@@ -357,7 +389,7 @@ export function PayDialog({
             >
               {amountIdr > 0 && current
                 ? t("qrOrders.bill.payWith", {
-                    amount: formatRupiah(amountIdr),
+                    amount: formatRupiah(payAmount),
                     method: currentLabel,
                   })
                 : t("qrOrders.bill.payContinue")}

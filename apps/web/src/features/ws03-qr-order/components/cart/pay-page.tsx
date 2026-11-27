@@ -332,6 +332,7 @@ export function PayPage({ paymentId }: { paymentId: string }) {
             : null
         }
         amountIdr={payment.amountIdr}
+        feeIdr={payment.guestFeeIdr}
         method={payment.method}
         returnTo={`/t/${encodeURIComponent(qrToken)}/pay/${encodeURIComponent(paymentId)}`}
       />

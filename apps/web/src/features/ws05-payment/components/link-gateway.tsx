@@ -25,11 +25,14 @@ export function LinkGatewayOpening({
   token,
   intentId,
   amountIdr,
+  guestFeeIdr = 0,
   instructions,
 }: {
   token: string;
   intentId: string;
+  /** What the guest pays the gateway (the bill plus the service fee). */
   amountIdr: number;
+  guestFeeIdr?: number;
   instructions: RedirectInstructions;
 }) {
   const t = useT();
@@ -49,6 +52,7 @@ export function LinkGatewayOpening({
       channelCode: card ? null : instructions.channelCode,
       channelName: card ? null : instructions.channelName,
       amountIdr,
+      ...(guestFeeIdr > 0 ? { guestFeeIdr } : {}),
       placeName: null,
       timeZone: null,
       theme: null,
@@ -58,7 +62,16 @@ export function LinkGatewayOpening({
       if (!openPaymentUrl(url)) setFailed(true);
     }, 600);
     return () => window.clearTimeout(timer);
-  }, [openable, intentId, token, instructions, card, amountIdr, url]);
+  }, [
+    openable,
+    intentId,
+    token,
+    instructions,
+    card,
+    amountIdr,
+    guestFeeIdr,
+    url,
+  ]);
 
   if (!openable || failed)
     return (
