@@ -73,7 +73,7 @@ export function CartLineRow({
               {details}
             </p>
           )}
-          <div className="mt-1 flex items-center justify-between gap-3">
+          <div className="mt-1 flex flex-wrap items-center justify-between gap-3">
             {soldOut ? (
               <Button
                 type="button"
