@@ -360,24 +360,37 @@ describe("PAY-01 server-priced intents behind a payment link", () => {
       outstandingIdr: 144_375,
     });
     expect(view.timeZone).toBe("Asia/Jakarta");
+    // 1272 K1 (34f592b7d): every method and channel carries its price. No
+    // fee here (DOIT, no guest fee schedule): a method with channels has no
+    // price of its own (null), each channel is the bill (fee 0).
     expect(view.methods).toEqual([
       {
         method: "qris",
         enabled: true,
         unavailableReason: null,
+        guestFeeIdr: 0,
+        totalIdr: 144_375,
         channels: [],
       },
       {
         method: "va",
         enabled: true,
         unavailableReason: null,
-        channels: [{ code: "bca", name: "BCA" }],
+        guestFeeIdr: null,
+        totalIdr: null,
+        channels: [
+          { code: "bca", name: "BCA", guestFeeIdr: 0, totalIdr: 144_375 },
+        ],
       },
       {
         method: "bank_transfer",
         enabled: true,
         unavailableReason: null,
-        channels: [{ code: "bca", name: "BCA" }],
+        guestFeeIdr: null,
+        totalIdr: null,
+        channels: [
+          { code: "bca", name: "BCA", guestFeeIdr: 0, totalIdr: 144_375 },
+        ],
       },
     ]);
     expect(view.activeIntent).toBeNull();
