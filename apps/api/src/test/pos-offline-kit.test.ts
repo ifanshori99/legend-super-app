@@ -280,6 +280,63 @@ describe("O1 kit issue", () => {
     expect(again.catalogVersion).toBe(first.catalogVersion);
   });
 
+  it("review O1 P3 2: one snapshot per (outlet, catalogue version), shared by every kit", async () => {
+    // Fresh tills: the shared ones spend their hourly epoch budget elsewhere.
+    const tillOne = await newTill(app);
+    const tillTwo = await newTill(app);
+    const first = await issuePosOfflineKit(
+      scope,
+      callerOf(tillOne),
+      outletId,
+      tillOne.shiftId,
+      {
+        resumeSequenceId: null,
+      },
+    );
+    const second = await issuePosOfflineKit(
+      scope,
+      callerOf(tillTwo),
+      outletId,
+      tillTwo.shiftId,
+      {
+        resumeSequenceId: null,
+      },
+    );
+    const third = await issuePosOfflineKit(
+      scope,
+      callerOf(tillOne),
+      outletId,
+      tillOne.shiftId,
+      {
+        resumeSequenceId: first.receiptRun.sequenceId,
+      },
+    );
+    expect(second.catalogVersion).toBe(first.catalogVersion);
+    expect(third.catalogVersion).toBe(first.catalogVersion);
+    const snapshots = await owner.query<{ catalogs: unknown }>(
+      `SELECT snapshot -> 'catalogs' AS catalogs FROM pos_offline_catalog_snapshots
+        WHERE tenant_id = $1 AND outlet_id = $2 AND catalog_version = $3`,
+      [seededTenantId, seededOutletA, first.catalogVersion],
+    );
+    expect(snapshots.rows).toHaveLength(1);
+    expect(snapshots.rows[0]!.catalogs).toEqual(
+      JSON.parse(JSON.stringify(first.catalogs)),
+    );
+    const kits = await owner.query<{ snapshot: unknown }>(
+      "SELECT snapshot FROM pos_offline_kits WHERE tenant_id = $1 AND id = ANY($2)",
+      [seededTenantId, [first.kitId, second.kitId, third.kitId]],
+    );
+    expect(kits.rows).toHaveLength(3);
+    expect(kits.rows.every((row) => row.snapshot === null)).toBe(true);
+    // Append-only like the kits.
+    await expect(
+      owner.query(
+        "UPDATE pos_offline_catalog_snapshots SET snapshot = '{}'::jsonb WHERE tenant_id = $1 AND catalog_version = $2",
+        [seededTenantId, first.catalogVersion],
+      ),
+    ).rejects.toMatchObject({ code: "23514" });
+  });
+
   it("opens a new epoch with a never-used prefix when storage was lost", async () => {
     const before = await issuePosOfflineKit(
       scope,

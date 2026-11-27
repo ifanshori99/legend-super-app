@@ -5,8 +5,8 @@
 // while the internet is down: the dine-in and takeaway price lists, the tax and
 // service-charge rules, the offline tenders (cash, manual EDC) and the device's
 // offline receipt run (`L<n>`, one epoch). Valid 24 hours. Every kit is stored
-// with its snapshot (append-only) so O2 can check synced prices against what
-// the tablet was told.
+// (append-only) and names its snapshot, kept once per (outlet, catalogue
+// version), so O2 can check synced prices against what the tablet was told.
 //
 // Who may ask: the shift's own cashier, on the shift's own registered device,
 // while the shift is open. The route also requires shift.cash.operate; the
@@ -30,7 +30,10 @@ import {
   type PosOfflineTaxSnapshot,
 } from "@starter/shared/pos";
 import { db } from "../db/index.ts";
-import { posOfflineKits } from "../db/schema/pos-offline.ts";
+import {
+  posOfflineCatalogSnapshots,
+  posOfflineKits,
+} from "../db/schema/pos-offline.ts";
 import { posShifts } from "../db/schema/pos-shift.ts";
 import { withTenant } from "../db/tenant.ts";
 import { resolveDeviceOutlet } from "./device-pin.service.ts";
@@ -143,6 +146,19 @@ export async function issuePosOfflineKit(
       .update(canonicalJson(priced))
       .digest("hex");
 
+    // Review O1 P3 2 (legend-wasr7.15): one stored snapshot per (outlet,
+    // catalogue version); a kit names it, it does not copy it.
+    await tx
+      .insert(posOfflineCatalogSnapshots)
+      .values({ tenantId, outletId, catalogVersion, snapshot })
+      .onConflictDoNothing({
+        target: [
+          posOfflineCatalogSnapshots.tenantId,
+          posOfflineCatalogSnapshots.outletId,
+          posOfflineCatalogSnapshots.catalogVersion,
+        ],
+      });
+
     const run = await ensureOfflineReceiptRun(
       tx,
       tenantId,
@@ -162,7 +178,6 @@ export async function issuePosOfflineKit(
         sequenceId: run.sequenceId,
         issuedBy: caller.userId,
         catalogVersion,
-        snapshot,
         issuedAt,
         expiresAt,
       })
