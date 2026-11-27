@@ -132,6 +132,10 @@ function duitkuMode(): MockDuitkuMode {
     mode === "open-fail" ||
     mode === "pending" ||
     mode === "failed" ||
+    mode === "late-paid" ||
+    mode === "refunded" ||
+    mode === "no-login" ||
+    mode === "down" ||
     mode === "expired"
     ? mode
     : "normal";

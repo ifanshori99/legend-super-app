@@ -259,11 +259,7 @@ export function PaymentMethods({
       aria-busy={loading}
       className="grid gap-2"
     >
-      <h2
-        id="method-title"
-        tabIndex={-1}
-        className="type-heading outline-none"
-      >
+      <h2 id="method-title" tabIndex={-1} className="type-heading outline-none">
         {t("qrGlass.checkout.method.title")}
       </h2>
       <RadioGroup.Root

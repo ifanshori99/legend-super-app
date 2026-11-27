@@ -84,10 +84,25 @@ const MOCK_EWALLETS = [
  * Duitku switches of the mock (cookie `legend-mock-duitku`, read in mock.ts):
  * `partial` = the outlet has only QRIS, DANA and ShopeePay on; `open-fail` =
  * opening an e-wallet or card payment fails; `pending`, `failed`, `expired` =
- * what the gateway reports for an e-wallet or card payment instead of paid.
+ * what the gateway reports for an e-wallet or card payment instead of paid;
+ * `late-paid` = failed first, paid 20 s later (a late settlement), `refunded` =
+ * paid then refunded, `no-login` = the guest's session is not in this tab (401),
+ * `down` = the payment lookup answers 503.
  */
 export type MockDuitkuMode =
-  "normal" | "partial" | "open-fail" | "pending" | "failed" | "expired";
+  | "normal"
+  | "partial"
+  | "open-fail"
+  | "pending"
+  | "failed"
+  | "expired"
+  | "late-paid"
+  | "refunded"
+  | "no-login"
+  | "down";
+
+/** `late-paid`: how long the mock gateway reports "failed" before "paid". */
+export const MOCK_LATE_PAID_AFTER_MS = 20_000;
 
 type Clock = () => number;
 
@@ -1254,6 +1269,37 @@ export function createEngine(
     const redirect =
       entry.payment.method === "ewallet" || entry.payment.method === "card";
     const outcome = flags.duitku;
+    if (redirect && outcome === "no-login")
+      throw new ApiError(401, "UNAUTHORIZED", "Sesi meja tidak ditemukan.");
+    if (redirect && outcome === "down")
+      throw new ApiError(503, "UNAVAILABLE", "Layanan sedang sibuk.");
+    if (redirect && outcome === "late-paid") {
+      const elapsed = now - entry.createdMs;
+      if (
+        elapsed >= MOCK_PAYMENT_SETTLE_MS &&
+        elapsed < MOCK_PAYMENT_SETTLE_MS + MOCK_LATE_PAID_AFTER_MS &&
+        entry.payment.status === "pending"
+      )
+        return { ...paymentView(entry), status: "failed", redirectUrl: null };
+      if (
+        elapsed >= MOCK_PAYMENT_SETTLE_MS + MOCK_LATE_PAID_AFTER_MS &&
+        !entry.applied &&
+        entry.payment.status === "pending"
+      )
+        settle(rec, entry, now);
+      return paymentView(entry);
+    }
+    if (
+      redirect &&
+      outcome === "refunded" &&
+      !entry.applied &&
+      entry.payment.status === "pending" &&
+      now - entry.createdMs >= MOCK_PAYMENT_SETTLE_MS
+    ) {
+      settle(rec, entry, now);
+      entry.payment = { ...entry.payment, status: "refunded" };
+      return paymentView(entry);
+    }
     if (
       redirect &&
       (outcome === "pending" || outcome === "failed" || outcome === "expired")
