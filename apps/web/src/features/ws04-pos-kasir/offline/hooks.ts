@@ -9,7 +9,12 @@ import type { PosOfflineKit } from "@starter/shared/pos";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { useOutletId } from "../hooks";
 import { useActiveShift } from "../shift-hooks";
-import { fetchOfflineKit, sendOfflineBatch, sendOfflineConflict } from "./api";
+import {
+  fetchOfflineKit,
+  sendOfflineBatch,
+  sendOfflineConflict,
+  sendOfflineStuck,
+} from "./api";
 import { useApiReachable } from "./connectivity";
 import { createOfflineQueue, type OfflineQueue } from "./queue";
 import { registerPosShell } from "./shell";
@@ -69,6 +74,8 @@ export function usePosOffline(): PosOfflineState {
       outletId,
       submit: (events) => sendOfflineBatch(outletId, events),
       report: (event) => sendOfflineConflict(outletId, event),
+      reportStuck: (event, stuck, approval) =>
+        sendOfflineStuck(outletId, event, stuck, approval),
     });
   }, [outletId]);
   const online = useApiReachable();

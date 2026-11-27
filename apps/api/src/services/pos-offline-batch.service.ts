@@ -36,6 +36,7 @@
 // journal debits the offline clearing account, like a `shift_closed` sale.
 import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
+import { AccessError } from "@starter/shared/access";
 import {
   businessDateOf,
   CoreError,
@@ -52,6 +53,7 @@ import {
 import {
   formatReceiptNumber,
   offlineEventResultSchema,
+  offlineStuckHeldReason,
   PosError,
   posOfflineBatchResultSchema,
   type OfflineEventResult,
@@ -59,6 +61,7 @@ import {
   type OfflineSaleFlag,
   type PosOfflineBatchResult,
   type ReportPosOfflineConflictInput,
+  type ReportPosOfflineStuckInput,
   type SubmitPosOfflineBatchInput,
 } from "@starter/shared/pos";
 import { formatRupiah } from "@starter/shared/i18n";
@@ -92,6 +95,8 @@ import {
   recordLateAdjustment,
 } from "../edge/late-adjustment.ts";
 import { logger } from "../lib/logger.ts";
+import { recordAudit } from "./audit-writer.ts";
+import { outletContext } from "./device-pin-support.ts";
 import { resolveDeviceOutlet } from "./device-pin.service.ts";
 import { sourceIdToDb } from "./inventory.service.ts";
 import type { Tx } from "./menu-internals.ts";
@@ -110,6 +115,8 @@ import {
 import { isEdgeProcess } from "./pos-edge-outlet.ts";
 import { outletSnapshotFor } from "./pos-receipt.service.ts";
 import { assertOutletPermission } from "./pos-shift-support.ts";
+import { holdsOverridePermission } from "./staff-override.service.ts";
+import { attemptApproverPin } from "./staff-pin-proof.service.ts";
 import { recordTaxSnapshotsFromPayload } from "./tax.service.ts";
 
 export type OfflineBatchCaller = { userId: UserId; deviceId: string | null };
@@ -332,6 +339,257 @@ export async function reportPosOfflineConflict(
     ...outcome.result,
     eventId: event.eventId,
   });
+}
+
+/** The staff session on the tablet; the device token may be gone (revoked). */
+export type OfflineStuckCaller = { userId: UserId; deviceId: string | null };
+
+const STUCK_KIT_UNKNOWN = "Bekal offline penjualan ini tidak dikenal di outlet ini.";
+
+/**
+ * POST .../pos/offline-stuck (1273 second opinion P2-1, CTO). A sale the batch
+ * refuses for good (kit_unknown, sequence_gap, a refused device) is reported
+ * by the staff session on the tablet with a supervisor's PIN; the device token
+ * is not needed (it may be revoked). The sale is stored `held` /
+ * `stuck_<reason>`: no order, stock, tax or journal, supervisors and owners
+ * alerted, audited with the approver. The kit must be one of this tenant and
+ * outlet, on the run the sale names. Idempotent per eventId: a stored sale
+ * answers its stored state (`ingested` stays ingested); another kit's is a 409
+ * OFFLINE_EVENT_CONFLICT. The number is used up only when it continues the
+ * run (like any held sale); a gap is never written off.
+ */
+export async function reportPosOfflineStuck(
+  context: ScopedTenantContext,
+  caller: OfflineStuckCaller,
+  outletId: OutletId,
+  input: ReportPosOfflineStuckInput,
+  now = new Date(),
+): Promise<OfflineEventResult> {
+  if (isEdgeProcess())
+    throw new CoreError(
+      "CONFLICT",
+      "Penjualan offline hanya diterima server pusat.",
+    );
+  const { tenant } = context;
+  const { event, approverUserId } = input;
+  // AUTH-06: the approver is never the requester.
+  if (approverUserId.toLowerCase() === caller.userId.toLowerCase())
+    throw new AccessError("APPROVER_IS_REQUESTER");
+  const approver = outletContext(tenant, outletId);
+  const assertApprover = async (tx: Tx) => {
+    if (
+      !(await holdsOverridePermission(
+        tx,
+        tenant,
+        approver,
+        approverUserId,
+        "cash_shift_close",
+        outletId,
+        now,
+        true,
+      ))
+    )
+      throw new AccessError(
+        "PERMISSION_DENIED",
+        "Penyetuju tidak memiliki izin untuk tindakan ini di outlet ini.",
+      );
+  };
+  // 1. The caller, the kit and the approver's permission, before the PIN.
+  await withTenant(db, context, async (tx) => {
+    await assertOutletPermission(
+      tx,
+      context,
+      caller.userId,
+      outletId,
+      "shift.cash.operate",
+    );
+    await stuckKitOf(tx, context, outletId, event);
+  });
+  await withTenant(db, approver, assertApprover);
+  // 2. The PIN: counted and committed on its own.
+  await attemptApproverPin(tenant, {
+    outletId,
+    approverUserId,
+    requesterUserId: caller.userId,
+    pin: input.pin,
+    deviceId: caller.deviceId,
+    now,
+  });
+  // 3. Store, under the run row lock (serialised with the batch).
+  try {
+    return await withTenant(db, context, async (tx) => {
+      await assertApprover(tx);
+      return storeStuckSale(tx, context, caller, outletId, input, now);
+    });
+  } catch (error) {
+    if (sqlStateOf(error) === "23505")
+      throw new PosError("OFFLINE_EVENT_CONFLICT");
+    throw error;
+  }
+}
+
+/** The kit of a stuck sale: this tenant's, this outlet's, the sale's run. */
+async function stuckKitOf(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: OutletId,
+  event: OfflineSaleEvent,
+) {
+  const [kit] = await tx
+    .select({
+      id: posOfflineKits.id,
+      deviceId: posOfflineKits.deviceId,
+      outletId: posOfflineKits.outletId,
+      shiftId: posOfflineKits.shiftId,
+      sequenceId: posOfflineKits.sequenceId,
+    })
+    .from(posOfflineKits)
+    .where(
+      and(
+        eq(posOfflineKits.tenantId, context.tenant.tenantId),
+        eq(posOfflineKits.id, event.kitId),
+      ),
+    );
+  if (
+    !kit ||
+    !sameId(kit.outletId, outletId) ||
+    !sameId(kit.sequenceId, event.sequenceId)
+  )
+    throw new CoreError("NOT_FOUND", STUCK_KIT_UNKNOWN);
+  return kit;
+}
+
+async function storeStuckSale(
+  tx: Tx,
+  context: ScopedTenantContext,
+  caller: OfflineStuckCaller,
+  outletId: OutletId,
+  input: ReportPosOfflineStuckInput,
+  now: Date,
+): Promise<OfflineEventResult> {
+  const { event } = input;
+  const tenantId = context.tenant.tenantId;
+  const kit = await stuckKitOf(tx, context, outletId, event);
+  const [run] = await tx
+    .select()
+    .from(receiptSequences)
+    .where(
+      and(
+        eq(receiptSequences.tenantId, tenantId),
+        eq(receiptSequences.id, kit.sequenceId),
+      ),
+    )
+    .for("update");
+  if (!run || run.series !== "offline")
+    throw new CoreError("NOT_FOUND", STUCK_KIT_UNKNOWN);
+  const receiptNumber = formatReceiptNumber(run.prefix, event.sequenceNumber);
+
+  // Replay: one event id is one sale. Stored already: its stored answer.
+  const [stored] = await tx
+    .select({
+      kitId: posOfflineSales.kitId,
+      state: posOfflineSales.state,
+      reason: posOfflineSales.reason,
+      flags: posOfflineSales.flags,
+      sequenceNumber: posOfflineSales.sequenceNumber,
+    })
+    .from(posOfflineSales)
+    .where(
+      and(
+        eq(posOfflineSales.tenantId, tenantId),
+        eq(posOfflineSales.eventId, event.eventId),
+      ),
+    );
+  if (stored) {
+    if (!sameId(stored.kitId, kit.id))
+      throw new PosError("OFFLINE_EVENT_CONFLICT");
+    return offlineEventResultSchema.parse(
+      result(event, stored.state, {
+        reason: stored.reason,
+        flags: stored.flags,
+        receiptNumber:
+          stored.reason === NUMBER_TAKEN
+            ? null
+            : formatReceiptNumber(run.prefix, stored.sequenceNumber),
+      }),
+    );
+  }
+
+  const reason = offlineStuckHeldReason(input.stuck);
+  // The number continues the run: used up, like any held sale. A gap stays a
+  // gap (never written off); an older number keeps its own sale.
+  if (event.sequenceNumber === run.lastNumber + 1)
+    await tx
+      .update(receiptSequences)
+      .set({ lastNumber: event.sequenceNumber, updatedAt: now })
+      .where(
+        and(
+          eq(receiptSequences.tenantId, tenantId),
+          eq(receiptSequences.id, run.id),
+        ),
+      );
+  await tx.insert(posOfflineSales).values({
+    tenantId,
+    eventId: event.eventId,
+    outletId,
+    deviceId: kit.deviceId,
+    kitId: kit.id,
+    shiftId: kit.shiftId,
+    sequenceId: run.id,
+    sequenceNumber: event.sequenceNumber,
+    state: "held",
+    reason,
+    flags: [],
+    payload: event,
+    receivedBy: caller.userId,
+  });
+  await recordAudit(
+    {
+      tenantId,
+      outletId,
+      actorType: "user",
+      actorId: caller.userId,
+      deviceId: caller.deviceId,
+      action: "pos_offline_sale.stuck_reported",
+      objectType: "offline_sale",
+      objectId: event.eventId,
+      reason: input.reason,
+      before: null,
+      after: {
+        state: "held",
+        reason,
+        approvedBy: input.approverUserId,
+        kitDeviceId: kit.deviceId,
+        kitId: kit.id,
+        shiftId: kit.shiftId,
+        receiptNumber,
+        totalIdr: String(event.totalIdr),
+      },
+      sensitiveAccess: false,
+    },
+    { tx, context },
+  );
+  await alertSupervisors(tx, context, {
+    alsoOwners: true,
+    outletId,
+    id: edgeAlertId("offline_sale_review", tenantId, event.eventId),
+    eventName: "offline_sale.review_needed",
+    aggregateType: "offline_sale",
+    aggregateId: event.eventId,
+    payload: {
+      receiptNumber,
+      state: "held",
+      reason,
+      shiftId: kit.shiftId,
+      totalIdr: String(event.totalIdr),
+    },
+    title: "Penjualan offline perlu dicek",
+    body: `Struk ${receiptNumber} (${formatRupiah(Number(event.totalIdr))}) tidak bisa dikirim dari tablet kasir (${input.stuck}) dan dilaporkan dengan PIN supervisor. Disimpan tanpa pesanan; uangnya sudah diterima, hubungi finance.`,
+  });
+  logger.warn({ eventId: event.eventId, reason }, "Offline sale stuck held");
+  return offlineEventResultSchema.parse(
+    result(event, "held", { reason, receiptNumber }),
+  );
 }
 
 /** One event in its own transaction; lock trouble is a `retry` rejection. */

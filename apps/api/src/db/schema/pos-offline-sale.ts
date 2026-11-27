@@ -12,8 +12,11 @@
 //                      one offline receipt number is never two sales, except
 //                      a `number_taken` hold (review O2 P3 1): another sale
 //                      the tablet put under a number already used, kept for
-//                      finance and never an order or a receipt.
-//                      Append-only (custom SQL).
+//                      finance and never an order or a receipt. Neither is
+//                      a `stuck_<reason>` hold (1273 P2-1): a sale the
+//                      tablet could never send, reported by its staff with
+//                      a supervisor PIN; it may name a number another sale
+//                      holds. Append-only (custom SQL).
 //
 // (T, O) rules: tenant_id + outlet_id NOT NULL, children reference parents
 // through composite (tenant_id, id) keys, tenant + outlet RLS.
@@ -86,7 +89,9 @@ export const posOfflineSales = pgTable(
     }),
     uniqueIndex("pos_offline_sales_sequence_number_uidx")
       .on(table.tenantId, table.sequenceId, table.sequenceNumber)
-      .where(sql`${table.reason} IS DISTINCT FROM 'number_taken'`),
+      .where(
+        sql`${table.reason} IS DISTINCT FROM 'number_taken' AND left(${table.reason}, 6) IS DISTINCT FROM 'stuck_'`,
+      ),
     index("pos_offline_sales_outlet_idx").on(
       table.tenantId,
       table.outletId,

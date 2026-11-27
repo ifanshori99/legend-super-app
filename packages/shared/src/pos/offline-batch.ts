@@ -23,9 +23,11 @@ import {
   idrSchema,
   isoDateTimeSchema,
   outletIdSchema,
+  userIdSchema,
   uuidSchema,
 } from "../core/index.ts";
 import { defineEndpoint } from "../api/endpoint.ts";
+import { staffPinInputSchema } from "../identity/inputs.ts";
 import { orderIdSchema } from "../kitchen/schemas.ts";
 import { orderPaidTaxSchema } from "./events.ts";
 import { OFFLINE_KIT_SERVICE_TYPES } from "./offline.ts";
@@ -230,5 +232,53 @@ export const reportPosOfflineConflict = defineEndpoint({
   path: "/api/outlets/:outletId/pos/offline-conflicts",
   params: z.strictObject({ outletId: outletIdSchema }),
   body: reportPosOfflineConflictInputSchema,
+  response: dataResponseSchema(offlineEventResultSchema),
+});
+
+/**
+ * 1273 second opinion P2-1 (CTO): a sale the cloud refuses for good stays on
+ * the tablet and blocks sign-out. Reasons the batch never gets past:
+ * - kit_unknown: the kit is not this device's (reinstalled or another device);
+ * - sequence_gap: an earlier number of the run never arrived;
+ * - device_refused: the device itself is refused (revoked, no device token).
+ */
+export const OFFLINE_STUCK_REASONS = [
+  "kit_unknown",
+  "sequence_gap",
+  "device_refused",
+] as const;
+export const offlineStuckReasonSchema = z.enum(OFFLINE_STUCK_REASONS);
+export type OfflineStuckReason = z.infer<typeof offlineStuckReasonSchema>;
+
+/** The `held` reason a reported stuck sale is stored under. */
+export const offlineStuckHeldReason = (reason: OfflineStuckReason) =>
+  `stuck_${reason}` as const;
+
+/**
+ * 1273 P2-1: the staff session on the tablet reports such a sale with a
+ * supervisor's PIN (never the device token, which may be revoked). The cloud
+ * stores it `held` / `stuck_<reason>` with no order, stock, tax or journal and
+ * alerts supervisors and owners; the tablet drops it only once this answers
+ * `held` or `ingested`. Idempotent per eventId: a resend answers what is
+ * stored (an already ingested sale answers `ingested`, never a second row).
+ */
+export const reportPosOfflineStuckInputSchema = clientInputSchema({
+  event: offlineSaleEventSchema,
+  /** Why the tablet could not send it (the batch's answer). */
+  stuck: offlineStuckReasonSchema,
+  /** The supervisor's written reason. */
+  reason: z.string().trim().min(3).max(500),
+  approverUserId: userIdSchema,
+  pin: staffPinInputSchema,
+});
+export type ReportPosOfflineStuckInput = z.infer<
+  typeof reportPosOfflineStuckInputSchema
+>;
+
+export const reportPosOfflineStuck = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pos/offline-stuck",
+  params: z.strictObject({ outletId: outletIdSchema }),
+  body: reportPosOfflineStuckInputSchema,
   response: dataResponseSchema(offlineEventResultSchema),
 });
