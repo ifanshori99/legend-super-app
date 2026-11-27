@@ -9,7 +9,9 @@
 // - `edc_bridge_commands`: every command the cloud sent, by device. A `result`
 //   is accepted only for a command sent to that device with the same terminal,
 //   op and trace; a late one is matched inside tenant + outlet + terminal. No
-//   frame is stored (a raw terminal answer may carry a PAN).
+//   frame is stored (a raw terminal answer may carry a PAN); the decoded
+//   answer without PAN is (`result_evidence`), so a late result keeps its
+//   approval code and RRN.
 // - Tenant + outlet RLS: edc-bridge.custom.sql (migration 0541).
 import { sql } from "drizzle-orm";
 import {
@@ -17,6 +19,7 @@ import {
   foreignKey,
   index,
   integer,
+  jsonb,
   pgTable,
   timestamp,
   uuid,
@@ -84,6 +87,9 @@ export const edcBridgeCommands = pgTable(
     // `response` | `transport_error` | `refused`; the frame is never kept.
     resultOutcome: varchar("result_outcome", { length: 20 }),
     resultAt: timestamp("result_at", { withTimezone: true }),
+    /** What the terminal answered, decoded, without PAN or free text
+     * (`EdcBridgeResultEvidence`); null when unreadable or not answered. */
+    resultEvidence: jsonb("result_evidence").$type<Record<string, unknown>>(),
     // `sale_record_release` for this sale's trace reached the device.
     releaseSentAt: timestamp("release_sent_at", { withTimezone: true }),
   },

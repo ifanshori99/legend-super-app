@@ -92,6 +92,35 @@ export class EdcBridgeProvider implements EdcProvider {
     return this.#transport.ready(terminal);
   }
 
+  /** The decoded answer for `edc_bridge_commands.result_evidence`: no PAN
+   * and no free text. Null when it is not a readable response. Never
+   * throws. */
+  evidence(
+    op: "sale" | "cancel" | "inquiry" | "void",
+    answer: EdcBridgeAnswer,
+  ): Record<string, string | number | null> | null {
+    if (answer.outcome !== "response") return null;
+    try {
+      const read =
+        op === "inquiry"
+          ? this.#codec.decodeInquiry(answer.frame)
+          : this.#codec.decodeResult(answer.frame);
+      return {
+        outcome: read.outcome,
+        amountIdr: "amountIdr" in read ? (read.amountIdr ?? null) : null,
+        approvalCode: read.approvalCode,
+        rrn: read.rrn,
+        responseCode: read.responseCode,
+        cardType: read.cardType,
+        invoiceNo: read.invoiceNo,
+        batchNo: read.batchNo,
+        trace: read.trace,
+      };
+    } catch {
+      return null;
+    }
+  }
+
   sale(request: EcrSaleRequest): Promise<EcrResult> {
     const sent = this.#transport.send({
       terminal: request.terminal,

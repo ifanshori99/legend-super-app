@@ -35,10 +35,24 @@ import {
   it,
   vi,
 } from "vitest";
-import { createUlid, ulidToUuid } from "@starter/shared/core";
+import {
+  createUlid,
+  idrSchema,
+  outletIdSchema,
+  tenantIdSchema,
+  ulidToUuid,
+} from "@starter/shared/core";
+import {
+  EcrTransportError,
+  EdcError,
+  type EcrTerminal,
+} from "@starter/shared/edc";
+import {
+  EDC_BRIDGE_PROTOCOL_VERSION,
+  type EdcBridgeCommand,
+} from "@starter/shared/edc/bridge";
 import { createApp } from "../app.ts";
 import { createSimulatorBridgeCodec } from "../edge/edc/bridge-codec.ts";
-import { EdcError } from "@starter/shared/edc";
 import {
   CloudEdcRuntime,
   EDC_BRIDGE_LEASE_TTL_MS,
@@ -868,6 +882,250 @@ describe("B2 cloud provider slot (bca_cloud, B5a)", () => {
     }
     expect(await outletLocks(outletC)).toBe(0);
     expect(await outletLocks(outletD)).toBe(0);
+  });
+});
+
+describe("B2 runtime writes (review P3)", () => {
+  let outletE: string;
+  const terminalE = randomUUID();
+  let deviceE: Device;
+  let cloud: CloudEdcRuntime;
+  let boom = false;
+
+  beforeAll(async () => {
+    outletE = randomUUID();
+    await owner.query(
+      `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
+       SELECT $1, tenant_id, brand_id, legal_entity_id, $2, 'Outlet B2 E', 'Jl. Uji 4', timezone, opening_hours, 'active'
+         FROM outlets WHERE id = $3`,
+      [outletE, `E${outletE.slice(0, 6)}`.toUpperCase(), fx.tenant.outletId],
+    );
+    await addTerminal(fx.tenant.tenantId, outletE, terminalE, "TID-B2-E1");
+    deviceE = await addDevice(fx.tenant.tenantId, outletE);
+    await assign(fx.tenant.tenantId, terminalE, deviceE);
+    cloud = new CloudEdcRuntime({
+      codecs: [createSimulatorBridgeCodec("bca")],
+      saleTimeoutMs: 1_000,
+      traceTimeoutMs: 1_000,
+      resultGraceMs: 200,
+      renewMs: 3_600_000,
+      now: () => {
+        if (boom) {
+          boom = false;
+          throw new Error("clock failed");
+        }
+        return new Date();
+      },
+    });
+  });
+
+  afterAll(async () => {
+    await cloud?.stop();
+  });
+
+  type Sent = { type: string } & Record<string, unknown>;
+  /** A tablet session on `cloud` over a fake socket. */
+  function tablet(onCommand?: (command: EdcBridgeCommand) => void) {
+    const sent: Sent[] = [];
+    const handlers = cloud.open(
+      {
+        id: deviceE.id,
+        tenantId: tenantIdSchema.parse(fx.tenant.tenantId),
+        outletId: outletIdSchema.parse(outletE),
+      },
+      {
+        send: (text) => {
+          const message = JSON.parse(text) as Sent;
+          sent.push(message);
+          if (message.type === "command")
+            onCommand?.(message as unknown as EdcBridgeCommand);
+          return true;
+        },
+        close: () => undefined,
+      },
+    );
+    const hello = () =>
+      handlers.message({
+        type: "hello",
+        protocolVersion: EDC_BRIDGE_PROTOCOL_VERSION,
+        appVersion: "0.1.0",
+        unackedResults: 0,
+        heldSaleRecords: 0,
+      });
+    return { sent, handlers, hello };
+  }
+
+  const terminal = (): EcrTerminal => ({
+    tenantId: fx.tenant.tenantId,
+    outletId: outletE,
+    id: terminalE,
+    bank: "bca",
+    terminalId: "TID-B2-E1",
+    merchantId: "MID-B2",
+    connection: "lan",
+    ipAddress: "10.0.0.8",
+  });
+  const trace = () => `B2${randomUUID().replace(/-/g, "").slice(0, 10)}`;
+  const sale = (value: string) =>
+    cloud.registry.bridgeProvider("bca")!.sale({
+      terminal: terminal(),
+      trace: value,
+      amountIdr: idrSchema.parse(BILL),
+      method: "card",
+      reference: "B2-REF",
+      signal: new AbortController().signal,
+    });
+  const approval = (command: Pick<EdcBridgeCommand, "trace">) =>
+    responseOf({
+      outcome: "approved",
+      amountIdr: BILL,
+      trace: command.trace,
+      approvalCode: "AP1234",
+      rrn: "RRNB2E1",
+      maskedPan: "411111******1111",
+      message: "APPROVED",
+    });
+  const acksOf = (sent: Sent[]) =>
+    sent.filter((m) => m.type === "ack").map((m) => m.commandId);
+
+  /** Makes the next `n` inserts into edc_bridge_commands fail. */
+  async function failCommandInserts(n: number) {
+    // A sequence, not a table: a failed insert rolls back table writes.
+    await owner.query(
+      `DROP SEQUENCE IF EXISTS b2_fail_seq;
+       CREATE SEQUENCE b2_fail_seq;
+       CREATE OR REPLACE FUNCTION b2_fail_insert() RETURNS trigger
+         LANGUAGE plpgsql SECURITY DEFINER AS $$
+       BEGIN
+         IF nextval('b2_fail_seq') <= ${n} THEN
+           RAISE EXCEPTION 'b2 insert refused';
+         END IF;
+         RETURN NEW;
+       END $$;
+       DROP TRIGGER IF EXISTS b2_fail_insert ON edc_bridge_commands;
+       CREATE TRIGGER b2_fail_insert BEFORE INSERT ON edc_bridge_commands
+         FOR EACH ROW EXECUTE FUNCTION b2_fail_insert();`,
+    );
+  }
+  async function stopFailing() {
+    await owner.query(
+      `DROP TRIGGER IF EXISTS b2_fail_insert ON edc_bridge_commands;
+       DROP FUNCTION IF EXISTS b2_fail_insert();
+       DROP SEQUENCE IF EXISTS b2_fail_seq;`,
+    );
+  }
+
+  it("b2-16 an error after the command is on the socket never makes it 'not sent': the sale ends as a transport error (unknown)", async () => {
+    const t = tablet(() => {
+      // The clock fails right after the socket write.
+      boom = true;
+    });
+    await t.hello();
+    await expect(sale(trace())).rejects.toBeInstanceOf(EcrTransportError);
+    expect(t.sent.some((m) => m.type === "command")).toBe(true);
+  });
+
+  it("b2-17 overlapping renewals of one session hand out one lease id, the one in the database", async () => {
+    const t = tablet();
+    // Hold the lease row so the three renewals are all in flight at once.
+    const hold = await owner.connect();
+    let renewals: Promise<unknown>;
+    try {
+      await hold.query("BEGIN");
+      await hold.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [fx.tenant.tenantId],
+      );
+      const { rowCount } = await hold.query(
+        "SELECT 1 FROM edc_bridge_terminal_leases WHERE terminal_id = $1 FOR UPDATE",
+        [terminalE],
+      );
+      expect(rowCount).toBe(1);
+      renewals = Promise.all([t.hello(), cloud.renewAll(), cloud.renewAll()]);
+      await pause(300);
+    } finally {
+      await hold.query("COMMIT");
+      hold.release();
+    }
+    await renewals;
+    const ids = t.sent
+      .filter((m) => m.type === "lease")
+      .flatMap((m) =>
+        (m.grants as Array<{ terminalId: string; leaseId: string }>)
+          .filter((g) => g.terminalId === terminalE)
+          .map((g) => g.leaseId),
+      );
+    expect(ids.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(ids).size).toBe(1);
+    const { rows } = await owner.query<{ lease: string }>(
+      "SELECT lease_id::text AS lease FROM edc_bridge_terminal_leases WHERE terminal_id = $1",
+      [terminalE],
+    );
+    expect(rows[0]!.lease).toBe(ids[0]);
+  });
+
+  it("b2-18 the command row is retried; ack only once stored; still failing = no ack and an ops alert", async () => {
+    try {
+      // Two failed inserts, then it goes in: acked.
+      await failCommandInserts(2);
+      const t = tablet((command) => {
+        void t.handlers.message(resultFor(command, approval(command)));
+      });
+      await t.hello();
+      const first = await sale(trace());
+      expect(first.outcome).toBe("approved");
+      await vi.waitFor(() => expect(acksOf(t.sent)).toHaveLength(1), {
+        timeout: 5_000,
+      });
+      // Never stored: the answer still settles the sale in memory, no ack.
+      await failCommandInserts(100);
+      const errors = vi.spyOn(logger, "error");
+      try {
+        const second = await sale(trace());
+        expect(second.outcome).toBe("approved");
+        await vi.waitFor(
+          () =>
+            expect(
+              errors.mock.calls.some(
+                ([meta]) =>
+                  (meta as { alert?: string } | undefined)?.alert ===
+                  "edc_cloud_result_persist_failed",
+              ),
+            ).toBe(true),
+          { timeout: 10_000 },
+        );
+        expect(acksOf(t.sent)).toHaveLength(1);
+      } finally {
+        errors.mockRestore();
+      }
+    } finally {
+      await stopFailing();
+    }
+  });
+
+  it("b2-19 a late result keeps its approval code and RRN, without PAN or terminal text", async () => {
+    let command: EdcBridgeCommand | undefined;
+    const t = tablet((sent) => {
+      command = sent;
+    });
+    await t.hello();
+    await expect(sale(trace())).rejects.toBeInstanceOf(EcrTransportError);
+    await t.handlers.message(resultFor(command!, approval(command!)));
+    expect(acksOf(t.sent)).toEqual([command!.commandId]);
+    const { rows } = await owner.query<{ evidence: Record<string, unknown> }>(
+      "SELECT result_evidence AS evidence FROM edc_bridge_commands WHERE id = $1",
+      [command!.commandId],
+    );
+    expect(rows[0]!.evidence).toMatchObject({
+      outcome: "approved",
+      amountIdr: BILL,
+      approvalCode: "AP1234",
+      rrn: "RRNB2E1",
+      trace: command!.trace,
+    });
+    const text = JSON.stringify(rows[0]!.evidence);
+    expect(text).not.toContain("411111");
+    expect(text).not.toContain("APPROVED");
   });
 });
 

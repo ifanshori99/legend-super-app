@@ -128,6 +128,9 @@ type Session = {
   readonly leases: Map<string, Lease>;
   helloed: boolean;
   closed: boolean;
+  /** One lease renewal at a time per session (`hello`, the renewal tick):
+   * overlapping renewals could hand the tablet two lease ids. */
+  renewal: Promise<void>;
 };
 
 type Pending = {
@@ -141,7 +144,12 @@ type Pending = {
   readonly timer: ReturnType<typeof setTimeout>;
   /** The outlet lock was lost after it went out: a result is late. */
   orphaned: boolean;
+  /** The `edc_bridge_commands` row, kept to insert it again. */
+  record: typeof edcBridgeCommands.$inferInsert | null;
 };
+
+/** Attempts of a command or result write: the first and 3 retries. */
+const PERSIST_RETRY_MS = [100, 300, 900] as const;
 
 /** Picks the provider per terminal (`connection_kind`). */
 export class CloudEdcProviderRegistry implements EdcProviderLookup {
@@ -443,6 +451,7 @@ export class CloudEdcRuntime {
       leases: new Map(),
       helloed: false,
       closed: false,
+      renewal: Promise.resolve(),
     };
     this.#sessions.set(device.id, session);
     return {
@@ -574,8 +583,15 @@ export class CloudEdcRuntime {
     this.#retries.set(key, timer);
   }
 
-  /** Grants (or renews) the device's leases and sends the full `lease`. */
-  async #renew(session: Session): Promise<void> {
+  /** Grants (or renews) the device's leases and sends the full `lease`,
+   * after any renewal of the session still running. */
+  #renew(session: Session): Promise<void> {
+    const next = session.renewal.then(() => this.#renewOnce(session));
+    session.renewal = next.catch(() => undefined);
+    return next;
+  }
+
+  async #renewOnce(session: Session): Promise<void> {
     const { device } = session;
     const owned = await this.#ensureOutlet(device.tenantId, device.outletId);
     const at = this.#now();
@@ -800,6 +816,7 @@ export class CloudEdcRuntime {
         settle,
         timer,
         orphaned: false,
+        record: null,
       };
       this.#pending.set(message.commandId, pending);
       // Written now, in this tick: from here on the command is dispatched.
@@ -808,35 +825,27 @@ export class CloudEdcRuntime {
         this.#pending.delete(message.commandId);
         return null;
       }
-      const sentAt = this.#now();
-      pending.stored = withTenant(
-        this.#db,
-        edcBridgeDeviceContext(
-          session.device.tenantId,
-          session.device.outletId,
-        ),
-        (tx) =>
-          tx.insert(edcBridgeCommands).values({
-            id: message.commandId,
-            tenantId: session.device.tenantId,
-            outletId: session.device.outletId,
-            terminalId: message.terminalId,
-            deviceId: session.device.id,
-            leaseId: message.leaseId,
-            op: message.op,
-            trace: message.trace,
-            sentAt,
-          }),
-      ).then(
-        () => true,
-        (error: unknown) => {
-          logger.error(
-            { ...errClass(error), commandId: message.commandId },
-            "EDC bridge command could not be recorded",
-          );
-          return false;
-        },
-      );
+      // Sent: whatever fails from here, the answer (or the deadline's
+      // transport error, `unknown`) is the only outcome; never "not sent".
+      try {
+        pending.record = {
+          id: message.commandId,
+          tenantId: session.device.tenantId,
+          outletId: session.device.outletId,
+          terminalId: message.terminalId,
+          deviceId: session.device.id,
+          leaseId: message.leaseId,
+          op: message.op,
+          trace: message.trace,
+          sentAt: this.#now(),
+        };
+        pending.stored = this.#persistCommand(pending.record);
+      } catch (error) {
+        logger.error(
+          { ...errClass(error), commandId: message.commandId },
+          "EDC bridge command could not be recorded",
+        );
+      }
       return answer;
     } catch (error) {
       logger.error(errClass(error), "EDC bridge command not sent");
@@ -887,16 +896,70 @@ export class CloudEdcRuntime {
     return row ?? null;
   }
 
-  async #storeResult(session: Session, result: EdcBridgeResult) {
+  /** `write` with the first try and 3 retries (100, 300, 900 ms). False
+   * when every attempt failed (logged by class only). Never throws. */
+  async #persist(
+    what: string,
+    commandId: string,
+    write: () => Promise<unknown>,
+  ): Promise<boolean> {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await write();
+        return true;
+      } catch (error) {
+        const delay = PERSIST_RETRY_MS[attempt];
+        logger.warn(
+          { ...errClass(error), commandId, attempt },
+          `EDC bridge ${what} could not be recorded`,
+        );
+        if (delay === undefined || this.#stopped) return false;
+        await new Promise((resolve) => setTimeout(resolve, delay).unref());
+      }
+    }
+  }
+
+  #persistCommand(
+    record: typeof edcBridgeCommands.$inferInsert,
+  ): Promise<boolean> {
+    return this.#persist("command", record.id, () =>
+      withTenant(
+        this.#db,
+        edcBridgeDeviceContext(record.tenantId, record.outletId),
+        (tx) =>
+          tx.insert(edcBridgeCommands).values(record).onConflictDoNothing(),
+      ),
+    );
+  }
+
+  /** Stores the result with its decoded evidence (no PAN, no free text). */
+  #storeResult(session: Session, result: EdcBridgeResult): Promise<boolean> {
     const { device } = session;
-    const at = this.#now();
-    await withTenant(
-      this.#db,
-      edcBridgeDeviceContext(device.tenantId, device.outletId),
-      (tx) =>
-        tx
+    const ctx = edcBridgeDeviceContext(device.tenantId, device.outletId);
+    return this.#persist("result", result.commandId, () =>
+      withTenant(this.#db, ctx, async (tx) => {
+        const [terminal] = await tx
+          .select({ bankCode: paymentEdcTerminals.bankCode })
+          .from(paymentEdcTerminals)
+          .where(
+            and(
+              eq(paymentEdcTerminals.tenantId, device.tenantId),
+              eq(paymentEdcTerminals.id, result.terminalId),
+            ),
+          )
+          .limit(1);
+        const evidence = terminal
+          ? (this.registry
+              .bridgeProvider(terminal.bankCode)
+              ?.evidence(result.op, result.answer) ?? null)
+          : null;
+        await tx
           .update(edcBridgeCommands)
-          .set({ resultOutcome: result.answer.outcome, resultAt: at })
+          .set({
+            resultOutcome: result.answer.outcome,
+            resultAt: this.#now(),
+            resultEvidence: evidence,
+          })
           .where(
             and(
               eq(edcBridgeCommands.tenantId, device.tenantId),
@@ -904,8 +967,23 @@ export class CloudEdcRuntime {
               eq(edcBridgeCommands.id, result.commandId),
               isNull(edcBridgeCommands.resultAt),
             ),
-          ),
+          );
+      }),
     );
+  }
+
+  /** Ack only once the result is in the database; otherwise the tablet
+   * sends it again (idempotent) and ops are alerted. */
+  async #ackStored(session: Session, result: EdcBridgeResult, log: object) {
+    if (await this.#storeResult(session, result)) {
+      this.#write(session, { type: "ack", commandId: result.commandId });
+      return true;
+    }
+    logger.error(
+      { ...log, alert: "edc_cloud_result_persist_failed" },
+      "EDC bridge result could not be stored; not acked, the tablet sends it again",
+    );
+    return false;
   }
 
   async #onResult(session: Session, result: EdcBridgeResult) {
@@ -932,10 +1010,17 @@ export class CloudEdcRuntime {
         this.#pending.delete(result.commandId);
         clearTimeout(pending.timer);
         pending.settle(result.answer);
-        if (await pending.stored) {
-          await this.#storeResult(session, result);
-          this.#write(session, { type: "ack", commandId: result.commandId });
-        }
+        // The command row failed at send time: try it again before the
+        // result (its retries are spent; ack waits for both).
+        let stored = await pending.stored;
+        if (!stored && pending.record)
+          stored = await this.#persistCommand(pending.record);
+        if (stored) await this.#ackStored(session, result, log);
+        else
+          logger.error(
+            { ...log, alert: "edc_cloud_result_persist_failed" },
+            "EDC bridge command could not be stored; result not acked",
+          );
         return;
       }
       // Late (deadline passed, outlet lock lost since) or after a restart:
@@ -950,12 +1035,11 @@ export class CloudEdcRuntime {
         );
         return;
       }
-      await this.#storeResult(session, result);
-      this.#write(session, { type: "ack", commandId: result.commandId });
-      logger.warn(
-        log,
-        "Late EDC bridge result stored; the sale is settled by inquiry",
-      );
+      if (await this.#ackStored(session, result, log))
+        logger.warn(
+          log,
+          "Late EDC bridge result stored; the sale is settled by inquiry",
+        );
     } catch (error) {
       logger.error({ ...errClass(error), ...log }, "EDC bridge result failed");
     }

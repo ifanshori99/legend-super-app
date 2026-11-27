@@ -29,6 +29,7 @@ CREATE TABLE "edc_bridge_commands" (
 	"sent_at" timestamp with time zone NOT NULL,
 	"result_outcome" varchar(20),
 	"result_at" timestamp with time zone,
+	"result_evidence" jsonb,
 	"release_sent_at" timestamp with time zone,
 	CONSTRAINT "edc_bridge_commands_op_check" CHECK ("edc_bridge_commands"."op" IN ('sale','cancel','inquiry','void')),
 	CONSTRAINT "edc_bridge_commands_outcome_check" CHECK ("edc_bridge_commands"."result_outcome" IS NULL OR "edc_bridge_commands"."result_outcome" IN ('response','transport_error','refused')),
