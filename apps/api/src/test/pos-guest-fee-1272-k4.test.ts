@@ -68,6 +68,7 @@ vi.setConfig({ testTimeout: 180_000, hookTimeout: 180_000 });
 
 const BILL_IDR = 33_000;
 const SUPERVISOR_PIN = "582914";
+const EDC_TERMINAL_ID = randomUUID();
 const METHODS = ["qris", "va", "bank_transfer", "ewallet", "card"] as const;
 const CHANNELS = {
   // I1 has no rate: never offered at fee 0.
@@ -150,6 +151,14 @@ beforeAll(async () => {
     base.tenant.outletId,
     "Jl. Braga No. 12, Bandung",
   ]);
+  await owner.query(
+    `INSERT INTO payment_edc_terminals
+       (id, tenant_id, outlet_id, bank_code, terminal_id, merchant_id, model,
+        connection, ip_address, supported_methods, status)
+     VALUES ($1, $2, $3, 'bca', 'TID-K4FEE', 'MID-K4FEE', 'Test EDC', 'lan',
+             '10.0.0.8', ARRAY['card','qris'], 'active')`,
+    [EDC_TERMINAL_ID, base.tenant.tenantId, base.tenant.outletId],
+  );
   fx = { ...base, gateway };
 });
 afterAll(async () => {
@@ -420,7 +429,7 @@ describe("1272 K4 cashier guest service fee", () => {
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 
-  it("VA with a fee: the tender, the hold and the captured amount are the bill; Duitku charges bill + fee; no change, no parked money, refund cap = bill", async () => {
+  it("VA with a fee: the tender, the hold and the captured amount are the bill; Duitku charges bill + fee; no change, no parked money, refundable = bill only", async () => {
     const order = await newSubmittedOrder(fx, 0);
     const va = await issue(order.id, "va");
     expect(va.tender).toMatchObject({
@@ -481,9 +490,13 @@ describe("1272 K4 cashier guest service fee", () => {
             eq(paymentIntents.id, va.intentId),
           ),
         );
-      return (await refundableBalance(tx, intent!)).cap;
+      return refundableBalance(tx, intent!);
     });
-    expect(Number(cap)).toBeLessThanOrEqual(BILL_IDR);
+    // Duitku received bill + fee, but only the bill is ever refundable
+    // (`paid` is capped at the intent's bill); the sale holds all of it.
+    expect(Number(cap.paid)).toBe(BILL_IDR);
+    expect(Number(cap.posSaleInUse)).toBe(BILL_IDR);
+    expect(Number(cap.cap)).toBe(0);
     await assertInvariants(fx, order.id);
 
     // The receipt prints the fee after the order total; totals stay the order.
@@ -493,6 +506,8 @@ describe("1272 K4 cashier guest service fee", () => {
       expect.objectContaining({ method: "va", amountIdr: BILL_IDR }),
     ]);
     expect(doc.guestFeeIdr).toBe(VA_FEE);
+    // The total paid is the server's figure: total + fee.
+    expect(doc.paidTotalIdr).toBe(BILL_IDR + VA_FEE);
   });
 
   it("the old VA paid after a release parks only the bill: the fee is withheld, never parked or refunded", async () => {
@@ -546,9 +561,201 @@ describe("1272 K4 cashier guest service fee", () => {
       expect(display.onlineCode).not.toHaveProperty("guestFeeIdr");
       await payCode(wallet.intentId, BILL_IDR, "ewallet", wallet.providerRef);
       expect(await capturedIdr(fx, order.id)).toBe(BILL_IDR);
-      expect(await receiptOf(order.id)).not.toHaveProperty("guestFeeIdr");
+      const doc = await receiptOf(order.id);
+      expect(doc).not.toHaveProperty("guestFeeIdr");
+      expect(doc).not.toHaveProperty("paidTotalIdr");
     } finally {
       fx.gateway.feeMethods = ["va", "ewallet"];
     }
+  });
+  it("negative side: a fee code paid with the bill only, or any other amount, parks in full (AMOUNT_MISMATCH): no tender captured, nothing refunded by the POS", async () => {
+    for (const paid of [
+      BILL_IDR,
+      BILL_IDR + VA_FEE - 1,
+      BILL_IDR + VA_FEE + 1,
+    ]) {
+      const order = await newSubmittedOrder(fx, 0);
+      const va = await issue(order.id, "va");
+      expect(
+        await payParked(va.intentId, paid, "va", va.providerRef),
+      ).toBeNull();
+      expect(await capturedIdr(fx, order.id)).toBe(0);
+      expect((await tenderStatuses(fx, order.id)).map((t) => t.status)).toEqual(
+        ["authorized"],
+      );
+      const parked = await unallocatedFunds(fx, va.intentId);
+      expect(parked.map((row) => row.amountIdr)).toEqual([paid]);
+      expect(await refundsOfIntent(fx, va.intentId)).toEqual([]);
+      await assertInvariants(fx, order.id);
+    }
+  });
+
+  it("DP + a VA with a fee: the code prices the remaining bill; tender = remaining, fee on top; the receipt keeps DP and total apart from the fee", async () => {
+    const DP = 10_000;
+    const REMAINING = BILL_IDR - DP;
+    const order = await newSubmittedOrder(fx, DP);
+    const fee = grossUpGuestFee(REMAINING, RATES.get("BC")!);
+    const options = await getPosPaymentOptions(
+      fx.context,
+      fx.tenant.outletId as OutletId,
+      { deviceId: null },
+      order.id,
+    );
+    expect(
+      options.methods.find((row) => row.method === "va")?.channels?.[0],
+    ).toMatchObject({
+      code: "BC",
+      guestFeeIdr: fee,
+      totalIdr: REMAINING + fee,
+    });
+    const va = await issue(order.id, "va");
+    expect(va.tender.amountIdr).toBe(REMAINING);
+    expect(va.intent).toEqual({
+      amountIdr: REMAINING,
+      guestFeeIdr: fee,
+      chargedIdr: REMAINING + fee,
+    });
+    await payCode(va.intentId, REMAINING + fee, "va", va.providerRef);
+    expect(await capturedIdr(fx, order.id)).toBe(REMAINING);
+    expect(await unallocatedFunds(fx, va.intentId)).toEqual([]);
+    await assertInvariants(fx, order.id);
+    const doc = await receiptOf(order.id);
+    expect(doc).toMatchObject({
+      totalIdr: BILL_IDR,
+      depositAppliedIdr: DP,
+      guestFeeIdr: fee,
+      paidTotalIdr: BILL_IDR + fee,
+    });
+    expect(doc.tenders).toEqual([
+      expect.objectContaining({ method: "va", amountIdr: REMAINING }),
+    ]);
+  });
+
+  it("a fee VA paid late after a card sale closed its hold: the guest is refunded the bill only, the fee is never refunded; the card keeps the bill", async () => {
+    const order = await newSubmittedOrder(fx, 0);
+    const va = await issue(order.id, "va");
+    const read = await fx.get(`${fx.base}/${order.id}`);
+    const number = read.body.data.number as string;
+    const sale = randomUUID();
+    await owner.query(
+      `INSERT INTO edc_transactions
+         (id, tenant_id, outlet_id, terminal_id, bank, reference, idempotency_key,
+          request_fingerprint, amount_idr, method, status, type, mode, trace,
+          approval_code, rrn, completed_at)
+       VALUES ($1, $2, $3, $4, 'bca', $5, $6, 'fp', $7, 'card', 'approved', 'sale', 'ecr',
+               $8, 'APP123', $9, now())`,
+      [
+        sale,
+        fx.tenant.tenantId,
+        fx.tenant.outletId,
+        EDC_TERMINAL_ID,
+        number,
+        randomUUID(),
+        BILL_IDR,
+        randomUUID().slice(0, 12),
+        "RRN" + randomUUID().replace(/-/g, "").slice(0, 9),
+      ],
+    );
+    const booked = await fx.post(`${fx.base}/${order.id}/tenders`, {
+      method: "edc_card",
+      expectedStatus: read.body.data.status as string,
+      edcTransactionId: sale,
+      idempotencyKey: randomUUID(),
+    });
+    expect(booked.status, JSON.stringify(booked.body)).toBe(201);
+    expect(await capturedIdr(fx, order.id)).toBe(BILL_IDR);
+
+    await payParked(va.intentId, BILL_IDR + VA_FEE, "va", va.providerRef);
+    // The bill stays paid once, by the card.
+    expect(await capturedIdr(fx, order.id)).toBe(BILL_IDR);
+    const refunded = (await refundsOfIntent(fx, va.intentId)).reduce(
+      (sum, row) => sum + row.amountIdr,
+      0,
+    );
+    // Refund = the bill (the refund cap of the intent); the fee stays.
+    expect(refunded).toBe(BILL_IDR);
+    expect(refunded).toBeLessThan(BILL_IDR + VA_FEE);
+    // The fee is not refundable: of the BILL + fee Duitku received, the
+    // refundable cap is the bill, and the refund took all of it.
+    const balance = await withTenant(db, fx.context, async (tx) => {
+      const [intent] = await tx
+        .select()
+        .from(paymentIntents)
+        .where(
+          and(
+            eq(paymentIntents.tenantId, fx.context.tenant.tenantId),
+            eq(paymentIntents.id, va.intentId),
+          ),
+        );
+      return refundableBalance(tx, intent!);
+    });
+    expect(Number(balance.cap)).toBe(BILL_IDR);
+    expect(Number(balance.reserved)).toBe(BILL_IDR);
+    await assertInvariants(fx, order.id);
+  });
+
+  it("options and createIntent agree on the fee, flag on and flag off", async () => {
+    const outletId = fx.tenant.outletId as OutletId;
+    for (const feeMethods of [["va", "ewallet"], []]) {
+      fx.gateway.feeMethods = feeMethods;
+      try {
+        const order = await newSubmittedOrder(fx, 0);
+        const options = await getPosPaymentOptions(
+          fx.context,
+          outletId,
+          { deviceId: null },
+          order.id,
+        );
+        for (const method of ["va", "ewallet"] as const) {
+          const channel = options.methods
+            .find((row) => row.method === method)
+            ?.channels?.find((row) => row.code === CHANNELS[method][0].code);
+          expect(channel, `${method} ${feeMethods.length}`).toBeTruthy();
+          const issued = await issue(order.id, method);
+          expect(issued.intent.guestFeeIdr).toBe(channel!.guestFeeIdr);
+          expect(issued.intent.chargedIdr).toBe(channel!.totalIdr);
+          if (feeMethods.length === 0) {
+            expect(channel).toMatchObject({
+              guestFeeIdr: 0,
+              totalIdr: BILL_IDR,
+            });
+          } else {
+            expect(channel!.guestFeeIdr).toBeGreaterThan(0);
+          }
+          // Free the bill for the next method: the cashier releases the code.
+          expect((await postCancel(fx, order.id)).status).toBe(202);
+          await owner.query(
+            `UPDATE payment_intents SET expires_at = now() - $3::int * interval '1 minute'
+              WHERE tenant_id=$1 AND id=$2`,
+            [fx.tenant.tenantId, issued.intentId, HOLD_RELEASE_AFTER_MIN + 1],
+          );
+          const released = await postRelease(
+            fx,
+            order.id,
+            await managerApproval(order.id, BILL_IDR),
+          );
+          expect(released.status, JSON.stringify(released.body)).toBe(200);
+        }
+      } finally {
+        fx.gateway.feeMethods = ["va", "ewallet"];
+      }
+    }
+  });
+
+  it("a fee code whose hold bill differs from the intent shows no instructions (P3-c)", async () => {
+    const order = await newSubmittedOrder(fx, 0);
+    const va = await issue(order.id, "va");
+    const shown = await getQris(fx, order.id);
+    expect(shown.body.data.instructions).toBeTruthy();
+    // The intent no longer matches the hold's bill: nothing is shown.
+    await owner.query(
+      `UPDATE payment_intents SET amount_idr = amount_idr - 1000
+        WHERE tenant_id=$1 AND id=$2`,
+      [fx.tenant.tenantId, va.intentId],
+    );
+    const hidden = await getQris(fx, order.id);
+    expect(hidden.status, JSON.stringify(hidden.body)).toBe(200);
+    expect(hidden.body.data.instructions).toBeNull();
+    expect(hidden.body.data).not.toHaveProperty("guestFeeIdr");
   });
 });
