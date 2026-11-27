@@ -110,15 +110,15 @@ function PinDialogBody({
           rows={3}
           onBlur={(event) => {
             // On a phone the pad sits below the fields, out of sight: once a
-            // reason is in, bring it up unless focus moved to another control
-            // (a tap on plain text lands on the dialog itself).
+            // reason is in, bring it up unless focus moved to a control (a tap
+            // on plain text lands on the dialog itself). A pad key counts as a
+            // control: scrolling between its press and release drops the tap.
             const next = event.relatedTarget;
             const toControl =
               next instanceof HTMLElement &&
               next.matches(
                 "input,textarea,select,button,a[href],[role='combobox']",
-              ) &&
-              !padRef.current?.contains(next);
+              );
             if (reason.trim() !== "" && !toControl)
               padRef.current?.scrollIntoView({ block: "nearest" });
           }}

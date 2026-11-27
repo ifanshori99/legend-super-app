@@ -229,7 +229,7 @@ for (const width of [390, 1280]) {
     await page.setViewportSize({ width, height: 900 });
     await open(page, "kind=edge_void_refused");
     const row = page
-      .getByText(/Void edge ditolak, refund manual sudah ada/)
+      .getByText("Void edge ditolak", { exact: true })
       .filter({ visible: true })
       .first();
     await expect(row).toBeVisible({ timeout: COLD_START_TIMEOUT_MS });
