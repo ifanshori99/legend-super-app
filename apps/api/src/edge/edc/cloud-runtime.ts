@@ -264,7 +264,7 @@ export function edcBridgeDeviceContext(
   );
 }
 
-function tenantWideContext(tenantId: string): ScopedTenantContext {
+export function tenantWideContext(tenantId: string): ScopedTenantContext {
   return establishScopedTenantContext(
     establishTenantContext({
       tenantId: tenantIdSchema.parse(tenantId),

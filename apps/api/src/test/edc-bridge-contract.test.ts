@@ -482,11 +482,17 @@ describe("EDC bridge contract: device token and pairing code", () => {
       expect(edcBridgeDeviceTokenSchema.safeParse(bad).success).toBe(false);
   });
 
-  it("pairing code is 8 Crockford characters, case-insensitive", () => {
+  it("pairing code is 8 characters without 0/O/1/I/L, case-insensitive", () => {
     expect(edcBridgePairingCodeSchema.parse("abcd2345")).toBe("ABCD2345");
-    expect(edcBridgePairingCodeSchema.safeParse("ABCD234I").success).toBe(
-      false,
-    );
+    expect(edcBridgePairingCodeSchema.parse("UVWXYZ99")).toBe("UVWXYZ99");
+    for (const bad of [
+      "ABCD234I",
+      "ABCD234L",
+      "ABCD234O",
+      "ABCD2340",
+      "ABCD2341",
+    ])
+      expect(edcBridgePairingCodeSchema.safeParse(bad).success).toBe(false);
     expect(edcBridgePairingCodeSchema.safeParse("ABC2345").success).toBe(false);
   });
 

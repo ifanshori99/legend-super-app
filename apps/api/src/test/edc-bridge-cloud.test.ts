@@ -14,7 +14,7 @@
 //   still refused while the sale is pending/unknown;
 // - revoked token: socket closed, reconnect refused, no new command;
 // - device API: `payment.edc.manage` at the outlet (403), other outlet or
-//   tenant = 404, token shown once (no-store) and never in audit or log,
+//   tenant = 404, pairing code (no token) shown once (no-store), token via /pair, never in audit or log,
 //   revoke closes the socket; a terminal with an unfinished sale is never
 //   moved, re-linked or released (EDC_TERMINAL_BUSY);
 // - outlet lock lost with a sale on the wire (CTO decision): the API process
@@ -26,6 +26,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { inspect } from "node:util";
+import request from "supertest";
 import {
   afterAll,
   afterEach,
@@ -778,8 +779,14 @@ describe("B2 device API", () => {
       });
       expect(issued.status, JSON.stringify(issued.body)).toBe(201);
       expect(issued.headers["cache-control"]).toBe("no-store");
-      token = issued.body.data.token as string;
       issuedId = issued.body.data.device.id as string;
+      // B4: the answer carries a pairing code, the tablet trades it.
+      expect(issued.body.data).not.toHaveProperty("token");
+      const paired = await request(fx.app)
+        .post("/api/edc-bridge/pair")
+        .send({ code: issued.body.data.pairCode.code });
+      expect(paired.status, JSON.stringify(paired.body)).toBe(200);
+      token = paired.body.data.token as string;
       expect(token.startsWith(`edcb_${issuedId}_`)).toBe(true);
       const list = await manager.get(
         `${DEVICES}?outletId=${fx.tenant.outletId}`,

@@ -1,8 +1,9 @@
-// EDC bridge tablets (B2 legend-wasr7.21): list, issue a token, revoke,
-// assign terminals. `payment.edc.manage` at the device's outlet, checked on
-// the row's own outlet. The token is shown once; only its SHA-256 is stored
-// and nothing here logs it. Every write leaves an audit row.
-import { randomBytes } from "node:crypto";
+// EDC bridge tablets (B2 legend-wasr7.21): list, create, issue a pairing code,
+// revoke, assign terminals. `payment.edc.manage` at the device's outlet,
+// checked on the row's own outlet. Create and "new code" answer a one-time
+// pairing code, never the device token (B4 legend-wasr7.24): the tablet trades
+// the code at POST /api/edc-bridge/pair (edc-bridge-pair.service.ts). Neither
+// is logged or audited. Every write leaves an audit row.
 import { and, asc, eq, inArray, isNotNull, isNull, or } from "drizzle-orm";
 import {
   CoreError,
@@ -17,6 +18,7 @@ import {
   type AssignEdcBridgeTerminalsInput,
   type CreateEdcBridgeDeviceInput,
   type EdcBridgeDeviceView,
+  type EdcBridgePairCode,
   type IssuedEdcBridgeDevice,
 } from "@starter/shared/edc/bridge-devices";
 import { db } from "../db/index.ts";
@@ -32,6 +34,11 @@ import {
   hashEdcBridgeToken,
 } from "../edge/edc/cloud-runtime.ts";
 import { recordAudit } from "./core-audit.ts";
+import {
+  cancelEdcBridgePairCodesTx,
+  issueEdcBridgePairCodeTx,
+  newEdcBridgeDeviceToken,
+} from "./edc-bridge-pair.service.ts";
 import { assertPaymentPermission } from "./payment-support.ts";
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -192,7 +199,8 @@ export async function createEdcBridgeDevice(
   return withTenant(db, ctx, async (tx) => {
     await authorize(tx, ctx, actor, input.outletId);
     const id = createUlid();
-    const token = `edcb_${id}_${randomBytes(32).toString("base64url")}`;
+    // Until the tablet pairs, the stored hash is of a token nobody holds.
+    const unheld = newEdcBridgeDeviceToken(id);
     const [row] = await tx
       .insert(edcBridgeDevices)
       .values({
@@ -200,7 +208,7 @@ export async function createEdcBridgeDevice(
         tenantId: ctx.tenant.tenantId,
         outletId: input.outletId,
         label: input.label,
-        tokenHash: hashEdcBridgeToken(token),
+        tokenHash: hashEdcBridgeToken(unheld),
         createdBy: actor,
       })
       .returning();
@@ -208,7 +216,33 @@ export async function createEdcBridgeDevice(
     await audit(tx, ctx, actor, row.outletId, "edc_bridge_device.created", id, {
       label: row.label,
     });
-    return { device: view(row, []), token };
+    const pairCode = await issueEdcBridgePairCodeTx(tx, ctx, actor, row);
+    return { device: view(row, []), pairCode };
+  });
+}
+
+/** "Issue a new code": the device's previous code stops working. Pairing
+ * with it replaces the device token (the old tablet is disconnected). */
+export async function issueEdcBridgePairCode(
+  ctx: ScopedTenantContext,
+  actor: string,
+  deviceId: string,
+): Promise<EdcBridgePairCode> {
+  return withTenant(db, ctx, async (tx) => {
+    const row = await loadDevice(tx, ctx, actor, deviceId);
+    if (row.revokedAt !== null)
+      throw new CoreError("CONFLICT", "Perangkat jembatan EDC sudah dicabut.");
+    const issued = await issueEdcBridgePairCodeTx(tx, ctx, actor, row);
+    await audit(
+      tx,
+      ctx,
+      actor,
+      row.outletId,
+      "edc_bridge_device.pair_code_issued",
+      row.id,
+      { expiresAt: issued.expiresAt },
+    );
+    return issued;
   });
 }
 
@@ -236,6 +270,7 @@ export async function revokeEdcBridgeDevice(
       )
       .returning();
     if (!revoked) throw notFound();
+    await cancelEdcBridgePairCodesTx(tx, ctx, row.id);
     await audit(
       tx,
       ctx,
