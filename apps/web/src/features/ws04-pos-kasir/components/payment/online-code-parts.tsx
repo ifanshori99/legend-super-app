@@ -27,6 +27,7 @@ import {
   useNow,
 } from "./gateway-parts";
 import { useEdcErrorText } from "./edc-side";
+import { CodeFee } from "./fee-lines";
 import { formatClock } from "./payment-helpers";
 
 /** Q93: a manager may release a code from 30 minutes after it lapsed. */
@@ -135,6 +136,13 @@ export function OnlineCodeHold({
         }
       >
         {shown && children}
+        {shown && (
+          <CodeFee
+            billIdr={attempt.amountIdr}
+            feeIdr={attempt.guestFeeIdr}
+            chargedIdr={attempt.chargedIdr}
+          />
+        )}
         {!shown && opensAt !== undefined && !canRelease && (
           <p className="text-base text-muted-foreground">
             {t("posKasirGateway.code.releaseAfter", {

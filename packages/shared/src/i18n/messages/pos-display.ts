@@ -86,6 +86,20 @@ export const posDisplayMessages = {
     cashierTitle: "Silakan bayar di kasir",
     cashierHint: "Kasir akan menghitung sisa pembayaran Anda.",
   },
+  /** 1269 C3a / 1272 K4: a cashier VA or e-wallet code on the display. */
+  onlineCode: {
+    vaTitle: "Bayar dengan Virtual Account",
+    vaHint: "Transfer ke nomor ini dari aplikasi atau ATM {bank}.",
+    vaNumber: "Nomor Virtual Account",
+    walletTitle: "Bayar dengan {wallet}",
+    walletHint: "Pindai kode ini dengan ponsel Anda untuk membuka {wallet}.",
+    walletAlt: "Kode halaman pembayaran {wallet}",
+    bill: "Tagihan",
+    fee: "Biaya layanan pembayaran",
+    total: "Yang harus dibayar",
+    noRefund:
+      "Biaya layanan pembayaran tidak dikembalikan bila pesanan dibatalkan.",
+  },
   orderingHint:
     "Kasir masih mencatat pesanan. Total diperbarui saat item ditambahkan.",
   paid: {

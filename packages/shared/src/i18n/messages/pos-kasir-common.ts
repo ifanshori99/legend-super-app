@@ -20,7 +20,7 @@ export const posKasirCommonMessages = {
     depositPaid: "DP lunas · {reference}",
     depositUnpaid: "DP belum lunas · {reference}",
     confirmed: "{label} terkonfirmasi",
-    remaining: "Sisa yang harus dibayar",
+    remaining: "Sisa tagihan",
     remainingPaid: "Sisa bayar",
   },
   keypad: {

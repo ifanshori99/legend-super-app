@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { QrCode } from "@/components/ui/qr-code";
 import { useEwallets, useStartPayment } from "../../hooks";
 import { FailedPanel } from "./failed-panel";
+import { FeeNoRefund, FeeQuote } from "./fee-lines";
 import {
   ChoiceGroup,
   ExpiredPanel,
@@ -38,7 +39,7 @@ export function EwalletPanel(props: PaymentPanelProps) {
     orderId,
     "ewallet",
   );
-  const wallets = useEwallets();
+  const wallets = useEwallets(orderId);
   const start = useStartPayment();
   const [walletCode, setWalletCode] = useState<string | null>(null);
 
@@ -65,7 +66,11 @@ export function EwalletPanel(props: PaymentPanelProps) {
           onChangeMethod={onChangeMethod}
         />
       );
-    const options = wallets.data ?? [];
+    const options = (wallets.data ?? []).map((option) => ({
+      ...option,
+      hint: <FeeQuote feeIdr={option.guestFeeIdr} totalIdr={option.totalIdr} />,
+    }));
+    const chosen = options.find((option) => option.code === walletCode);
     if (options.length === 0)
       return (
         <PosPanel
@@ -112,6 +117,7 @@ export function EwalletPanel(props: PaymentPanelProps) {
             value={walletCode}
             onChange={setWalletCode}
           />
+          <FeeNoRefund feeIdr={chosen?.guestFeeIdr} className="max-w-3xl" />
         </StartPanel>
       </LiveRegion>
     );

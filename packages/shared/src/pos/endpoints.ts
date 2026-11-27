@@ -70,6 +70,7 @@ import {
   posOrderStatusSchema,
   posOrderSummarySchema,
   posPaymentOptionsSchema,
+  posPaymentOptionsQuerySchema,
   posQrisHoldSchema,
   posQrisStatusSchema,
   posQrisReconciliationSchema,
@@ -377,6 +378,8 @@ export const getPosPaymentOptions = defineEndpoint({
   method: "GET",
   path: "/api/outlets/:outletId/pos/payment-options",
   params: outletParams,
+  /** 1272 K4: `orderId` prices each method for that order's remaining bill. */
+  query: posPaymentOptionsQuerySchema,
   response: dataResponseSchema(posPaymentOptionsSchema),
 });
 

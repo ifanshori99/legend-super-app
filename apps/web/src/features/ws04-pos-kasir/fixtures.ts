@@ -113,6 +113,23 @@ export const ewallets: Ewallet[] = [
   { code: "shopeepay", label: "ShopeePay" },
 ];
 
+/**
+ * 1272 K4 demo: the guest service fee rate of each mock bank and wallet
+ * (Duitku MDR, gross-up on the bill). Mock only; the server prices for real.
+ */
+export const mockGuestFeeRates: Record<
+  string,
+  { bps: number; flatIdr: number }
+> = {
+  bca: { bps: 0, flatIdr: 4_000 },
+  mandiri: { bps: 0, flatIdr: 4_000 },
+  bni: { bps: 0, flatIdr: 3_500 },
+  gopay: { bps: 200, flatIdr: 0 },
+  ovo: { bps: 150, flatIdr: 0 },
+  dana: { bps: 150, flatIdr: 0 },
+  shopeepay: { bps: 200, flatIdr: 0 },
+};
+
 export const registeredTerminals: RegisteredTerminal[] = [
   {
     id: MOCK_DEVICE_ID,

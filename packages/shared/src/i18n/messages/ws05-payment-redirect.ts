@@ -5,24 +5,25 @@
 // refunded in any case). Shown only for a method or bank that carries a fee.
 export const paymentRedirectMessages = {
   fee: {
-    label: "Biaya layanan",
-    line: "Biaya layanan {fee}",
+    label: "Biaya layanan pembayaran",
+    line: "Biaya layanan pembayaran {fee}",
     total: "Total dibayar {total}",
     totalLabel: "Total dibayar",
-    noRefund: "Biaya layanan tidak dikembalikan bila pesanan dibatalkan.",
+    noRefund:
+      "Biaya layanan pembayaran tidak dikembalikan bila pesanan dibatalkan.",
     billRow: "Tagihan",
     // The step before Duitku's page when the method carries a fee (1272 K3).
     confirmPill: "Periksa dulu",
-    confirmTitle: "Ada biaya layanan",
+    confirmTitle: "Ada biaya layanan pembayaran",
     confirmLead:
-      "Pembayaran dengan {method} dikenai biaya layanan. Pesanan Anda tersimpan dan belum dibayar.",
+      "Pembayaran dengan {method} dikenai biaya layanan pembayaran. Pesanan Anda tersimpan dan belum dibayar.",
     confirmPay: "Bayar {total}",
     gone: "{method} sedang tidak tersedia untuk pesanan ini. Pilih metode lain.",
     loadFailed:
-      "Biaya layanan belum bisa dimuat, jadi metode ini belum bisa dibayar.",
+      "Biaya layanan pembayaran belum bisa dimuat, jadi metode ini belum bisa dibayar.",
     reload: "Muat ulang",
     checkFailed:
-      "Biaya layanan belum bisa diperiksa, jadi pembayaran belum dibuka. Pesanan Anda tersimpan, coba bayar lagi dari sini.",
+      "Biaya layanan pembayaran belum bisa diperiksa, jadi pembayaran belum dibuka. Pesanan Anda tersimpan, coba bayar lagi dari sini.",
   },
   method: {
     ewallet: "E-wallet",

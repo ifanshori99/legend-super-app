@@ -453,11 +453,13 @@ posOrderRouter.post(
 
 posOrderRouter.get("/payment-options", pay, async (req, res) => {
   const { outletId } = getPosPaymentOptions.params.parse(req.params);
+  const { orderId } = getPosPaymentOptions.query.parse(req.query);
   res.json({
     data: await getPosPaymentOptionsService(
       getScopedTenantContext(req),
       outletId,
       { deviceId: await currentDeviceIdOf(req) },
+      orderId,
     ),
   });
 });

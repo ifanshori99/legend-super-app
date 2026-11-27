@@ -24,6 +24,7 @@ import { BillLines } from "./bill-lines.tsx";
 import { BillTotals } from "./bill-totals.tsx";
 import { DisplayHeader } from "./display-header.tsx";
 import { IdleSlide } from "./idle-slide.tsx";
+import { OnlineCodePanel } from "./online-code-panel.tsx";
 import { PaidPanel } from "./paid-panel.tsx";
 import { QrisPanel } from "./qris-panel.tsx";
 import { QrisStatusPanel } from "./qris-status-panel.tsx";
@@ -192,6 +193,8 @@ function CustomerDisplayContent() {
             />
           ) : atCashier ? (
             <QrisStatusPanel kind="cashier" amountIdr={null} />
+          ) : paying && payMode === "online_code" && state.onlineCode ? (
+            <OnlineCodePanel code={state.onlineCode} />
           ) : paying && (payMode === "loading" || state.qris === null) ? (
             <QrisStatusPanel kind="loading" amountIdr={null} />
           ) : paying && payMode === "qris" && state.qris ? (

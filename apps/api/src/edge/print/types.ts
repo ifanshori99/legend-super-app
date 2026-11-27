@@ -248,6 +248,13 @@ export type ReceiptData = {
    */
   depositAppliedIdr?: number;
   payments: { method: string; amount: number }[];
+  /**
+   * 1272 K4: guest service fee an online code charged on top of the bill.
+   * Not part of the order: printed after the payments with the total paid.
+   */
+  guestFee?: number;
+  /** 1272 K4: the total paid from the server (order total + guest fee). */
+  paidTotal?: number;
   change?: number;
   footer?: string | null;
   /** Training-mode sale (F5 Mode Latihan): printed with a "LATIHAN" banner. */

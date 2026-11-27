@@ -194,9 +194,15 @@ function ReceiptBody({ document }: { document: ReceiptDocument }) {
           )}
         </>
       )}
+      {/* 1272 K4: the guest service fee is not part of the order total. */}
+      {document.guestFeeIdr ? (
+        <Line label={t("posReceiptPublic.guestFee")}>
+          <Money amount={document.guestFeeIdr} className="font-semibold" />
+        </Line>
+      ) : null}
       <Line label={t("posReceiptPublic.paid")}>
         <Money
-          amount={paidIdr(document.tenders, deposit)}
+          amount={document.paidTotalIdr ?? paidIdr(document.tenders, deposit)}
           className="font-semibold"
         />
       </Line>

@@ -135,7 +135,7 @@ export type DisplayDeposit =
   | { kind: "unknown" };
 
 export type DisplayPayMode =
-  "not_paying" | "loading" | "qris" | "pay_at_cashier";
+  "not_paying" | "loading" | "qris" | "online_code" | "pay_at_cashier";
 
 /**
  * What the payment pane shows. The display QRIS is always the full bill total
@@ -145,7 +145,7 @@ export type DisplayPayMode =
  * never holds a code that could charge more than is due.
  */
 export function displayPayMode(
-  state: Pick<CustomerDisplayState, "state" | "qris">,
+  state: Pick<CustomerDisplayState, "state" | "qris" | "onlineCode">,
   deposit: DisplayDeposit,
 ): DisplayPayMode {
   if (state.state !== "awaiting_payment") return "not_paying";
@@ -156,5 +156,7 @@ export function displayPayMode(
     deposit.depositAppliedIdr > 0
   )
     return "pay_at_cashier";
-  return state.qris !== null ? "qris" : "loading";
+  if (state.qris !== null) return "qris";
+  // 1269 C3a / 1272 K4: a cashier VA / e-wallet code (bill + guest fee).
+  return state.onlineCode ? "online_code" : "loading";
 }

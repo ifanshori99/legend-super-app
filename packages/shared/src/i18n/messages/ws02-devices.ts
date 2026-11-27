@@ -108,6 +108,8 @@ export const deviceRegistryMessages = {
   receiptPrintLabels: {
     voided: "DIBATALKAN",
     rounding: "Pembulatan",
+    guestFee: "Biaya layanan pembayaran",
+    paidTotal: "Total dibayar",
   },
 
   training: {

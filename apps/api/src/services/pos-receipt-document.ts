@@ -17,7 +17,12 @@ import {
   type PosReceipt,
   type ReceiptDocument,
 } from "@starter/shared/pos";
-import { serviceChargeRules, taxRules, user } from "../db/schema/index.ts";
+import {
+  paymentIntents,
+  serviceChargeRules,
+  taxRules,
+  user,
+} from "../db/schema/index.ts";
 import {
   posOrderRefunds,
   posOrderTenders,
@@ -201,6 +206,28 @@ export async function buildReceiptDocument(
     };
   }
 
+  // 1272 K4 (design duitku-fee-passthrough §3): the guest service fee the
+  // captured tenders' gateway codes charged on top of the bill. Read from the
+  // intents, never recomputed; not part of the order totals (no PB1, no
+  // service charge), so it prints after them with the total paid.
+  const captured = tenders.filter((tender) => tender.status === "captured");
+  const intentIds = captured
+    .map((tender) => tender.paymentIntentId)
+    .filter((id): id is string => id !== null);
+  const fees =
+    intentIds.length === 0
+      ? []
+      : await tx
+          .select({ guestFeeIdr: paymentIntents.guestFeeIdr })
+          .from(paymentIntents)
+          .where(
+            and(
+              eq(paymentIntents.tenantId, tenantId),
+              inArray(paymentIntents.id, intentIds),
+            ),
+          );
+  const guestFeeIdr = sum(fees.map((row) => Number(row.guestFeeIdr)));
+
   return receiptDocumentSchema.parse({
     id: receipt.id,
     tenantId: order.tenantId,
@@ -251,13 +278,17 @@ export async function buildReceiptDocument(
     totalIdr: order.totalIdr,
     depositAppliedIdr: order.depositAppliedIdr,
     pricesIncludeTax: order.pricesIncludeTax,
-    tenders: tenders
-      .filter((tender) => tender.status === "captured")
-      .map((tender) => ({
-        method: tender.method,
-        amountIdr: tender.amountIdr,
-        reference: tender.reference,
-      })),
+    tenders: captured.map((tender) => ({
+      method: tender.method,
+      amountIdr: tender.amountIdr,
+      reference: tender.reference,
+    })),
+    ...(guestFeeIdr > 0
+      ? {
+          guestFeeIdr: idr(guestFeeIdr),
+          paidTotalIdr: idr(Number(order.totalIdr) + guestFeeIdr),
+        }
+      : {}),
     cashierName,
     // The customer profile is not read: the document never needs a name (POS-07).
     customerName: null,

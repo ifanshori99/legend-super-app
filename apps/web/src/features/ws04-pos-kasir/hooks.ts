@@ -165,12 +165,13 @@ export function useEdcTerminals() {
   });
 }
 
-export function useVaBanks() {
-  return useQuery(vaBanksQuery(useOutletId()));
+/** 1272 K4: `orderId` prices each bank for the bill (guest service fee). */
+export function useVaBanks(orderId?: string) {
+  return useQuery(vaBanksQuery(useOutletId(), orderId));
 }
 
-export function useEwallets() {
-  return useQuery(ewalletsQuery(useOutletId()));
+export function useEwallets(orderId?: string) {
+  return useQuery(ewalletsQuery(useOutletId(), orderId));
 }
 
 function putSession(

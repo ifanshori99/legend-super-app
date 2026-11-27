@@ -10,7 +10,8 @@
 // Demo switch (browser only, same idea as the edge mock override): set
 //   localStorage["legend-display-mock"] = "unpaired" | "idle" | "ordering" |
 //     "awaiting_payment" | "awaiting_expired" | "awaiting_loading" |
-//     "awaiting_deposit" | "awaiting_duitku" | "paid"
+//     "awaiting_deposit" | "awaiting_duitku" | "awaiting_va_fee" |
+//     "awaiting_ewallet" | "paid"
 // and reload. The default is a live bill awaiting QRIS payment — the screen's
 // main purpose. "awaiting_expired" serves one expired code so the refresh path
 // can be exercised, then continues with a fresh one. "awaiting_loading" keeps
@@ -21,6 +22,8 @@
 // provider, so the screen shows the "Duitku" label instead of "DOIT" (brief
 // 936, bead legend-5w6). Every other demo's orderId resolves to an order
 // without a deposit (the display reads the order's deposit; sub-539-u2).
+// "awaiting_va_fee" is a cashier VA with a guest service fee (1272 K4): the
+// bill, the fee and the total paid; "awaiting_ewallet" an e-wallet without.
 import {
   cafeLegendPosFixtures,
   getCustomerDisplayState,
@@ -59,6 +62,8 @@ const DEMO_STATES = [
   "awaiting_loading",
   "awaiting_deposit",
   "awaiting_duitku",
+  "awaiting_va_fee",
+  "awaiting_ewallet",
   "paid",
 ] as const;
 type DemoState = (typeof DEMO_STATES)[number];
@@ -182,6 +187,45 @@ function buildState(entry: DisplayStore, nowMs: number): DisplayStateWire {
       tenders: [],
       changeIdr: null,
     };
+  if (entry.demo === "awaiting_va_fee" || entry.demo === "awaiting_ewallet") {
+    const expiresAt = new Date(nowMs + QRIS_LIFETIME_MS).toISOString();
+    // Demo fee: Duitku VA flat Rp4.000 grossed up on the bill (mock only).
+    const guestFeeIdr = 4_000;
+    return {
+      ...base,
+      state: "awaiting_payment",
+      orderId: ORDER_NO_DEPOSIT,
+      orderNumber: fixture.orderNumber,
+      ...billTotals,
+      qris: null,
+      onlineCode:
+        entry.demo === "awaiting_va_fee"
+          ? {
+              amountIdr: fixture.totalIdr,
+              instructions: {
+                method: "va",
+                channelCode: "BC",
+                channelName: "BCA Virtual Account",
+                virtualAccountNumber: "8808123456789012",
+              },
+              expiresAt,
+              guestFeeIdr,
+              chargedIdr: fixture.totalIdr + guestFeeIdr,
+            }
+          : {
+              amountIdr: fixture.totalIdr,
+              instructions: {
+                method: "ewallet",
+                channelCode: "OV",
+                channelName: "OVO",
+                paymentUrl: "https://sandbox.duitku.com/demo/pay/display",
+              },
+              expiresAt,
+            },
+      tenders: [],
+      changeIdr: null,
+    };
+  }
   const expired = entry.demo === "awaiting_expired" && !entry.expiredServed;
   return {
     ...base,

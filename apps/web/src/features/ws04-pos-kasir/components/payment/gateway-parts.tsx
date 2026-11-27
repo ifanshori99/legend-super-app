@@ -16,6 +16,7 @@ import type {
   PaymentSession,
 } from "../../types";
 import { Notice, PosPanel, StateBlock, StatusPill } from "../shared";
+import { codeHeadlineIdr } from "./fee-lines";
 
 // Pieces shared by the gateway panels (QRIS, VA, e-wallet, online card, failed;
 // bead legend-mjmm, P2). Each panel owns its own states; this file only holds
@@ -241,7 +242,7 @@ export function ChoiceGroup({
 }: {
   legend: string;
   name: string;
-  options: ReadonlyArray<{ code: string; label: string }>;
+  options: ReadonlyArray<{ code: string; label: string; hint?: ReactNode }>;
   value: string | null;
   onChange: (code: string) => void;
 }) {
@@ -253,7 +254,7 @@ export function ChoiceGroup({
           <label
             key={option.code}
             className={cn(
-              "flex min-h-control cursor-pointer items-center rounded-control border-(length:--border-w) border-border bg-card px-4 text-(length:--density-text) font-semibold",
+              "flex min-h-control cursor-pointer flex-col justify-center gap-0.5 rounded-control border-(length:--border-w) border-border bg-card px-4 text-(length:--density-text) font-semibold",
               "has-checked:border-2 has-checked:border-foreground has-checked:bg-muted",
               "has-focus-visible:shadow-focus",
             )}
@@ -267,6 +268,8 @@ export function ChoiceGroup({
               className="sr-only"
             />
             {option.label}
+            {/* 1272 K4: the guest service fee of this bank or wallet. */}
+            {option.hint}
           </label>
         ))}
       </div>
@@ -401,7 +404,7 @@ export function WaitingPanel({
       <StateBlock
         title={heading}
         description={description}
-        amountIdr={attempt.amountIdr}
+        amountIdr={codeHeadlineIdr(attempt)}
         className="py-4"
       >
         {remainingMs !== undefined && (

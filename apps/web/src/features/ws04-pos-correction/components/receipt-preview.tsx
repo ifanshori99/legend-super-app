@@ -136,6 +136,23 @@ function ReceiptPaper({ document }: { document: ReceiptDocument }) {
           <Money amount={Number(tender.amountIdr)} className="font-semibold" />
         </PaperRow>
       ))}
+      {/* 1272 K4: the guest service fee is not part of the order total. */}
+      {document.guestFeeIdr && document.paidTotalIdr ? (
+        <>
+          <PaperRow label={t("posCorrection.receipt.guestFee")}>
+            <Money
+              amount={Number(document.guestFeeIdr)}
+              className="font-semibold"
+            />
+          </PaperRow>
+          <PaperRow label={t("posCorrection.receipt.paidTotal")}>
+            <Money
+              amount={Number(document.paidTotalIdr)}
+              className="font-semibold"
+            />
+          </PaperRow>
+        </>
+      ) : null}
       <p className="text-center text-sm text-muted-foreground">
         {t(
           document.status === "voided"
