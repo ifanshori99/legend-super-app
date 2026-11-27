@@ -1027,6 +1027,8 @@ describe("B2 runtime writes (review P3)", () => {
         id: deviceE.id,
         tenantId: tenantIdSchema.parse(fx.tenant.tenantId),
         outletId: outletIdSchema.parse(outletE),
+        // B4 P2: a session is bound to the token it authenticated with.
+        tokenHash: hashEdcBridgeToken(deviceE.token),
       },
       {
         send: (text) => {

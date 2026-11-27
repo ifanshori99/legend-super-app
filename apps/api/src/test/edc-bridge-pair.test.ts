@@ -152,6 +152,7 @@ describe("B4 pairing code", () => {
       expect(await tokenHashOf(device.id)).toBe(hashEdcBridgeToken(token));
       expect(before).not.toBe(hashEdcBridgeToken(token));
       expect(await getCloudEdcRuntime()!.authenticate(token)).toEqual({
+        tokenHash: hashEdcBridgeToken(token),
         id: device.id,
         tenantId: fx.tenant.tenantId,
         outletId: fx.tenant.outletId,
@@ -283,6 +284,7 @@ describe("B4 pairing code", () => {
     const runtime = getCloudEdcRuntime()!;
     const tokenA1 = (await pair({ code: a1.code })).body.data.token as string;
     expect(await runtime.authenticate(tokenA1)).toEqual({
+      tokenHash: hashEdcBridgeToken(tokenA1),
       id: a1.id,
       tenantId: fx.tenant.tenantId,
       outletId: fx.tenant.outletId,
@@ -291,6 +293,7 @@ describe("B4 pairing code", () => {
     const pairedB = await pair({ code: codeB });
     expect(pairedB.status, JSON.stringify(pairedB.body)).toBe(200);
     expect(await runtime.authenticate(pairedB.body.data.token)).toEqual({
+      tokenHash: hashEdcBridgeToken(pairedB.body.data.token),
       id: deviceB,
       tenantId: tenantB,
       outletId: outletB,
