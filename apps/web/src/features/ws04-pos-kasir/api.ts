@@ -623,7 +623,7 @@ async function fetchPaymentOptions(outletId: string, orderId?: string) {
   const { data } = await callEndpoint(getPosPaymentOptions, {
     params: { outletId },
     // 1272 K4: the order prices each channel (the server reads its bill).
-    ...(orderId ? { query: { orderId } } : {}),
+    query: orderId ? { orderId } : {},
   });
   return data;
 }

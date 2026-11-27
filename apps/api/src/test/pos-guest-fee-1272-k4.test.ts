@@ -24,6 +24,7 @@ import {
 } from "@starter/shared/core";
 import { establishTenantContext } from "@starter/shared/core/server";
 import type { PaymentChannel } from "@starter/shared/payment";
+import { customerDisplayStateSchema } from "@starter/shared/pos";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { setStaffPin } from "../services/device-pin.service.ts";
@@ -347,14 +348,16 @@ async function displayShowing(orderId: string) {
   } finally {
     client.release();
   }
-  return readStateForDisplay(
-    establishTenantContext({
-      tenantId: tenantIdSchema.parse(fx.tenant.tenantId),
-      brandId: null,
-      source: "session",
-    }),
-    fx.tenant.outletId as OutletId,
-    displayId,
+  return customerDisplayStateSchema.parse(
+    await readStateForDisplay(
+      establishTenantContext({
+        tenantId: tenantIdSchema.parse(fx.tenant.tenantId),
+        brandId: null,
+        source: "session",
+      }),
+      fx.tenant.outletId as OutletId,
+      displayId,
+    ),
   );
 }
 
@@ -474,7 +477,7 @@ describe("1272 K4 cashier guest service fee", () => {
         .from(paymentIntents)
         .where(
           and(
-            eq(paymentIntents.tenantId, fx.tenant.tenantId),
+            eq(paymentIntents.tenantId, fx.context.tenant.tenantId),
             eq(paymentIntents.id, va.intentId),
           ),
         );
