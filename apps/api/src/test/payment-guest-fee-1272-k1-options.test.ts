@@ -474,3 +474,46 @@ describe("1272 re-review P2: a refresh never replaces a priced code at another p
     expect(Number(rows[0]!.n)).toBe(2);
   });
 });
+
+describe("1272 re-review P2 (rest): a refresh of a code that had no fee", () => {
+  const expireNow = (intentId: string) =>
+    owner.query(
+      "UPDATE payment_intents SET status = 'expired', provider_final_at = now() WHERE tenant_id = $1 AND id = $2",
+      [fx.tenant.tenantId, intentId],
+    );
+  const refresh = (token: string, intentId: string) =>
+    agent(fx.app)
+      .post(`/api/payments/links/${token}/intents/${intentId}/refresh`)
+      .set(fx.headers);
+
+  it("a fee-0 code that would now carry a fee is 409 FEE_CHANGED and nothing is issued", async () => {
+    gw.rates = new Map([...RATES(), ["OV", { bps: 0, flatIdr: 0 }]]);
+    const { token } = await openLink();
+    const first = await linkIntent(token, {});
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    expect(first.body.data.guestFeeIdr).toBe(0);
+    await expireNow(first.body.data.id);
+
+    gw.rates = RATES();
+    const before = gw.created.length;
+    const changed = await refresh(token, first.body.data.id);
+    expect(changed.status, JSON.stringify(changed.body)).toBe(409);
+    expect(changed.body.error.code).toBe("FEE_CHANGED");
+    expect(gw.created).toHaveLength(before);
+  });
+
+  it("a QRIS refresh is unchanged", async () => {
+    gw.rates = RATES();
+    const { token } = await openLink();
+    const first = await linkIntent(token, {
+      method: "qris",
+      channelCode: null,
+    });
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    await expireNow(first.body.data.id);
+    const again = await refresh(token, first.body.data.id);
+    expect(again.status, JSON.stringify(again.body)).toBe(200);
+    expect(again.body.data.id).not.toBe(first.body.data.id);
+    expect(again.body.data.chargedIdr).toBe(LINK_TOTAL);
+  });
+});

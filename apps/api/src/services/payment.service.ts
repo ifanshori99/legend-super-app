@@ -2811,7 +2811,9 @@ export async function refreshIntent(
     );
   // Fee second opinion re-review P2: a code with a guest fee is replaced only
   // at the total the guest saw on the old one; another price is 409
-  // FEE_CHANGED (the guest sees the new price and chooses again).
+  // FEE_CHANGED (the guest sees the new price and chooses again). A code
+  // without a fee that would now carry one is refused too (a priced create
+  // needs the total, and none was seen); QRIS and unpriced codes are unchanged.
   const priced = Number(current.guestFeeIdr) > 0;
   return createIntent(
     context,
@@ -2823,7 +2825,7 @@ export async function refreshIntent(
       ...(priced ? { expectedChargedIdr: Number(current.chargedIdr) } : {}),
     }),
     now,
-    priced ? { requireExpectedCharged: true } : {},
+    { requireExpectedCharged: true },
   );
 }
 
