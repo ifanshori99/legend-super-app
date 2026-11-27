@@ -15,6 +15,7 @@ import { Router, type Request } from "express";
 import { userIdSchema } from "@starter/shared/core";
 import {
   reportPosOfflineConflict,
+  reportPosOfflineStuck,
   submitPosOfflineBatch,
 } from "@starter/shared/pos";
 import {
@@ -80,6 +81,31 @@ posOfflineBatchRouter.post(
     const body = reportPosOfflineConflict.body.parse(req.body);
     res.status(200).json({
       data: await offlineBatch.reportPosOfflineConflict(
+        getScopedTenantContext(req),
+        {
+          userId: userIdSchema.parse(actorOf(req)),
+          deviceId: await currentDeviceIdOf(req),
+        },
+        outletId,
+        body,
+      ),
+    });
+  },
+);
+
+// 1273 second opinion P2-1: a sale the batch refuses for good, reported by the
+// staff session with a supervisor PIN. Same guards; the device token is
+// optional here (the service never asks the registry for the kit's device).
+posOfflineBatchRouter.post(
+  "/offline-stuck",
+  requireOutletPermission("shift.cash.operate", outletOf),
+  requireCorePosWriteOnCloud,
+  jsonBody,
+  async (req, res) => {
+    const { outletId } = reportPosOfflineStuck.params.parse(req.params);
+    const body = reportPosOfflineStuck.body.parse(req.body);
+    res.status(200).json({
+      data: await offlineBatch.reportPosOfflineStuck(
         getScopedTenantContext(req),
         {
           userId: userIdSchema.parse(actorOf(req)),

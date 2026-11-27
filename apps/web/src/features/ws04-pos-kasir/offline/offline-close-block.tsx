@@ -28,7 +28,10 @@ export function OfflineCloseBlock({
   shiftId: string;
   pending: number;
   parked: number;
-  queue: Pick<OfflineQueue, "pending" | "parked"> | null;
+  queue:
+    | (Pick<OfflineQueue, "pending" | "parked"> &
+        Partial<Pick<OfflineQueue, "stuck" | "reportStuck">>)
+    | null;
   kit: Pick<PosOfflineKit, "receiptRun"> | null;
   online: boolean;
   syncNow: () => Promise<boolean>;

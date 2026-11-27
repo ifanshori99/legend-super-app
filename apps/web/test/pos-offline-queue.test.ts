@@ -33,6 +33,7 @@ import {
   countPendingOfflineSales,
   createOfflineQueue,
   type OfflineReport,
+  type OfflineStuckSend,
   type OfflineSubmit,
 } from "@/features/ws04-pos-kasir/offline/queue";
 import {
@@ -624,5 +625,147 @@ describe("sync to the cloud", () => {
     const { cloud, queue } = await queuedSales(2);
     await Promise.all([queue.sync(), queue.sync()]);
     expect(cloud.calls).toHaveLength(1);
+  });
+});
+
+// 1273 second opinion P2-1: a sale the cloud refuses for good is reported with
+// a supervisor's PIN; the tablet drops it only after the cloud holds it.
+describe("a sale the cloud refuses for good", () => {
+  const approval = {
+    reason: "Tablet dipasang ulang",
+    approverUserId: "0a1b2c3d-0000-4000-8000-0000000000a1",
+    pin: "582914",
+  };
+
+  async function stuckSales(count: number) {
+    const backend = createMemoryOfflineBackend();
+    const kit = kitOf();
+    const refusals = new Map<string, string>();
+    let refuseAll: ApiError | null = null;
+    const submit = (async (events) => {
+      if (refuseAll) throw refuseAll;
+      return {
+        results: events.map(
+          (event) =>
+            ({
+              eventId: event.eventId,
+              status: "rejected",
+              reason: refusals.get(event.eventId) ?? "retry",
+              flags: [],
+              receiptNumber: null,
+            }) as OfflineEventResult,
+        ),
+        runs: [],
+      };
+    }) as OfflineSubmit;
+    const sent: string[] = [];
+    let answer: OfflineEventResult["status"] | "down" = "held";
+    const reportStuck: OfflineStuckSend = async (event, stuck, given) => {
+      sent.push(`${event.eventId}:${stuck}:${given.approverUserId}`);
+      if (answer === "down") throw new TypeError("Failed to fetch");
+      return {
+        eventId: event.eventId,
+        status: answer,
+        reason: answer === "held" ? `stuck_${stuck}` : null,
+        flags: [],
+        receiptNumber: null,
+      } as OfflineEventResult;
+    };
+    const queue = createOfflineQueue({
+      backend,
+      outletId: OUTLET,
+      submit,
+      report: neverReported,
+      reportStuck,
+      now: () => clock,
+    });
+    await queue.saveKit(kit);
+    const total = priceOfflineSale(kit, cart, clock).totalIdr;
+    const sales: OfflineSaleEvent[] = [];
+    for (let i = 0; i < count; i += 1) {
+      clock = new Date(clock.getTime() + 1_000);
+      sales.push(await queue.recordSale(cart, [cash(total)]));
+    }
+    return {
+      backend,
+      queue,
+      sales,
+      refusals,
+      sent,
+      refuse: (error: ApiError | null) => {
+        refuseAll = error;
+      },
+      answer: (next: typeof answer) => {
+        answer = next;
+      },
+    };
+  }
+
+  it("marks kit_unknown and sequence_gap as stuck, a retry is not", async () => {
+    const { queue, sales, refusals } = await stuckSales(3);
+    refusals.set(sales[0]!.eventId, "kit_unknown");
+    refusals.set(sales[1]!.eventId, "sequence_gap");
+    await queue.sync();
+    expect(
+      (await queue.stuck()).map((row) => [row.event.eventId, row.stuck]),
+    ).toEqual([
+      [sales[0]!.eventId, "kit_unknown"],
+      [sales[1]!.eventId, "sequence_gap"],
+    ]);
+  });
+
+  it("a 403 on the whole call (device refused) marks every sale of it", async () => {
+    const { queue, sales, refuse } = await stuckSales(2);
+    refuse(new ApiError(403, "FORBIDDEN", "Perangkat tidak terdaftar"));
+    expect((await queue.sync()).remaining).toBe(2);
+    expect((await queue.stuck()).map((row) => row.stuck)).toEqual([
+      "device_refused",
+      "device_refused",
+    ]);
+    expect(sales).toHaveLength(2);
+  });
+
+  it("drops the sale only once the cloud holds it; a network failure keeps it", async () => {
+    const { backend, queue, sales, refusals, sent, answer } =
+      await stuckSales(2);
+    refusals.set(sales[0]!.eventId, "kit_unknown");
+    await queue.sync();
+    answer("down");
+    await expect(
+      queue.reportStuck(sales[0]!.eventId, approval),
+    ).rejects.toBeInstanceOf(TypeError);
+    expect(await queue.pendingCount()).toBe(2);
+    // An answer that is not settled is a failure the cashier sees.
+    answer("rejected");
+    await expect(
+      queue.reportStuck(sales[0]!.eventId, approval),
+    ).rejects.toMatchObject({ code: "STUCK_NOT_SETTLED" });
+    expect(await queue.pendingCount()).toBe(2);
+    answer("held");
+    expect(await queue.reportStuck(sales[0]!.eventId, approval)).toMatchObject({
+      status: "held",
+      reason: "stuck_kit_unknown",
+    });
+    expect(sent.at(-1)).toBe(
+      `${sales[0]!.eventId}:kit_unknown:${approval.approverUserId}`,
+    );
+    expect((await queue.pending()).map((sale) => sale.eventId)).toEqual([
+      sales[1]!.eventId,
+    ]);
+    expect(await countPendingOfflineSales(backend, null)).toBe(1);
+    expect(await queue.stuck()).toEqual([]);
+  });
+
+  it("an already ingested answer drops it too; a sale not marked stuck is refused", async () => {
+    const { queue, sales, refusals, sent, answer } = await stuckSales(2);
+    await expect(
+      queue.reportStuck(sales[0]!.eventId, approval),
+    ).rejects.toMatchObject({ code: "STUCK_UNKNOWN" });
+    expect(sent).toEqual([]);
+    refusals.set(sales[0]!.eventId, "sequence_gap");
+    await queue.sync();
+    answer("ingested");
+    await queue.reportStuck(sales[0]!.eventId, approval);
+    expect(await queue.pendingCount()).toBe(1);
   });
 });

@@ -17,6 +17,11 @@
 //   a settled report drops it. Any other refusal stops the sync, nothing parked.
 // - pendingCount (queue + parked) blocks the shift close and the sign-out
 //   (tablet guard; the count also goes to the server as offlineQueuePending).
+// - 1273 P2-1: a sale the cloud refuses for good (kit_unknown, sequence_gap,
+//   or a 403 on the whole call: the device is refused) is marked stuck by the
+//   sync. reportStuck sends it with a supervisor's PIN
+//   (reportPosOfflineStuck); only a settled answer (held / ingested) drops it.
+//   A network failure or a refused PIN keeps it on the tablet.
 import { createUlidFactory } from "@starter/shared/core";
 import {
   OFFLINE_BATCH_MAX_EVENTS,
@@ -25,6 +30,7 @@ import {
   posOfflineKitSchema,
   type OfflineEventResult,
   type OfflineSaleEvent,
+  type OfflineStuckReason,
   type OfflineSaleTender,
   type PosOfflineBatchResult,
   type PosOfflineKit,
@@ -45,6 +51,25 @@ export type OfflineSubmit = (
 export type OfflineReport = (
   event: OfflineSaleEvent,
 ) => Promise<OfflineEventResult>;
+
+/** The supervisor's approval of a stuck sale report (1273 P2-1). */
+export type OfflineStuckApproval = {
+  reason: string;
+  approverUserId: string;
+  pin: string;
+};
+
+export type OfflineStuckSend = (
+  event: OfflineSaleEvent,
+  stuck: OfflineStuckReason,
+  approval: OfflineStuckApproval,
+) => Promise<OfflineEventResult>;
+
+/** A queued sale the last sync found refused for good. */
+export type OfflineStuckSale = {
+  event: OfflineSaleEvent;
+  stuck: OfflineStuckReason;
+};
 
 export type OfflineRecordOptions = {
   /**
@@ -81,6 +106,17 @@ export type OfflineQueue = {
   /** Queued + parked: what blocks Tutup shift and sign-out. */
   pendingCount(): Promise<number>;
   parked(): Promise<ParkedRecord[]>;
+  /** Queued sales the cloud refused for good (1273 P2-1), in run order. */
+  stuck(): Promise<OfflineStuckSale[]>;
+  /**
+   * Reports a stuck sale with a supervisor's PIN; drops it only when the
+   * cloud answers it settled. A failure, or an answer that is not settled
+   * (STUCK_NOT_SETTLED), throws and keeps it queued.
+   */
+  reportStuck(
+    eventId: string,
+    approval: OfflineStuckApproval,
+  ): Promise<OfflineEventResult>;
   sync(): Promise<OfflineSyncReport>;
 };
 
@@ -101,6 +137,13 @@ const isEventConflict = (error: unknown) =>
 const settles = (result: OfflineEventResult) =>
   OFFLINE_EVENT_SETTLED.includes(result.status);
 
+/** Batch refusals the tablet can never get past by resending (1273 P2-1). */
+const STUCK_RESULT_REASONS: readonly string[] = ["kit_unknown", "sequence_gap"];
+
+/** The device itself is refused: every sale of the call is stuck. */
+const isDeviceRefused = (error: unknown) =>
+  error instanceof ApiError && error.status === 403;
+
 type Step = { settled: number; parked: number; stop: boolean };
 
 async function countOf(tx: OfflineTx, outletId: string | null) {
@@ -117,9 +160,13 @@ export function createOfflineQueue(options: {
   outletId: string;
   submit: OfflineSubmit;
   report: OfflineReport;
+  /** 1273 P2-1: the stuck sale report; without it reportStuck refuses. */
+  reportStuck?: OfflineStuckSend;
   now?: () => Date;
 }): OfflineQueue {
   const { backend, submit, report } = options;
+  /** eventId -> why the cloud refuses it for good, as the last sync saw. */
+  const stuckMarks = new Map<string, OfflineStuckReason>();
   const outletId = options.outletId.toLowerCase();
   const now = options.now ?? (() => new Date());
   const nextUlid = createUlidFactory({ now: () => now().getTime() });
@@ -177,6 +224,15 @@ export function createOfflineQueue(options: {
     try {
       const answer = await submit(chunk);
       const settled = answer.results.filter(settles).map((row) => row.eventId);
+      for (const row of answer.results) {
+        if (
+          row.status === "rejected" &&
+          row.reason !== null &&
+          STUCK_RESULT_REASONS.includes(row.reason)
+        )
+          stuckMarks.set(row.eventId, row.reason as OfflineStuckReason);
+        else stuckMarks.delete(row.eventId);
+      }
       await apply(settled, answer.runs);
       return {
         settled: settled.length,
@@ -184,6 +240,9 @@ export function createOfflineQueue(options: {
         stop: settled.length < answer.results.length,
       };
     } catch (error) {
+      if (isDeviceRefused(error))
+        for (const event of chunk)
+          stuckMarks.set(event.eventId, "device_refused");
       if (!isEventConflict(error)) throw error;
     }
     if (chunk.length === 1) {
@@ -319,6 +378,28 @@ export function createOfflineQueue(options: {
     pendingCount: () => backend.run("readonly", (tx) => countOf(tx, outletId)),
 
     parked: parkedRows,
+
+    async stuck() {
+      return (await queued())
+        .filter((event) => stuckMarks.has(event.eventId))
+        .map((event) => ({ event, stuck: stuckMarks.get(event.eventId)! }));
+    },
+
+    async reportStuck(eventId, approval) {
+      const stuck = stuckMarks.get(eventId);
+      const row = await backend.run("readonly", (tx) =>
+        tx.get("queue", eventId),
+      );
+      if (!options.reportStuck || !stuck || !row || row.outletId !== outletId)
+        throw new OfflineSaleError("STUCK_UNKNOWN");
+      const answer = await options.reportStuck(row.event, stuck, approval);
+      // Only a settled answer: the cloud holds the sale (held or ingested).
+      // Anything else is a failure the cashier must see; the sale stays.
+      if (!settles(answer)) throw new OfflineSaleError("STUCK_NOT_SETTLED");
+      await backend.run("readwrite", (tx) => tx.delete("queue", eventId));
+      stuckMarks.delete(eventId);
+      return answer;
+    },
 
     sync() {
       // One sync at a time per queue; another tab's sync is harmless (replay).
