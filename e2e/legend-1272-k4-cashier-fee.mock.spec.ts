@@ -35,12 +35,23 @@ async function setFee(page: Page) {
     .addCookies([{ name: "legend-mock-duitku", value: "fee", url: baseURL! }]);
 }
 
-async function shot(page: Page, name: string, widths = [1280, 390]) {
+async function shot(
+  page: Page,
+  name: string,
+  widths = [1280, 390],
+  scrollToEnd = false,
+) {
   await page.addStyleTag({
     content: '[data-slot="support-session-bar"]{display:none !important}',
   });
   for (const width of widths) {
     await page.setViewportSize({ width, height: width === 1280 ? 800 : 844 });
+    // The sticky action footer covers what is below the fold: show the end.
+    // (scroll-mb on the fee box keeps it clear of the footer.)
+    if (scrollToEnd)
+      await page
+        .locator(".scroll-mb-48")
+        .evaluate((el) => el.scrollIntoView({ block: "end" }));
     await captureScreenshot(page, `${BEAD}/${name}-${width}.png`, {
       fullPage: false,
     });
@@ -94,9 +105,7 @@ test("K4 VA: each bank shows its service fee and guest total; the live code show
   await expect(main).toContainText("Yang harus dibayar");
   await expect(main).toContainText(/Tagihan\s*Rp\s*148\.000/);
   await expect(main).toContainText(NO_REFUND);
-  // The sticky footer never hides the fee box (scroll-mb).
-  await main.getByText(NO_REFUND).scrollIntoViewIfNeeded();
-  await shot(page, "kasir-va-kode");
+  await shot(page, "kasir-va-kode", [1280, 390], true);
 });
 
 test("K4 e-wallet: the percentage fee is shown per wallet before the request", async ({

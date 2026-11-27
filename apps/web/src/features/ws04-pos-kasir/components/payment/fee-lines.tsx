@@ -90,7 +90,7 @@ export function CodeFee({
   return (
     // scroll-mb: the sticky footer never covers the box when it is scrolled
     // into view (K4 P3-1).
-    <div className="grid w-full max-w-3xl scroll-mb-24 gap-2 rounded-container border-(length:--border-w) border-border p-4">
+    <div className="grid w-full max-w-3xl scroll-mb-48 gap-2 text-left rounded-container border-(length:--border-w) border-border p-4">
       <div className="flex items-baseline justify-between gap-3 text-sm text-muted-foreground">
         <span>{t("posKasirGateway.fee.billLabel")}</span>
         <Money amount={billIdr} className="font-semibold" />
