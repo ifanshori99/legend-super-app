@@ -16,6 +16,16 @@ export type ResolvedEdcAgent = {
   terminalReady(row: typeof paymentEdcTerminals.$inferSelect): boolean;
 };
 
+/** Before resolving for a sale (or its payment options): lets the cloud take
+ * a cloud-provider outlet lazily (`prepareSale`). No-op on the edge. */
+export async function prepareEdcAgent(
+  tenantId: TenantId,
+  outletId: OutletId,
+): Promise<void> {
+  if (getEdgeEdcAgent()) return;
+  await getCloudEdcRuntime()?.prepareSale(tenantId, outletId);
+}
+
 export function resolveEdcAgent(
   tenantId: TenantId,
   outletId: OutletId,

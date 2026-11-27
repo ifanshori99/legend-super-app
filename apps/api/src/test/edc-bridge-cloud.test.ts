@@ -38,13 +38,15 @@ import {
 import { createUlid, ulidToUuid } from "@starter/shared/core";
 import { createApp } from "../app.ts";
 import { createSimulatorBridgeCodec } from "../edge/edc/bridge-codec.ts";
+import { EdcError } from "@starter/shared/edc";
 import {
+  CloudEdcRuntime,
   EDC_BRIDGE_LEASE_TTL_MS,
   getCloudEdcRuntime,
   hashEdcBridgeToken,
   startCloudEdcRuntime,
   stopCloudEdcRuntime,
-  type CloudEdcRuntime,
+  type CloudEdcProvider,
 } from "../edge/edc/cloud-runtime.ts";
 import { logger } from "../lib/logger.ts";
 import { attachEdcBridgeRealtime } from "../routes/edc-bridge.routes.ts";
@@ -787,6 +789,85 @@ describe("B2 device API", () => {
       expect(row).not.toContain(token);
       expect(row).not.toContain(hashEdcBridgeToken(token));
     }
+  });
+});
+
+describe("B2 cloud provider slot (bca_cloud, B5a)", () => {
+  async function addOutlet(code: string) {
+    const id = randomUUID();
+    await owner.query(
+      `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
+       SELECT $1, tenant_id, brand_id, legal_entity_id, $2, 'Outlet B2 cloud', 'Jl. Uji 3', timezone, opening_hours, 'active'
+         FROM outlets WHERE id = $3`,
+      [id, `${code}${id.slice(0, 6)}`.toUpperCase(), fx.tenant.outletId],
+    );
+    return id;
+  }
+
+  it("b2-15 outlets of a cloud provider are taken at boot and lazily (idempotent); readiness is the provider's", async () => {
+    const outletC = await addOutlet("C");
+    const outletD = await addOutlet("D");
+    const terminalC = randomUUID();
+    await asTenant(
+      fx.tenant.tenantId,
+      `INSERT INTO payment_edc_terminals
+         (id, tenant_id, outlet_id, bank_code, terminal_id, merchant_id, model,
+          connection, ip_address, supported_methods, status, connection_kind)
+       VALUES ($1, $2, $3, 'bca', 'TID-B2-C1', 'MID-B2', 'BCA cloud', 'lan', '10.0.0.9',
+               ARRAY['card','qris'], 'active', 'bca_cloud')`,
+      [terminalC, fx.tenant.tenantId, outletC],
+    );
+    let ready = true;
+    const unused = () => Promise.reject(new Error("not called"));
+    const fake: CloudEdcProvider = {
+      bank: "bca",
+      capabilities: { inquiry: "by_trace", cancelInProgress: false },
+      sale: unused,
+      cancel: unused,
+      inquiry: unused,
+      void: unused,
+      ready: () => ready,
+      outlets: async () => [
+        { tenantId: fx.tenant.tenantId, outletId: outletC },
+      ],
+    };
+    const cloud = new CloudEdcRuntime({
+      bcaCloud: fake,
+      codecs: [],
+      renewMs: 3_600_000,
+      retryDelayMs: () => 200,
+    });
+    try {
+      expect(cloud.agentFor(fx.tenant.tenantId, outletC)).toBeNull();
+      await cloud.startOutlets();
+      expect(cloud.agentFor(fx.tenant.tenantId, outletC)).not.toBeNull();
+      expect(await outletLocks(outletC)).toBe(1);
+      // Idempotent: no second lock.
+      expect(await cloud.ensureOutlet(fx.tenant.tenantId, outletC)).toBe(true);
+      expect(await outletLocks(outletC)).toBe(1);
+      const target = {
+        id: terminalC,
+        tenantId: fx.tenant.tenantId,
+        outletId: outletC,
+        connectionKind: "bca_cloud",
+      };
+      expect(cloud.registry.get("bca", target)).toBe(fake);
+      ready = false;
+      expect(() => cloud.registry.get("bca", target)).toThrow(
+        new EdcError("EDC_AGENT_NOT_READY"),
+      );
+      // An outlet added after boot: taken on its first sale.
+      expect(cloud.agentFor(fx.tenant.tenantId, outletD)).toBeNull();
+      await cloud.prepareSale(fx.tenant.tenantId, outletD);
+      expect(cloud.agentFor(fx.tenant.tenantId, outletD)).not.toBeNull();
+      // The shared runtime (no cloud provider) never takes outlets lazily.
+      await runtime.prepareSale(fx.tenant.tenantId, outletD);
+      expect(runtime.agentFor(fx.tenant.tenantId, outletD)).toBeNull();
+    } finally {
+      await cloud.stop();
+    }
+    expect(await outletLocks(outletC)).toBe(0);
+    expect(await outletLocks(outletD)).toBe(0);
   });
 });
 

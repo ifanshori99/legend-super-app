@@ -178,6 +178,8 @@ const emergencyRealtime = attachEmergencyRealtime(server, {
 // codec (B5) every terminal is refused and ECR stays locked.
 const cloudEdc =
   !env.EDGE_MODE && env.EDC_BRIDGE_ENABLED ? startCloudEdcRuntime() : null;
+// Outlets served by a cloud provider (B5a bca_cloud) are taken at boot.
+void cloudEdc?.startOutlets();
 const edcBridgeRealtime = cloudEdc
   ? attachEdcBridgeRealtime(server, { runtime: getCloudEdcRuntime })
   : null;

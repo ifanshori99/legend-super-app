@@ -194,6 +194,9 @@ export class CloudEdcProviderRegistry implements EdcProviderLookup {
  * docs/design/edc-bridge-protocol.md "Provider cloud"). */
 export type CloudEdcProvider = EdcProvider & {
   ready(terminal: { tenantId: string; outletId: string; id: string }): boolean;
+  /** Outlets with an active terminal of this provider: their lock is taken
+   * at boot (`startOutlets`), since no tablet ever says `hello` for them. */
+  outlets(): Promise<ReadonlyArray<{ tenantId: string; outletId: string }>>;
 };
 
 export type CloudEdcRuntimeOptions = {
@@ -278,6 +281,7 @@ export class CloudEdcRuntime {
   readonly #losses = new Map<string, number>();
   readonly #retries = new Map<string, ReturnType<typeof setTimeout>>();
   readonly #retryDelayMs: (attempt: number) => number;
+  readonly #bcaCloud: CloudEdcProvider | null;
   readonly #renewTimer: ReturnType<typeof setInterval>;
   #stopped = false;
 
@@ -287,6 +291,7 @@ export class CloudEdcRuntime {
     this.#ttlMs = options.leaseTtlMs ?? EDC_BRIDGE_LEASE_TTL_MS;
     this.#graceMs = options.resultGraceMs ?? EDC_BRIDGE_RESULT_GRACE_MS;
     this.#retryDelayMs = options.retryDelayMs ?? defaultRetryDelayMs;
+    this.#bcaCloud = options.bcaCloud ?? null;
     const saleTimeoutMs = options.saleTimeoutMs ?? EDC_SALE_TIMEOUT_MS;
     const traceTimeoutMs = options.traceTimeoutMs ?? EDC_TRACE_TIMEOUT_MS;
     const transport: EdcBridgeTransport = {
@@ -322,6 +327,42 @@ export class CloudEdcRuntime {
       options.renewMs ?? EDC_BRIDGE_LEASE_RENEW_MS,
     );
     this.#renewTimer.unref();
+  }
+
+  /** Takes the outlet for the agent (advisory lock), unless already owned.
+   * Idempotent; concurrent calls share one attempt. False when another
+   * process holds it, the runtime is stopped, or the start failed (logged).
+   * Bridge outlets are taken on `hello`; cloud-provider outlets at boot and
+   * on their first sale (`prepareSale`). */
+  ensureOutlet(tenantId: string, outletId: string): Promise<boolean> {
+    return this.#ensureOutlet(tenantId, outletId);
+  }
+
+  /** Boot: takes every outlet the cloud provider serves. A refused outlet is
+   * retried with backoff. Never throws. */
+  async startOutlets(): Promise<void> {
+    if (!this.#bcaCloud) return;
+    let outlets: ReadonlyArray<{ tenantId: string; outletId: string }>;
+    try {
+      outlets = await this.#bcaCloud.outlets();
+    } catch (error) {
+      logger.error(
+        errClass(error),
+        "The cloud EDC provider could not list its outlets",
+      );
+      return;
+    }
+    for (const { tenantId, outletId } of outlets)
+      if (!(await this.#ensureOutlet(tenantId, outletId)))
+        this.#retryOutlet(tenantId, outletId, 0);
+  }
+
+  /** Before a sale or the payment options of an outlet: with a cloud
+   * provider configured, the outlet is taken lazily (an outlet added after
+   * boot). No-op without one: bridge outlets wait for their tablet. */
+  async prepareSale(tenantId: string, outletId: string): Promise<void> {
+    if (!this.#bcaCloud || this.#owned.has(keyOf(tenantId, outletId))) return;
+    await this.#ensureOutlet(tenantId, outletId);
   }
 
   /** The agent, when this process owns the outlet. */

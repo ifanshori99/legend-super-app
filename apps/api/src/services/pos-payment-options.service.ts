@@ -27,7 +27,7 @@ import {
 import { db } from "../db/index.ts";
 import { paymentEdcTerminals } from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
-import { resolveEdcAgent } from "../edge/edc/resolver.ts";
+import { prepareEdcAgent, resolveEdcAgent } from "../edge/edc/resolver.ts";
 import { logger } from "../lib/logger.ts";
 import { selectGatewayForNewIntent } from "./payment-gateway-select.ts";
 import {
@@ -172,6 +172,7 @@ export async function getPosPaymentOptions(
     edc_card: edc("card"),
     edc_qris: edc("qris"),
   };
+  await prepareEdcAgent(context.tenant.tenantId, outletId);
   const resolved = resolveEdcAgent(context.tenant.tenantId, outletId);
   const ecrEnabled =
     resolved !== null && terminals.some((row) => resolved.terminalReady(row));

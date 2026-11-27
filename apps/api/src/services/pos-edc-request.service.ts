@@ -34,7 +34,7 @@ import { db } from "../db/index.ts";
 import { edcTransactions } from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import type { EdcAgent } from "../edge/edc/agent.ts";
-import { resolveEdcAgent } from "../edge/edc/resolver.ts";
+import { prepareEdcAgent, resolveEdcAgent } from "../edge/edc/resolver.ts";
 import {
   assertExpectedVersion,
   readPosOrder,
@@ -63,6 +63,7 @@ export async function startPosEdcSale(
     expectedVersion?: number;
   },
 ): Promise<EdcTransaction> {
+  await prepareEdcAgent(context.tenant.tenantId, outletId);
   const agent = agentOrLocked(context, outletId);
   const ask = await withTenant(db, context, async (tx) => {
     const { order, pos } = await readPosOrder(tx, context, outletId, orderId);
