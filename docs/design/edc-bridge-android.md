@@ -39,6 +39,8 @@ heavy ./gradlew testDebugUnitTest   # unit test JVM
 heavy ./gradlew assembleDebug       # app/build/outputs/apk/debug/app-debug.apk
 ```
 
+Pakai `testDebugUnitTest`, bukan `test`, `check`, `build` atau `lint`: perintah itu ikut menjalankan task rilis dan sengaja gagal tanpa kunci rilis.
+
 Repositori hanya `google()` dan `mavenCentral()` (juga untuk plugin: AGP, KSP, Room ada di sana; tanpa Gradle Plugin Portal). Wrapper memeriksa `distributionSha256Sum` dari checksum resmi Gradle.
 
 Versi: Gradle wrapper 9.9.2, AGP 9.5.3 (Kotlin bawaan, compiler dipin 2.4.21), Room 2.8.5 + KSP 2.3.14, OkHttp 4.12.0 (5.x butuh compileSdk 37), kotlinx-serialization-json 1.13.0 (hanya runtime, tanpa plugin). minSdk 26, targetSdk 35. Hanya repositori `google()` dan `mavenCentral()`.
