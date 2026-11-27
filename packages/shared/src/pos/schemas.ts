@@ -2183,7 +2183,19 @@ export const posQrisStatusSchema = posQrisHoldSchema.extend({
    * Absent for a QRIS hold.
    */
   instructions: posOnlineCodeInstructionsSchema.nullable().optional(),
-});
+  /**
+   * 1272 K4: a code with a guest service fee shows it and what the guest pays
+   * the gateway (`amountIdr` + fee). Absent for a code without a fee.
+   */
+  guestFeeIdr: positiveIdr.optional(),
+  chargedIdr: positiveIdr.optional(),
+}).refine(
+  (row) =>
+    row.guestFeeIdr === undefined
+      ? row.chargedIdr === undefined
+      : row.chargedIdr === row.amountIdr + row.guestFeeIdr,
+  { path: ["chargedIdr"], message: "chargedIdr = amountIdr + guestFeeIdr" },
+);
 export type PosQrisStatus = z.infer<typeof posQrisStatusSchema>;
 
 // ---- Payment options (1268 B2) ----------------------------------------------
@@ -2211,13 +2223,42 @@ export type PosPaymentUnavailableReason = z.infer<
   typeof posPaymentUnavailableReasonSchema
 >;
 
+/** Fee and total come together or not at all (1272 K4). */
+const pricedTogether = (row: { guestFeeIdr?: Idr; totalIdr?: Idr }) =>
+  (row.guestFeeIdr === undefined) === (row.totalIdr === undefined);
+
+/**
+ * 1272 K4 (design duitku-fee-passthrough §3, §7): a channel as the cashier
+ * sees it. Priced for a named order (`?orderId=`): the guest service fee
+ * ("Biaya layanan") on top of the remaining bill and the total the guest pays
+ * the gateway. Without an order: the provider's channel only, as before.
+ */
+export const posPaymentChannelSchema = paymentChannelSchema
+  .extend({
+    guestFeeIdr: nonnegativeIdr.optional(),
+    totalIdr: nonnegativeIdr.optional(),
+  })
+  .refine(pricedTogether, {
+    path: ["totalIdr"],
+    message: "A priced channel carries its fee and its total",
+  });
+export type PosPaymentChannel = z.infer<typeof posPaymentChannelSchema>;
+
 export const posPaymentOptionSchema = z
   .strictObject({
     method: z.enum(POS_PAYMENT_OPTION_METHODS),
     enabled: z.boolean(),
     unavailableReason: posPaymentUnavailableReasonSchema.nullable(),
     /** 1269 C3a: VA and e-wallet only, the channels the cashier may pick. */
-    channels: z.array(paymentChannelSchema).optional(),
+    channels: z.array(posPaymentChannelSchema).optional(),
+    /** 1272 K4: priced for a named order, an enabled method without channels
+     * (cash, QRIS, EDC): fee 0 and the remaining bill. Absent otherwise. */
+    guestFeeIdr: nonnegativeIdr.optional(),
+    totalIdr: nonnegativeIdr.optional(),
+  })
+  .refine(pricedTogether, {
+    path: ["totalIdr"],
+    message: "A priced method carries its fee and its total",
   })
   .refine((row) => row.enabled === (row.unavailableReason === null), {
     path: ["unavailableReason"],
@@ -2255,6 +2296,14 @@ export const posPaymentOptionsSchema = z.strictObject({
   }),
 });
 export type PosPaymentOptions = z.infer<typeof posPaymentOptionsSchema>;
+
+/** 1272 K4: name the order to price each method (never an amount, PAY-01). */
+export const posPaymentOptionsQuerySchema = z.strictObject({
+  orderId: orderIdSchema.optional(),
+});
+export type PosPaymentOptionsQuery = z.infer<
+  typeof posPaymentOptionsQuerySchema
+>;
 
 /**
  * legend-adiov: a force released QRIS the system keeps asking the provider
@@ -2508,6 +2557,13 @@ export const receiptDocumentBaseShape = {
   // legend-j772n: empty only for a DP-only sale (checkDocumentTotals enforces
   // that DP then covers the total); every other document keeps a tender.
   tenders: z.array(posDocumentTenderSchema),
+  /**
+   * 1272 K4: the guest service fee ("Biaya layanan") the captured online
+   * tenders' gateway codes added on top of the bill. Not part of the order
+   * (no service charge, no PB1): printed after the order total, with the
+   * total paid = tenders + fee. Absent when no tender carried a fee.
+   */
+  guestFeeIdr: positiveIdr.optional(),
   cashierName: z.string().min(1).max(150).nullable(),
   customerName: z.string().min(1).max(150).nullable(),
 };
@@ -2681,11 +2737,23 @@ export type CustomerDisplayQris = z.infer<typeof customerDisplayQrisSchema>;
  * Duitku payment page). Same rules as `qris`: open hold, exactly the remaining
  * balance, unexpired.
  */
-export const customerDisplayOnlineCodeSchema = z.strictObject({
-  amountIdr: positiveIdr,
-  instructions: posOnlineCodeInstructionsSchema,
-  expiresAt: isoDateTimeSchema,
-});
+export const customerDisplayOnlineCodeSchema = z
+  .strictObject({
+    amountIdr: positiveIdr,
+    instructions: posOnlineCodeInstructionsSchema,
+    expiresAt: isoDateTimeSchema,
+    /** 1272 K4: the guest service fee of the code and what the guest pays
+     * (`amountIdr` + fee). Absent for a code without a fee. */
+    guestFeeIdr: positiveIdr.optional(),
+    chargedIdr: positiveIdr.optional(),
+  })
+  .refine(
+    (row) =>
+      row.guestFeeIdr === undefined
+        ? row.chargedIdr === undefined
+        : row.chargedIdr === row.amountIdr + row.guestFeeIdr,
+    { path: ["chargedIdr"], message: "chargedIdr = amountIdr + guestFeeIdr" },
+  );
 export type CustomerDisplayOnlineCode = z.infer<
   typeof customerDisplayOnlineCodeSchema
 >;
