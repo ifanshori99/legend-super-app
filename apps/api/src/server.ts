@@ -8,6 +8,7 @@ import {
   startCloudEdcRuntime,
   stopCloudEdcRuntime,
 } from "./edge/edc/cloud-runtime.ts";
+import { createBcaCloudProviderFromEnv } from "./edge/edc/bca-cloud-provider.ts";
 import { attachEdcBridgeRealtime } from "./routes/edc-bridge.routes.ts";
 import { expressClientAddress } from "./lib/client-address.ts";
 import { env } from "./config/env";
@@ -175,9 +176,12 @@ const emergencyRealtime = attachEmergencyRealtime(server, {
 
 // EDC agent in the cloud (B2 legend-wasr7.21): bridge tablets connect on
 // /api/edc-bridge. Cloud only, off unless EDC_BRIDGE_ENABLED; without a bank
-// codec (B5) every terminal is refused and ECR stays locked.
+// codec (B5) every bridge terminal is refused. `bca_cloud` terminals (B5a)
+// need the EDC_BCA_CLOUD_* credentials; without them they are not ready.
 const cloudEdc =
-  !env.EDGE_MODE && env.EDC_BRIDGE_ENABLED ? startCloudEdcRuntime() : null;
+  !env.EDGE_MODE && env.EDC_BRIDGE_ENABLED
+    ? startCloudEdcRuntime({ bcaCloud: createBcaCloudProviderFromEnv(env) })
+    : null;
 // Outlets served by a cloud provider (B5a bca_cloud) are taken at boot.
 void cloudEdc?.startOutlets();
 const edcBridgeRealtime = cloudEdc
