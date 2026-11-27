@@ -10,6 +10,7 @@
     <string name="action_stop">Hentikan jembatan</string>
     <string name="error_server">Alamat server harus https://nama-host tanpa path.</string>
     <string name="error_code">Kode pasang harus 8 huruf atau angka dari backoffice.</string>
+    <string name="error_code_new_server">Alamat server berubah. Isi kode pasang baru dari backoffice server itu.</string>
     <string name="error_code_invalid">Kode pasang tidak berlaku. Minta kode baru di backoffice.</string>
     <string name="error_code_rate_limited">Terlalu banyak kode salah. Tunggu 15 menit lalu coba lagi.</string>
     <string name="error_pair_failed">Tidak bisa memasangkan tablet. Periksa alamat server dan koneksi, lalu coba lagi.</string>

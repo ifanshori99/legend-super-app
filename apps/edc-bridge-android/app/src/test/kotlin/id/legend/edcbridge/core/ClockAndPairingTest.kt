@@ -63,6 +63,15 @@ class ClockAndPairingTest {
     }
 
     @Test
+    fun `saved token is kept only for the same server`() {
+        assertTrue(Pairing.sameServer("https://pos.contoh.id", " https://pos.contoh.id/ "))
+        assertFalse(Pairing.sameServer("https://pos.contoh.id", "https://lain.contoh.id"))
+        assertFalse(Pairing.sameServer("https://pos.contoh.id", "https://pos.contoh.id:8443"))
+        assertFalse(Pairing.sameServer(null, "https://pos.contoh.id"))
+        assertFalse(Pairing.sameServer("https://pos.contoh.id", "http://pos.contoh.id"))
+    }
+
+    @Test
     fun `pairing code is 8 characters without 0, O, 1, I, L`() {
         assertEquals("ABCD2345", Pairing.normalizePairCode(" abcd-2345 "))
         assertEquals("UVWXYZ99", Pairing.normalizePairCode("UVWX YZ99"))

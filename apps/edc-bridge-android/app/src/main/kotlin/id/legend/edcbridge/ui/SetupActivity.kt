@@ -93,6 +93,11 @@ class SetupActivity : Activity() {
                 status.text = getString(R.string.error_code)
                 return
             }
+            // The saved token belongs to the saved server only.
+            if (!Pairing.sameServer(settings.serverUrl, serverUrl)) {
+                status.text = getString(R.string.error_code_new_server)
+                return
+            }
             settings.serverUrl = serverUrl.trim()
             BridgeService.reload(this)
             status.text = getString(R.string.status_connecting)

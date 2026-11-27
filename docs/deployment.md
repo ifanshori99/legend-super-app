@@ -460,6 +460,10 @@ The edge bootstrap routes (`/api/edge-sync/bootstrap/*`) have their own in-memor
 - An outlet's edge nodes share the outlet's public IP. A guest device on the same network can use up the per-IP budget and delay that outlet's sync for the rest of the minute. Keep edge nodes on a network segment guests cannot use, or put the outlet behind its own address.
 - `TRUST_PROXY` must match the proxy hops here too: with too few hops every edge node in the fleet appears as the proxy's address and they all share one per-IP bucket.
 
+### EDC bridge pairing limit
+
+`POST /api/edc-bridge/pair` (tablet pairing, no session, legend-wasr7.24) allows 5 wrong pairing codes per client IP in 15 minutes (counted in the database, `edc_bridge_pair_ip_slots`), on top of the public per-IP/minute limiter. It keys on `req.ip` like every other limiter, so `TRUST_PROXY` must match the proxy hops here too: with too few hops every tablet of every tenant appears as the proxy's address and shares one bucket, so five wrong codes anywhere block all pairing for 15 minutes. Check it after any proxy change.
+
 ### Cloudflare free-plan rule (edge layer)
 
 The API limiter is one process's backstop. Put a stricter, shared rule at the edge where the plan allows it. On the **Free plan** Cloudflare's rate limiting rules allow **one rule**, a **10-second counting period**, **IP-only** counting, a **10-second mitigation timeout**, and expressions limited to **path** (plus verified bot). One rule can still cover the two catalogue-dumping surfaces:

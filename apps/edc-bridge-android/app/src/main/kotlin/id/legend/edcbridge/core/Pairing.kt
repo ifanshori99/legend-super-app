@@ -43,6 +43,14 @@ object Pairing {
     /** `https://host[:port]` only; the socket is `wss://host[:port]/api/edc-bridge`. */
     fun socketUrl(serverUrl: String): String? = authority(serverUrl)?.let { "wss://$it/api/edc-bridge" }
 
+    /** True only when both addresses are valid and name the same server. A
+     * saved token is kept only for its own server: a changed address needs a
+     * new pairing code, so the token never goes to another host. */
+    fun sameServer(saved: String?, typed: String): Boolean {
+        val savedSocket = saved?.let { socketUrl(it) } ?: return false
+        return savedSocket == socketUrl(typed)
+    }
+
     /** Where the code is traded for the device token (B4, no session). */
     fun pairUrl(serverUrl: String): String? = authority(serverUrl)?.let { "https://$it/api/edc-bridge/pair" }
 
