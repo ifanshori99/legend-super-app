@@ -182,6 +182,27 @@ describe("maxFee* caps are platform-only (K5 review P2)", () => {
     await save(BASE, { platform: true });
   });
 
+  it("a free-text maxFee* value never reaches the audit row", async () => {
+    const card = "4111111111111111";
+    await save(
+      { ...BASE, maxFeeNote: card, maxFeeBps_va: 1.5 },
+      { platform: true },
+    );
+    const { rows } = await owner.query<{ event: unknown }>(
+      "SELECT event FROM audit_logs WHERE tenant_id = $1 AND event->>'objectType' = 'tenant_integration'",
+      [tenantId],
+    );
+    expect(rows.length).toBeGreaterThan(0);
+    expect(JSON.stringify(rows)).not.toContain(card);
+    // Neither the note nor a non-whole number is listed as a cap value.
+    const caps = rows
+      .map((row) => JSON.stringify(row.event))
+      .join("")
+      .match(/"capKey":"[A-Za-z_]+"/g);
+    expect(caps).not.toContain('"capKey":"maxFeeNote"');
+    await save(BASE, { platform: true });
+  });
+
   it("guestFees belong to Duitku only", async () => {
     const error = await refusal(() =>
       upsertIntegration(

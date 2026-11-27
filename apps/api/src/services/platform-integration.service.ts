@@ -250,9 +250,7 @@ function auditSnapshot(row: IntegrationRow): Record<string, unknown> {
     status: row.status,
     configKeys: Object.keys(row.config).sort(),
     // Fee caps are the platform's and not secret: old and new values show up.
-    feeCaps: Object.entries(feeCapKeys(row.config)).map(
-      ([capKey, capValue]) => ({ capKey, capValue }),
-    ),
+    feeCaps: feeCapsForAudit(row.config),
     credentialFields: row.credentialFields ?? [],
     credentialsConfigured: row.credentialsEncrypted !== null,
   };
@@ -531,6 +529,18 @@ function feeCapKeys(config: Record<string, unknown>): Record<string, unknown> {
       .filter(([key]) => key.startsWith("maxFee"))
       .sort(([a], [b]) => (a < b ? -1 : 1)),
   );
+}
+
+const FEE_CAP_AUDIT_KEY = /^maxFee(Bps|FlatIdr)_[a-z]+$/;
+
+/** Fee caps for the audit row: cap keys with whole numbers only, never a
+ * free-text value that happens to sit under a `maxFee*` name. */
+function feeCapsForAudit(config: Record<string, unknown>) {
+  return Object.entries(feeCapKeys(config))
+    .filter(
+      ([key, value]) => FEE_CAP_AUDIT_KEY.test(key) && Number.isInteger(value),
+    )
+    .map(([capKey, capValue]) => ({ capKey, capValue }));
 }
 
 /**
