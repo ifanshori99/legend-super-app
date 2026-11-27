@@ -856,7 +856,11 @@ export async function getPosQrisStatus(
     if (!hold || hold.outletId !== outletId)
       throw notFound("Pesanan ini belum punya QRIS.");
     const [code] = await tx
-      .select({ method: paymentIntents.method })
+      .select({
+        method: paymentIntents.method,
+        amountIdr: paymentIntents.amountIdr,
+        guestFeeIdr: paymentIntents.guestFeeIdr,
+      })
       .from(paymentIntents)
       .where(
         and(
@@ -865,8 +869,20 @@ export async function getPosQrisStatus(
         ),
       );
     const online = code?.method === "va" || code?.method === "ewallet";
+    // 1272 K4: a code with a guest service fee shows it and what the guest
+    // pays the gateway; the hold amount stays the bill (tender = bill).
+    const guestFeeIdr = Number(code?.guestFeeIdr ?? 0);
+    const dto = await holdDto(tx, tenantId, hold);
     return {
-      ...(await holdDto(tx, tenantId, hold)),
+      ...dto,
+      ...(online &&
+      guestFeeIdr > 0 &&
+      Number(code?.amountIdr) === Number(dto.amountIdr)
+        ? {
+            guestFeeIdr: idr(guestFeeIdr),
+            chargedIdr: idr(Number(dto.amountIdr) + guestFeeIdr),
+          }
+        : {}),
       qrPayload:
         access.canAcceptPayment && !online
           ? await showableQrPayload(tx, context, hold, now)

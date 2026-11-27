@@ -746,6 +746,8 @@ async function buildState(tx: Tx, pairing: PairingRow, now: Date) {
     amountIdr: number;
     instructions: PosOnlineCodeInstructions;
     expiresAt: string;
+    guestFeeIdr?: number;
+    chargedIdr?: number;
   } | null = null;
   // D-08: the hold must be open AND exactly the remaining amount.
   if (hold && remaining > 0 && Number(hold.amountIdr) === remaining) {
@@ -755,6 +757,8 @@ async function buildState(tx: Tx, pairing: PairingRow, now: Date) {
         method: paymentIntents.method,
         instructions: paymentIntents.instructions,
         expiresAt: paymentIntents.expiresAt,
+        amountIdr: paymentIntents.amountIdr,
+        guestFeeIdr: paymentIntents.guestFeeIdr,
       })
       .from(paymentIntents)
       .where(
@@ -783,17 +787,25 @@ async function buildState(tx: Tx, pairing: PairingRow, now: Date) {
     const code = posOnlineCodeInstructionsSchema.safeParse(
       intent?.instructions,
     );
+    // 1272 K4: the guest service fee rides on top of the bill; the screen
+    // shows it and what the guest pays. A code whose bill is not the
+    // remaining balance shows nothing (the D-08 rule above, on the intent).
+    const guestFeeIdr = Number(intent?.guestFeeIdr ?? 0);
     if (
       intent &&
       code.success &&
       intent.provider === "duitku" &&
       code.data.method === intent.method &&
-      intent.expiresAt.getTime() > now.getTime()
+      intent.expiresAt.getTime() > now.getTime() &&
+      (guestFeeIdr === 0 || Number(intent.amountIdr) === remaining)
     )
       onlineCode = {
         amountIdr: remaining,
         instructions: code.data,
         expiresAt: intent.expiresAt.toISOString(),
+        ...(guestFeeIdr > 0
+          ? { guestFeeIdr, chargedIdr: remaining + guestFeeIdr }
+          : {}),
       };
   }
   const changes = tenders

@@ -13,14 +13,21 @@
 //   legend-vpx, so ECR stays locked there.
 // - Nothing secret leaves: no merchant id, address, full terminal id, gateway
 //   name or credential.
+// - 1272 K4 (design duitku-fee-passthrough §3, §7): with `orderId` each VA /
+//   e-wallet channel carries the guest service fee on top of the order's
+//   remaining bill and the total the guest pays, priced by the gateway's own
+//   schedule (the gross-up the create call recomputes; it never reads this
+//   quote). A channel without a usable rate is left out, never shown at fee
+//   0; a method left without channels is off. Every other enabled method
+//   carries fee 0 and the remaining bill. Without an order: no fee fields.
 
 import { and, asc, eq } from "drizzle-orm";
 import type { OutletId, ScopedTenantContext } from "@starter/shared/core";
-import type { PaymentChannel } from "@starter/shared/payment";
 import { PAYMENT_GATEWAY_PROVIDERS } from "@starter/shared/platform";
 import {
   POS_PAYMENT_OPTION_METHODS,
   posPaymentOptionsSchema,
+  type PosPaymentChannel,
   type PosPaymentOptions,
   type PosPaymentUnavailableReason,
 } from "@starter/shared/pos";
@@ -29,6 +36,8 @@ import { paymentEdcTerminals } from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { prepareEdcAgent, resolveEdcAgent } from "../edge/edc/resolver.ts";
 import { logger } from "../lib/logger.ts";
+import { NO_GUEST_FEE } from "./payment-gateway.ts";
+import { priceForGuest } from "./payment-guest-fee.ts";
 import { selectGatewayForNewIntent } from "./payment-gateway-select.ts";
 import {
   resolveRoutingRule,
@@ -38,7 +47,12 @@ import {
   edgeHasGatewayCredentials,
   isEdgeProcess,
 } from "./pos-order-payment.ts";
-import { loadOutlet } from "./pos-order-support.ts";
+import {
+  loadOutlet,
+  readPosOrder,
+  remainingIdr,
+  tendersOf,
+} from "./pos-order-support.ts";
 
 type Reason = PosPaymentUnavailableReason | null;
 
@@ -83,7 +97,8 @@ async function onlineCodeOption(
   outletId: OutletId,
   method: "va" | "ewallet",
   routing: ResolvedRouting,
-): Promise<{ reason: Reason; channels: PaymentChannel[] }> {
+  baseIdr: number | null,
+): Promise<{ reason: Reason; channels: PosPaymentChannel[] }> {
   const off = (reason: PosPaymentUnavailableReason) => ({
     reason,
     channels: [],
@@ -102,7 +117,20 @@ async function onlineCodeOption(
     const listed = await selected.port.methods?.(context, outletId);
     const entry = listed?.find((row) => row.method === method && row.enabled);
     if (!entry || entry.channels.length === 0) return off("routing_disabled");
-    return { reason: null, channels: [...entry.channels] };
+    if (baseIdr === null)
+      return { reason: null, channels: [...entry.channels] };
+    // 1272 K4: priced for the order; a channel without a rate is left out.
+    const schedule = selected.port.guestFeeSchedule
+      ? await selected.port.guestFeeSchedule(context, outletId)
+      : NO_GUEST_FEE;
+    const priced: PosPaymentChannel[] = [];
+    for (const channel of entry.channels) {
+      const price = priceForGuest(schedule, method, channel.code, baseIdr);
+      if (price) priced.push({ ...channel, ...price });
+    }
+    return priced.length === 0
+      ? off("routing_disabled")
+      : { reason: null, channels: priced };
   } catch (error) {
     logger.warn(
       { err: error, outletId, method },
@@ -116,13 +144,20 @@ export async function getPosPaymentOptions(
   context: ScopedTenantContext,
   outletId: OutletId,
   caller: { deviceId: string | null },
+  orderId?: string,
 ): Promise<PosPaymentOptions> {
-  const { routing, vaRouting, ewalletRouting, terminals } = await withTenant(
-    db,
-    context,
-    async (tx) => {
+  const { routing, vaRouting, ewalletRouting, terminals, baseIdr } =
+    await withTenant(db, context, async (tx) => {
       await loadOutlet(tx, context, outletId);
+      // 1272 K4: the bill a tender would take now (an online code takes the
+      // whole remaining balance); 404 for an order of another outlet.
+      let base: number | null = null;
+      if (orderId !== undefined) {
+        const { order } = await readPosOrder(tx, context, outletId, orderId);
+        base = remainingIdr(order, await tendersOf(tx, context, order.id));
+      }
       return {
+        baseIdr: base,
         routing: await resolveRoutingRule(tx, context, outletId, "qris"),
         vaRouting: await resolveRoutingRule(tx, context, outletId, "va"),
         ewalletRouting: await resolveRoutingRule(
@@ -146,21 +181,27 @@ export async function getPosPaymentOptions(
             asc(paymentEdcTerminals.id),
           ),
       };
-    },
-  );
+    });
   const edc = (method: "card" | "qris"): Reason =>
     terminals.some((row) => row.supportedMethods.includes(method))
       ? null
       : "no_terminal";
-  const va = await onlineCodeOption(context, outletId, "va", vaRouting);
+  const va = await onlineCodeOption(
+    context,
+    outletId,
+    "va",
+    vaRouting,
+    baseIdr,
+  );
   const ewallet = await onlineCodeOption(
     context,
     outletId,
     "ewallet",
     ewalletRouting,
+    baseIdr,
   );
   const channels: Partial<
-    Record<(typeof POS_PAYMENT_OPTION_METHODS)[number], PaymentChannel[]>
+    Record<(typeof POS_PAYMENT_OPTION_METHODS)[number], PosPaymentChannel[]>
   > = { va: va.channels, ewallet: ewallet.channels };
   const reasons: Record<(typeof POS_PAYMENT_OPTION_METHODS)[number], Reason> = {
     // Cash books on the open shift of this device (pos-cash-guard.ts).
@@ -184,6 +225,14 @@ export async function getPosPaymentOptions(
       unavailableReason: reasons[method],
       // Only an enabled VA / e-wallet lists channels (absent otherwise).
       ...(channels[method]?.length ? { channels: channels[method] } : {}),
+      // 1272 K4: no fee on cash, QRIS (design §5) or EDC; the channels of a
+      // VA / e-wallet carry their own.
+      ...(baseIdr !== null &&
+      reasons[method] === null &&
+      method !== "va" &&
+      method !== "ewallet"
+        ? { guestFeeIdr: 0, totalIdr: baseIdr }
+        : {}),
     })),
     edc: {
       ecrEnabled,

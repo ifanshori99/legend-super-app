@@ -2175,27 +2175,29 @@ export type PosOnlineCodeInstructions = z.infer<
  * unexpired, the bill unchanged since issue, amount = remaining, and the
  * caller holds `pos.payment.accept`. Null means: show no QR.
  */
-export const posQrisStatusSchema = posQrisHoldSchema.extend({
-  qrPayload: z.string().min(16).nullable(),
-  /**
-   * 1269 C3a: a VA or e-wallet code of the hold (the VA number or the Duitku
-   * payment page), under the same rules as `qrPayload`; null = show nothing.
-   * Absent for a QRIS hold.
-   */
-  instructions: posOnlineCodeInstructionsSchema.nullable().optional(),
-  /**
-   * 1272 K4: a code with a guest service fee shows it and what the guest pays
-   * the gateway (`amountIdr` + fee). Absent for a code without a fee.
-   */
-  guestFeeIdr: positiveIdr.optional(),
-  chargedIdr: positiveIdr.optional(),
-}).refine(
-  (row) =>
-    row.guestFeeIdr === undefined
-      ? row.chargedIdr === undefined
-      : row.chargedIdr === row.amountIdr + row.guestFeeIdr,
-  { path: ["chargedIdr"], message: "chargedIdr = amountIdr + guestFeeIdr" },
-);
+export const posQrisStatusSchema = posQrisHoldSchema
+  .extend({
+    qrPayload: z.string().min(16).nullable(),
+    /**
+     * 1269 C3a: a VA or e-wallet code of the hold (the VA number or the Duitku
+     * payment page), under the same rules as `qrPayload`; null = show nothing.
+     * Absent for a QRIS hold.
+     */
+    instructions: posOnlineCodeInstructionsSchema.nullable().optional(),
+    /**
+     * 1272 K4: a code with a guest service fee shows it and what the guest pays
+     * the gateway (`amountIdr` + fee). Absent for a code without a fee.
+     */
+    guestFeeIdr: positiveIdr.optional(),
+    chargedIdr: positiveIdr.optional(),
+  })
+  .refine(
+    (row) =>
+      row.guestFeeIdr === undefined
+        ? row.chargedIdr === undefined
+        : row.chargedIdr === row.amountIdr + row.guestFeeIdr,
+    { path: ["chargedIdr"], message: "chargedIdr = amountIdr + guestFeeIdr" },
+  );
 export type PosQrisStatus = z.infer<typeof posQrisStatusSchema>;
 
 // ---- Payment options (1268 B2) ----------------------------------------------
