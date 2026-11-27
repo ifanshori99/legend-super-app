@@ -255,7 +255,10 @@ export async function fetchOpenShiftsOfDay(
     );
     for (const shift of page.data)
       if (shift.status === "open") open.push(activeShiftFrom(shift));
-    cursor = page.meta.nextCursor ?? undefined;
+    // Review K O5 P3 6: a cursor that does not move would loop for ever.
+    const next = page.meta.nextCursor ?? undefined;
+    if (next === cursor) break;
+    cursor = next;
   } while (cursor);
   return open;
 }

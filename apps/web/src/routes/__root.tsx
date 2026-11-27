@@ -20,7 +20,11 @@ import { Button } from "@/components/ui/button";
 import { PushOwnerGuard } from "@/features/ws05-notifications/components/push-owner-guard";
 import { isScreenClosedOnSharedDevice } from "@/lib/areas/guard";
 import { loadAreaAccess } from "@/lib/areas/load-access";
-import { loadWithOfflineFallback } from "@/lib/offline-navigation";
+import {
+  loadWithOfflineFallback,
+  recallRootContext,
+  rememberRootContext,
+} from "@/lib/offline-navigation";
 import type { AreaAccess } from "@/lib/areas/access";
 import { getSessionFn, type Session } from "@/lib/session";
 import { getTenantBrandFn } from "@/lib/tenant-brand-fn";
@@ -55,9 +59,6 @@ type RootContext = Pick<
   "session" | "access" | "tenantTheme" | "textOverrides"
 >;
 
-// Browser-only memory of the last resolved root context (see beforeLoad).
-let lastRootContext: RootContext | null = null;
-
 async function loadRootContext(): Promise<RootContext> {
   const [session, brand] = await Promise.all([
     getSessionFn(),
@@ -88,11 +89,13 @@ export const Route = createRootRouteWithContext<RouterContext>()({
     // Browser only: with the internet gone (offline till) the last context the
     // browser resolved stays in force (see lib/offline-navigation).
     const { session, access, tenantTheme, textOverrides } = isBrowser
-      ? (lastRootContext = await loadWithOfflineFallback(
+      ? await loadWithOfflineFallback(
           loadRootContext,
-          lastRootContext,
-        ))
+          recallRootContext<RootContext>(),
+        )
       : await loadRootContext();
+    if (isBrowser)
+      rememberRootContext({ session, access, tenantTheme, textOverrides });
     // Shared tablet (founder Q29): screens outside the allowlist do not exist
     // there, in every area. The API refuses their requests as well.
     if (isScreenClosedOnSharedDevice(access, location.pathname))
@@ -125,7 +128,7 @@ function RootLayout() {
   // till (see lib/offline-navigation).
   useEffect(() => {
     const { session, access, tenantTheme, textOverrides } = rootContext;
-    lastRootContext = { session, access, tenantTheme, textOverrides };
+    rememberRootContext({ session, access, tenantTheme, textOverrides });
   }, [rootContext]);
   return (
     <>

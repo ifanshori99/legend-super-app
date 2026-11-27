@@ -543,7 +543,10 @@ async function ingestInTransaction(
   if (reason !== null || flags.length > 0)
     await alertSupervisors(tx, context, {
       // Review O3 P1: a conflicting sale reaches finance (the owners) too.
-      ...(conflictOf !== null ? { alsoOwners: true } : {}),
+      // Review K O5 P3 4: so does a sale the cashier marked "pelanggan lain".
+      ...(conflictOf !== null || event.otherCustomerReason !== undefined
+        ? { alsoOwners: true }
+        : {}),
       outletId,
       id: edgeAlertId("offline_sale_review", tenantId, event.eventId),
       eventName: "offline_sale.review_needed",

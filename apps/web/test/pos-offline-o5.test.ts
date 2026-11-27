@@ -127,6 +127,16 @@ describe("O5 (2): the day close lists the shifts still open since before today",
     ]);
   });
 
+  it("review K P3 6: a cursor that does not move ends the loop", async () => {
+    net.respond = () => ({
+      data: [shiftRow(1, "open", "2026-11-27")],
+      meta: { limit: 100, nextCursor: "stuck" },
+    });
+    const shifts = await fetchOpenShiftsOfDay(OUTLET, "2026-11-27");
+    expect(net.calls).toHaveLength(2);
+    expect(shifts).toHaveLength(2);
+  });
+
   it("an outlet with no open shift lists none", async () => {
     net.respond = () => ({
       data: [shiftRow(1, "closed", "2026-11-26")],

@@ -10,6 +10,17 @@ type Options = {
   offline?: () => boolean;
 };
 
+/**
+ * Review K O5 P3 1: only the browsers' "no answer" TypeError of fetch counts,
+ * not any TypeError (a code bug while online must still surface).
+ */
+const FETCH_FAILURE =
+  /failed to fetch|load failed|networkerror|network request failed/i;
+
+function isFetchFailure(error: unknown): boolean {
+  return error instanceof TypeError && FETCH_FAILURE.test(error.message);
+}
+
 function browserOffline(): boolean {
   return typeof navigator !== "undefined" && navigator.onLine === false;
 }
@@ -27,8 +38,25 @@ export async function loadWithOfflineFallback<T>(
     return await load();
   } catch (error) {
     const offline = (options.offline ?? browserOffline)();
-    const networkFailure = error instanceof TypeError;
+    const networkFailure = isFetchFailure(error);
     if (last !== null && (offline || networkFailure)) return last;
     throw error;
   }
+}
+
+// Browser-only memory of the last root context the browser resolved. Review K
+// O5 P2: sign-out empties it, so a lost network after sign-out never shows the
+// account that just left to the next person at this tablet.
+let lastRootContext: unknown = null;
+
+export function rememberRootContext<T>(context: T): void {
+  lastRootContext = context;
+}
+
+export function recallRootContext<T>(): T | null {
+  return (lastRootContext as T | null) ?? null;
+}
+
+export function forgetRootContext(): void {
+  lastRootContext = null;
 }

@@ -1070,6 +1070,51 @@ describe("Review O2 fixes", () => {
     expect(await ordersOf(event.eventId)).toBe(1);
   });
 
+  it("O5 review P3 4: a sale marked another customer reaches the owners too, even when the outlet has a supervisor", async () => {
+    const assign = async (name: string, template: string, scope: string) => {
+      const who = agent(app);
+      await signUp(who, name);
+      const session = await who.get("/api/auth/get-session");
+      const userId = session.body.user.id as string;
+      const { rows: roles } = await owner.query<{ id: string }>(
+        "SELECT id FROM roles WHERE tenant_id = $1 AND template_key = $2",
+        [seededTenantId, template],
+      );
+      await owner.query(
+        `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+         VALUES ($1, $2, $3, $4, $5, now() - interval '1 minute', $2)`,
+        [
+          seededTenantId,
+          userId,
+          roles[0]!.id,
+          scope === "tenant" ? "tenant" : "outlet",
+          scope === "tenant" ? null : seededOutletA,
+        ],
+      );
+      return userId;
+    };
+    const supervisorId = await assign(
+      "O5 Review Supervisor",
+      "supervisor",
+      "outlet",
+    );
+    const ownerId = await assign("O5 Review Owner", "owner", "tenant");
+    const kit = await kitFor(c);
+    const event = offlineSaleEventSchema.parse({
+      ...sale(kit, menuOf(kit), kit.receiptRun.lastNumber + 1),
+      otherCustomerReason: "Pelanggan lain, meja berbeda",
+    });
+    const result = await submit(c, [event]);
+    const receiptNumber = result.results[0]!.receiptNumber!;
+    const { rows } = await owner.query<{ user_id: string }>(
+      "SELECT user_id::text FROM notifications WHERE tenant_id = $1 AND body LIKE $2",
+      [seededTenantId, `%${receiptNumber}%`],
+    );
+    const receivers = rows.map((row) => row.user_id);
+    expect(receivers).toContain(supervisorId);
+    expect(receivers).toContain(ownerId);
+  });
+
   it("O5 (1): the reason of another customer must be written (4 to 200 characters)", async () => {
     const kit = await kitFor(c);
     const base = sale(kit, menuOf(kit), kit.receiptRun.lastNumber + 1);

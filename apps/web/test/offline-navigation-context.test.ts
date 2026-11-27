@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { loadWithOfflineFallback } from "@/lib/offline-navigation";
+import {
+  forgetRootContext,
+  loadWithOfflineFallback,
+  recallRootContext,
+  rememberRootContext,
+} from "@/lib/offline-navigation";
 
 // O5 release bug (27 Nov): on the offline tablet every in-app navigation (phone
 // "Lihat keranjang", "Tutup shift") ran the root beforeLoad, whose server
@@ -59,5 +64,54 @@ describe("loadWithOfflineFallback", () => {
         { offline: () => false },
       ),
     ).rejects.toThrow("boom");
+  });
+});
+
+describe("review K O5 P3 1: only a lost connection counts as offline", () => {
+  it("rethrows a programming TypeError while the browser is online", async () => {
+    await expect(
+      loadWithOfflineFallback(
+        async () => {
+          throw new TypeError("Cannot read properties of undefined");
+        },
+        "old",
+        { offline: () => false },
+      ),
+    ).rejects.toThrow("Cannot read properties");
+  });
+
+  it("keeps the last value for the browsers' fetch failure messages", async () => {
+    for (const message of [
+      "Failed to fetch",
+      "Load failed",
+      "NetworkError when attempting to fetch resource.",
+    ])
+      expect(
+        await loadWithOfflineFallback(
+          async () => {
+            throw new TypeError(message);
+          },
+          "old",
+          { offline: () => false },
+        ),
+      ).toBe("old");
+  });
+});
+
+describe("review K O5 P2: sign-out forgets the last root context", () => {
+  it("after forgetRootContext a lost network no longer shows the old account", async () => {
+    rememberRootContext({ session: { user: { id: "account-a" } } });
+    expect(recallRootContext()).not.toBeNull();
+    forgetRootContext();
+    expect(recallRootContext()).toBeNull();
+    await expect(
+      loadWithOfflineFallback(
+        async () => {
+          throw new TypeError("Failed to fetch");
+        },
+        recallRootContext(),
+        { offline: () => true },
+      ),
+    ).rejects.toThrow("Failed to fetch");
   });
 });

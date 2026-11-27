@@ -368,6 +368,7 @@ export function CashierMainScreen() {
       {
         onSuccess: () => {
           cart.clear();
+          setOtherReason(null);
           restoreNow();
         },
         onSettled: pendingPark.refresh,
@@ -383,6 +384,7 @@ export function CashierMainScreen() {
       {
         onSuccess: () => {
           cart.clear();
+          setOtherReason(null);
           setStatus({ key: "parkedOk" });
         },
         onSettled: pendingPark.refresh,
@@ -403,7 +405,10 @@ export function CashierMainScreen() {
           // Same cart as the one parked: it is on the held list now, so it
           // leaves the screen. A different cart stays: it is a new order.
           // Read again now: an item added while this was sending must stay.
-          if (sameOrder(readDraft(draftKey), meta, snapshot)) cart.clear();
+          if (sameOrder(readDraft(draftKey), meta, snapshot)) {
+            cart.clear();
+            setOtherReason(null);
+          }
           setStatus({ key: "parkedOk" });
         },
         onSettled: pendingPark.refresh,

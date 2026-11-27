@@ -66,3 +66,13 @@ Buntu di langkah jual (penyebab persis):
 - Koreksi harness: service worker dan Cache API hanya ada di secure context, jadi e2e sebelumnya tidak menjalankan service worker sama sekali. Spec kini memakai konteks persisten dengan `channel: "chromium"` (headless baru) dan `--unsafely-treat-insecure-origin-as-secure`; headless shell lama mengabaikan flag itu. `isSecureContext` ditegaskan true. Shim `randomUUID` dibuang (tak perlu lagi).
 - Catatan: `tests/panic-push-service-worker.test.mjs` sudah gagal di HEAD sebelum perubahan ini (3 test mencari listener push yang tak ada di sw.js); tidak disentuh.
 - Menyentuh konteks sesi root (`__root.tsx` dari langkah 6): review K architect menyusul.
+
+## Langkah 8: perbaikan Review K O5 (27 Nov): 1 P2 + 6 P3, semua selesai
+
+- P2 sign-out: `forgetRootContext()` + `queryClient.clear()` sebelum `router.invalidate()` (`sign-out-button.tsx`); memori konteks pindah ke `lib/offline-navigation.ts` (`rememberRootContext/recallRootContext/forgetRootContext`). Test gagal-dulu: `offline-navigation-context.test.ts` (setelah forget, jaringan putus tidak lagi menampilkan akun lama) dan `tests/push-registration-web.test.mjs` (clear dan forget setelah signOut; mock modul O3 yang hilang ditambah, 2 test lama sudah gagal sebelum ini karena penjaga O3).
+- P3-1: hanya `navigator.onLine === false` atau pesan gagal-fetch (Failed to fetch, Load failed, NetworkError) yang dianggap offline; TypeError biasa dilempar. Test gagal-dulu.
+- P3-2/3: `sw.js` membuang dulu aset yang bukan milik deploy sekarang (shell + daftar precache); `pos-precache.json` diambil dengan `cache: "no-cache"`. Test baru `tests/pos-sw-precache.test.mjs` (gagal-dulu terbukti).
+- P3-4: alert `other_customer` juga ke owner (`alsoOwners`). Test API gagal-dulu: owner tidak ada di penerima, lalu hijau (27 test).
+- P3-5: `setOtherReason(null)` di tiga jalur `cart.clear()` (park, parkir lalu pulihkan, kirim ulang park). Tanpa test otomatis (state komponen; web test berjalan di node tanpa render).
+- P3-6: `fetchOpenShiftsOfDay` berhenti bila `nextCursor` sama dengan kursor sebelumnya. Test gagal-dulu (loop tak berakhir).
+- Pra-gate: prettier, eslint, text-contract, typecheck api+web hijau; test web 40 hijau, API pos-offline-batch 27 hijau, root 33 hijau; e2e offline ulang HIJAU (1 passed).
