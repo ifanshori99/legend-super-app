@@ -1,7 +1,9 @@
 -- 1272 K1 (legend-osqou.56; design duitku-fee-passthrough §3): guest service
 -- fee on Duitku va/ewallet/card intents. charged_idr is what the gateway
--- charges; amount_idr stays the bill. New columns only, no row rewritten
--- (existing rows get guest_fee_idr 0, so charged_idr = amount_idr). After 0543.
+-- charges; amount_idr stays the bill. New columns only, no FK. The STORED
+-- generated column rewrites payment_intents under an exclusive lock for the
+-- time of the ALTER (existing rows get guest_fee_idr 0, so charged_idr =
+-- amount_idr): run it at a quiet hour (docs/deploy/runbook-founder.md). After 0543.
 ALTER TABLE "payment_intents" ADD COLUMN "guest_fee_idr" bigint DEFAULT 0 NOT NULL;--> statement-breakpoint
 ALTER TABLE "payment_intents" ADD COLUMN "gateway_fee_quote_idr" bigint;--> statement-breakpoint
 ALTER TABLE "payment_intents" ADD COLUMN "charged_idr" bigint GENERATED ALWAYS AS (amount_idr + guest_fee_idr) STORED NOT NULL;--> statement-breakpoint

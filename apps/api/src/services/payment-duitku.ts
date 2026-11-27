@@ -554,7 +554,12 @@ export function createDuitkuGateway(
     // and its quote is the fee Duitku takes from that amount.
     const rows = await fetchMethods(resolved, chargedIdr);
     const code = chooseCode(rows, input.method, input.channelCode);
-    if (guestFeeIdr > 0 && !feeQuoteAccepted(code.totalFee, guestFeeIdr)) {
+    // Every flagged method is checked, a zero rate too: a fee 0 against a
+    // quote above 0 leaves the outlet short.
+    if (
+      guestFeeMethodOn(input.method, env.DUITKU_GUEST_FEE_METHODS) &&
+      !feeQuoteAccepted(code.totalFee, guestFeeIdr)
+    ) {
       // §1: Duitku would take more (outlet short) or clearly less (guest
       // overpays) than our rate: no intent, ops told to fix the rate.
       logger.warn(

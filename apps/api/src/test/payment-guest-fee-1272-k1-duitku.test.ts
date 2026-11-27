@@ -243,6 +243,15 @@ describe("guest fee on", () => {
     expect(near.calls.inquiryAmounts).toEqual([BILL + g]);
   });
 
+  it("a zero rate on a flagged method still checks the quote: fee 0 against a quote above 0 creates no intent", async () => {
+    const { port, calls } = gateway(
+      { ...fullRates, OV: { bps: 0, flatIdr: 0 } },
+      (code) => (code === "OV" ? 350 : 0),
+    );
+    await expectFeeChanged(port.createIntent(request("ewallet", "OV", 0)));
+    expect(calls.inquiryAmounts).toEqual([]);
+  });
+
   it("a fee other than the rate's (0 or stale) is refused before any provider call", async () => {
     const { port, calls } = gateway(fullRates, mdr({ OV: OV_RATE }));
     await expectFeeChanged(port.createIntent(request("ewallet", "OV")));

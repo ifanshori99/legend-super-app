@@ -22,6 +22,7 @@ Catatan:
 
 - Kunci inti (rahasia login, enkripsi data, PIN) dibuat tim di VPS dengan `openssl rand`. Founder tidak perlu membuat.
 - Duitku production baru dipakai setelah bukti sandbox. `DUITKU_ALLOW_SANDBOX` selalu `false` di production.
+- Migrasi 0544 (biaya layanan tamu, `payment_intents`) menambah kolom `charged_idr` bertipe generated STORED: Postgres menulis ulang tabel `payment_intents` dengan kunci eksklusif selama ALTER berjalan. Jalankan di jam sepi. Saklar `DUITKU_GUEST_FEE_METHODS` tetap kosong di production sampai pencocokan settlement (K2) dan K4 masuk.
 - Saklar uang (`DOIT_REFUNDS_ENABLED`, `DOIT_RECURRING_ENABLED`) tetap `false`. Hanya founder yang menyalakan.
 - Backup: repo2 harus akun dan lokasi lain dari repo1, supaya satu kegagalan tidak menghapus keduanya. Berkas R2 sendiri belum ikut backup database; atur versioning atau replikasi bucket di Cloudflare.
 

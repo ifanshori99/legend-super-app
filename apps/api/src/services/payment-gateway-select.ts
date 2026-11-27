@@ -198,10 +198,26 @@ export async function methodIssuable(
   let listed: boolean;
   let channels: readonly PaymentChannel[];
   try {
+    // 1272 K1: the gateway charges the bill plus the guest fee, so limits are
+    // read at that amount; a fee method with no usable rate is not offered.
+    // A channel-bearing method asked without its channel (the guest has not
+    // picked a bank yet) has no rate to read: the bill alone, and the create
+    // call prices the chosen channel.
+    const priced =
+      channelCode !== null || method === "qris" || method === "card";
+    const guestFeeIdr =
+      priced && port.guestFeeSchedule
+        ? (await port.guestFeeSchedule(context, outletId))(
+            method,
+            channelCode,
+            amountIdr,
+          )
+        : 0;
+    if (guestFeeIdr === null) return "not_offered";
     if (port.methods) {
-      const entry = (await port.methods(context, outletId, amountIdr)).find(
-        (candidate) => candidate.method === method && candidate.enabled,
-      );
+      const entry = (
+        await port.methods(context, outletId, amountIdr + guestFeeIdr)
+      ).find((candidate) => candidate.method === method && candidate.enabled);
       listed = entry !== undefined;
       channels = entry?.channels ?? [];
     } else {

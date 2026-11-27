@@ -36,6 +36,7 @@ import {
   resolvePostingRule,
   type PostingAccountRole,
 } from "@starter/shared/accounting";
+import { sql } from "drizzle-orm";
 import { createApp } from "../app";
 import { db } from "../db";
 import { withTenant } from "../db/tenant";
@@ -43,6 +44,7 @@ import { paymentIntents } from "../db/schema";
 import { resetPaymentWebhookRateLimits } from "../routes/payment-webhook.routes";
 import { resetPaymentGateways } from "../services/payment-gateway";
 import { refundableBalance } from "../services/payment-admin.service";
+import { netAllocatedIdrSql } from "../services/payment-net-allocated-sql";
 import { confirmPayment, createPaymentLink } from "../services/payment.service";
 import {
   setIntegrationStatus,
@@ -182,6 +184,10 @@ afterAll(async () => {
   if (createdLinkIds.length > 0) {
     const intents =
       "SELECT id FROM payment_intents WHERE tenant_id = $1 AND payment_link_id = ANY($2::uuid[])";
+    await owner.query(
+      `DELETE FROM payment_provider_refunds WHERE tenant_id = $1 AND payment_intent_id IN (${intents})`,
+      [tenantA, createdLinkIds],
+    );
     await owner.query(
       `DELETE FROM payment_evidence WHERE tenant_id = $1 AND payment_intent_id IN (${intents})`,
       [tenantA, createdLinkIds],
@@ -563,6 +569,81 @@ describe("§4 the guest fee is never refunded", () => {
     });
     // The bill is still credited once.
     expect(await linkPaidIdr(bill.linkId)).toBe(BILL_TOTAL);
+  });
+});
+
+async function netAllocated(intentId: string): Promise<bigint> {
+  return withTenant(db, contextFor("session"), async (tx) => {
+    const result = await tx.execute(
+      sql`SELECT (${netAllocatedIdrSql(sql`${tenantA}::uuid`, sql`${intentId}::uuid`)})::text AS net`,
+    );
+    return BigInt((result.rows[0] as { net: string }).net);
+  });
+}
+
+async function providerRefund(bill: Bill, amountIdr: number): Promise<void> {
+  await owner.query(
+    `INSERT INTO payment_provider_refunds
+       (tenant_id, outlet_id, payment_intent_id, provider, provider_refund_id,
+        provider_payment_ref, amount_idr, source)
+     VALUES ($1, $2, $3, 'duitku', $4, $5, $6, 'payment_webhook')`,
+    [
+      tenantA,
+      outletA,
+      bill.intentId,
+      `rf_${unique()}`,
+      bill.reference,
+      amountIdr,
+    ],
+  );
+}
+
+describe("net allocated of a fee intent is the bill, never bill + fee (K1 review P2-1)", () => {
+  it("a paid fee intent put the bill toward its bill, not the charged amount", async () => {
+    const bill = await openFeeIntent();
+    await settleAtCharged(bill);
+    expect(await netAllocated(bill.intentId)).toBe(BigInt(BILL_TOTAL));
+  });
+
+  it("a provider refund within the fee is taken off the bill, not hidden in the fee", async () => {
+    const bill = await openFeeIntent();
+    await settleAtCharged(bill);
+    await providerRefund(bill, GUEST_FEE - 1_000);
+    expect(await netAllocated(bill.intentId)).toBe(
+      BigInt(BILL_TOTAL - (GUEST_FEE - 1_000)),
+    );
+  });
+
+  it("a second payment at the charged amount does not raise it above the bill", async () => {
+    const bill = await openFeeIntent();
+    await settleAtCharged(bill);
+    await confirmPayment(contextFor("webhook"), bill.intentId, {
+      source: "verified_webhook",
+      method: "ewallet",
+      amountIdr: CHARGED,
+      providerRef: `${bill.reference}-2`,
+      at: new Date().toISOString(),
+    });
+    expect(await netAllocated(bill.intentId)).toBe(BigInt(BILL_TOTAL));
+  });
+
+  it("an intent without a fee gives the old result: evidence less funds", async () => {
+    const bill = await openFeeIntent();
+    await owner.query(
+      "UPDATE payment_intents SET guest_fee_idr = 0 WHERE id = $1",
+      [bill.intentId],
+    );
+    statusAnswers.set(bill.intentId, {
+      statusCode: "00",
+      reference: bill.reference,
+      amount: String(BILL_TOTAL),
+    });
+    expect(
+      (await callback(bill.intentId, bill.reference, BILL_TOTAL)).status,
+    ).toBe(200);
+    expect(await netAllocated(bill.intentId)).toBe(BigInt(BILL_TOTAL));
+    await providerRefund(bill, 1_000);
+    expect(await netAllocated(bill.intentId)).toBe(BigInt(BILL_TOTAL - 1_000));
   });
 });
 
