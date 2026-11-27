@@ -19,9 +19,17 @@ import {
 import { RadioGroup } from "radix-ui";
 import { cn } from "cn";
 import { formatRupiah, type MessageKey } from "@starter/shared/i18n";
-import type { GuestPaymentOptions } from "@starter/shared/qr-order";
+import type {
+  GuestPaymentOptions,
+  GuestPaymentOptionsQuery,
+} from "@starter/shared/qr-order";
 import { useT } from "@/components/i18n";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  FeeNoRefund,
+  FeeQuote,
+  hasGuestFee,
+} from "@/features/ws05-payment/components/fee-parts";
 import { useTableJourney } from "../../context";
 import { useGuestPaymentOptions } from "../../hooks";
 
@@ -30,7 +38,13 @@ export type PayMethod = "qris" | "ewallet" | "va" | "card" | "cashier";
 /** The guest's choice: a method, plus the e-wallet app for `ewallet`. */
 export type PayChoice = { method: PayMethod; wallet: string | null };
 
-type Channel = { code: string; name: string };
+/** 1272 K3: a channel with the service fee the server priced for the target. */
+type Channel = {
+  code: string;
+  name: string;
+  guestFeeIdr?: number | null;
+  chargedIdr?: number | null;
+};
 
 const METHODS: readonly {
   value: PayMethod;
@@ -95,15 +109,47 @@ export function availableMethods(options: GuestPaymentOptions | undefined): {
 }
 
 /** E-wallet app name for a channel code, from the payment options. */
-export function useWalletName(wallet: string | null): string | null {
+export function useWalletName(
+  wallet: string | null,
+  target?: GuestPaymentOptionsQuery,
+): string | null {
   const { sessionId } = useTableJourney();
-  const options = useGuestPaymentOptions(sessionId);
+  const options = useGuestPaymentOptions(sessionId, target);
   if (!wallet) return null;
   return (
     availableMethods(options.data?.data).wallets.find(
       (item) => item.code === wallet,
     )?.name ?? null
   );
+}
+
+/** What the chosen method adds on top of the bill, priced for the target. */
+export type ChosenFee = { feeIdr: number; chargedIdr: number };
+
+/**
+ * 1272 K3: the service fee and charged total of the guest's choice, or null
+ * when it carries none (QRIS, card at 0, an e-wallet not picked yet, VA: the
+ * VA page prices each bank) or when no target is named yet.
+ */
+export function useChosenFee(
+  choice: PayChoice,
+  target?: GuestPaymentOptionsQuery,
+): ChosenFee | null {
+  const { sessionId } = useTableJourney();
+  const options = useGuestPaymentOptions(sessionId, target);
+  const entry = options.data?.data.methods.find(
+    (item) => item.method === choice.method,
+  );
+  if (!entry?.enabled) return null;
+  const priced =
+    choice.method === "ewallet"
+      ? entry.banks.find((bank) => bank.code === choice.wallet)
+      : choice.method === "card" || choice.method === "qris"
+        ? entry
+        : undefined;
+  if (!priced || !hasGuestFee(priced.guestFeeIdr)) return null;
+  if (typeof priced.chargedIdr !== "number") return null;
+  return { feeIdr: priced.guestFeeIdr, chargedIdr: priced.chargedIdr };
 }
 
 /** The rust button label follows the chosen method. */
@@ -166,7 +212,10 @@ function WalletChoices({
   disabled: boolean;
 }) {
   const t = useT();
-  const name = wallets.find((item) => item.code === value)?.name;
+  const chosen = wallets.find((item) => item.code === value);
+  const name = chosen?.name;
+  // A priced wallet needs the room for two more lines: one per row.
+  const priced = wallets.some((item) => hasGuestFee(item.guestFeeIdr));
   return (
     <div className="grid gap-3 px-2.5 pb-3">
       <RadioGroup.Root
@@ -174,7 +223,10 @@ function WalletChoices({
         disabled={disabled}
         onValueChange={onChange}
         aria-label={t("payment.redirect.method.ewalletLegend")}
-        className="grid grid-cols-1 gap-2 min-[360px]:grid-cols-2"
+        className={cn(
+          "grid grid-cols-1 gap-2",
+          !priced && "min-[360px]:grid-cols-2",
+        )}
       >
         {wallets.map((wallet) => (
           <RadioGroup.Item
@@ -182,7 +234,13 @@ function WalletChoices({
             value={wallet.code}
             className={choiceClass}
           >
-            <span className="min-w-0 break-words">{wallet.name}</span>
+            <span className="grid min-w-0 gap-0.5 break-words">
+              <span>{wallet.name}</span>
+              <FeeQuote
+                feeIdr={wallet.guestFeeIdr}
+                chargedIdr={wallet.chargedIdr}
+              />
+            </span>
             <RadioMark small />
           </RadioGroup.Item>
         ))}
@@ -196,21 +254,25 @@ function WalletChoices({
           ? t("payment.redirect.method.ewalletNote", { wallet: name })
           : t("payment.redirect.method.pickWallet")}
       </p>
+      <FeeNoRefund feeIdr={chosen?.guestFeeIdr} />
     </div>
   );
 }
 
-function CardNote() {
+function CardNote({ feeIdr }: { feeIdr: number | null | undefined }) {
   const t = useT();
   const { menu } = useTableJourney();
   const place = menu?.brand.name;
   return (
-    <p className="flex items-start gap-2 px-2.5 pb-3 text-sm leading-5 text-muted-foreground">
-      <ShieldCheck className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-      {place
-        ? t("payment.redirect.method.cardNote", { place })
-        : t("payment.redirect.method.cardNoteNoPlace")}
-    </p>
+    <div className="grid gap-2 px-2.5 pb-3">
+      <p className="flex items-start gap-2 text-sm leading-5 text-muted-foreground">
+        <ShieldCheck className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+        {place
+          ? t("payment.redirect.method.cardNote", { place })
+          : t("payment.redirect.method.cardNoteNoPlace")}
+      </p>
+      <FeeNoRefund feeIdr={feeIdr} />
+    </div>
   );
 }
 
@@ -218,15 +280,21 @@ export function PaymentMethods({
   value,
   onChange,
   disabled = false,
+  target,
 }: {
   value: PayChoice;
   onChange: (choice: PayChoice) => void;
   disabled?: boolean;
+  /** The placed order the options are priced for (1272 K3); none while the cart is not placed yet. */
+  target?: GuestPaymentOptionsQuery;
 }) {
   const t = useT();
   const { sessionId } = useTableJourney();
-  const options = useGuestPaymentOptions(sessionId);
+  const options = useGuestPaymentOptions(sessionId, target);
   const { hidden, wallets } = availableMethods(options.data?.data);
+  const cardOption = options.data?.data.methods.find(
+    (item) => item.method === "card",
+  );
   const method = value.method;
   const chosenOff = hidden.has(method);
   // A chosen method turned off: fall back to QRIS and say which one.
@@ -315,6 +383,12 @@ export function PaymentMethods({
                       ? t(hint)
                       : wallets.map((item) => item.name).join(", ")}
                   </span>
+                  {option === "card" && (
+                    <FeeQuote
+                      feeIdr={cardOption?.guestFeeIdr}
+                      chargedIdr={cardOption?.chargedIdr}
+                    />
+                  )}
                 </span>
                 <RadioMark />
               </RadioGroup.Item>
@@ -329,7 +403,9 @@ export function PaymentMethods({
                   disabled={disabled}
                 />
               )}
-              {selected && option === "card" && <CardNote />}
+              {selected && option === "card" && (
+                <CardNote feeIdr={cardOption?.guestFeeIdr} />
+              )}
             </div>
           );
         })}

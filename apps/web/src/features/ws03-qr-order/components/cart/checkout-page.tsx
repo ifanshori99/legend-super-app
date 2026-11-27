@@ -17,6 +17,7 @@ import { Money } from "@/components/ui/money";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
+import { FeeNoRefund } from "@/features/ws05-payment/components/fee-parts";
 import { WaiterOrderNotice } from "@/features/ws02-edge/components/waiter-order-notice";
 import { useTableJourney } from "../../context";
 import { orderHasPaidShare } from "../../domain.ts";
@@ -47,6 +48,7 @@ import { GatewayOpenFailed } from "./gateway-opening";
 import {
   PICK_WALLET_ID,
   PaymentMethods,
+  useChosenFee,
   useCtaLabel,
   useWalletName,
   type PayChoice,
@@ -153,7 +155,15 @@ export function CheckoutPage() {
     wallet: null,
   });
   const method = choice.method;
-  const walletName = useWalletName(choice.wallet);
+  // 1272 K3: a placed order waiting for payment names the bill the options are
+  // priced for; a cart not placed yet has no bill, so no service fee to show.
+  const waitingId =
+    view && view.cart.lines.length === 0
+      ? view.orders.find((order) => order.status === "awaiting_payment")?.id
+      : undefined;
+  const feeTarget = waitingId ? { orderId: waitingId } : undefined;
+  const walletName = useWalletName(choice.wallet, feeTarget);
+  const chosenFee = useChosenFee(choice, feeTarget);
   // An e-wallet needs an app picked by the guest (nothing is preselected).
   const needsWallet = method === "ewallet" && !choice.wallet;
   // C2b: Duitku's page for e-wallet or card could not be opened for this order.
@@ -355,10 +365,23 @@ export function CheckoutPage() {
       bill.data?.data.splits ?? [],
       awaitingOrder.id,
     );
+    // The bill plus the service fee of the chosen method, when it has one.
+    const payTotal = chosenFee?.chargedIdr ?? awaitingOrder.totalIdr;
     const action = (
       <div className="grid gap-3">
         {payFailure}
-        {total(awaitingOrder.totalIdr)}
+        {chosenFee && (
+          <div className="flex items-baseline justify-between gap-3 px-1 text-sm">
+            <span className="text-muted-foreground">
+              {t("payment.redirect.fee.label")}
+            </span>
+            <span className="font-semibold tabular">
+              {formatRupiah(chosenFee.feeIdr)}
+            </span>
+          </div>
+        )}
+        {total(payTotal)}
+        <FeeNoRefund feeIdr={chosenFee?.feeIdr} className="px-1" />
         <Button
           type="button"
           size="lg"
@@ -366,9 +389,9 @@ export function CheckoutPage() {
           loading={start.isPending}
           disabled={needsWallet}
           aria-describedby={needsWallet ? PICK_WALLET_ID : undefined}
-          onClick={() => payOrder(awaitingOrder.id, awaitingOrder.totalIdr)}
+          onClick={() => payOrder(awaitingOrder.id, payTotal)}
         >
-          {ctaLabel(choice, awaitingOrder.totalIdr, walletName)}
+          {ctaLabel(choice, payTotal, walletName)}
           <ChevronRight aria-hidden="true" />
         </Button>
       </div>
@@ -419,6 +442,7 @@ export function CheckoutPage() {
                 value={choice}
                 onChange={setChoice}
                 disabled={start.isPending}
+                target={feeTarget}
               />
               <div className="hidden border-t border-border pt-4 lg:block">
                 {action}
