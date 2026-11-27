@@ -246,3 +246,4 @@ export * from "./edc-settlement-csv";
 // B2 EDC bridge tablets, terminal leases, commands (legend-wasr7.21, 0541).
 export * from "./edc-bridge-devices";
 export * from "./edc-bridge";
+export * from "./edc-bridge-pair";

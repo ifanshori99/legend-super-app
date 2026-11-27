@@ -46,7 +46,9 @@ export type IdentityDigestPurpose =
   | "client-ip"
   | "inbound-request"
   // legend-k2l: the 256-bit email magic-link token (only this digest is stored).
-  | "magic-link";
+  | "magic-link"
+  // legend-wasr7.24: the 8-character EDC bridge pairing code.
+  | "edc-pair-code";
 
 /** HMAC-SHA-256 hex of `<purpose>\0<value>`. */
 export function identityDigest(
