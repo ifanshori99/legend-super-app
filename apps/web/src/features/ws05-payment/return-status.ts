@@ -13,6 +13,7 @@
 // stripping (docs/frontend.md "Tests").
 
 import type { PaymentStatus } from "@starter/shared/payment";
+import type { TenantThemeConfig } from "@starter/shared/theme";
 
 /** After this long without a final answer the page says "masih diproses". */
 export const LONG_WAIT_MS = 60_000;
@@ -21,24 +22,72 @@ export const RETURN_RECORD_TTL_MS = 6 * 60 * 60_000;
 
 const POLL_DELAYS_MS = [2000, 2000, 3000, 3000, 5000, 5000, 8000, 10_000];
 const POLL_MAX_MS = 15_000;
+/** Pace of the slow watch after a failed or expired answer. */
+export const LATE_POLL_MS = 15_000;
+/**
+ * How long the page keeps watching after "failed" or "expired": the rules allow
+ * failed -> paid and expired -> paid (a late payment from the gateway), and a
+ * guest offered "Coba lagi" meanwhile could pay twice.
+ */
+export const LATE_WATCH_MS = 10 * 60_000;
 
 /** Delay before poll number `attempt + 1`; grows, then holds at 15 s. */
-export function nextPollDelayMs(attempt: number): number {
+export function nextPollDelayMs(
+  attempt: number,
+  status?: PaymentStatus,
+): number {
+  if (status === "failed" || status === "expired") return LATE_POLL_MS;
   return POLL_DELAYS_MS[attempt] ?? POLL_MAX_MS;
 }
 
-const FINAL: readonly PaymentStatus[] = [
+/** Statuses nothing can leave (a refund does not turn back into a payment). */
+const TERMINAL: readonly PaymentStatus[] = [
   "paid",
   "partially_refunded",
   "refunded",
-  "failed",
-  "expired",
 ];
+const LATE: readonly PaymentStatus[] = ["failed", "expired"];
 
-/** Keep asking until the server answers with a final status. */
-export function shouldPollReturn(status: PaymentStatus | undefined): boolean {
-  return status === undefined || !FINAL.includes(status);
+/**
+ * Keep asking until the server answers with a terminal status. After failed
+ * or expired, keep a slow watch for LATE_WATCH_MS (`watchedMs` since the page
+ * started watching).
+ */
+export function shouldPollReturn(
+  status: PaymentStatus | undefined,
+  watchedMs: number,
+): boolean {
+  if (status === undefined) return true;
+  if (TERMINAL.includes(status)) return false;
+  if (LATE.includes(status)) return watchedMs < LATE_WATCH_MS;
+  return true;
 }
+
+/**
+ * "Coba lagi" opens a new payment only when a fresh server answer says the
+ * last one is failed or expired; anything else (paid, pending, no answer)
+ * means the guest may already have paid.
+ */
+export function canStartNewPayment(status: PaymentStatus | undefined): boolean {
+  return status === "failed" || status === "expired";
+}
+
+/**
+ * Only Duitku's own pages are opened for a guest: `duitku.com` and its
+ * subdomains (passport, sandbox, app-prod, app-sandbox), never a lookalike.
+ */
+export function isDuitkuPageHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return host === "duitku.com" || host.endsWith(".duitku.com");
+}
+
+/** The tenant theme of the table, kept so the return page looks the same. */
+export type ReturnTheme = {
+  tokens: TenantThemeConfig["colors"];
+  fontFamily?: TenantThemeConfig["font"];
+  corners?: TenantThemeConfig["corners"];
+  logoUrl?: string | null;
+};
 
 type RecordBase = {
   v: 1;
@@ -51,6 +100,10 @@ type RecordBase = {
   amountIdr: number;
   /** Brand or outlet name for the top bar; null when unknown. */
   placeName: string | null;
+  /** The outlet's IANA zone, for the time shown; null when unknown. */
+  timeZone: string | null;
+  /** The table's tenant theme (checked again where it is applied). */
+  theme: ReturnTheme | null;
   savedAt: number;
 };
 
@@ -79,6 +132,29 @@ const isString = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0 && value.length <= 2000;
 const isNullableString = (value: unknown): value is string | null =>
   value === null || isString(value);
+const THEME_MAX_CHARS = 6000;
+
+/** A stored theme, or null when it is missing or does not look like one. */
+function readTheme(value: unknown): ReturnTheme | null {
+  if (typeof value !== "object" || value === null) return null;
+  const theme = value as Record<string, unknown>;
+  if (typeof theme.tokens !== "object" || theme.tokens === null) return null;
+  try {
+    if (JSON.stringify(value).length > THEME_MAX_CHARS) return null;
+  } catch {
+    return null;
+  }
+  return {
+    tokens: theme.tokens as ReturnTheme["tokens"],
+    ...(typeof theme.fontFamily === "string"
+      ? { fontFamily: theme.fontFamily as ReturnTheme["fontFamily"] }
+      : {}),
+    ...(typeof theme.corners === "string"
+      ? { corners: theme.corners as ReturnTheme["corners"] }
+      : {}),
+    logoUrl: typeof theme.logoUrl === "string" ? theme.logoUrl : null,
+  };
+}
 
 export function serializeReturnRecord(record: ReturnRecord): string {
   return JSON.stringify(record);
@@ -121,6 +197,9 @@ export function parseReturnRecord(
     channelName: value.channelName,
     amountIdr: value.amountIdr,
     placeName: value.placeName,
+    // Records saved before these two fields existed read as "unknown".
+    timeZone: isString(value.timeZone) ? value.timeZone : null,
+    theme: readTheme(value.theme),
     savedAt: value.savedAt,
   };
   if (value.kind === "table") {
@@ -165,19 +244,30 @@ export function pickReturnRecord(
 }
 
 export type ReturnPhase =
-  "invalid" | "checking" | "waiting" | "slow" | "paid" | "failed" | "expired";
+  | "invalid"
+  | "orders"
+  | "checking"
+  | "unreachable"
+  | "waiting"
+  | "slow"
+  | "paid"
+  | "refunded"
+  | "failed"
+  | "expired";
 
-const SETTLED: readonly PaymentStatus[] = [
-  "paid",
-  "partially_refunded",
-  "refunded",
-];
-/** The server does not know this payment for this guest (or this browser). */
-const UNKNOWN_ANSWERS = [400, 401, 403, 404, 422];
+/** The server does not know this payment (the link, not this guest's login). */
+const UNKNOWN_ANSWERS = [400, 404, 422];
+/**
+ * A table guest's session credential lives in the tab (sessionStorage). An
+ * e-wallet app often reopens the browser in a new tab, so 401 or 403 there
+ * does not mean "unknown": the order may be paid.
+ */
+const NO_LOGIN_ANSWERS = [401, 403];
 
 /**
  * What the return page shows.
  * - `hasRecord`: undefined while this browser's record is still being read.
+ * - `recordKind`: the stored record's kind (a table order or a payment link).
  * - `status`: the server's last answer; it wins over a later failed poll.
  * - `errorStatus`: HTTP status of the last failed poll, null for a network
  *   failure, undefined when the last poll did not fail.
@@ -185,6 +275,7 @@ const UNKNOWN_ANSWERS = [400, 401, 403, 404, 422];
  */
 export function returnPhase(input: {
   hasRecord: boolean | undefined;
+  recordKind?: ReturnRecord["kind"];
   status: PaymentStatus | undefined;
   errorStatus: number | null | undefined;
   waitedMs: number;
@@ -193,15 +284,21 @@ export function returnPhase(input: {
   if (input.hasRecord === undefined) return "checking";
   const { status } = input;
   if (status !== undefined) {
-    if (SETTLED.includes(status)) return "paid";
+    if (status === "paid") return "paid";
+    if (status === "refunded" || status === "partially_refunded")
+      return "refunded";
     if (status === "failed") return "failed";
     if (status === "expired") return "expired";
     return input.waitedMs >= LONG_WAIT_MS ? "slow" : "waiting";
   }
-  if (
-    typeof input.errorStatus === "number" &&
-    UNKNOWN_ANSWERS.includes(input.errorStatus)
-  )
-    return "invalid";
-  return "checking";
+  const { errorStatus } = input;
+  if (typeof errorStatus === "number") {
+    if (UNKNOWN_ANSWERS.includes(errorStatus)) return "invalid";
+    if (NO_LOGIN_ANSWERS.includes(errorStatus))
+      return input.recordKind === "table" ? "orders" : "invalid";
+    // 5xx and anything else: the answer is out of reach, not "checking".
+    return "unreachable";
+  }
+  if (errorStatus === null) return "unreachable";
+  return input.waitedMs >= LONG_WAIT_MS ? "unreachable" : "checking";
 }

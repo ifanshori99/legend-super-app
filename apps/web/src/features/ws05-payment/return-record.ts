@@ -7,6 +7,7 @@
 // expire after RETURN_RECORD_TTL_MS.
 import { API_MOCK } from "@/lib/api/mock-flag";
 import {
+  isDuitkuPageHost,
   parseReturnRecord,
   pickReturnRecord,
   serializeReturnRecord,
@@ -121,13 +122,15 @@ export function claimAutoOpen(paymentId: string): boolean {
 }
 
 /**
- * Whether a gateway page URL may be opened: https only. The mock API answers
- * with this app's own return page, so mock mode also allows its own origin.
+ * Whether a gateway page URL may be opened: https on a Duitku host only
+ * (production and sandbox). The mock API answers with this app's own return
+ * page, so mock mode also allows its own origin.
  */
 export function isOpenablePaymentUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
-    if (parsed.protocol === "https:") return true;
+    if (parsed.protocol === "https:" && isDuitkuPageHost(parsed.hostname))
+      return true;
     return (
       API_MOCK &&
       typeof window !== "undefined" &&

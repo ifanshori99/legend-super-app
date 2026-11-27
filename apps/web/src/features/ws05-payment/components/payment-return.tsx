@@ -14,7 +14,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import {
   Check,
@@ -25,16 +25,23 @@ import {
   Link2Off,
   RefreshCw,
   TriangleAlert,
+  Undo2,
 } from "lucide-react";
 import { cn } from "cn";
 import { getGuestPayment } from "@starter/shared/qr-order";
 import type { PaymentStatus } from "@starter/shared/payment";
+import { DEFAULT_TIME_ZONE } from "@starter/shared/core";
+import {
+  buildTenantThemeCss,
+  type TenantThemeConfig,
+} from "@starter/shared/theme";
 import { useT } from "@/components/i18n";
 import { ThemeScope } from "@/components/theme-scope";
 import { Button } from "@/components/ui/button";
 import { callEndpoint } from "@/lib/api/endpoint";
 import { ApiError } from "@/lib/api/errors";
 import { newIdempotencyKey } from "@/lib/idempotency";
+import { TenantThemeStyle } from "@/lib/theme";
 // Registers the table session's bearer credential for /api/table-sessions.
 import "@/features/ws03-qr-order/session-store";
 import { startPayment as startGuestPayment } from "@/features/ws03-qr-order/api";
@@ -45,6 +52,7 @@ import {
   saveReturnRecord,
 } from "../return-record";
 import {
+  canStartNewPayment,
   nextPollDelayMs,
   returnPhase,
   shouldPollReturn,
@@ -118,28 +126,44 @@ function useReturnRecord(): ReturnRecord | null | undefined {
   );
 }
 
-/** Polls the server with backoff until its status is final. */
-function useReturnAnswer(record: ReturnRecord | null | undefined) {
+const answerKey = (record: ReturnRecord) =>
+  ["payment-return", record.kind, record.paymentId] as const;
+
+/** Statuses of a failed poll that will not change by asking again. */
+const SETTLED_ERRORS = [400, 401, 403, 404, 422];
+
+/**
+ * Polls the server with backoff until its status is terminal, then keeps a
+ * slow watch after failed or expired (a late payment may still settle).
+ */
+function useReturnAnswer(
+  record: ReturnRecord | null | undefined,
+  startedAt: number,
+) {
   return useQuery({
-    queryKey: ["payment-return", record?.kind, record?.paymentId],
+    queryKey: record
+      ? answerKey(record)
+      : ["payment-return", undefined, undefined],
     queryFn: ({ signal }) => askServer(record!, signal),
     enabled: !!record,
     retry: false,
     refetchOnWindowFocus: true,
+    // Only while the tab is shown: a hidden tab does not watch.
     refetchIntervalInBackground: false,
     refetchInterval: (query) => {
-      if (!shouldPollReturn(query.state.data?.status)) return false;
-      // A "not found" for this guest is final too: the page says so.
+      const status = query.state.data?.status;
+      if (!shouldPollReturn(status, Date.now() - startedAt)) return false;
+      // A "not found" or "no login" for this guest will not change.
       const error = query.state.error;
       if (
         !query.state.data &&
         error instanceof ApiError &&
-        [400, 401, 403, 404, 422].includes(error.status)
+        SETTLED_ERRORS.includes(error.status)
       )
         return false;
       const attempts =
         query.state.dataUpdateCount + query.state.errorUpdateCount;
-      return nextPollDelayMs(Math.max(0, attempts - 1));
+      return nextPollDelayMs(Math.max(0, attempts - 1), status);
     },
   });
 }
@@ -159,10 +183,41 @@ function useNow(active: boolean): number {
   return now;
 }
 
-const timeFormat = new Intl.DateTimeFormat("id-ID", {
-  hour: "2-digit",
-  minute: "2-digit",
-});
+/** "Diterima" is the outlet's clock, not the guest's device. */
+function formatOutletTime(iso: string, timeZone: string | null): string {
+  const options: Intl.DateTimeFormatOptions = {
+    hour: "2-digit",
+    minute: "2-digit",
+  };
+  try {
+    return new Intl.DateTimeFormat("id-ID", {
+      ...options,
+      timeZone: timeZone ?? DEFAULT_TIME_ZONE,
+    }).format(new Date(iso));
+  } catch {
+    return new Intl.DateTimeFormat("id-ID", {
+      ...options,
+      timeZone: DEFAULT_TIME_ZONE,
+    }).format(new Date(iso));
+  }
+}
+
+/** The QR menu's tenant id: tokens.css derives the QR chrome from it. */
+const QR_TENANT_ID = "qr-menu";
+
+/** The table's brand colours, when they pass the contrast check. */
+function tenantConfig(record: ReturnRecord | null | undefined) {
+  if (!record?.theme || !record.placeName) return null;
+  const config: TenantThemeConfig = {
+    id: QR_TENANT_ID,
+    name: record.placeName,
+    colors: record.theme.tokens,
+    font: record.theme.fontFamily,
+    corners: record.theme.corners,
+    logoUrl: record.theme.logoUrl,
+  };
+  return buildTenantThemeCss(config).ok ? config : null;
+}
 
 function TopBar({ title, context }: { title: string; context: string | null }) {
   return (
@@ -189,7 +244,7 @@ function Footer({ children }: { children: ReactNode }) {
     <div
       className={cn(
         "grid gap-3 lg:col-start-1",
-        "max-lg:qr-glass max-lg:sticky max-lg:bottom-3 max-lg:z-30 max-lg:-mx-1 max-lg:rounded-qr-float max-lg:p-3 max-lg:pb-[max(0.75rem,env(safe-area-inset-bottom))]",
+        "max-lg:mt-auto max-lg:qr-glass max-lg:sticky max-lg:bottom-3 max-lg:z-30 max-lg:-mx-1 max-lg:rounded-qr-float max-lg:p-3 max-lg:pb-[max(0.75rem,env(safe-area-inset-bottom))]",
         "lg:max-w-sm",
       )}
     >
@@ -205,11 +260,11 @@ export function PaymentReturnPage() {
   const t = useT();
   // undefined: not read yet (server render and first browser render agree).
   const record = useReturnRecord();
-  const answer = useReturnAnswer(record);
   const [startedAt] = useState(() => Date.now());
+  const answer = useReturnAnswer(record, startedAt);
   const status = answer.data?.status;
-  const final = status !== undefined && !shouldPollReturn(status);
-  const now = useNow(!final);
+  const terminal = status !== undefined && !shouldPollReturn(status, 0);
+  const now = useNow(!terminal);
   const waitedMs = now - startedAt;
   const errorStatus = answer.error
     ? answer.error instanceof ApiError
@@ -218,6 +273,7 @@ export function PaymentReturnPage() {
     : undefined;
   const phase = returnPhase({
     hasRecord: record === undefined ? undefined : record !== null,
+    recordKind: record?.kind,
     status,
     errorStatus,
     waitedMs,
@@ -225,8 +281,15 @@ export function PaymentReturnPage() {
 
   // "Coba lagi dengan DANA": a new payment for the same order or link, then
   // straight back to the gateway page. A refusal shows a plain message.
+  const queryClient = useQueryClient();
   const retry = useMutation({
     mutationFn: async (current: ReturnRecord) => {
+      // Ask the server first (round-trip, never the page's older answer): a
+      // payment that settled late must not be paid a second time. Anything
+      // but a fresh failed or expired answer, including no answer, stops here.
+      const fresh = await askServer(current, new AbortController().signal);
+      queryClient.setQueryData(answerKey(current), fresh);
+      if (!canStartNewPayment(fresh.status)) return;
       let next: { id: string; amountIdr: number; url: string | null };
       if (current.kind === "table") {
         if (!current.orderId) throw new Error("No order to pay");
@@ -325,6 +388,46 @@ export function PaymentReturnPage() {
     </Button>
   );
 
+  const noRepay = (
+    <Callout
+      tone="warn"
+      icon={<TriangleAlert aria-hidden="true" />}
+      title={t("payment.redirect.back.noRepayTitle")}
+    >
+      {orderNumber
+        ? t("payment.redirect.back.noRepayOrder", { number: orderNumber })
+        : t("payment.redirect.back.noRepay")}
+    </Callout>
+  );
+  const homeLink = (primary: boolean) => {
+    const label =
+      record?.kind === "table"
+        ? t("payment.redirect.back.toOrders")
+        : t("payment.redirect.back.toBill");
+    const to =
+      record?.kind === "table"
+        ? { to: "/t/$token/orders" as const, params: { token: record.qrToken } }
+        : record?.kind === "link"
+          ? {
+              to: "/bayar/$token" as const,
+              params: { token: record.linkToken },
+            }
+          : null;
+    if (!to) return null;
+    return primary ? (
+      <Button asChild>
+        <Link {...to}>
+          {label}
+          <ChevronRight aria-hidden="true" />
+        </Link>
+      </Button>
+    ) : (
+      <Link {...to} className={textLink}>
+        {label}
+      </Link>
+    );
+  };
+
   switch (phase) {
     case "checking":
       pill = (
@@ -335,6 +438,37 @@ export function PaymentReturnPage() {
       title = t("payment.redirect.back.checkingTitle");
       lead = t("payment.redirect.back.checkingLead");
       paper = <AmountPaperSkeleton />;
+      break;
+    case "unreachable":
+      live = "alert";
+      pill = (
+        <StatusPill tone="wait" icon={<TriangleAlert />}>
+          {t("payment.redirect.back.unreachablePill")}
+        </StatusPill>
+      );
+      title = t("payment.redirect.back.unreachableTitle");
+      lead = isTable
+        ? t("payment.redirect.back.unreachableLeadOrder")
+        : t("payment.redirect.back.unreachableLeadLink");
+      extras = noRepay;
+      footer = (
+        <>
+          {checkNow(true, t("payment.redirect.back.checkAgain"))}
+          {homeLink(false)}
+        </>
+      );
+      break;
+    case "orders":
+      live = "alert";
+      pill = (
+        <StatusPill tone="neutral" icon={<Link2Off />}>
+          {t("payment.redirect.back.ordersPill")}
+        </StatusPill>
+      );
+      title = t("payment.redirect.back.ordersTitle");
+      lead = t("payment.redirect.back.ordersLead");
+      extras = noRepay;
+      footer = homeLink(true);
       break;
     case "waiting": {
       pill = (
@@ -353,17 +487,24 @@ export function PaymentReturnPage() {
         ? Math.max(0, Math.round((now - answer.dataUpdatedAt) / 1000))
         : null;
       extras = (
-        <p className="flex items-center gap-2 text-sm leading-5 font-semibold">
+        <p className="flex flex-wrap items-center gap-x-2 text-sm leading-5 font-semibold">
           <Spinner className="size-4.5 border-2" />
           {t("payment.redirect.back.autoCheck")}
           {seconds !== null && (
-            <span className="font-normal text-muted-foreground">
-              {t("payment.redirect.back.lastChecked", { seconds })}
-            </span>
+            <>
+              <span aria-hidden="true" className="text-muted-foreground">
+                ·
+              </span>
+              <span className="font-normal text-muted-foreground">
+                {seconds < 3
+                  ? t("payment.redirect.back.lastCheckedNow")
+                  : t("payment.redirect.back.lastChecked", { seconds })}
+              </span>
+            </>
           )}
         </p>
       );
-      footer = checkNow(false, t("payment.redirect.back.checkNow"));
+      footer = checkNow(false, t("payment.redirect.back.checkAgain"));
       break;
     }
     case "slow":
@@ -376,37 +517,11 @@ export function PaymentReturnPage() {
       lead = isTable
         ? t("payment.redirect.back.slowLeadOrder")
         : t("payment.redirect.back.slowLeadLink");
-      extras = (
-        <Callout
-          tone="warn"
-          icon={<TriangleAlert aria-hidden="true" />}
-          title={t("payment.redirect.back.noRepayTitle")}
-        >
-          {orderNumber
-            ? t("payment.redirect.back.noRepayOrder", { number: orderNumber })
-            : t("payment.redirect.back.noRepay")}
-        </Callout>
-      );
+      extras = noRepay;
       footer = (
         <>
           {checkNow(true, t("payment.redirect.back.checkAgain"))}
-          {record?.kind === "table" ? (
-            <Link
-              to="/t/$token/orders"
-              params={{ token: record.qrToken }}
-              className={textLink}
-            >
-              {t("payment.redirect.back.toOrders")}
-            </Link>
-          ) : record?.kind === "link" ? (
-            <Link
-              to="/bayar/$token"
-              params={{ token: record.linkToken }}
-              className={textLink}
-            >
-              {t("payment.redirect.back.toBill")}
-            </Link>
-          ) : null}
+          {homeLink(false)}
         </>
       );
       break;
@@ -433,7 +548,7 @@ export function PaymentReturnPage() {
                     label: t("payment.redirect.back.rowReceived"),
                     value: (
                       <span className="tabular">
-                        {timeFormat.format(new Date(paidAt))}
+                        {formatOutletTime(paidAt, record?.timeZone ?? null)}
                       </span>
                     ),
                   },
@@ -469,6 +584,23 @@ export function PaymentReturnPage() {
         ) : null;
       break;
     }
+    case "refunded":
+      pill = (
+        <StatusPill tone="neutral" icon={<Undo2 />}>
+          {t("payment.redirect.back.refundedPill")}
+        </StatusPill>
+      );
+      title = t("payment.redirect.back.refundedTitle");
+      lead = t("payment.redirect.back.refundedLead");
+      paper = (
+        <AmountPaper
+          label={t("payment.redirect.back.refundedLabel")}
+          amountIdr={amountIdr}
+          rows={rows}
+        />
+      );
+      footer = homeLink(true);
+      break;
     case "failed":
     case "expired": {
       live = "alert";
@@ -543,11 +675,13 @@ export function PaymentReturnPage() {
             <button
               type="button"
               className={textLink}
-              disabled={retry.isPending}
+              disabled={retry.isPending || retry.isSuccess}
               aria-busy={retry.isPending}
               onClick={() => retry.mutate(record)}
             >
-              {t("payment.redirect.back.retryWith", { method: methodName })}
+              {retry.isPending || retry.isSuccess
+                ? t("payment.redirect.back.retrying")
+                : t("payment.redirect.back.retryWith", { method: methodName })}
             </button>
           ) : !failed && record?.kind === "table" ? (
             <Link
@@ -604,14 +738,19 @@ export function PaymentReturnPage() {
 
   const invalid = phase === "invalid";
   const busy = phase === "checking" || phase === "waiting";
+  // The brand colours of the table the guest left, so the page they come back
+  // to looks like the one they paid from (null: the base theme).
+  const theme = tenantConfig(record);
   return (
     <ThemeScope
       density="hangat"
       mode="light"
+      tenant={theme ? QR_TENANT_ID : undefined}
       data-surface="qr"
       className="relative isolate min-h-dvh bg-background"
     >
-      <main className="mx-auto grid w-full max-w-[90rem] grid-cols-[minmax(0,1fr)] content-start gap-5 px-4 pt-3 pb-4 lg:px-14 lg:pt-5 lg:pb-8">
+      {theme ? <TenantThemeStyle tenant={theme} /> : null}
+      <main className="mx-auto grid w-full max-w-[90rem] grid-cols-[minmax(0,1fr)] gap-5 px-4 pt-3 pb-4 max-lg:min-h-dvh max-lg:grid-rows-[auto_minmax(0,1fr)] lg:content-start lg:px-14 lg:pt-5 lg:pb-8">
         <TopBar
           title={invalid || !place ? t("payment.redirect.back.title") : place}
           context={
@@ -622,7 +761,7 @@ export function PaymentReturnPage() {
         />
         <div
           className={cn(
-            "grid content-start gap-5 lg:mx-auto lg:w-full lg:max-w-5xl lg:gap-x-12 lg:pt-6",
+            "flex flex-col gap-5 lg:mx-auto lg:grid lg:w-full lg:max-w-5xl lg:content-start lg:gap-x-12 lg:pt-6",
             paper && "lg:grid-cols-[minmax(0,1fr)_24rem]",
           )}
         >

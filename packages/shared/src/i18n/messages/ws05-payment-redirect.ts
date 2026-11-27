@@ -40,12 +40,12 @@ export const paymentRedirectMessages = {
     partner: "Halaman berikutnya milik Duitku, mitra pembayaran {place}.",
     partnerNoPlace: "Halaman berikutnya milik Duitku, mitra pembayaran kami.",
     open: "Buka halaman {method}",
-    cancelOrder: "Batal, kembali ke keranjang",
+    cancelOrder: "Kembali ke pesanan",
     cancelLink: "Batal, pilih metode lain",
     failedPill: "Belum terbuka",
     failedTitle: "Halaman {method} belum bisa dibuka",
     failedLeadOrder:
-      "Anda belum membayar apa pun. Keranjang masih tersimpan, coba lagi atau pilih metode lain.",
+      "Anda belum membayar apa pun. Pesanan masih tersimpan, coba lagi atau pilih metode lain.",
     failedLeadLink:
       "Anda belum membayar apa pun. Coba lagi atau pilih metode lain.",
     retry: "Coba buka lagi",
@@ -75,8 +75,8 @@ export const paymentRedirectMessages = {
     waitingLeadCard:
       "Konfirmasi pembayaran kartu biasanya masuk dalam beberapa detik. Jangan bayar ulang.",
     autoCheck: "Diperiksa otomatis",
-    lastChecked: "· terakhir {seconds} detik lalu",
-    checkNow: "Periksa sekarang",
+    lastChecked: "terakhir {seconds} detik lalu",
+    lastCheckedNow: "baru saja diperiksa",
     slowPill: "Masih diproses",
     slowTitle: "Pembayaran masih diproses",
     slowLeadOrder:
@@ -90,6 +90,21 @@ export const paymentRedirectMessages = {
     checkAgain: "Cek lagi",
     toOrders: "Lihat status pesanan",
     toBill: "Lihat tagihan",
+    unreachablePill: "Belum terhubung",
+    unreachableTitle: "Status belum bisa diperiksa",
+    unreachableLeadOrder:
+      "Sambungan terputus atau sistem sedang sibuk. Pembayaran Anda tidak hilang, dan kami belum tahu hasilnya.",
+    unreachableLeadLink:
+      "Sambungan terputus atau sistem sedang sibuk. Pembayaran Anda tidak hilang, dan kami belum tahu hasilnya.",
+    ordersPill: "Dibuka di tab lain",
+    ordersTitle: "Cek status pesanan Anda",
+    ordersLead:
+      "Halaman ini terbuka di tab atau browser lain, jadi status pembayarannya tidak bisa ditampilkan di sini. Pembayaran yang sudah masuk tetap tercatat.",
+    refundedPill: "Dikembalikan",
+    refundedTitle: "Pembayaran sudah dikembalikan",
+    refundedLead:
+      "Pembayaran ini sudah dikembalikan, seluruhnya atau sebagian. Tanyakan ke kasir untuk rinciannya.",
+    refundedLabel: "Nominal pembayaran",
     paidPill: "Lunas",
     paidTitle: "Pembayaran berhasil",
     paidLeadOrder: "Terima kasih. Pesanan Anda diteruskan ke dapur.",
@@ -102,20 +117,21 @@ export const paymentRedirectMessages = {
       "Pembayaran dengan {method} dibatalkan atau tidak disetujui. Pesanan belum dibayar dan belum masuk dapur.",
     failedLeadLink:
       "Pembayaran dengan {method} dibatalkan atau tidak disetujui. Tagihan belum dibayar.",
-    cartKeptTitle: "Keranjang masih tersimpan",
+    cartKeptTitle: "Pesanan masih tersimpan",
     cartKept: "Anda bisa bayar lagi dengan metode lain.",
     chooseOther: "Pilih metode lain",
     retryWith: "Coba lagi dengan {method}",
+    retrying: "Membuka…",
     retryFailed:
       "Pembayaran baru belum bisa dibuat. Pilih metode lain atau coba lagi.",
     expiredPill: "Waktu habis",
     expiredTitle: "Waktu pembayaran habis",
     expiredLeadOrder:
-      "Pembayaran ini sudah tidak bisa dipakai dan belum ada uang yang kami terima. Keranjang masih tersimpan.",
+      "Pembayaran ini sudah tidak bisa dipakai dan belum ada uang yang kami terima. Pesanan masih tersimpan.",
     expiredLeadLink:
       "Pembayaran ini sudah tidak bisa dipakai dan belum ada uang yang kami terima.",
     newPayment: "Buat pembayaran baru",
-    toCart: "Kembali ke keranjang",
+    toCart: "Kembali ke pesanan",
     invalidPill: "Tidak dikenali",
     invalidTitle: "Tautan ini tidak dikenali",
     invalidLead:

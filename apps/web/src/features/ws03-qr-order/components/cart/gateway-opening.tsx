@@ -30,6 +30,7 @@ import {
   saveReturnRecord,
 } from "@/features/ws05-payment/return-record";
 import { useTableJourney } from "../../context";
+import { outletTimeZone } from "../../lib/outlet-time-zone.ts";
 import {
   QrFooter,
   QrTopBar,
@@ -142,8 +143,10 @@ export function GatewayOpenFailed({
         </>
       }
     >
-      <div role="alert" className="grid gap-5">
+      <div className="grid gap-5">
         <StateHeader
+          alert
+          focusTitle
           pill={
             <StatusPill tone="bad" icon={<TriangleAlert />}>
               {t("payment.redirect.opening.failedPill")}
@@ -204,6 +207,15 @@ export function GatewayOpening({ payment }: { payment: GuestPayment }) {
       channelName: payment.bankName,
       amountIdr: payment.amountIdr,
       placeName: place,
+      timeZone: outletTimeZone(menu),
+      theme: menu?.theme
+        ? {
+            tokens: menu.theme.tokens,
+            fontFamily: menu.theme.fontFamily,
+            corners: menu.theme.corners,
+            logoUrl: menu.theme.logoUrl,
+          }
+        : null,
     });
   }, [
     sessionId,

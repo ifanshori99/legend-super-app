@@ -4,7 +4,7 @@
 // the guest came back with the back button). Nothing here settles the screen:
 // the page keeps polling the server (PAY-02).
 import { useEffect, useState } from "react";
-import { ExternalLink } from "lucide-react";
+import { ExternalLink, RefreshCw } from "lucide-react";
 import { formatRupiah } from "@starter/shared/i18n";
 import type { PaymentInstructions } from "@starter/shared/payment";
 import { useT } from "@/components/i18n";
@@ -50,6 +50,8 @@ export function LinkGatewayOpening({
       channelName: card ? null : instructions.channelName,
       amountIdr,
       placeName: null,
+      timeZone: null,
+      theme: null,
     });
     if (!claimAutoOpen(intentId)) return;
     const timer = window.setTimeout(() => {
@@ -60,10 +62,25 @@ export function LinkGatewayOpening({
 
   if (!openable || failed)
     return (
-      <p role="alert" className="text-sm leading-5 text-danger">
-        {t("payment.redirect.opening.failedTitle", { method: page })}.{" "}
-        {t("payment.redirect.opening.failedLeadLink")}
-      </p>
+      <div className="grid gap-3">
+        <p role="alert" className="text-sm leading-5 text-danger">
+          {t("payment.redirect.opening.failedTitle", { method: page })}.{" "}
+          {t("payment.redirect.opening.failedLeadLink")}
+        </p>
+        <Button
+          type="button"
+          variant="outline"
+          className="w-full"
+          onClick={() => {
+            // A refused address will not change by itself: ask the server again.
+            if (!openable) window.location.reload();
+            else if (openPaymentUrl(url)) setFailed(false);
+          }}
+        >
+          <RefreshCw aria-hidden="true" />
+          {t("payment.redirect.opening.retry")}
+        </Button>
+      </div>
     );
 
   return (

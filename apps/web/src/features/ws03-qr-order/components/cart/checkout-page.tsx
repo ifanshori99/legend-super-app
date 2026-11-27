@@ -29,6 +29,7 @@ import {
   useStartPayment,
 } from "../../hooks";
 import { idempotencyKey } from "../../lib/ids.ts";
+import { gatewayUnreachable } from "../../lib/pay-failure.ts";
 import { formatAvailableFrom } from "../../lib/item-options.ts";
 import { outletTimeZone } from "../../lib/outlet-time-zone.ts";
 import { CompanionOffer, useCompanion } from "../glass/companion-offer";
@@ -276,8 +277,11 @@ export function CheckoutPage() {
         idempotencyKey: payKey(orderId, keyMethod),
       },
       {
-        onError: () => {
-          if (redirect) setOpenFailed({ orderId, amountIdr });
+        onError: (error) => {
+          // Only "no answer" or a gateway outage is "could not be opened";
+          // a refusal (409, 422) shows the ordinary failure notice.
+          if (redirect && gatewayUnreachable(error))
+            setOpenFailed({ orderId, amountIdr });
         },
         onSuccess: (result) => {
           // A replayed key returns the same payment; once it has expired or
@@ -315,6 +319,10 @@ export function CheckoutPage() {
         onOtherMethod={() => {
           setOpenFailed(null);
           start.reset();
+          // The button that had focus is gone: land on the method list.
+          requestAnimationFrame(() =>
+            document.getElementById("method-title")?.focus(),
+          );
         }}
       />
     );
