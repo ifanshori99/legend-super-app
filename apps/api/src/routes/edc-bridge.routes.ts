@@ -8,8 +8,11 @@
 //   anything outside it closes the socket (1008). Ping every 15 s, dropped
 //   after 45 s without a pong. The cloud runtime (edge/edc/cloud-runtime.ts)
 //   does hello/lease, commands, results, ack and `sale_record_release`.
-// - HTTP `/api/edc-bridge/devices`: list, issue a token (shown once), revoke,
-//   assign terminals; `payment.edc.manage` at the outlet (UI: B4).
+// - HTTP `/api/edc-bridge/devices`: list, create, issue a new pairing code,
+//   revoke, assign terminals; `payment.edc.manage` at the outlet (UI: B4).
+//   Create and "new code" answer an 8-character pairing code, never a token.
+// - HTTP `/api/edc-bridge/pair` (B4 legend-wasr7.24): the tablet trades the
+//   code for its device token (shown once). No session, see the router.
 import type { IncomingMessage, Server } from "node:http";
 import type { Duplex } from "node:stream";
 import { Router, type Request } from "express";
@@ -24,13 +27,20 @@ import {
   createEdcBridgeDeviceInputSchema,
   edcBridgeDeviceParamsSchema,
   listEdcBridgeDevicesQuerySchema,
+  pairEdcBridgeInputSchema,
 } from "@starter/shared/edc/bridge-devices";
 import type { CloudEdcRuntime } from "../edge/edc/cloud-runtime.ts";
+import { HttpError } from "../lib/http-error.ts";
+import { clientIpDigest } from "../lib/identity-digest.ts";
 import { logger } from "../lib/logger.ts";
 import { toLoggableError } from "../lib/safe-error.ts";
 import { getAuth, requireAuth } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
+import {
+  clientIp,
+  rejectRateLimited,
+} from "../middleware/public-rate-limit.ts";
 import {
   getScopedTenantContext,
   requireMenuPermission,
@@ -38,6 +48,7 @@ import {
 } from "../middleware/permissions.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
 import * as devices from "../services/edc-bridge-device.service.ts";
+import { redeemEdcBridgePairCode } from "../services/edc-bridge-pair.service.ts";
 
 export const EDC_BRIDGE_WS_PATH = "/api/edc-bridge";
 const PING_INTERVAL_MS = 15_000;
@@ -87,7 +98,21 @@ edcBridgeRouter.post(
       actor(req),
       createEdcBridgeDeviceInputSchema.parse(req.body),
     );
-    // The token is in this answer only: never cached.
+    // The pairing code is in this answer only: never cached.
+    res.set("Cache-Control", "no-store").status(201).json({ data: issued });
+  },
+);
+
+edcBridgeRouter.post(
+  route(`${EDC_BRIDGE_DEVICES_PATH}/:deviceId/pair-code`),
+  byRecord,
+  async (req, res) => {
+    const { deviceId } = edcBridgeDeviceParamsSchema.parse(req.params);
+    const issued = await devices.issueEdcBridgePairCode(
+      scope(req),
+      actor(req),
+      deviceId,
+    );
     res.set("Cache-Control", "no-store").status(201).json({ data: issued });
   },
 );
@@ -123,6 +148,38 @@ edcBridgeRouter.put(
     });
   },
 );
+
+// ------------------------------------------------------------- pair
+
+// POST /api/edc-bridge/pair: the tablet trades a pairing code for its device
+// token. No requireAuth or requireTrustedOrigin on purpose: the tablet is an
+// Android app, not a browser, so it has no session cookie and no Origin; the
+// code is the credential, and no cookie means there is nothing for a
+// cross-site request to ride on. Still `jsonBody` (100 kB cap, JSON only) and
+// a strict schema. Brute force is bounded per IP (5 wrong codes per 15 min,
+// 429) and per code (locked after 5 wrong); every wrong, expired, used or
+// locked code gets the same EDC_PAIR_CODE_INVALID. See
+// docs/design/edc-bridge-protocol.md "Token perangkat".
+export const edcBridgePairRouter = Router();
+
+edcBridgePairRouter.post("/", jsonBody, async (req, res) => {
+  res.set("Cache-Control", "no-store");
+  const input = pairEdcBridgeInputSchema.parse(req.body);
+  const outcome = await redeemEdcBridgePairCode(
+    input,
+    clientIpDigest(clientIp(req)),
+  );
+  if (outcome.kind === "rate_limited")
+    return rejectRateLimited(res, outcome.retryAfterSeconds);
+  if (outcome.kind === "invalid")
+    throw new HttpError(
+      400,
+      "EDC_PAIR_CODE_INVALID",
+      "Kode pasang tidak berlaku. Minta kode baru di backoffice.",
+    );
+  // The token is in this answer only.
+  res.json({ data: outcome.data });
+});
 
 // -------------------------------------------------------------- WSS
 

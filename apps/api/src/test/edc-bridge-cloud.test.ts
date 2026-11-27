@@ -14,7 +14,7 @@
 //   still refused while the sale is pending/unknown;
 // - revoked token: socket closed, reconnect refused, no new command;
 // - device API: `payment.edc.manage` at the outlet (403), other outlet or
-//   tenant = 404, token shown once (no-store) and never in audit or log,
+//   tenant = 404, pairing code (no token) shown once (no-store), token via /pair, never in audit or log,
 //   revoke closes the socket; a terminal with an unfinished sale is never
 //   moved, re-linked or released (EDC_TERMINAL_BUSY);
 // - outlet lock lost with a sale on the wire (CTO decision): the API process
@@ -26,6 +26,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { inspect } from "node:util";
+import request from "supertest";
 import {
   afterAll,
   afterEach,
@@ -778,8 +779,14 @@ describe("B2 device API", () => {
       });
       expect(issued.status, JSON.stringify(issued.body)).toBe(201);
       expect(issued.headers["cache-control"]).toBe("no-store");
-      token = issued.body.data.token as string;
       issuedId = issued.body.data.device.id as string;
+      // B4: the answer carries a pairing code, the tablet trades it.
+      expect(issued.body.data).not.toHaveProperty("token");
+      const paired = await request(fx.app)
+        .post("/api/edc-bridge/pair")
+        .send({ code: issued.body.data.pairCode.code });
+      expect(paired.status, JSON.stringify(paired.body)).toBe(200);
+      token = paired.body.data.token as string;
       expect(token.startsWith(`edcb_${issuedId}_`)).toBe(true);
       const list = await manager.get(
         `${DEVICES}?outletId=${fx.tenant.outletId}`,
@@ -816,6 +823,77 @@ describe("B2 device API", () => {
       expect(row).not.toContain(token);
       expect(row).not.toContain(hashEdcBridgeToken(token));
     }
+  });
+});
+
+describe("B4 re-pairing ends the old tablet (review P2)", () => {
+  beforeAll(async () => {
+    await owner.query(
+      "UPDATE roles SET permissions = permissions || $2::jsonb WHERE id = $1",
+      [fx.tenant.roleId, JSON.stringify(["payment.edc.manage"])],
+    );
+  });
+
+  const api = () => ({
+    post: (path: string, body: Record<string, unknown>) =>
+      fx.staff.client.post(path).set(fx.headers).set(originHeader).send(body),
+  });
+  const pair = async (code: string) => {
+    const res = await request(fx.app)
+      .post("/api/edc-bridge/pair")
+      .send({ code });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    return res.body.data.token as string;
+  };
+
+  it("b4-p2a token replaced on another API instance (no revoked() here): the next lease renewal says goodbye token_revoked", async () => {
+    const device = await addDevice(fx.tenant.tenantId, outletA2);
+    const tablet = await bridge(device);
+    expect(tablet.opened).toEqual({ ok: true });
+    await tablet.hello();
+    // What /pair on another instance commits: a new token hash, nothing
+    // told to this process.
+    const other = `edcb_${device.id}_${randomBytes(32).toString("base64url")}`;
+    await asTenant(
+      fx.tenant.tenantId,
+      "UPDATE edc_bridge_devices SET token_hash = $2 WHERE id = $1",
+      [ulidToUuid(device.id), hashEdcBridgeToken(other)],
+    );
+    await runtime.renewAll();
+    expect(await tablet.waitFor("goodbye")).toEqual({
+      type: "goodbye",
+      reason: "token_revoked",
+    });
+    expect(await tablet.closed()).not.toBeNull();
+    expect((await bridge(device)).opened).toEqual({ ok: false, status: 401 });
+  });
+
+  it("b4-p2b re-pair on the same instance: old socket closed at once, old token refused, new token connects", async () => {
+    const created = await api().post("/api/edc-bridge/devices", {
+      outletId: outletA2,
+      label: "Tablet ganti",
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const id = created.body.data.device.id as string;
+    const first = { id, token: await pair(created.body.data.pairCode.code) };
+    const tablet = await bridge(first);
+    expect(tablet.opened).toEqual({ ok: true });
+    await tablet.hello();
+    const reissued = await api().post(
+      `/api/edc-bridge/devices/${id}/pair-code`,
+      {},
+    );
+    expect(reissued.status, JSON.stringify(reissued.body)).toBe(201);
+    const second = { id, token: await pair(reissued.body.data.code) };
+    expect(await tablet.waitFor("goodbye")).toEqual({
+      type: "goodbye",
+      reason: "token_revoked",
+    });
+    expect(await tablet.closed()).not.toBeNull();
+    expect((await bridge(first)).opened).toEqual({ ok: false, status: 401 });
+    const fresh = await bridge(second);
+    expect(fresh.opened).toEqual({ ok: true });
+    await fresh.hello();
   });
 });
 
@@ -949,6 +1027,8 @@ describe("B2 runtime writes (review P3)", () => {
         id: deviceE.id,
         tenantId: tenantIdSchema.parse(fx.tenant.tenantId),
         outletId: outletIdSchema.parse(outletE),
+        // B4 P2: a session is bound to the token it authenticated with.
+        tokenHash: hashEdcBridgeToken(deviceE.token),
       },
       {
         send: (text) => {

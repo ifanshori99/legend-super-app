@@ -90,6 +90,9 @@ export const PUBLIC_RATE_LIMIT_PATHS: string[] = [
   "/api/facility/entry",
   // Active subscription plans for the Wi-Fi portal, no login (legend-1cj0).
   "/api/facility/subscription-plans",
+  // EDC bridge tablet pairing, no session (legend-wasr7.24). The coarse
+  // per-IP/minute guard in front of its own 5-wrong-codes-per-15-min limit.
+  "/api/edc-bridge/pair",
 ];
 
 /**

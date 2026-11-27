@@ -64,8 +64,8 @@ export const EDC_BRIDGE_MAX_COMMAND_TIMEOUT_MS = 300_000;
  * another tablet (see `edcBridgeLeaseReusableAt`). */
 export const EDC_BRIDGE_LEASE_HANDOVER_GRACE_MS = 30_000;
 
-/** Wrong pairing codes allowed per code, and per source IP and device, before
- * the cloud blocks further attempts. */
+/** Wrong pairing codes allowed per code (then the code is locked), and per
+ * source IP in `EDC_BRIDGE_PAIRING_IP_WINDOW_MS` (then 429). */
 export const EDC_BRIDGE_PAIRING_MAX_ATTEMPTS = 5;
 
 const runtime = globalThis as unknown as {
@@ -428,9 +428,20 @@ export const edcBridgeDeviceTokenSchema = z
   .string()
   .regex(/^edcb_[0-7][0-9A-HJKMNP-TV-Z]{25}_[A-Za-z0-9_-]{43}$/);
 
-/** One-time code shown in backoffice and typed on the tablet: 8 Crockford
- * base32 characters, any case. */
+/** Pairing code alphabet: A-Z and 2-9 without 0, O, 1, I, L (31 characters),
+ * so a code read off a screen is never ambiguous (B4 legend-wasr7.24). */
+export const EDC_BRIDGE_PAIRING_CODE_ALPHABET =
+  "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
+
+/** One-time code shown in backoffice and typed on the tablet: 8 characters of
+ * `EDC_BRIDGE_PAIRING_CODE_ALPHABET`, any case. */
 export const edcBridgePairingCodeSchema = z
   .string()
   .toUpperCase()
-  .regex(/^[0-9A-HJKMNP-TV-Z]{8}$/);
+  .regex(/^[2-9A-HJKMNP-Z]{8}$/);
+
+/** A pairing code is valid this long after it is issued. */
+export const EDC_BRIDGE_PAIRING_CODE_TTL_MS = 10 * 60_000;
+
+/** Window of the per-IP wrong-code limit (`EDC_BRIDGE_PAIRING_MAX_ATTEMPTS`). */
+export const EDC_BRIDGE_PAIRING_IP_WINDOW_MS = 15 * 60_000;
