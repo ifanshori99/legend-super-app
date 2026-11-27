@@ -33,6 +33,8 @@ export type SupervisorPinDialogProps = {
   minReasonLength?: number;
   /** Label of the reason field when it is more than a plain reason. */
   reasonLabel?: string;
+  /** The dialog cannot be closed (Cancel, X, Escape, outside tap) meanwhile. */
+  locked?: boolean;
 };
 
 function PinDialogBody({
@@ -45,12 +47,14 @@ function PinDialogBody({
   error,
   minReasonLength,
   reasonLabel,
+  locked,
 }: Omit<SupervisorPinDialogProps, "open" | "onOpenChange"> & {
   onCancel: () => void;
 }) {
   const t = useT();
   const reasonId = useId();
   const reasonRef = useRef<HTMLTextAreaElement>(null);
+  const padRef = useRef<HTMLDivElement>(null);
   const [reason, setReason] = useState("");
   const [reasonError, setReasonError] = useState<string>();
   // Empty the dots and shake once per new error (adjusted during render, as the
@@ -104,19 +108,40 @@ function PinDialogBody({
             if (reasonError) setReasonError(undefined);
           }}
           rows={3}
+          onBlur={(event) => {
+            // On a phone the pad sits below the fields, out of sight: once a
+            // reason is in, bring it up unless focus moved to another control
+            // (a tap on plain text lands on the dialog itself).
+            const next = event.relatedTarget;
+            const toControl =
+              next instanceof HTMLElement &&
+              next.matches(
+                "input,textarea,select,button,a[href],[role='combobox']",
+              ) &&
+              !padRef.current?.contains(next);
+            if (reason.trim() !== "" && !toControl)
+              padRef.current?.scrollIntoView({ block: "nearest" });
+          }}
         />
       </FormField>
-      <PinPad
-        onComplete={handlePin}
-        pending={pending}
-        clearSignal={signal}
-        shakeSignal={signal}
-        error={error}
-        status={pending ? t("posKasirCommon.pinDialog.checking") : null}
-        label={t("posKasirCommon.pinDialog.pinLabel")}
-      />
+      <div ref={padRef}>
+        <PinPad
+          onComplete={handlePin}
+          pending={pending}
+          clearSignal={signal}
+          shakeSignal={signal}
+          error={error}
+          status={pending ? t("posKasirCommon.pinDialog.checking") : null}
+          label={t("posKasirCommon.pinDialog.pinLabel")}
+        />
+      </div>
       <DialogFooter>
-        <Button type="button" variant="outline" onClick={onCancel}>
+        <Button
+          type="button"
+          variant="outline"
+          onClick={onCancel}
+          disabled={locked}
+        >
           {t("posKasirCommon.pinDialog.cancel")}
         </Button>
       </DialogFooter>
@@ -133,9 +158,17 @@ export function SupervisorPinDialog({
   onOpenChange,
   ...body
 }: SupervisorPinDialogProps) {
+  const stay = (event: Event) => {
+    if (body.locked) event.preventDefault();
+  };
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent
+        hideClose={body.locked}
+        onEscapeKeyDown={stay}
+        onPointerDownOutside={stay}
+        onInteractOutside={stay}
+      >
         <PinDialogBody {...body} onCancel={() => onOpenChange(false)} />
       </DialogContent>
     </Dialog>
