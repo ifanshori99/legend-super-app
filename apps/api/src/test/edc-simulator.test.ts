@@ -73,10 +73,10 @@ describe("EdcProviderRegistry", () => {
     }
   });
 
-  it("EDC-05 default registry has simulators for 4 banks only when enabled", () => {
+  it("EDC-05 default registry has simulators for 5 banks (BRI added by 0541) only when enabled", () => {
     expect(
       createDefaultEdcRegistry({ simulator: true }).banks().sort(),
-    ).toEqual(["bca", "bjb", "bni", "mandiri"]);
+    ).toEqual(["bca", "bjb", "bni", "bri", "mandiri"]);
     expect(createDefaultEdcRegistry({ simulator: false }).banks()).toEqual([]);
   });
 });

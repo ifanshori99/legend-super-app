@@ -912,7 +912,7 @@ describe("EDC review K regressions", () => {
       const { createDefaultEdcRegistry } = await registryWith(false);
       expect(
         createDefaultEdcRegistry({ simulator: true }).banks().sort(),
-      ).toEqual(["bca", "bjb", "bni", "mandiri"]);
+      ).toEqual(["bca", "bjb", "bni", "bri", "mandiri"]);
     });
   });
 });

@@ -187,6 +187,11 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
   // legend-wasr7.6 (O2)
   "0537_offline_cash_clearing_mapping.sql":
     "inserts account 1205 (Kas Offline Belum Dicocokkan) and its offline_cash_clearing mapping for every already provisioned (tenant, legal entity) pair that has at least one account_mappings row (legend-wasr7.6); idempotent (only when the code or role is absent), never updates or deletes an account or mapping, never takes over a tenant's own account on that code, parent only when it is a same-type unmapped leaf, FORCE RLS on chart_of_accounts and account_mappings lifted and restored in the same migration",
+  // 0542 offline catalog snapshots, 0543 EDC bridge pairing
+  "0542_pos_offline_catalog_snapshots.sql":
+    "backfills one pos_offline_catalog_snapshots row per (outlet, catalog version) from the earliest existing pos_offline_kits snapshot, so the new snapshot foreign key holds for kits already issued; a schema upgrade of existing data, never an import; restores FORCE RLS",
+  "0543_edc_bridge_pair_codes.sql":
+    "function bodies only, no row edited by the migration: app.edc_bridge_pair_* functions count a failed attempt on edc_bridge_pair_codes and take a pairing IP slot in edc_bridge_pair_ip_slots when a bridge pairs (legend-wasr7.24); creates empty tables and grants",
   // legend-89pn
   "0360_cash_movement_mapping_backfill.sql":
     "inserts accounts 2108 (Kas Masuk Belum Diklasifikasi) and 6112 (Beban Kas Keluar Kasir) and their cash_in_clearing / cash_out_expense mappings for every already provisioned (tenant, legal entity) pair that has at least one account_mappings row (legend-89pn); idempotent (only when the code or role is absent), never updates or deletes an account or mapping, never takes over a tenant's own account on those codes, parent only when it is a same-type unmapped leaf, FORCE RLS on chart_of_accounts and account_mappings lifted and restored in the same migration",

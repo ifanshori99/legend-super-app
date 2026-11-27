@@ -1049,6 +1049,16 @@ describe("an older edge keeps working with a newer cloud", () => {
   it("every column of a v4 table either travels or is listed as staying home", () => {
     const home: Partial<Record<CatalogDocumentStream, string[]>> = {
       tables: ["qrTokenHash", "qrTokenSealed", "status"],
+      // The EDC agent runs in the cloud API process only (edc-bridge-protocol.md:
+      // the edge path stays out of process), so how a terminal is reached
+      // (0541: bridge or BCA cloud, paired bridge tablet, serial link) never
+      // travels.
+      payment_edc_terminals: [
+        "bridgeDeviceId",
+        "connectionKind",
+        "linkBaudRate",
+        "linkPort",
+      ],
     };
     for (const stream of CATALOG_DOCUMENT_STREAMS) {
       const columns = Object.keys(
