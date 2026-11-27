@@ -137,6 +137,14 @@ beforeAll(async () => {
 
 afterAll(async () => {
   setAuditWriter(null);
+  // The primary sits on the seeded outlet A: left active, 1269 E3 refuses every
+  // cloud POS write of that outlet in later files (POS_WRITE_ON_EDGE, e.g.
+  // pos-refund-after-manual-refund-980). Revoke what this file registered.
+  await asOwner(
+    `UPDATE edge_nodes SET status = 'revoked', revoked_at = now()
+      WHERE tenant_id = $1 AND registered_by = $2 AND status = 'active'`,
+    [tenantId, actor],
+  );
   await owner.end();
 });
 
