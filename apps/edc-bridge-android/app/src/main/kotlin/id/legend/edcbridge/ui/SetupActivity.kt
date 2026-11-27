@@ -14,11 +14,19 @@ import id.legend.edcbridge.R
 import id.legend.edcbridge.core.Pairing
 import id.legend.edcbridge.secure.DeviceSettings
 import id.legend.edcbridge.service.BridgeService
+import java.io.IOException
+import java.util.concurrent.TimeUnit
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 
 /**
- * Pairing screen: server address and the one-time device token from
- * backoffice. The token field is cleared after saving and the token is never
- * shown again.
+ * Pairing screen: server address and the 8-character pairing code from
+ * backoffice (B4 legend-wasr7.24). The code is traded once at
+ * POST /api/edc-bridge/pair for the device token, which goes straight into
+ * DeviceSettings (Android Keystore) and is never shown. The code field is
+ * cleared at once; neither is logged.
  */
 class SetupActivity : Activity() {
     private lateinit var settings: DeviceSettings
@@ -33,15 +41,15 @@ class SetupActivity : Activity() {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
             setText(settings.serverUrl ?: "")
         }
-        val token = EditText(this).apply {
-            hint = getString(if (settings.hasToken) R.string.hint_token_saved else R.string.hint_token)
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD or
+        val code = EditText(this).apply {
+            hint = getString(if (settings.hasToken) R.string.hint_code_saved else R.string.hint_code)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS or
                 InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
         }
         status = TextView(this)
         val save = Button(this).apply {
             text = getString(R.string.action_save_start)
-            setOnClickListener { save(server.text.toString(), token) }
+            setOnClickListener { save(server.text.toString(), code) }
         }
         val stop = Button(this).apply {
             text = getString(R.string.action_stop)
@@ -53,7 +61,7 @@ class SetupActivity : Activity() {
                 setPadding(pad, pad, pad, pad)
                 addView(TextView(this@SetupActivity).apply { text = getString(R.string.setup_intro) })
                 addView(server)
-                addView(token)
+                addView(code)
                 addView(save)
                 addView(stop)
                 addView(status)
@@ -72,25 +80,65 @@ class SetupActivity : Activity() {
             .getString(BridgeService.STATUS_KEY, getString(R.string.status_stopped))
     }
 
-    private fun save(serverUrl: String, tokenField: EditText) {
-        if (Pairing.socketUrl(serverUrl) == null) {
+    private fun save(serverUrl: String, codeField: EditText) {
+        val pairUrl = Pairing.pairUrl(serverUrl)
+        if (pairUrl == null) {
             status.text = getString(R.string.error_server)
             return
         }
-        val token = tokenField.text.toString().trim()
-        tokenField.text.clear()
-        if (token.isNotEmpty() && !Pairing.isDeviceToken(token)) {
-            status.text = getString(R.string.error_token)
+        val typed = codeField.text.toString()
+        codeField.text.clear()
+        if (typed.isBlank()) {
+            if (!settings.hasToken) {
+                status.text = getString(R.string.error_code)
+                return
+            }
+            settings.serverUrl = serverUrl.trim()
+            BridgeService.reload(this)
+            status.text = getString(R.string.status_connecting)
             return
         }
-        if (token.isEmpty() && !settings.hasToken) {
-            status.text = getString(R.string.error_token)
+        val code = Pairing.normalizePairCode(typed)
+        if (code == null) {
+            status.text = getString(R.string.error_code)
             return
         }
-        settings.serverUrl = serverUrl.trim()
-        if (token.isNotEmpty()) settings.saveToken(token)
-        tokenField.hint = getString(R.string.hint_token_saved)
-        BridgeService.reload(this)
-        status.text = getString(R.string.status_connecting)
+        status.text = getString(R.string.status_pairing)
+        Thread {
+            val answer = try {
+                val request = Request.Builder()
+                    .url(pairUrl)
+                    .post(Pairing.pairRequestBody(code).toRequestBody(JSON))
+                    .build()
+                http.newCall(request).execute().use { response ->
+                    Pairing.parsePairAnswer(response.code, response.body?.string() ?: "")
+                }
+            } catch (e: IOException) {
+                Pairing.PairAnswer.Failed
+            }
+            runOnUiThread { paired(serverUrl, codeField, answer) }
+        }.start()
+    }
+
+    private fun paired(serverUrl: String, codeField: EditText, answer: Pairing.PairAnswer) {
+        when (answer) {
+            is Pairing.PairAnswer.Paired -> {
+                settings.serverUrl = serverUrl.trim()
+                settings.saveToken(answer.token)
+                codeField.hint = getString(R.string.hint_code_saved)
+                BridgeService.reload(this)
+                status.text = getString(R.string.status_connecting)
+            }
+            Pairing.PairAnswer.Invalid -> status.text = getString(R.string.error_code_invalid)
+            Pairing.PairAnswer.RateLimited -> status.text = getString(R.string.error_code_rate_limited)
+            Pairing.PairAnswer.Failed -> status.text = getString(R.string.error_pair_failed)
+        }
+    }
+
+    private companion object {
+        val JSON = "application/json".toMediaType()
+        val http: OkHttpClient = OkHttpClient.Builder()
+            .callTimeout(20, TimeUnit.SECONDS)
+            .build()
     }
 }

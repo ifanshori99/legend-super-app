@@ -66,9 +66,9 @@ APK rilis: belum ada kunci tanda tangan. Kunci rilis disimpan di luar repo (kepu
 
 ## Pasangkan
 
-1. Backoffice: buat perangkat jembatan di outlet (B2 `/api/edc-bridge/devices`, izin `payment.edc.manage`), salin token (tampil sekali), tugaskan terminal EDC ke perangkat itu.
-2. Tablet: buka Legend EDC Bridge, isi alamat server (`https://host`, tanpa path) dan token, "Simpan dan jalankan". Status "Terhubung ke server." di layar dan notifikasi.
-3. Ganti tablet = buat token baru; cabut token lama di backoffice.
+1. Backoffice: buat perangkat jembatan di outlet (B2 `/api/edc-bridge/devices`, izin `payment.edc.manage`). Jawabannya kode pasang 8 karakter (B4 legend-wasr7.24), berlaku 10 menit, sekali pakai; token perangkat tidak pernah tampil di backoffice. Tugaskan terminal EDC ke perangkat itu. Kode kedaluwarsa: "terbitkan kode baru" (`POST /api/edc-bridge/devices/:id/pair-code`).
+2. Tablet: buka Legend EDC Bridge, isi alamat server (`https://host`, tanpa path) dan kode pasang, "Simpan dan jalankan". Aplikasi menukar kode lewat `POST /api/edc-bridge/pair`, menyimpan token terenkripsi (Android Keystore) dan menyambung. Status "Terhubung ke server." di layar dan notifikasi.
+3. Ganti tablet = terbitkan kode baru dan pasangkan tablet baru: token lama diganti, tablet lama diputus (`goodbye token_revoked`).
 
 ## Uji lapangan B7 (qa + founder, terminal asli)
 

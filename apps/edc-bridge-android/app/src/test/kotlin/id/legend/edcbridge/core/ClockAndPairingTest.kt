@@ -58,5 +58,35 @@ class ClockAndPairingTest {
         assertNull(Pairing.socketUrl("https://user:pw@pos.contoh.id"))
         assertNull(Pairing.socketUrl("https://pos.contoh.id?token=x"))
         assertNull(Pairing.socketUrl("not a url"))
+        assertEquals("https://pos.contoh.id:8443/api/edc-bridge/pair", Pairing.pairUrl(" https://pos.contoh.id:8443/ "))
+        assertNull(Pairing.pairUrl("http://pos.contoh.id"))
+    }
+
+    @Test
+    fun `pairing code is 8 characters without 0, O, 1, I, L`() {
+        assertEquals("ABCD2345", Pairing.normalizePairCode(" abcd-2345 "))
+        assertEquals("UVWXYZ99", Pairing.normalizePairCode("UVWX YZ99"))
+        for (bad in listOf("ABCD234I", "ABCD234L", "ABCD234O", "ABCD2340", "ABCD2341", "ABC2345", "ABCD23456")) {
+            assertNull(bad, Pairing.normalizePairCode(bad))
+        }
+        assertEquals("""{"code":"ABCD2345"}""", Pairing.pairRequestBody("ABCD2345"))
+    }
+
+    @Test
+    fun `pair answer gives the token only for a valid 200`() {
+        val token = "edcb_01JDX0Z8K3QW5N7M2P4R6T8V9A_" + "A".repeat(43)
+        assertEquals(
+            Pairing.PairAnswer.Paired(token),
+            Pairing.parsePairAnswer(200, """{"data":{"deviceId":"01JDX0Z8K3QW5N7M2P4R6T8V9A","token":"$token"}}"""),
+        )
+        assertFalse(Pairing.PairAnswer.Paired(token).toString().contains(token))
+        assertEquals(Pairing.PairAnswer.Failed, Pairing.parsePairAnswer(200, """{"data":{"token":"edcb_nope"}}"""))
+        assertEquals(
+            Pairing.PairAnswer.Invalid,
+            Pairing.parsePairAnswer(400, """{"error":{"code":"EDC_PAIR_CODE_INVALID","message":"x"}}"""),
+        )
+        assertEquals(Pairing.PairAnswer.Failed, Pairing.parsePairAnswer(422, """{"error":{"code":"VALIDATION_ERROR"}}"""))
+        assertEquals(Pairing.PairAnswer.RateLimited, Pairing.parsePairAnswer(429, ""))
+        assertEquals(Pairing.PairAnswer.Failed, Pairing.parsePairAnswer(500, "not json"))
     }
 }
