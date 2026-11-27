@@ -968,7 +968,8 @@ describe("review 1: paid is proven by the payment link", () => {
       ["tenant", await seedLink(other)],
       [
         "cancelled",
-        await seedLink(s, { expires_at: new Date(Date.now() - 1) }),
+        // A minute back: the database clock can trail this process's by a few ms.
+        await seedLink(s, { expires_at: new Date(Date.now() - 60_000) }),
       ],
       ["no expiry", await seedLink(s, { expires_at: null })],
     ];

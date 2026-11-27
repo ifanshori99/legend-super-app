@@ -1026,7 +1026,9 @@ describe("an older edge keeps working with a newer cloud", () => {
         catalogRecordUpdatedPayloadSchema.safeParse({ stream, record: {} })
           .success,
       ).toBe(false);
-  });
+    // sweepCatalogPublisher visits every active tenant of the shared test
+    // database (155 ms alone, past the 20 s default in a full shard).
+  }, 90_000);
 
   it("paging by one record loses and repeats nothing, deletions included", async () => {
     const zones = [];
