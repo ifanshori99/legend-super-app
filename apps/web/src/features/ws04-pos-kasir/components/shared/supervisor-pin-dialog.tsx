@@ -35,6 +35,8 @@ export type SupervisorPinDialogProps = {
   reasonLabel?: string;
   /** The dialog cannot be closed (Cancel, X, Escape, outside tap) meanwhile. */
   locked?: boolean;
+  /** The PIN pad takes no key yet (e.g. no approver picked). */
+  pinDisabled?: boolean;
 };
 
 function PinDialogBody({
@@ -48,6 +50,7 @@ function PinDialogBody({
   minReasonLength,
   reasonLabel,
   locked,
+  pinDisabled,
 }: Omit<SupervisorPinDialogProps, "open" | "onOpenChange"> & {
   onCancel: () => void;
 }) {
@@ -128,6 +131,7 @@ function PinDialogBody({
         <PinPad
           onComplete={handlePin}
           pending={pending}
+          disabled={pinDisabled}
           clearSignal={signal}
           shakeSignal={signal}
           error={error}

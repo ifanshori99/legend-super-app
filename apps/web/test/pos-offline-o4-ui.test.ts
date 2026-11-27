@@ -49,10 +49,16 @@ vi.mock("@tanstack/react-router", () => ({
 }));
 
 import { useT } from "@/components/i18n";
+import { ApiError } from "@/lib/api/errors";
 import { OfflineBanner } from "@/features/ws04-pos-kasir/offline/offline-banner";
 import { OfflineCloseBlockBody } from "@/features/ws04-pos-kasir/offline/offline-close-block";
 import { PayBody } from "@/features/ws04-pos-kasir/offline/offline-pay-dialog";
 import { OfflineQueueBody } from "@/features/ws04-pos-kasir/offline/offline-queue-sheet";
+import { OfflineSaleError } from "@/features/ws04-pos-kasir/offline/price";
+import {
+  StuckApproverField,
+  stuckReportErrorText,
+} from "@/features/ws04-pos-kasir/offline/stuck-report-dialog";
 import { createOfflineQueue } from "@/features/ws04-pos-kasir/offline/queue";
 import {
   cashOf,
@@ -307,6 +313,54 @@ describe("queue sheet", () => {
       buttonsOf(offline).some((b) => b.label === "Laporkan ke kantor"),
     ).toBe(false);
     expect(visibleText(offline)).toContain("Ditolak cloud");
+    expect(visibleText(offline)).toContain(
+      "Sambungkan tablet ke internet untuk melaporkan.",
+    );
+  });
+
+  test("1273 P2-1 audit: supervisor list loading, failure with retry, and the failure texts", () => {
+    const field = (status: "loading" | "error" | "empty" | "ready") =>
+      render((t) =>
+        createElement(StuckApproverField, {
+          status,
+          options: status === "ready" ? [{ userId: "u1", name: "Sari" }] : [],
+          value: status === "ready" ? "u1" : undefined,
+          onChange: () => {},
+          onRetry: () => {},
+          retrying: false,
+          disabled: false,
+          t,
+        }),
+      );
+    expect(visibleText(field("loading"))).toContain("Memuat supervisor…");
+    expect(buttonsOf(field("error")).some((b) => b.label === "Coba lagi")).toBe(
+      true,
+    );
+    expect(visibleText(field("ready"))).toContain(
+      "Supervisor yang hadir memilih namanya",
+    );
+    render((t) => {
+      const text = (error: unknown) => stuckReportErrorText(error, t);
+      expect(text(new OfflineSaleError("STUCK_NOT_SETTLED"))).toBe(
+        "Laporan belum diterima kantor. Penjualan tetap di tablet.",
+      );
+      expect(text(new TypeError("Failed to fetch"))).toContain(
+        "Laporan belum terkirim",
+      );
+      expect(text(new ApiError(503, "UNAVAILABLE", "x"))).toContain(
+        "Kantor sedang bermasalah",
+      );
+      expect(text(new ApiError(401, "PIN_INVALID", "x"))).toBe(
+        "PIN salah. Coba lagi.",
+      );
+      expect(text(new ApiError(409, "OFFLINE_SALE_NOT_STUCK", "x"))).toContain(
+        "bisa dikirim biasa",
+      );
+      expect(text(new ApiError(429, "RATE_LIMITED", "Too many"))).toContain(
+        "Terlalu banyak PIN salah",
+      );
+      return createElement("p");
+    });
   });
 
   test("offline, sending now is not offered as a working action", () => {

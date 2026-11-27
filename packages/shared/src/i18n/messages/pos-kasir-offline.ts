@@ -160,9 +160,32 @@ export const posKasirOfflineMessages = {
     report: "Laporkan ke kantor",
     dialogTitle: "Laporkan penjualan ke kantor",
     dialogSummary:
-      "Struk {receipt} ({amount}) disimpan di cloud tanpa pesanan dan dicek Finance. Tablet baru menghapusnya setelah cloud menerima.",
-    networkError:
-      "Laporan belum terkirim. Penjualan tetap di tablet; coba lagi saat tersambung.",
+      "Struk {receipt} ({amount}) dikirim ke kantor untuk dicek Finance. Tablet menghapusnya setelah kantor menerima.",
+    supervisorHint:
+      "Supervisor yang hadir memilih namanya, lalu memasukkan PIN sendiri.",
+    loadingSupervisors: "Memuat supervisor…",
+    retrySupervisors: "Coba lagi",
+    needsInternet: "Sambungkan tablet ke internet untuk melaporkan.",
+    reported: "Struk {receipt} dilaporkan ke kantor dan dihapus dari tablet.",
+    error: {
+      notSettled: "Laporan belum diterima kantor. Penjualan tetap di tablet.",
+      network:
+        "Laporan belum terkirim. Penjualan tetap di tablet; coba lagi saat tersambung.",
+      server:
+        "Kantor sedang bermasalah. Penjualan tetap di tablet; coba lagi sebentar lagi.",
+      pinInvalid: "PIN salah. Coba lagi.",
+      pinLocked:
+        "PIN supervisor ini terkunci. Pilih supervisor lain atau minta PIN diatur ulang.",
+      sameUser: "Penyetuju harus orang lain, bukan kasir yang sedang masuk.",
+      notStuck:
+        "Penjualan ini ternyata bisa dikirim biasa. Tutup dialog, lalu tekan Coba kirim sekarang.",
+      session: "Sesi kasir berakhir. Masuk lagi, lalu laporkan ulang.",
+      forbidden:
+        "Laporan ditolak: akun kasir atau supervisor tidak punya izin di outlet ini.",
+      throttled:
+        "Terlalu banyak PIN salah. Tunggu beberapa menit, lalu coba lagi.",
+      refused: "Laporan ditolak kantor. Penjualan tetap di tablet.",
+    },
   },
   dayClose: {
     openShiftsLabel: "Shift yang masih buka",

@@ -73,6 +73,7 @@ const devices = new Set<string>();
 let itemId = "";
 let app: ReturnType<typeof createApp>;
 let supervisor = "";
+let tenantOwner = "";
 let a: Till;
 
 async function asOwner<T>(run: (client: PoolClient) => Promise<T>) {
@@ -299,6 +300,12 @@ beforeAll(async () => {
     { outletId: seededOutletA, userId: supervisor },
     { pin: PIN },
   );
+  tenantOwner = (
+    await staffWithRole(app, {
+      template: "owner",
+      label: "Offline Stuck Owner",
+    })
+  ).userId;
   a = await newTill();
 });
 
@@ -360,6 +367,16 @@ describe("offline stuck report (1273 P2-1)", () => {
         [seededTenantId, `%${event.eventId}%`, `%${supervisor}%`],
       ),
     ).toBe(1);
+    // Review P3-4: supervisors and owners are alerted (finance must see it).
+    const { rows: alerted } = await owner.query<{ user_id: string }>(
+      `SELECT user_id FROM notifications
+        WHERE tenant_id = $1 AND title = 'Penjualan offline perlu dicek' AND body LIKE $2`,
+      [seededTenantId, `%${answer.receiptNumber}%PIN supervisor%`],
+    );
+    const alertedIds = alerted.map((row) => row.user_id.toLowerCase());
+    expect(alertedIds).toContain(supervisor.toLowerCase());
+    expect(alertedIds).toContain(tenantOwner.toLowerCase());
+
     // A resend is the same answer, one row.
     expect(await report(a, event, "sequence_gap")).toEqual(answer);
     expect(await rowsOf(event.eventId)).toBe(1);
@@ -410,6 +427,33 @@ describe("offline stuck report (1273 P2-1)", () => {
       report(a, event, "sequence_gap", { approverUserId: other.userId }),
     ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
     expect(await rowsOf(event.eventId)).toBe(0);
+  });
+
+  it("review P3-1: refuses a reason that does not hold, so a normal sale is never held", async () => {
+    const kit = await kitFor(a);
+    const next = sale(kit, (await lastNumberOf(kit.receiptRun.sequenceId)) + 1);
+    // The next number is no gap.
+    await expect(report(a, next, "sequence_gap")).rejects.toMatchObject({
+      status: 409,
+      code: "OFFLINE_SALE_NOT_STUCK",
+    });
+    // The kit's own registered device is neither unknown nor refused.
+    for (const stuck of ["kit_unknown", "device_refused"] as const)
+      await expect(report(a, next, stuck)).rejects.toMatchObject({
+        status: 409,
+        code: "OFFLINE_SALE_NOT_STUCK",
+      });
+    expect(await rowsOf(next.eventId)).toBe(0);
+    // Without the kit's device (token gone, tablet reinstalled) it holds.
+    expect(
+      await report(
+        a,
+        next,
+        "kit_unknown",
+        {},
+        { ...callerOf(a), deviceId: null },
+      ),
+    ).toMatchObject({ status: "held", reason: "stuck_kit_unknown" });
   });
 
   it("refuses a kit outside the session's tenant, outlet or run", async () => {

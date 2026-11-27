@@ -735,10 +735,11 @@ describe("a sale the cloud refuses for good", () => {
       queue.reportStuck(sales[0]!.eventId, approval),
     ).rejects.toBeInstanceOf(TypeError);
     expect(await queue.pendingCount()).toBe(2);
+    // An answer that is not settled is a failure the cashier sees.
     answer("rejected");
-    expect((await queue.reportStuck(sales[0]!.eventId, approval)).status).toBe(
-      "rejected",
-    );
+    await expect(
+      queue.reportStuck(sales[0]!.eventId, approval),
+    ).rejects.toMatchObject({ code: "STUCK_NOT_SETTLED" });
     expect(await queue.pendingCount()).toBe(2);
     answer("held");
     expect(await queue.reportStuck(sales[0]!.eventId, approval)).toMatchObject({

@@ -6,7 +6,7 @@
 // Nothing here deletes a sale by itself. 1273 P2-1: a sale the cloud refuses
 // for good gets "Laporkan ke kantor" (supervisor PIN); the queue drops it only
 // once the cloud holds it.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Ban, CircleAlert, Clock } from "lucide-react";
 import type {
   OfflineSaleEvent,
@@ -75,6 +75,9 @@ export function OfflineQueueSheet({
   const t = useT();
   const [rows, setRows] = useState<OfflineQueueRows | null>(null);
   const [reporting, setReporting] = useState<OfflineStuckSale | null>(null);
+  /** Announced after a stuck sale was reported (it left the list). */
+  const [reported, setReported] = useState<string | null>(null);
+  const titleRef = useRef<HTMLHeadingElement>(null);
   const [failed, setFailed] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncFailed, setSyncFailed] = useState(false);
@@ -108,6 +111,7 @@ export function OfflineQueueSheet({
       open={open}
       onOpenChange={(next) => {
         if (next) setSyncFailed(false);
+        setReported(null);
         onOpenChange(next);
       }}
     >
@@ -116,11 +120,16 @@ export function OfflineQueueSheet({
         className="w-[min(44rem,100%)] max-[700px]:w-full"
       >
         <SheetHeader>
-          <SheetTitle>{t("posKasirOffline.queue.title")}</SheetTitle>
+          <SheetTitle ref={titleRef} tabIndex={-1}>
+            {t("posKasirOffline.queue.title")}
+          </SheetTitle>
           <SheetDescription>
             {t("posKasirOffline.queue.description")}
           </SheetDescription>
         </SheetHeader>
+        <p role="status" className="sr-only">
+          {reported ?? ""}
+        </p>
         <OfflineQueueBody
           rows={rows}
           failed={failed}
@@ -149,8 +158,20 @@ export function OfflineQueueSheet({
               if (!next) setReporting(null);
             }}
             onReported={() => {
+              const receipt = reporting
+                ? offlineReceiptNumber(kit, reporting.event.sequenceNumber)
+                : "";
               setReporting(null);
-              void readRows(queue).then(setRows, () => setFailed(true));
+              setReported(t("posKasirOffline.stuck.reported", { receipt }));
+              void readRows(queue).then(
+                (next) => {
+                  setRows(next);
+                  // Its row and button are gone: focus lands on the title,
+                  // not on the page behind the sheet.
+                  requestAnimationFrame(() => titleRef.current?.focus());
+                },
+                () => setFailed(true),
+              );
             }}
           />
         )}
@@ -384,6 +405,11 @@ function SaleRow({
         <Notice tone="danger" title={t(stuckReasonKey(stuck))}>
           {t("posKasirOffline.stuck.body")}
         </Notice>
+      )}
+      {stuck && !onReport && (
+        <p className="text-sm text-muted-foreground">
+          {t("posKasirOffline.stuck.needsInternet")}
+        </p>
       )}
       {stuck && onReport && (
         <Button

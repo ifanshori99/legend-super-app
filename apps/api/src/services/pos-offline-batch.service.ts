@@ -94,6 +94,7 @@ import {
   openBusinessDateFrom,
   recordLateAdjustment,
 } from "../edge/late-adjustment.ts";
+import { HttpError } from "../lib/http-error.ts";
 import { logger } from "../lib/logger.ts";
 import { recordAudit } from "./audit-writer.ts";
 import { outletContext } from "./device-pin-support.ts";
@@ -460,6 +461,38 @@ async function stuckKitOf(
   return kit;
 }
 
+/** Code of a stuck report whose reason does not hold (review P3-1). */
+export const OFFLINE_SALE_NOT_STUCK = "OFFLINE_SALE_NOT_STUCK";
+
+function assertStillStuck(
+  stuck: ReportPosOfflineStuckInput["stuck"],
+  facts: {
+    callerDeviceId: string | null;
+    kitDeviceId: string;
+    runDeviceId: string | null;
+    sequenceNumber: number;
+    lastNumber: number;
+  },
+): void {
+  const ownDevice =
+    facts.callerDeviceId !== null &&
+    sameId(facts.callerDeviceId, facts.kitDeviceId) &&
+    facts.runDeviceId !== null &&
+    sameId(facts.callerDeviceId, facts.runDeviceId);
+  const holds =
+    stuck === "sequence_gap"
+      ? facts.sequenceNumber > facts.lastNumber + 1
+      : !ownDevice;
+  if (!holds)
+    throw new HttpError(
+      409,
+      OFFLINE_SALE_NOT_STUCK,
+      stuck === "sequence_gap"
+        ? "Nomor struk ini tidak lagi menunggu nomor sebelumnya. Kirim ulang antrean dulu."
+        : "Perangkat ini masih pemegang bekal penjualan ini. Kirim ulang antrean dulu.",
+    );
+}
+
 async function storeStuckSale(
   tx: Tx,
   context: ScopedTenantContext,
@@ -516,6 +549,15 @@ async function storeStuckSale(
     );
   }
 
+  // Review P3-1: the stated reason must hold now, or the sale would sync on
+  // its own (a report must never turn a normal sale into a held one).
+  assertStillStuck(input.stuck, {
+    callerDeviceId: caller.deviceId,
+    kitDeviceId: kit.deviceId,
+    runDeviceId: run.deviceId,
+    sequenceNumber: event.sequenceNumber,
+    lastNumber: run.lastNumber,
+  });
   const reason = offlineStuckHeldReason(input.stuck);
   // The number continues the run: used up, like any held sale. A gap stays a
   // gap (never written off); an older number keeps its own sale.

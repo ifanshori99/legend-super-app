@@ -110,7 +110,8 @@ export type OfflineQueue = {
   stuck(): Promise<OfflineStuckSale[]>;
   /**
    * Reports a stuck sale with a supervisor's PIN; drops it only when the
-   * cloud answers it settled. A failure throws and keeps it queued.
+   * cloud answers it settled. A failure, or an answer that is not settled
+   * (STUCK_NOT_SETTLED), throws and keeps it queued.
    */
   reportStuck(
     eventId: string,
@@ -393,7 +394,8 @@ export function createOfflineQueue(options: {
         throw new OfflineSaleError("STUCK_UNKNOWN");
       const answer = await options.reportStuck(row.event, stuck, approval);
       // Only a settled answer: the cloud holds the sale (held or ingested).
-      if (!settles(answer)) return answer;
+      // Anything else is a failure the cashier must see; the sale stays.
+      if (!settles(answer)) throw new OfflineSaleError("STUCK_NOT_SETTLED");
       await backend.run("readwrite", (tx) => tx.delete("queue", eventId));
       stuckMarks.delete(eventId);
       return answer;
