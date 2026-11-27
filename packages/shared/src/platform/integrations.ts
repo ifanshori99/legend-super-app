@@ -226,6 +226,24 @@ export function isGatewayPreviousKey(key: string): boolean {
   return key.startsWith("previous");
 }
 
+/**
+ * 1272 K1 (design duitku-fee-passthrough §1): the guest service fee of one
+ * Duitku channel, `ceil(amount * bps / 10000) + flatIdr` on the charged amount.
+ * Kept in the integration config as `guestFees: { <channel code>: rate }`. The
+ * server reads a rate only when it is within the method's C4a cap
+ * (`maxFeeBps_<method>`, `maxFeeFlatIdr_<method>`); any other value hides the
+ * channel. bps stays under 10000 so the gross-up exists.
+ */
+export const duitkuGuestFeeRateSchema = z.strictObject({
+  bps: z.number().int().min(0).max(9_999),
+  flatIdr: z.number().int().min(0).max(1_000_000),
+});
+export type DuitkuGuestFeeRate = z.infer<typeof duitkuGuestFeeRateSchema>;
+export const duitkuGuestFeesSchema = z.record(
+  z.string().regex(/^[A-Z0-9]{1,40}$/),
+  duitkuGuestFeeRateSchema,
+);
+
 const duitkuConfigSchema = z.object({
   environment: z.enum(GATEWAY_CREDENTIAL_SPECS.duitku.config.environment),
   notificationEmail: z.email().max(254),
