@@ -628,7 +628,7 @@ export async function addPosTender(
               method: input.method,
               channelCode,
               ...(input.expectedChargedIdr !== undefined
-                ? { expectedChargedIdr: input.expectedChargedIdr }
+                ? { expectedChargedIdr: idr(input.expectedChargedIdr) }
                 : {}),
               idempotencyKey: `pos-${createHash("sha256")
                 // legend-yhia9 QH-17: bound to the link too. A POS transaction

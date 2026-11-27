@@ -155,6 +155,8 @@ export const startPayment = (
     method: GuestPaymentMethod;
     /** Required for `va` (a code from the payment options); none for QRIS. */
     bankCode?: string;
+    /** The total (bill + fee) the guest saw; sent for a method with a fee. */
+    expectedChargedIdr?: number;
     idempotencyKey: string;
   },
 ) =>

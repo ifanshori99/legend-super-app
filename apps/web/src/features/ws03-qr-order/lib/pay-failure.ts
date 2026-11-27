@@ -8,3 +8,12 @@ export function gatewayUnreachable(error: unknown): boolean {
   if (typeof status !== "number") return true;
   return status === 0 || status >= 500;
 }
+
+/**
+ * 1272 P2-2: the server refused the code because the total the guest saw is no
+ * longer the price (rate or bill changed): the guest sees the new price and
+ * confirms again; the gateway is never opened on the old one.
+ */
+export function feeChanged(error: unknown): boolean {
+  return (error as { code?: unknown } | null)?.code === "FEE_CHANGED";
+}

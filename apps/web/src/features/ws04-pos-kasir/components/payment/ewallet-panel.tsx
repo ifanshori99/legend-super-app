@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { QrCode } from "@/components/ui/qr-code";
 import { useEwallets, useStartPayment } from "../../hooks";
 import { FailedPanel } from "./failed-panel";
-import { FeeNoRefund, FeeQuote } from "./fee-lines";
+import { FeeNoRefund, FeeQuote, hasGuestFee } from "./fee-lines";
 import {
   ChoiceGroup,
   ExpiredPanel,
@@ -100,12 +100,25 @@ export function EwalletPanel(props: PaymentPanelProps) {
           startDisabled={walletCode === null}
           onStart={() =>
             walletCode !== null &&
-            start.mutate({
-              orderId,
-              method: "ewallet",
-              amountIdr,
-              walletCode,
-            })
+            start.mutate(
+              {
+                orderId,
+                method: "ewallet",
+                amountIdr,
+                walletCode,
+                ...(hasGuestFee(chosen?.guestFeeIdr) &&
+                typeof chosen?.totalIdr === "number"
+                  ? { expectedChargedIdr: chosen.totalIdr }
+                  : {}),
+              },
+              {
+                // The price changed: read the wallets again for the new total.
+                onError: (error) => {
+                  if ((error as { code?: unknown }).code === "FEE_CHANGED")
+                    void wallets.refetch();
+                },
+              },
+            )
           }
           error={start.error}
           onChangeMethod={onChangeMethod}

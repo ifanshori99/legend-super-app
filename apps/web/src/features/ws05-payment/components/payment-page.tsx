@@ -10,7 +10,13 @@ import { Card } from "@/components/ui/card";
 import { ErrorState } from "@/components/ui/feedback-state";
 import { useToast } from "@/components/ui/toast";
 import { useOnline } from "@/lib/use-online";
-import { isNotFoundError, isOfflineError, paymentErrorKey } from "../errors";
+import {
+  isFeeChangedError,
+  isNotFoundError,
+  isOfflineError,
+  paymentErrorKey,
+} from "../errors";
+import { shownChargedIdr } from "../shown-price";
 import {
   useAutoRefreshIntent,
   useCountdown,
@@ -133,6 +139,11 @@ export function PaymentPage({ token }: { token: string }) {
       ? selection.channelCode
       : null;
 
+  /** A price that changed since the payer saw it: show the new one. */
+  function onStartError(error: unknown) {
+    if (isFeeChangedError(error)) void link.refetch();
+  }
+
   function submit() {
     if (!selectedMethod || !canSubmit(selectedMethod, selectedChannel)) return;
     if (
@@ -145,11 +156,20 @@ export function PaymentPage({ token }: { token: string }) {
         channel: selectedChannel,
       };
     setSwitching(false);
-    start.mutate({
-      method: selectedMethod,
-      channelCode: selectedChannel,
-      idempotencyKey: idempotency.current.key,
-    });
+    const expectedChargedIdr = shownChargedIdr(
+      data.methods,
+      selectedMethod,
+      selectedChannel,
+    );
+    start.mutate(
+      {
+        method: selectedMethod,
+        channelCode: selectedChannel,
+        ...(expectedChargedIdr === undefined ? {} : { expectedChargedIdr }),
+        idempotencyKey: idempotency.current.key,
+      },
+      { onError: onStartError },
+    );
   }
 
   /** A fresh code for the same method after an expiry or a failure. */
@@ -167,11 +187,16 @@ export function PaymentPage({ token }: { token: string }) {
       method,
       channel,
     };
-    start.mutate({
-      method,
-      channelCode: channel,
-      idempotencyKey: idempotency.current.key,
-    });
+    const expectedChargedIdr = shownChargedIdr(data.methods, method, channel);
+    start.mutate(
+      {
+        method,
+        channelCode: channel,
+        ...(expectedChargedIdr === undefined ? {} : { expectedChargedIdr }),
+        idempotencyKey: idempotency.current.key,
+      },
+      { onError: onStartError },
+    );
   }
 
   function notifyCashier() {

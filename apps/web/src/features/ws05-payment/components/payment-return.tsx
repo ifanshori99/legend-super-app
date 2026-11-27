@@ -33,7 +33,7 @@ import { cn } from "cn";
 import { formatRupiah } from "@starter/shared/i18n";
 import { getGuestPayment } from "@starter/shared/qr-order";
 import type { PaymentStatus } from "@starter/shared/payment";
-import { DEFAULT_TIME_ZONE } from "@starter/shared/core";
+import { DEFAULT_TIME_ZONE, idr } from "@starter/shared/core";
 import {
   buildTenantThemeCss,
   type TenantThemeConfig,
@@ -49,6 +49,7 @@ import { TenantThemeStyle } from "@/lib/theme";
 import "@/features/ws03-qr-order/session-store";
 import { startPayment as startGuestPayment } from "@/features/ws03-qr-order/api";
 import { fetchPaymentIntent, startPaymentIntent } from "../api";
+import { isFeeChangedError } from "../errors";
 import { FeeNoRefund } from "./fee-parts";
 import { priceForRetry, type RetryPrice } from "../retry-price";
 import {
@@ -318,6 +319,8 @@ export function PaymentReturnPage() {
       if (!price) throw new Error("Method is no longer offered");
       if (price.feeIdr > 0 && price.chargedIdr !== confirmedChargedIdr)
         return { confirm: price };
+      const expectedChargedIdr =
+        price.feeIdr > 0 ? { expectedChargedIdr: idr(price.chargedIdr) } : {};
       let next: {
         id: string;
         amountIdr: number;
@@ -332,6 +335,7 @@ export function PaymentReturnPage() {
           ...(current.method === "ewallet" && current.channelCode
             ? { bankCode: current.channelCode }
             : {}),
+          ...expectedChargedIdr,
           idempotencyKey: newIdempotencyKey(),
         });
         next = {
@@ -344,6 +348,7 @@ export function PaymentReturnPage() {
         const intent = await startPaymentIntent(current.linkToken, {
           method: current.method,
           channelCode: current.method === "card" ? null : current.channelCode,
+          ...expectedChargedIdr,
           idempotencyKey: newIdempotencyKey(),
         });
         const instructions = intent.instructions;
@@ -367,6 +372,20 @@ export function PaymentReturnPage() {
       if (!openPaymentUrl(next.url)) throw new Error("Payment page refused");
     },
     onSuccess: (result) => setRetryConfirm(result?.confirm ?? null),
+    // 1272 P2-2: the price changed after the guest confirmed it: back to the
+    // confirmation with the new total, never to the gateway.
+    onError: (error, { record: current }) => {
+      if (!isFeeChangedError(error)) return;
+      void priceForRetry(current).then(
+        (price) => {
+          if (price && price.feeIdr > 0) {
+            retry.reset();
+            setRetryConfirm(price);
+          }
+        },
+        () => undefined,
+      );
+    },
   });
 
   const methodName = !record

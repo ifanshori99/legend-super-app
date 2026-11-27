@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { useOutletClock } from "@/lib/tenant-context";
 import { useStartPayment, useVaBanks } from "../../hooks";
 import { FailedPanel } from "./failed-panel";
-import { FeeNoRefund, FeeQuote } from "./fee-lines";
+import { FeeNoRefund, FeeQuote, hasGuestFee } from "./fee-lines";
 import {
   ChoiceGroup,
   ExpiredPanel,
@@ -108,12 +108,25 @@ export function VaPanel(props: PaymentPanelProps) {
           startDisabled={bankCode === null}
           onStart={() =>
             bankCode !== null &&
-            start.mutate({
-              orderId,
-              method: "va",
-              amountIdr,
-              bankCode,
-            })
+            start.mutate(
+              {
+                orderId,
+                method: "va",
+                amountIdr,
+                bankCode,
+                ...(hasGuestFee(chosen?.guestFeeIdr) &&
+                typeof chosen?.totalIdr === "number"
+                  ? { expectedChargedIdr: chosen.totalIdr }
+                  : {}),
+              },
+              {
+                // The price changed: read the banks again for the new total.
+                onError: (error) => {
+                  if ((error as { code?: unknown }).code === "FEE_CHANGED")
+                    void banks.refetch();
+                },
+              },
+            )
           }
           error={start.error}
           onChangeMethod={onChangeMethod}

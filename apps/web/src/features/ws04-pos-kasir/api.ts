@@ -1154,6 +1154,9 @@ export async function startPayment(
         tenderBody({
           method,
           ...(channelCode ? { channelCode } : {}),
+          ...(input.expectedChargedIdr === undefined
+            ? {}
+            : { expectedChargedIdr: input.expectedChargedIdr }),
           expectedStatus: before.status,
           expectedVersion: before.version,
           idempotencyKey,
