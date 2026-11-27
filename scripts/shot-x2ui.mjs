@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* global window */
 // Screenshots for X2-UI (legend-wasr7.18: Tutup Hari EDC per terminal, unggah CSV settlement):
 // starts the mock dev server and the browser inside one heavy job.
 //   heavy --browser node scripts/shot-x2ui.mjs

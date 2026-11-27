@@ -239,7 +239,7 @@ export function EdcSettlementImportPage() {
           label={t("edcSettlementCsv.form.file")}
           required
           hint={
-            picked
+            picked && fileHintKind(true, error) === "count"
               ? t("edcSettlementCsv.form.fileChosen", {
                   name: picked.name,
                   count: picked.lines,
