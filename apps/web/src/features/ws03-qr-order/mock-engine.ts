@@ -72,6 +72,37 @@ const MOCK_VA_BANKS = [
   { code: "permata", name: "Permata", prefix: "8528" },
 ] as const;
 const VA_WINDOW_MS = 24 * 60 * 60_000;
+/** Mock stand-in for Duitku's e-wallet channels (C2b, legend-osqou.4). */
+const MOCK_EWALLETS = [
+  { code: "OV", name: "OVO" },
+  { code: "DA", name: "DANA" },
+  { code: "SA", name: "ShopeePay" },
+  { code: "LA", name: "LinkAja" },
+] as const;
+
+/**
+ * Duitku switches of the mock (cookie `legend-mock-duitku`, read in mock.ts):
+ * `partial` = the outlet has only QRIS, DANA and ShopeePay on; `open-fail` =
+ * opening an e-wallet or card payment fails; `pending`, `failed`, `expired` =
+ * what the gateway reports for an e-wallet or card payment instead of paid;
+ * `late-paid` = failed first, paid 20 s later (a late settlement), `refunded` =
+ * paid then refunded, `no-login` = the guest's session is not in this tab (401),
+ * `down` = the payment lookup answers 503.
+ */
+export type MockDuitkuMode =
+  | "normal"
+  | "partial"
+  | "open-fail"
+  | "pending"
+  | "failed"
+  | "expired"
+  | "late-paid"
+  | "refunded"
+  | "no-login"
+  | "down";
+
+/** `late-paid`: how long the mock gateway reports "failed" before "paid". */
+export const MOCK_LATE_PAID_AFTER_MS = 20_000;
 
 type Clock = () => number;
 
@@ -973,17 +1004,46 @@ export function createEngine(
    */
   function paymentOptions(
     sessionId: string,
-    flags: { vaDown?: boolean; emptyBanks?: boolean } = {},
+    flags: {
+      vaDown?: boolean;
+      emptyBanks?: boolean;
+      duitku?: MockDuitkuMode;
+    } = {},
   ): GuestPaymentOptions {
     sessionOf(sessionId);
+    const partial = flags.duitku === "partial";
     const off = flags.vaDown
       ? ("gateway_down" as const)
       : flags.emptyBanks
         ? ("no_channels" as const)
-        : null;
+        : partial
+          ? ("routing_disabled" as const)
+          : null;
+    const wallets = MOCK_EWALLETS.filter(
+      (wallet) => !partial || wallet.code === "DA" || wallet.code === "SA",
+    ).map(({ code, name }) => ({ code, name }));
     return {
       methods: [
         { method: "qris", enabled: true, unavailableReason: null, banks: [] },
+        {
+          method: "ewallet",
+          enabled: true,
+          unavailableReason: null,
+          banks: wallets,
+        },
+        partial
+          ? {
+              method: "card",
+              enabled: false,
+              unavailableReason: "routing_disabled",
+              banks: [],
+            }
+          : {
+              method: "card",
+              enabled: true,
+              unavailableReason: null,
+              banks: [],
+            },
         off
           ? { method: "va", enabled: false, unavailableReason: off, banks: [] }
           : {
@@ -1011,6 +1071,7 @@ export function createEngine(
       payerSecret?: string;
       idempotencyKey: string;
     },
+    flags: { duitku?: MockDuitkuMode } = {},
   ) {
     const session = sessionOf(sessionId);
     const rec = recOf(sessionId);
@@ -1048,6 +1109,23 @@ export function createEngine(
         "VALIDATION_ERROR",
         "Bank virtual account ini tidak tersedia; pilih bank lain.",
       );
+    const wallet =
+      body.method === "ewallet"
+        ? MOCK_EWALLETS.find((item) => item.code === body.bankCode)
+        : undefined;
+    if (body.method === "ewallet" && !wallet)
+      throw new ApiError(
+        422,
+        "VALIDATION_ERROR",
+        "E-wallet ini tidak tersedia; pilih yang lain.",
+      );
+    const redirect = body.method === "ewallet" || body.method === "card";
+    if (redirect && flags.duitku === "open-fail")
+      throw new ApiError(
+        503,
+        "GATEWAY_UNAVAILABLE",
+        "Halaman pembayaran belum bisa dibuka.",
+      );
     const amount = amountFor(session, body.target);
     // Like the API: the same VA bank returns the live VA; another choice
     // supersedes it (QRIS after QRIS keeps the older mock behaviour).
@@ -1061,8 +1139,14 @@ export function createEngine(
         continue;
       if (live.method === "va" && bank && live.bankCode === bank.code)
         return paymentView(entry);
-      if (live.method === "va" || body.method === "va")
-        entry.payment = { ...live, status: "expired" };
+      const liveRedirect = live.method === "ewallet" || live.method === "card";
+      if (
+        live.method === "va" ||
+        body.method === "va" ||
+        liveRedirect ||
+        redirect
+      )
+        entry.payment = { ...live, status: "expired", redirectUrl: null };
     }
     const target = body.target;
     const seed =
@@ -1073,8 +1157,15 @@ export function createEngine(
           ? target.billSplitId
           : session.id;
     const now = clock();
+    const id = uuid();
+    // Duitku sends the guest back to the single return page with these
+    // parameters; the mock "page" is that return itself.
+    const origin =
+      typeof window === "undefined"
+        ? "http://localhost"
+        : window.location.origin;
     const payment = {
-      id: uuid(),
+      id,
       target: body.target,
       method: body.method,
       amountIdr: idr(amount),
@@ -1083,10 +1174,12 @@ export function createEngine(
         body.method === "qris"
           ? `00020101021226610016ID.CO.QRIS.WWW01189360091400${rand("0123456789", 10)}5204581253033605802ID5913Cafe Legend6007Bandung6304${rand("ABCDEF0123456789", 4)}`
           : null,
-      redirectUrl: null,
+      redirectUrl: redirect
+        ? `${origin}/bayar/kembali?merchantOrderId=${id}&resultCode=00&reference=MOCK${rand("0123456789", 8)}`
+        : null,
       vaNumber: bank ? mockVaNumber(bank.prefix, seed) : null,
-      bankCode: bank?.code ?? null,
-      bankName: bank?.name ?? null,
+      bankCode: bank?.code ?? wallet?.code ?? null,
+      bankName: bank?.name ?? wallet?.name ?? null,
       expiresAt: iso(now + (bank ? VA_WINDOW_MS : 15 * 60_000)),
       paidAt: null,
       idemKey: body.idempotencyKey,
@@ -1112,7 +1205,12 @@ export function createEngine(
     // Settling is lazy (first read after the delay), so the paid time is when it
     // was due, not when someone looked: the 24 h claim window counts from it.
     const paidMs = Math.min(now, entry.createdMs + MOCK_PAYMENT_SETTLE_MS);
-    entry.payment = { ...entry.payment, status: "paid", paidAt: iso(paidMs) };
+    entry.payment = {
+      ...entry.payment,
+      status: "paid",
+      paidAt: iso(paidMs),
+      redirectUrl: null,
+    };
     const target = entry.payment.target;
     const orders = floor.ordersOf(rec.sessionId);
     const splits = floor.splitsOf(rec.sessionId);
@@ -1158,12 +1256,67 @@ export function createEngine(
     }
   }
 
-  function getPayment(sessionId: string, paymentId: string): GuestPayment {
+  function getPayment(
+    sessionId: string,
+    paymentId: string,
+    flags: { duitku?: MockDuitkuMode } = {},
+  ): GuestPayment {
     const rec = recOf(sessionId);
     const entry = rec.payments.get(paymentId);
     if (!entry)
       throw new ApiError(404, "NOT_FOUND", "Pembayaran tidak ditemukan.");
     const now = clock();
+    const redirect =
+      entry.payment.method === "ewallet" || entry.payment.method === "card";
+    const outcome = flags.duitku;
+    if (redirect && outcome === "no-login")
+      throw new ApiError(401, "UNAUTHORIZED", "Sesi meja tidak ditemukan.");
+    if (redirect && outcome === "down")
+      throw new ApiError(503, "UNAVAILABLE", "Layanan sedang sibuk.");
+    if (redirect && outcome === "late-paid") {
+      const elapsed = now - entry.createdMs;
+      if (
+        elapsed >= MOCK_PAYMENT_SETTLE_MS &&
+        elapsed < MOCK_PAYMENT_SETTLE_MS + MOCK_LATE_PAID_AFTER_MS &&
+        entry.payment.status === "pending"
+      )
+        return { ...paymentView(entry), status: "failed", redirectUrl: null };
+      if (
+        elapsed >= MOCK_PAYMENT_SETTLE_MS + MOCK_LATE_PAID_AFTER_MS &&
+        !entry.applied &&
+        entry.payment.status === "pending"
+      )
+        settle(rec, entry, now);
+      return paymentView(entry);
+    }
+    if (
+      redirect &&
+      outcome === "refunded" &&
+      !entry.applied &&
+      entry.payment.status === "pending" &&
+      now - entry.createdMs >= MOCK_PAYMENT_SETTLE_MS
+    ) {
+      settle(rec, entry, now);
+      // Like the API: `paidAt` goes with `paid` only (guestPaymentSchema).
+      entry.payment = { ...entry.payment, status: "refunded", paidAt: null };
+      return paymentView(entry);
+    }
+    if (
+      redirect &&
+      (outcome === "pending" || outcome === "failed" || outcome === "expired")
+    ) {
+      if (
+        outcome !== "pending" &&
+        entry.payment.status === "pending" &&
+        now - entry.createdMs >= MOCK_PAYMENT_SETTLE_MS
+      )
+        entry.payment = {
+          ...entry.payment,
+          status: outcome,
+          redirectUrl: null,
+        };
+      return paymentView(entry);
+    }
     if (
       !entry.applied &&
       entry.payment.status === "pending" &&

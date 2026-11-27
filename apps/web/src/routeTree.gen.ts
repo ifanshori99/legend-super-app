@@ -42,6 +42,7 @@ import { Route as PublicReservasiRouteImport } from './routes/_public/reservasi'
 import { Route as PublicReservationRouteImport } from './routes/_public/reservation'
 import { Route as McpConsentRouteImport } from './routes/mcp.consent'
 import { Route as CustomerBayarTokenRouteImport } from './routes/_customer/bayar.$token'
+import { Route as CustomerBayarKembaliRouteImport } from './routes/_customer/bayar.kembali'
 import { Route as CustomerFFacilityRouteImport } from './routes/_customer/f.$facility'
 import { Route as CustomerMemberIndexRouteImport } from './routes/_customer/member.index'
 import { Route as CustomerMemberDaftarRouteImport } from './routes/_customer/member.daftar'
@@ -559,6 +560,11 @@ const McpConsentRoute = McpConsentRouteImport.update({
 const CustomerBayarTokenRoute = CustomerBayarTokenRouteImport.update({
   id: '/bayar/$token',
   path: '/bayar/$token',
+  getParentRoute: () => CustomerRoute,
+} as any)
+const CustomerBayarKembaliRoute = CustomerBayarKembaliRouteImport.update({
+  id: '/bayar/kembali',
+  path: '/bayar/kembali',
   getParentRoute: () => CustomerRoute,
 } as any)
 const CustomerFFacilityRoute = CustomerFFacilityRouteImport.update({
@@ -2658,6 +2664,7 @@ export interface FileRoutesByFullPath {
   '/reservation': typeof PublicReservationRoute
   '/mcp/consent': typeof McpConsentRoute
   '/bayar/$token': typeof CustomerBayarTokenRoute
+  '/bayar/kembali': typeof CustomerBayarKembaliRoute
   '/f/$facility': typeof CustomerFFacilityRoute
   '/member/daftar': typeof CustomerMemberDaftarRoute
   '/member/favorit': typeof CustomerMemberFavoritRoute
@@ -3044,6 +3051,7 @@ export interface FileRoutesByTo {
   '/reservation': typeof PublicReservationRoute
   '/mcp/consent': typeof McpConsentRoute
   '/bayar/$token': typeof CustomerBayarTokenRoute
+  '/bayar/kembali': typeof CustomerBayarKembaliRoute
   '/f/$facility': typeof CustomerFFacilityRoute
   '/member/daftar': typeof CustomerMemberDaftarRoute
   '/member/favorit': typeof CustomerMemberFavoritRoute
@@ -3441,6 +3449,7 @@ export interface FileRoutesById {
   '/mcp/consent': typeof McpConsentRoute
   '/_public/': typeof PublicIndexRoute
   '/_customer/bayar/$token': typeof CustomerBayarTokenRoute
+  '/_customer/bayar/kembali': typeof CustomerBayarKembaliRoute
   '/_customer/f/$facility': typeof CustomerFFacilityRoute
   '/_customer/member/daftar': typeof CustomerMemberDaftarRoute
   '/_customer/member/favorit': typeof CustomerMemberFavoritRoute
@@ -3831,6 +3840,7 @@ export interface FileRouteTypes {
     | '/reservation'
     | '/mcp/consent'
     | '/bayar/$token'
+    | '/bayar/kembali'
     | '/f/$facility'
     | '/member/daftar'
     | '/member/favorit'
@@ -4217,6 +4227,7 @@ export interface FileRouteTypes {
     | '/reservation'
     | '/mcp/consent'
     | '/bayar/$token'
+    | '/bayar/kembali'
     | '/f/$facility'
     | '/member/daftar'
     | '/member/favorit'
@@ -4613,6 +4624,7 @@ export interface FileRouteTypes {
     | '/mcp/consent'
     | '/_public/'
     | '/_customer/bayar/$token'
+    | '/_customer/bayar/kembali'
     | '/_customer/f/$facility'
     | '/_customer/member/daftar'
     | '/_customer/member/favorit'
@@ -5231,6 +5243,13 @@ declare module '@tanstack/react-router' {
       path: '/bayar/$token'
       fullPath: '/bayar/$token'
       preLoaderRoute: typeof CustomerBayarTokenRouteImport
+      parentRoute: typeof CustomerRoute
+    }
+    '/_customer/bayar/kembali': {
+      id: '/_customer/bayar/kembali'
+      path: '/bayar/kembali'
+      fullPath: '/bayar/kembali'
+      preLoaderRoute: typeof CustomerBayarKembaliRouteImport
       parentRoute: typeof CustomerRoute
     }
     '/_customer/f/$facility': {
@@ -7861,6 +7880,7 @@ interface CustomerRouteChildren {
   CustomerMemberRoute: typeof CustomerMemberRouteWithChildren
   CustomerWifiRoute: typeof CustomerWifiRoute
   CustomerBayarTokenRoute: typeof CustomerBayarTokenRoute
+  CustomerBayarKembaliRoute: typeof CustomerBayarKembaliRoute
   CustomerFFacilityRoute: typeof CustomerFFacilityRoute
   CustomerTTokenRoute: typeof CustomerTTokenRouteWithChildren
 }
@@ -7869,6 +7889,7 @@ const CustomerRouteChildren: CustomerRouteChildren = {
   CustomerMemberRoute: CustomerMemberRouteWithChildren,
   CustomerWifiRoute: CustomerWifiRoute,
   CustomerBayarTokenRoute: CustomerBayarTokenRoute,
+  CustomerBayarKembaliRoute: CustomerBayarKembaliRoute,
   CustomerFFacilityRoute: CustomerFFacilityRoute,
   CustomerTTokenRoute: CustomerTTokenRouteWithChildren,
 }

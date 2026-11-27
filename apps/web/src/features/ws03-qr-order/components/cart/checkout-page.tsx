@@ -29,6 +29,7 @@ import {
   useStartPayment,
 } from "../../hooks";
 import { idempotencyKey } from "../../lib/ids.ts";
+import { gatewayUnreachable } from "../../lib/pay-failure.ts";
 import { formatAvailableFrom } from "../../lib/item-options.ts";
 import { outletTimeZone } from "../../lib/outlet-time-zone.ts";
 import { CompanionOffer, useCompanion } from "../glass/companion-offer";
@@ -42,7 +43,14 @@ import { Notice } from "../notice";
 import { SessionEnded } from "../session-states";
 import { CartLineRow } from "./cart-line-row";
 import { CodeField } from "./code-field";
-import { PaymentMethods, useCtaLabel, type PayMethod } from "./payment-methods";
+import { GatewayOpenFailed } from "./gateway-opening";
+import {
+  PICK_WALLET_ID,
+  PaymentMethods,
+  useCtaLabel,
+  useWalletName,
+  type PayChoice,
+} from "./payment-methods";
 import { PriceBreakdown } from "./price-breakdown";
 import { SignInNudge } from "./sign-in-nudge";
 
@@ -114,6 +122,9 @@ function forgetPayKey(orderId: string, method: string) {
   payKeys.delete(`${orderId}:${method}`);
 }
 
+/** Full width; a long label ("Bayar Rp… dengan E-wallet") wraps at 320 px. */
+const payCta = "h-auto min-h-control-lg w-full py-2 whitespace-normal";
+
 export function CheckoutPage() {
   const t = useT();
   const toast = useToast();
@@ -137,7 +148,19 @@ export function CheckoutPage() {
   const cartVersion = view?.cart.version ?? 0;
   const [code, setCode] = useState<string | null>(null);
   const [codeOpen, setCodeOpen] = useState(false);
-  const [method, setMethod] = useState<PayMethod>("qris");
+  const [choice, setChoice] = useState<PayChoice>({
+    method: "qris",
+    wallet: null,
+  });
+  const method = choice.method;
+  const walletName = useWalletName(choice.wallet);
+  // An e-wallet needs an app picked by the guest (nothing is preselected).
+  const needsWallet = method === "ewallet" && !choice.wallet;
+  // C2b: Duitku's page for e-wallet or card could not be opened for this order.
+  const [openFailed, setOpenFailed] = useState<{
+    orderId: OrderId;
+    amountIdr: number;
+  } | null>(null);
   const codes = code
     ? VOUCHER.test(code)
       ? { voucherCode: code }
@@ -229,7 +252,7 @@ export function CheckoutPage() {
   // cashier code screen for "Bayar di kasir", the VA screen for Virtual
   // Account (it lists the provider's banks and opens the VA itself, since
   // the VA needs a bank before useStartPayment can run).
-  const payOrder = (orderId: OrderId, fresh = false) => {
+  const payOrder = (orderId: OrderId, amountIdr: number, fresh = false) => {
     if (method === "va") {
       void navigate({
         to: "/t/$token/bayar/$orderId",
@@ -245,13 +268,27 @@ export function CheckoutPage() {
       });
       return;
     }
+    // An e-wallet key is per app: another app is another payment.
+    const keyMethod =
+      method === "ewallet" ? `ewallet:${choice.wallet ?? ""}` : method;
+    const redirect = method === "ewallet" || method === "card";
+    if (method === "ewallet" && !choice.wallet) return;
     start.mutate(
       {
         target: { kind: "order", orderId },
         method,
-        idempotencyKey: payKey(orderId, method),
+        ...(method === "ewallet" && choice.wallet
+          ? { bankCode: choice.wallet }
+          : {}),
+        idempotencyKey: payKey(orderId, keyMethod),
       },
       {
+        onError: (error) => {
+          // Only "no answer" or a gateway outage is "could not be opened";
+          // a refusal (409, 422) shows the ordinary failure notice.
+          if (redirect && gatewayUnreachable(error))
+            setOpenFailed({ orderId, amountIdr });
+        },
         onSuccess: (result) => {
           // A replayed key returns the same payment; once it has expired or
           // failed, retrying must open a new one (one fresh attempt).
@@ -260,10 +297,11 @@ export function CheckoutPage() {
             (result.data.status === "expired" ||
               result.data.status === "failed")
           ) {
-            forgetPayKey(orderId, method);
-            payOrder(orderId, true);
+            forgetPayKey(orderId, keyMethod);
+            payOrder(orderId, amountIdr, true);
             return;
           }
+          setOpenFailed(null);
           void navigate({
             to: "/t/$token/pay/$paymentId",
             params: { token: qrToken, paymentId: result.data.id },
@@ -272,6 +310,28 @@ export function CheckoutPage() {
       },
     );
   };
+
+  // C2b: Duitku's page could not be opened. Nothing was paid; the order and
+  // the cart stay as they are (design/mockups/c2b-tamu-bayar "membuka-gagal").
+  if (openFailed && (method === "ewallet" || method === "card"))
+    return (
+      <GatewayOpenFailed
+        method={method}
+        walletName={walletName}
+        amountIdr={openFailed.amountIdr}
+        orderId={openFailed.orderId}
+        retrying={start.isPending}
+        onRetry={() => payOrder(openFailed.orderId, openFailed.amountIdr)}
+        onOtherMethod={() => {
+          setOpenFailed(null);
+          start.reset();
+          // The button that had focus is gone: land on the method list.
+          requestAnimationFrame(() =>
+            document.getElementById("method-title")?.focus(),
+          );
+        }}
+      />
+    );
 
   const payFailure = start.isError && (
     <Notice tone="danger" title={t("qrOrders.bill.payFailed")} />
@@ -302,11 +362,13 @@ export function CheckoutPage() {
         <Button
           type="button"
           size="lg"
-          className="w-full"
+          className={payCta}
           loading={start.isPending}
-          onClick={() => payOrder(awaitingOrder.id)}
+          disabled={needsWallet}
+          aria-describedby={needsWallet ? PICK_WALLET_ID : undefined}
+          onClick={() => payOrder(awaitingOrder.id, awaitingOrder.totalIdr)}
         >
-          {ctaLabel(method, awaitingOrder.totalIdr)}
+          {ctaLabel(choice, awaitingOrder.totalIdr, walletName)}
           <ChevronRight aria-hidden="true" />
         </Button>
       </div>
@@ -354,8 +416,8 @@ export function CheckoutPage() {
           {!splitPaid && (
             <aside className={asideClass}>
               <PaymentMethods
-                value={method}
-                onChange={setMethod}
+                value={choice}
+                onChange={setChoice}
                 disabled={start.isPending}
               />
               <div className="hidden border-t border-border pt-4 lg:block">
@@ -442,7 +504,8 @@ export function CheckoutPage() {
             void navigate({ to: "/t/$token/bill", params: { token: qrToken } });
             return;
           }
-          if (data.kitchenFire === "held_for_payment") payOrder(data.order.id);
+          if (data.kitchenFire === "held_for_payment")
+            payOrder(data.order.id, data.order.totalIdr);
           else {
             toast({
               title: t("qrCart.checkout.sentToast"),
@@ -509,15 +572,16 @@ export function CheckoutPage() {
       <Button
         type="button"
         size="lg"
-        className="w-full"
+        className={payCta}
         loading={busy || (payFirst && payable === null && !base.isError)}
-        disabled={blocked}
+        disabled={blocked || needsWallet}
+        aria-describedby={needsWallet ? PICK_WALLET_ID : undefined}
         onClick={() => submit()}
       >
         {payFirst
           ? payable === null
             ? t("qrGlass.checkout.cta.held")
-            : ctaLabel(method, payable)
+            : ctaLabel(choice, payable, walletName)
           : t("qrCart.checkout.openBillSubmit")}
         <ChevronRight aria-hidden="true" />
       </Button>
@@ -681,8 +745,8 @@ export function CheckoutPage() {
         <aside className={asideClass}>
           {payFirst ? (
             <PaymentMethods
-              value={method}
-              onChange={setMethod}
+              value={choice}
+              onChange={setChoice}
               disabled={busy}
             />
           ) : (

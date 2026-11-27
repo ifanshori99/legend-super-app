@@ -131,7 +131,10 @@ export function canSubmit(
   channelCode: string | null,
 ): boolean {
   if (!method) return false;
-  return method === "qris" ? channelCode === null : Boolean(channelCode);
+  // QRIS and card take no channel (C2b); VA, transfer and e-wallet need one.
+  return method === "qris" || method === "card"
+    ? channelCode === null
+    : Boolean(channelCode);
 }
 
 /** Whether the bill already carries service charge or tax (owner decision 12: exclusive prices). */

@@ -61,7 +61,7 @@ export function QrTopBar({
     <>
       <div
         className={cn(
-          "sticky top-3 z-30 -mx-1 grid min-h-14 grid-cols-[2.75rem_1fr_2.75rem] items-center gap-2 rounded-qr-float px-2 py-1.5",
+          "sticky top-3 z-30 -mx-1 grid min-h-14 grid-cols-[2.75rem_minmax(0,1fr)_2.75rem] items-center gap-2 rounded-qr-float px-2 py-1.5",
           "max-lg:qr-glass",
           "lg:static lg:mx-0 lg:grid-cols-[auto_1fr_auto] lg:px-0 lg:pt-2",
           className,
