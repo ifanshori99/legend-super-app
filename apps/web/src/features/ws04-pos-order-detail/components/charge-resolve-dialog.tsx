@@ -28,6 +28,7 @@ import {
 } from "@/features/ws04-pos-kasir/components/shared";
 import { useActorId } from "@/features/ws04-pos-kasir/hooks";
 import { useChargeApprovers, useResolveChargeAttempt } from "../charge-hooks";
+import { chargeErrorKey } from "../charge-logic";
 import { CollectDeadlineError } from "../charge-method-logic";
 
 export type ResolvableAttempt = {
@@ -90,11 +91,9 @@ export function ChargeResolveDialog({
   const serverError =
     resolve.error instanceof CollectDeadlineError
       ? t("posIssueCharge.resolve.timeout")
-      : serverCode === ISSUE_CHARGE_EDC_STATEMENT_REQUIRED
-        ? t("posIssueCharge.resolve.statementRequired")
-        : serverCode === ISSUE_CHARGE_SLIP_REQUIRED
-          ? t("posIssueCharge.resolve.slipRequired")
-          : (resolve.error?.message ?? null);
+      : resolve.error
+        ? t(chargeErrorKey(serverCode))
+        : null;
   const slipShown = askStatement && statement === "paid";
   // Each field says what is wrong next to it (on leaving it, and on the PIN),
   // and a field error never empties the PIN.

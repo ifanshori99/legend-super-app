@@ -111,3 +111,10 @@ Sudah (keputusan CTO 27 Nov di `docs/qa/1272-f1mmf-web-review.md`):
 - Test node charge + text-contract lulus; web typecheck lulus; prettier/eslint bersih.
 
 Sisa (tidak dikerjakan): audit P3-16(c) keypad PIN di 390 perlu gulir, P3-16(d) fokus awal dialog belum diperiksa keyboard, P3-17 pesan server tak dikenal tampil apa adanya; banner shell di luar diff. Berikut: re-review architect + ui-auditor (CTO).
+
+### Cek ulang audit UI + re-review architect (27 Nov)
+
+- PIN pad: e2e mock `e2e/legend-1272-f1mmf-resolve.mock.spec.ts` membuktikan 6 digit dengan bidang salah tidak macet (pesan bidang tampil, titik PIN kosong, PIN diketik ulang lalu tercatat). Lulus; tidak perlu perbaikan.
+- P3-17: `chargeErrorKey` (charge-logic.ts) memetakan kode server ke katalog (`posIssueCharge.error.*`, PIN salah/terkunci, terlalu sering, konflik); kode tak dikenal = kalimat umum. Pesan mentah server tidak tampil lagi (layar dan dialog).
+- Refetch tagihan di latar memakai `readWithin(..., PRECHECK_DEADLINE_MS, signal)`: bacaan macet berhenti di 8 dtk, polling jalan lagi.
+- 2 test node baru gagal dulu di 89b0b193f, kini 35/35 lulus; text-contract lulus; typecheck web lulus.

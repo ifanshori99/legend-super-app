@@ -69,3 +69,32 @@ export function edcStartKeyAfter(
 ): "refused" | "keep" | "end" {
   return collectKeyAfter(status, firstSend);
 }
+
+/** Catalog keys of the server answers the charge screen and dialog explain. */
+const ERROR_KEYS = {
+  EDC_AGENT_NOT_READY: "posIssueCharge.edc.notReady",
+  ISSUE_CHARGE_EDC_STATEMENT_REQUIRED:
+    "posIssueCharge.resolve.statementRequired",
+  ISSUE_CHARGE_SLIP_REQUIRED: "posIssueCharge.resolve.slipRequired",
+  PIN_INVALID: "posIssueCharge.error.pinInvalid",
+  PIN_LOCKED: "posIssueCharge.error.pinLocked",
+  PIN_DEVICE_THROTTLED: "posIssueCharge.error.throttled",
+  RATE_LIMITED: "posIssueCharge.error.throttled",
+  CONFLICT: "posIssueCharge.error.conflict",
+} as const;
+
+export type ChargeErrorKey =
+  (typeof ERROR_KEYS)[keyof typeof ERROR_KEYS] | "posIssueCharge.error.generic";
+
+/**
+ * The catalog text of a server error code. The server's own message is never
+ * shown to the cashier: an unknown code reads as one plain Indonesian sentence
+ * (UI audit P3-17).
+ */
+export function chargeErrorKey(
+  code: string | null | undefined,
+): ChargeErrorKey {
+  if (code && Object.hasOwn(ERROR_KEYS, code))
+    return ERROR_KEYS[code as keyof typeof ERROR_KEYS];
+  return "posIssueCharge.error.generic";
+}

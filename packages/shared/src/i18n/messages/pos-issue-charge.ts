@@ -200,7 +200,17 @@ export const posIssueChargeMessages = {
   },
   failed: {
     title: "Penagihan belum berhasil",
-    hint: "Tidak ada uang yang tercatat. Periksa pesan di bawah, lalu coba lagi.",
+    hint: "Tidak ada uang yang tercatat.",
+  },
+  error: {
+    generic:
+      "Permintaan belum bisa diproses. Periksa status, lalu coba lagi. Bila terulang, panggil supervisor.",
+    pinInvalid: "PIN supervisor salah. Coba lagi.",
+    pinLocked:
+      "PIN supervisor terkunci sementara. Minta supervisor lain atau coba lagi nanti.",
+    throttled: "Terlalu banyak percobaan. Tunggu sebentar, lalu coba lagi.",
+    conflict:
+      "Tagihan sedang diproses atau sudah berubah. Periksa status, lalu coba lagi.",
   },
   success: {
     paidAmount: "Selisih dibayar",

@@ -241,13 +241,20 @@ export class PrecheckDeadlineError extends Error {}
 
 /**
  * Runs `read` with a signal that aborts after `ms`; the read then rejects with
- * `PrecheckDeadlineError`, so a hanging read never holds the screen.
+ * `PrecheckDeadlineError`, so a hanging read never holds the screen. An
+ * `outer` signal (the query's own cancel) aborts the read too.
  */
 export function readWithin<T>(
   read: (signal: AbortSignal) => Promise<T>,
   ms: number,
+  outer?: AbortSignal,
 ): Promise<T> {
   const controller = new AbortController();
+  if (outer?.aborted) controller.abort(outer.reason);
+  else
+    outer?.addEventListener("abort", () => controller.abort(outer.reason), {
+      once: true,
+    });
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
       controller.abort();

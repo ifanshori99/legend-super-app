@@ -566,3 +566,70 @@ describe("legend-f1mmf web review P1: a card start that answered late", () => {
     );
   });
 });
+
+describe("legend-f1mmf recheck: errors and background reads", () => {
+  test("an unknown server code reads as the catalog's plain sentence, never the server's text", async () => {
+    const { chargeErrorKey } = await failures();
+    const { posIssueChargeMessages } = await messages();
+    const text = (key) =>
+      key
+        .split(".")
+        .slice(1)
+        .reduce((node, part) => node?.[part], posIssueChargeMessages);
+    for (const code of ["SOMETHING_NEW", "VALIDATION_ERROR", null, undefined])
+      assert.equal(chargeErrorKey(code), "posIssueCharge.error.generic");
+    assert.equal(chargeErrorKey("toString"), "posIssueCharge.error.generic");
+    assert.equal(
+      chargeErrorKey("PIN_INVALID"),
+      "posIssueCharge.error.pinInvalid",
+    );
+    assert.equal(
+      chargeErrorKey("EDC_AGENT_NOT_READY"),
+      "posIssueCharge.edc.notReady",
+    );
+    for (const code of [
+      "SOMETHING_NEW",
+      "EDC_AGENT_NOT_READY",
+      "ISSUE_CHARGE_EDC_STATEMENT_REQUIRED",
+      "ISSUE_CHARGE_SLIP_REQUIRED",
+      "PIN_INVALID",
+      "PIN_LOCKED",
+      "PIN_DEVICE_THROTTLED",
+      "RATE_LIMITED",
+      "CONFLICT",
+    ])
+      assert.equal(typeof text(chargeErrorKey(code)), "string", code);
+  });
+
+  test("a background read is cancelled with its query and bounded by the deadline", async () => {
+    const { readWithin, PrecheckDeadlineError } = await logic();
+    const outer = new AbortController();
+    let aborted = false;
+    const read = readWithin(
+      (signal) =>
+        new Promise((_, reject) => {
+          signal.addEventListener("abort", () => {
+            aborted = true;
+            reject(new Error("aborted"));
+          });
+        }),
+      2_000,
+      outer.signal,
+    );
+    outer.abort();
+    const settled = await Promise.race([
+      read.then(
+        () => "resolved",
+        (error) => error,
+      ),
+      new Promise((done) => setTimeout(() => done("still running"), 300)),
+    ]);
+    assert.ok(settled instanceof Error, String(settled));
+    assert.ok(!(settled instanceof PrecheckDeadlineError));
+    assert.equal(aborted, true);
+    await assert.rejects(
+      readWithin(() => new Promise(() => {}), 10, new AbortController().signal),
+      PrecheckDeadlineError,
+    );
+  });
+});

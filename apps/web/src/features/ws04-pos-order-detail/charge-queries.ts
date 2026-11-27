@@ -6,7 +6,11 @@ import {
   fetchChargeTerminals,
   fetchIssueCharge,
 } from "./charge-api";
-import { chargePollMs } from "./charge-method-logic";
+import {
+  chargePollMs,
+  PRECHECK_DEADLINE_MS,
+  readWithin,
+} from "./charge-method-logic";
 
 export const issueChargeKeys = {
   all: ["pos-order-detail"] as const,
@@ -38,7 +42,14 @@ export const chargeTerminalsQuery = (outletId: string) =>
 export const issueChargeQuery = (outletId: string, chargeId: string) =>
   queryOptions({
     queryKey: issueChargeKeys.charge(outletId, chargeId),
-    queryFn: ({ signal }) => fetchIssueCharge(chargeId, signal),
+    // Each read has a deadline, so one hanging background read never stops
+    // the polling (react-query waits for the running fetch before the next).
+    queryFn: ({ signal }) =>
+      readWithin(
+        (own) => fetchIssueCharge(chargeId, own),
+        PRECHECK_DEADLINE_MS,
+        signal,
+      ),
     // Money may be on its way: keep asking until the server says otherwise.
     refetchInterval: (query) => chargePollMs(query.state.data),
     refetchIntervalInBackground: false,

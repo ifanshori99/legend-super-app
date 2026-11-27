@@ -313,19 +313,17 @@ export function useChargeAttempts(
   let failure: {
     kind: "unknown" | "failed" | "not_read" | "changed" | "held";
     code: string | null;
-    message: string;
   } | null = null;
   if (error instanceof NotSentError)
-    failure = { kind: error.reason, code: null, message: "" };
+    failure = { kind: error.reason, code: null };
   else if (error instanceof ApiError)
     failure = {
       kind: lastEnded ? "failed" : chargeFailureKind(error.status),
       code: error.code,
-      message: error.message,
     };
-  else if (error) failure = { kind: "unknown", code: null, message: "" };
+  else if (error) failure = { kind: "unknown", code: null };
   else if (unresolved && !mutation.isPending)
-    failure = { kind: "unknown", code: null, message: "" };
+    failure = { kind: "unknown", code: null };
 
   const data = mutation.data?.kind === "collect" ? mutation.data.answer : null;
   const settled = answerSettles(data ?? undefined);

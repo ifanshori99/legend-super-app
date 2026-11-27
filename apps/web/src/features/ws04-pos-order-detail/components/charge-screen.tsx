@@ -29,7 +29,7 @@ import {
   useIssueCharge,
 } from "../charge-hooks";
 import type { IssueChargeDetail } from "../charge-endpoints";
-import { chargeSurchargeIdr } from "../charge-logic";
+import { chargeErrorKey, chargeSurchargeIdr } from "../charge-logic";
 import {
   chargePhase,
   edcSaleMatches,
@@ -204,8 +204,7 @@ export function ChargeScreen({ chargeId }: { chargeId: string }) {
 /** A refusal the server named: its catalog text, else the server's own. */
 function useFailureText() {
   const t = useT();
-  return (code: string | null, message: string) =>
-    code === "EDC_AGENT_NOT_READY" ? t("posIssueCharge.edc.notReady") : message;
+  return (code: string | null) => t(chargeErrorKey(code));
 }
 
 function ChargeBody({ chargeId }: { chargeId: string }) {
@@ -595,7 +594,7 @@ function ChargeBody({ chargeId }: { chargeId: string }) {
         },
         failed: {
           title: t("posIssueCharge.failed.title"),
-          text: `${t("posIssueCharge.failed.hint")} ${failureText(failure.code, failure.message)}`,
+          text: `${t("posIssueCharge.failed.hint")} ${failureText(failure.code)}`,
         },
       }[kind];
     body = (
