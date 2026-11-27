@@ -233,8 +233,13 @@ function contentHash(input: Input): string {
 /** Second view of the EDC table: the void row that cancels a sale. */
 const voids = alias(edcTransactions, "edc_voids");
 
-/** POS transaction a settlement line may settle. */
-type PosCandidate = { id: string; amountIdr: number };
+/**
+ * POS transaction a settlement line may settle. `amountIdr` is what the
+ * provider took from the payer: for a gateway intent its `charged_idr` (bill +
+ * guest service fee, 1272 K2), for an EDC sale its amount. `guestFeeIdr` is
+ * the fee collected to cover the gateway's MDR (0 without one, and for EDC).
+ */
+type PosCandidate = { id: string; amountIdr: number; guestFeeIdr: number };
 
 async function matchedElsewhere(
   tx: Tx,
@@ -266,6 +271,7 @@ async function findEdcCandidates(
       .select({
         id: edcTransactions.id,
         amountIdr: edcTransactions.amountIdr,
+        guestFeeIdr: sql<number>`0`.mapWith(Number),
       })
       .from(edcTransactions)
       .where(
@@ -293,8 +299,14 @@ async function findGatewayCandidates(
   input: Input,
   reference: string,
 ): Promise<PosCandidate[]> {
+  // The gateway reports what it charged the guest (design
+  // duitku-fee-passthrough §6): bill + guest fee, never the bill alone.
   return tx
-    .select({ id: paymentIntents.id, amountIdr: paymentIntents.amountIdr })
+    .select({
+      id: paymentIntents.id,
+      amountIdr: paymentIntents.chargedIdr,
+      guestFeeIdr: paymentIntents.guestFeeIdr,
+    })
     .from(paymentIntents)
     .where(
       and(
@@ -553,6 +565,38 @@ async function importChecked(
             now,
           });
         tally[status] += 1;
+        // 1272 K2 (design §2, §6): the gateway took more than the guest fee
+        // collected for this payment, so the outlet nets less than the bill.
+        // Never absorbed silently: a case for the supervisor (expected = the
+        // line less the guest fee, received = the line less the real fee, so
+        // the variance is exactly the fee shortfall), and while it is open the
+        // channel's guest fee rate is locked (payment-guest-fee-lock.ts). The
+        // settlement journal books the difference to gateway_fee_expense once
+        // the case is closed and the report is reconciled. A matched line
+        // keeps its status; a mismatched one also keeps its amount case.
+        if (pos && pos.guestFeeIdr > 0 && line.feeIdr > pos.guestFeeIdr) {
+          // A fee above the line itself is an anomaly a person must see, not
+          // a shortfall to skip: refuse the whole report (rolled back).
+          if (line.feeIdr > line.amountIdr)
+            throw new HttpError(
+              422,
+              "SETTLEMENT_FEE_EXCEEDS_AMOUNT",
+              `Biaya gateway lebih besar dari nominal pada baris ${line.reference} (baris ke-${index + 1}). Periksa laporan lalu impor ulang.`,
+            );
+          await tx.insert(cases).values({
+            ...caseBase,
+            settlementLineId: lineRow.id,
+            reference: line.reference,
+            kind: "guest_fee_shortfall",
+            expectedIdr: idr(line.amountIdr - pos.guestFeeIdr),
+            receivedIdr: idr(line.amountIdr - line.feeIdr),
+            varianceIdr: idr(pos.guestFeeIdr - line.feeIdr),
+            reason:
+              "Gateway fee is above the guest service fee collected for this payment",
+            status: "open",
+          });
+          tally.cases += 1;
+        }
         if (status === "matched") continue;
         const expected = pos ? pos.amountIdr : 0;
         const [mismatchCase] = await tx
@@ -627,7 +671,8 @@ async function importChecked(
           : await tx
               .select({
                 id: paymentIntents.id,
-                amountIdr: paymentIntents.amountIdr,
+                // What the gateway owes for it: bill + guest fee (1272 K2).
+                amountIdr: paymentIntents.chargedIdr,
                 providerRef: paymentIntents.providerRef,
               })
               .from(paymentIntents)

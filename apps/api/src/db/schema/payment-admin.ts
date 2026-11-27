@@ -367,6 +367,13 @@ export const paymentReconciliationCases = pgTable(
     receivedIdr: idrColumn("received_idr").notNull(),
     varianceIdr: idrColumn("variance_idr").notNull(),
     reason: text("reason").notNull(),
+    /**
+     * `amount`: the money on the line (or a missing line) differs from POS.
+     * `guest_fee_shortfall` (1272 K2): the line matched, but the gateway took
+     * a fee above the guest service fee collected for it, so the outlet got
+     * less than the bill; it locks that Duitku channel's guest fee while open.
+     */
+    kind: varchar("kind", { length: 30 }).notNull().default("amount"),
     status: varchar("status", { length: 20 }).notNull().default("open"),
     resolvedBy: text("resolved_by"),
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
@@ -402,6 +409,10 @@ export const paymentReconciliationCases = pgTable(
     check(
       "payment_reconciliation_cases_source_check",
       sql`${t.source} IN ('gateway','edc')`,
+    ),
+    check(
+      "payment_reconciliation_cases_kind_check",
+      sql`${t.kind} IN ('amount','guest_fee_shortfall')`,
     ),
     check(
       "payment_reconciliation_cases_status_check",

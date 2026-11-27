@@ -3718,6 +3718,13 @@
       "when": 1795765822393,
       "tag": "0544_guest_service_fee",
       "breakpoints": true
+    },
+    {
+      "idx": 545,
+      "version": "7",
+      "when": 1795771776552,
+      "tag": "0545_guest_fee_shortfall_case",
+      "breakpoints": true
     }
   ]
 }
