@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Legend EDC Bridge</string>
+    <string name="channel_name">Jembatan EDC</string>
+    <string name="setup_intro">Isi alamat server dan token perangkat dari backoffice. Token hanya tampil sekali di backoffice dan tidak akan ditampilkan lagi di sini.</string>
+    <string name="hint_server">Alamat server, contoh https://pos.contoh.id</string>
+    <string name="hint_token">Token perangkat (edcb_…)</string>
+    <string name="hint_token_saved">Token tersimpan. Isi hanya untuk mengganti.</string>
+    <string name="action_save_start">Simpan dan jalankan</string>
+    <string name="action_stop">Hentikan jembatan</string>
+    <string name="error_server">Alamat server harus https://nama-host tanpa path.</string>
+    <string name="error_token">Token perangkat tidak valid.</string>
+    <string name="status_connecting">Menghubungkan ke server…</string>
+    <string name="status_connected">Terhubung ke server.</string>
+    <string name="status_waiting">Koneksi terputus, mencoba lagi…</string>
+    <string name="status_not_paired">Belum dipasangkan.</string>
+    <string name="status_revoked">Token dicabut di backoffice. Pasangkan ulang.</string>
+    <string name="status_update_required">Versi aplikasi tidak didukung server. Perbarui aplikasi.</string>
+    <string name="status_stopped">Jembatan berhenti.</string>
+</resources>

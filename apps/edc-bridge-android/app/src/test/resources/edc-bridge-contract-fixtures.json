@@ -1,0 +1,1774 @@
+{
+  "downlink": [
+    {
+      "name": "lease lan + usb + refused",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"lan\",\"host\":\"192.168.1.50\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"},{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-9f40-5a6b7c8d9e02\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"usb\",\"baudRate\":9600},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-9f40-5a6b7c8d9e02\",\"reason\":\"held_by_other_device\"}]}",
+      "valid": true,
+      "parsed": {
+        "type": "lease",
+        "grants": [
+          {
+            "terminalId": "3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01",
+            "leaseId": "7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d",
+            "ttlMs": 120000,
+            "link": {
+              "connection": "lan",
+              "host": "192.168.1.50",
+              "port": 9000
+            },
+            "framing": "stx_bcdlen_etx_lrc"
+          },
+          {
+            "terminalId": "3f0e2a4c-1b2d-4c3e-9f40-5a6b7c8d9e02",
+            "leaseId": "7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d",
+            "ttlMs": 120000,
+            "link": {
+              "connection": "usb",
+              "baudRate": 9600
+            },
+            "framing": "stx_bcdlen_etx_lrc"
+          }
+        ],
+        "refused": [
+          {
+            "terminalId": "3f0e2a4c-1b2d-4c3e-9f40-5a6b7c8d9e02",
+            "reason": "held_by_other_device"
+          }
+        ]
+      }
+    },
+    {
+      "name": "lease empty",
+      "raw": "{\"type\":\"lease\",\"grants\":[],\"refused\":[]}",
+      "valid": true,
+      "parsed": {
+        "type": "lease",
+        "grants": [],
+        "refused": []
+      }
+    },
+    {
+      "name": "lease uppercase uuid",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3F0E2A4C-1B2D-4C3E-8F40-5A6B7C8D9E01\",\"leaseId\":\"7A1B2C3D-4E5F-4A6B-8C7D-8E9F0A1B2C3D\",\"ttlMs\":120000,\"link\":{\"connection\":\"lan\",\"host\":\"192.168.1.50\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": true,
+      "parsed": {
+        "type": "lease",
+        "grants": [
+          {
+            "terminalId": "3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01",
+            "leaseId": "7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d",
+            "ttlMs": 120000,
+            "link": {
+              "connection": "lan",
+              "host": "192.168.1.50",
+              "port": 9000
+            },
+            "framing": "stx_bcdlen_etx_lrc"
+          }
+        ],
+        "refused": []
+      }
+    },
+    {
+      "name": "lease ttl min",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":10000,\"link\":{\"connection\":\"lan\",\"host\":\"192.168.1.50\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": true,
+      "parsed": {
+        "type": "lease",
+        "grants": [
+          {
+            "terminalId": "3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01",
+            "leaseId": "7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d",
+            "ttlMs": 10000,
+            "link": {
+              "connection": "lan",
+              "host": "192.168.1.50",
+              "port": 9000
+            },
+            "framing": "stx_bcdlen_etx_lrc"
+          }
+        ],
+        "refused": []
+      }
+    },
+    {
+      "name": "lease ttl max",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":600000,\"link\":{\"connection\":\"lan\",\"host\":\"192.168.1.50\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": true,
+      "parsed": {
+        "type": "lease",
+        "grants": [
+          {
+            "terminalId": "3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01",
+            "leaseId": "7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d",
+            "ttlMs": 600000,
+            "link": {
+              "connection": "lan",
+              "host": "192.168.1.50",
+              "port": 9000
+            },
+            "framing": "stx_bcdlen_etx_lrc"
+          }
+        ],
+        "refused": []
+      }
+    },
+    {
+      "name": "lease ttl below min",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":9999,\"link\":{\"connection\":\"lan\",\"host\":\"192.168.1.50\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": false
+    },
+    {
+      "name": "lease ttl above max",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":600001,\"link\":{\"connection\":\"lan\",\"host\":\"192.168.1.50\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": false
+    },
+    {
+      "name": "lease ttl fractional",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000.5,\"link\":{\"connection\":\"lan\",\"host\":\"192.168.1.50\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": false
+    },
+    {
+      "name": "lease ttl string",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":\"120000\",\"link\":{\"connection\":\"lan\",\"host\":\"192.168.1.50\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": false
+    },
+    {
+      "name": "lease ttl null",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":null,\"link\":{\"connection\":\"lan\",\"host\":\"192.168.1.50\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": false
+    },
+    {
+      "name": "lease ttl boolean",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":true,\"link\":{\"connection\":\"lan\",\"host\":\"192.168.1.50\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": false
+    },
+    {
+      "name": "lease ttl written 120000.0",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000.0,\"link\":{\"connection\":\"lan\",\"host\":\"10.0.0.5\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": true,
+      "parsed": {
+        "type": "lease",
+        "grants": [
+          {
+            "terminalId": "3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01",
+            "leaseId": "7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d",
+            "ttlMs": 120000,
+            "link": {
+              "connection": "lan",
+              "host": "10.0.0.5",
+              "port": 9000
+            },
+            "framing": "stx_bcdlen_etx_lrc"
+          }
+        ],
+        "refused": []
+      }
+    },
+    {
+      "name": "lease ttl written 1.2e5",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":1.2e5,\"link\":{\"connection\":\"lan\",\"host\":\"10.0.0.5\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": true,
+      "parsed": {
+        "type": "lease",
+        "grants": [
+          {
+            "terminalId": "3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01",
+            "leaseId": "7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d",
+            "ttlMs": 120000,
+            "link": {
+              "connection": "lan",
+              "host": "10.0.0.5",
+              "port": 9000
+            },
+            "framing": "stx_bcdlen_etx_lrc"
+          }
+        ],
+        "refused": []
+      }
+    },
+    {
+      "name": "lease 9 grants",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"lan\",\"host\":\"192.168.1.50\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"},{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"lan\",\"host\":\"192.168.1.50\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"},{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"lan\",\"host\":\"192.168.1.50\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"},{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"lan\",\"host\":\"192.168.1.50\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"},{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"lan\",\"host\":\"192.168.1.50\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"},{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"lan\",\"host\":\"192.168.1.50\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"},{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"lan\",\"host\":\"192.168.1.50\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"},{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"lan\",\"host\":\"192.168.1.50\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"},{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"lan\",\"host\":\"192.168.1.50\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": false
+    },
+    {
+      "name": "lease 9 refused",
+      "raw": "{\"type\":\"lease\",\"grants\":[],\"refused\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-9f40-5a6b7c8d9e02\",\"reason\":\"terminal_inactive\"},{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-9f40-5a6b7c8d9e02\",\"reason\":\"terminal_inactive\"},{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-9f40-5a6b7c8d9e02\",\"reason\":\"terminal_inactive\"},{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-9f40-5a6b7c8d9e02\",\"reason\":\"terminal_inactive\"},{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-9f40-5a6b7c8d9e02\",\"reason\":\"terminal_inactive\"},{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-9f40-5a6b7c8d9e02\",\"reason\":\"terminal_inactive\"},{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-9f40-5a6b7c8d9e02\",\"reason\":\"terminal_inactive\"},{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-9f40-5a6b7c8d9e02\",\"reason\":\"terminal_inactive\"},{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-9f40-5a6b7c8d9e02\",\"reason\":\"terminal_inactive\"}]}",
+      "valid": false
+    },
+    {
+      "name": "lease refused unknown reason",
+      "raw": "{\"type\":\"lease\",\"grants\":[],\"refused\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-9f40-5a6b7c8d9e02\",\"reason\":\"busy\"}]}",
+      "valid": false
+    },
+    {
+      "name": "lease refused extra key",
+      "raw": "{\"type\":\"lease\",\"grants\":[],\"refused\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-9f40-5a6b7c8d9e02\",\"reason\":\"terminal_inactive\",\"note\":\"x\"}]}",
+      "valid": false
+    },
+    {
+      "name": "lease grant extra key",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"lan\",\"host\":\"192.168.1.50\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\",\"expiresAt\":\"2026-11-27T00:00:00Z\"}],\"refused\":[]}",
+      "valid": false
+    },
+    {
+      "name": "lease grant missing framing",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"lan\",\"host\":\"192.168.1.50\",\"port\":9000}}],\"refused\":[]}",
+      "valid": false
+    },
+    {
+      "name": "lease framing unknown",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"lan\",\"host\":\"192.168.1.50\",\"port\":9000},\"framing\":\"raw\"}],\"refused\":[]}",
+      "valid": false
+    },
+    {
+      "name": "lease link extra key",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"lan\",\"host\":\"192.168.1.50\",\"port\":9000,\"tls\":false},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": false
+    },
+    {
+      "name": "lease link bluetooth",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"bluetooth\",\"address\":\"00:11:22:33:44:55\"},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": false
+    },
+    {
+      "name": "lease usb baud 115200",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"usb\",\"baudRate\":115200},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": true,
+      "parsed": {
+        "type": "lease",
+        "grants": [
+          {
+            "terminalId": "3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01",
+            "leaseId": "7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d",
+            "ttlMs": 120000,
+            "link": {
+              "connection": "usb",
+              "baudRate": 115200
+            },
+            "framing": "stx_bcdlen_etx_lrc"
+          }
+        ],
+        "refused": []
+      }
+    },
+    {
+      "name": "lease usb baud 4800",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"usb\",\"baudRate\":4800},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": false
+    },
+    {
+      "name": "lease usb baud 14400",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"usb\",\"baudRate\":14400},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": false
+    },
+    {
+      "name": "lan 10.0.0.1",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"lan\",\"host\":\"10.0.0.1\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": true,
+      "parsed": {
+        "type": "lease",
+        "grants": [
+          {
+            "terminalId": "3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01",
+            "leaseId": "7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d",
+            "ttlMs": 120000,
+            "link": {
+              "connection": "lan",
+              "host": "10.0.0.1",
+              "port": 9000
+            },
+            "framing": "stx_bcdlen_etx_lrc"
+          }
+        ],
+        "refused": []
+      }
+    },
+    {
+      "name": "lan 10.255.255.255",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"lan\",\"host\":\"10.255.255.255\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": true,
+      "parsed": {
+        "type": "lease",
+        "grants": [
+          {
+            "terminalId": "3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01",
+            "leaseId": "7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d",
+            "ttlMs": 120000,
+            "link": {
+              "connection": "lan",
+              "host": "10.255.255.255",
+              "port": 9000
+            },
+            "framing": "stx_bcdlen_etx_lrc"
+          }
+        ],
+        "refused": []
+      }
+    },
+    {
+      "name": "lan 172.16.0.1",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"lan\",\"host\":\"172.16.0.1\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": true,
+      "parsed": {
+        "type": "lease",
+        "grants": [
+          {
+            "terminalId": "3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01",
+            "leaseId": "7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d",
+            "ttlMs": 120000,
+            "link": {
+              "connection": "lan",
+              "host": "172.16.0.1",
+              "port": 9000
+            },
+            "framing": "stx_bcdlen_etx_lrc"
+          }
+        ],
+        "refused": []
+      }
+    },
+    {
+      "name": "lan 172.31.255.255",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"lan\",\"host\":\"172.31.255.255\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": true,
+      "parsed": {
+        "type": "lease",
+        "grants": [
+          {
+            "terminalId": "3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01",
+            "leaseId": "7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d",
+            "ttlMs": 120000,
+            "link": {
+              "connection": "lan",
+              "host": "172.31.255.255",
+              "port": 9000
+            },
+            "framing": "stx_bcdlen_etx_lrc"
+          }
+        ],
+        "refused": []
+      }
+    },
+    {
+      "name": "lan 192.168.0.1",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"lan\",\"host\":\"192.168.0.1\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": true,
+      "parsed": {
+        "type": "lease",
+        "grants": [
+          {
+            "terminalId": "3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01",
+            "leaseId": "7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d",
+            "ttlMs": 120000,
+            "link": {
+              "connection": "lan",
+              "host": "192.168.0.1",
+              "port": 9000
+            },
+            "framing": "stx_bcdlen_etx_lrc"
+          }
+        ],
+        "refused": []
+      }
+    },
+    {
+      "name": "lan 172.15.255.255",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"lan\",\"host\":\"172.15.255.255\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": false
+    },
+    {
+      "name": "lan 172.32.0.1",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"lan\",\"host\":\"172.32.0.1\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": false
+    },
+    {
+      "name": "lan 192.169.1.1",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"lan\",\"host\":\"192.169.1.1\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": false
+    },
+    {
+      "name": "lan 8.8.8.8",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"lan\",\"host\":\"8.8.8.8\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": false
+    },
+    {
+      "name": "lan 0.0.0.0",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"lan\",\"host\":\"0.0.0.0\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": false
+    },
+    {
+      "name": "lan 127.0.0.1",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"lan\",\"host\":\"127.0.0.1\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": false
+    },
+    {
+      "name": "lan 100.64.0.1",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"lan\",\"host\":\"100.64.0.1\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": false
+    },
+    {
+      "name": "lan 169.254.1.1",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"lan\",\"host\":\"169.254.1.1\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": false
+    },
+    {
+      "name": "lan 010.0.0.1",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"lan\",\"host\":\"010.0.0.1\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": false
+    },
+    {
+      "name": "lan 10.0.0.256",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"lan\",\"host\":\"10.0.0.256\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": false
+    },
+    {
+      "name": "lan trailing space",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"lan\",\"host\":\"10.0.0.1 \",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": false
+    },
+    {
+      "name": "lan newline",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"lan\",\"host\":\"10.0.0.1\\n\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": false
+    },
+    {
+      "name": "lan hostname",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"lan\",\"host\":\"edc.local\",\"port\":9000},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": false
+    },
+    {
+      "name": "lan port 1",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"lan\",\"host\":\"10.0.0.1\",\"port\":1},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": true,
+      "parsed": {
+        "type": "lease",
+        "grants": [
+          {
+            "terminalId": "3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01",
+            "leaseId": "7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d",
+            "ttlMs": 120000,
+            "link": {
+              "connection": "lan",
+              "host": "10.0.0.1",
+              "port": 1
+            },
+            "framing": "stx_bcdlen_etx_lrc"
+          }
+        ],
+        "refused": []
+      }
+    },
+    {
+      "name": "lan port 65535",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"lan\",\"host\":\"10.0.0.1\",\"port\":65535},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": true,
+      "parsed": {
+        "type": "lease",
+        "grants": [
+          {
+            "terminalId": "3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01",
+            "leaseId": "7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d",
+            "ttlMs": 120000,
+            "link": {
+              "connection": "lan",
+              "host": "10.0.0.1",
+              "port": 65535
+            },
+            "framing": "stx_bcdlen_etx_lrc"
+          }
+        ],
+        "refused": []
+      }
+    },
+    {
+      "name": "lan port 0",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"lan\",\"host\":\"10.0.0.1\",\"port\":0},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": false
+    },
+    {
+      "name": "lan port 65536",
+      "raw": "{\"type\":\"lease\",\"grants\":[{\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"ttlMs\":120000,\"link\":{\"connection\":\"lan\",\"host\":\"10.0.0.1\",\"port\":65536},\"framing\":\"stx_bcdlen_etx_lrc\"}],\"refused\":[]}",
+      "valid": false
+    },
+    {
+      "name": "command sale",
+      "raw": "{\"type\":\"command\",\"commandId\":\"0b1c2d3e-4f50-4162-a374-8596a7b8c9d0\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"op\":\"sale\",\"trace\":\"000123\",\"frame\":\"eyJvcCI6InNhbGUifQ==\",\"timeoutMs\":60000}",
+      "valid": true,
+      "parsed": {
+        "type": "command",
+        "commandId": "0b1c2d3e-4f50-4162-a374-8596a7b8c9d0",
+        "leaseId": "7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d",
+        "terminalId": "3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01",
+        "op": "sale",
+        "trace": "000123",
+        "frame": "eyJvcCI6InNhbGUifQ==",
+        "timeoutMs": 60000
+      }
+    },
+    {
+      "name": "command void",
+      "raw": "{\"type\":\"command\",\"commandId\":\"0b1c2d3e-4f50-4162-a374-8596a7b8c9d0\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"op\":\"void\",\"trace\":\"000123\",\"frame\":\"eyJvcCI6InNhbGUifQ==\",\"timeoutMs\":60000}",
+      "valid": true,
+      "parsed": {
+        "type": "command",
+        "commandId": "0b1c2d3e-4f50-4162-a374-8596a7b8c9d0",
+        "leaseId": "7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d",
+        "terminalId": "3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01",
+        "op": "void",
+        "trace": "000123",
+        "frame": "eyJvcCI6InNhbGUifQ==",
+        "timeoutMs": 60000
+      }
+    },
+    {
+      "name": "command cancel",
+      "raw": "{\"type\":\"command\",\"commandId\":\"0b1c2d3e-4f50-4162-a374-8596a7b8c9d0\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"op\":\"cancel\",\"trace\":\"000123\",\"frame\":\"eyJvcCI6InNhbGUifQ==\",\"timeoutMs\":60000}",
+      "valid": true,
+      "parsed": {
+        "type": "command",
+        "commandId": "0b1c2d3e-4f50-4162-a374-8596a7b8c9d0",
+        "leaseId": "7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d",
+        "terminalId": "3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01",
+        "op": "cancel",
+        "trace": "000123",
+        "frame": "eyJvcCI6InNhbGUifQ==",
+        "timeoutMs": 60000
+      }
+    },
+    {
+      "name": "command inquiry",
+      "raw": "{\"type\":\"command\",\"commandId\":\"0b1c2d3e-4f50-4162-a374-8596a7b8c9d0\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"op\":\"inquiry\",\"trace\":\"000123\",\"frame\":\"eyJvcCI6InNhbGUifQ==\",\"timeoutMs\":60000}",
+      "valid": true,
+      "parsed": {
+        "type": "command",
+        "commandId": "0b1c2d3e-4f50-4162-a374-8596a7b8c9d0",
+        "leaseId": "7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d",
+        "terminalId": "3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01",
+        "op": "inquiry",
+        "trace": "000123",
+        "frame": "eyJvcCI6InNhbGUifQ==",
+        "timeoutMs": 60000
+      }
+    },
+    {
+      "name": "command op refund",
+      "raw": "{\"type\":\"command\",\"commandId\":\"0b1c2d3e-4f50-4162-a374-8596a7b8c9d0\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"op\":\"refund\",\"trace\":\"000123\",\"frame\":\"eyJvcCI6InNhbGUifQ==\",\"timeoutMs\":60000}",
+      "valid": false
+    },
+    {
+      "name": "command uppercase uuid",
+      "raw": "{\"type\":\"command\",\"commandId\":\"0B1C2D3E-4F50-4162-A374-8596A7B8C9D0\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"terminalId\":\"3F0E2A4C-1B2D-4C3E-8F40-5A6B7C8D9E01\",\"op\":\"sale\",\"trace\":\"000123\",\"frame\":\"eyJvcCI6InNhbGUifQ==\",\"timeoutMs\":60000}",
+      "valid": true,
+      "parsed": {
+        "type": "command",
+        "commandId": "0b1c2d3e-4f50-4162-a374-8596a7b8c9d0",
+        "leaseId": "7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d",
+        "terminalId": "3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01",
+        "op": "sale",
+        "trace": "000123",
+        "frame": "eyJvcCI6InNhbGUifQ==",
+        "timeoutMs": 60000
+      }
+    },
+    {
+      "name": "command nil uuid",
+      "raw": "{\"type\":\"command\",\"commandId\":\"00000000-0000-0000-0000-000000000000\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"op\":\"sale\",\"trace\":\"000123\",\"frame\":\"eyJvcCI6InNhbGUifQ==\",\"timeoutMs\":60000}",
+      "valid": true,
+      "parsed": {
+        "type": "command",
+        "commandId": "00000000-0000-0000-0000-000000000000",
+        "leaseId": "7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d",
+        "terminalId": "3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01",
+        "op": "sale",
+        "trace": "000123",
+        "frame": "eyJvcCI6InNhbGUifQ==",
+        "timeoutMs": 60000
+      }
+    },
+    {
+      "name": "command max uuid",
+      "raw": "{\"type\":\"command\",\"commandId\":\"ffffffff-ffff-ffff-ffff-ffffffffffff\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"op\":\"sale\",\"trace\":\"000123\",\"frame\":\"eyJvcCI6InNhbGUifQ==\",\"timeoutMs\":60000}",
+      "valid": true,
+      "parsed": {
+        "type": "command",
+        "commandId": "ffffffff-ffff-ffff-ffff-ffffffffffff",
+        "leaseId": "7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d",
+        "terminalId": "3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01",
+        "op": "sale",
+        "trace": "000123",
+        "frame": "eyJvcCI6InNhbGUifQ==",
+        "timeoutMs": 60000
+      }
+    },
+    {
+      "name": "command uuid version 0",
+      "raw": "{\"type\":\"command\",\"commandId\":\"0b1c2d3e-4f50-0162-a374-8596a7b8c9d0\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"op\":\"sale\",\"trace\":\"000123\",\"frame\":\"eyJvcCI6InNhbGUifQ==\",\"timeoutMs\":60000}",
+      "valid": false
+    },
+    {
+      "name": "command uuid variant c",
+      "raw": "{\"type\":\"command\",\"commandId\":\"0b1c2d3e-4f50-4162-c374-8596a7b8c9d0\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"op\":\"sale\",\"trace\":\"000123\",\"frame\":\"eyJvcCI6InNhbGUifQ==\",\"timeoutMs\":60000}",
+      "valid": false
+    },
+    {
+      "name": "command uuid no dashes",
+      "raw": "{\"type\":\"command\",\"commandId\":\"0b1c2d3e4f504162a3748596a7b8c9d0\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"op\":\"sale\",\"trace\":\"000123\",\"frame\":\"eyJvcCI6InNhbGUifQ==\",\"timeoutMs\":60000}",
+      "valid": false
+    },
+    {
+      "name": "command trace 32",
+      "raw": "{\"type\":\"command\",\"commandId\":\"0b1c2d3e-4f50-4162-a374-8596a7b8c9d0\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"op\":\"sale\",\"trace\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"frame\":\"eyJvcCI6InNhbGUifQ==\",\"timeoutMs\":60000}",
+      "valid": true,
+      "parsed": {
+        "type": "command",
+        "commandId": "0b1c2d3e-4f50-4162-a374-8596a7b8c9d0",
+        "leaseId": "7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d",
+        "terminalId": "3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01",
+        "op": "sale",
+        "trace": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "frame": "eyJvcCI6InNhbGUifQ==",
+        "timeoutMs": 60000
+      }
+    },
+    {
+      "name": "command trace 33",
+      "raw": "{\"type\":\"command\",\"commandId\":\"0b1c2d3e-4f50-4162-a374-8596a7b8c9d0\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"op\":\"sale\",\"trace\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"frame\":\"eyJvcCI6InNhbGUifQ==\",\"timeoutMs\":60000}",
+      "valid": false
+    },
+    {
+      "name": "command trace empty",
+      "raw": "{\"type\":\"command\",\"commandId\":\"0b1c2d3e-4f50-4162-a374-8596a7b8c9d0\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"op\":\"sale\",\"trace\":\"\",\"frame\":\"eyJvcCI6InNhbGUifQ==\",\"timeoutMs\":60000}",
+      "valid": false
+    },
+    {
+      "name": "command trace dash",
+      "raw": "{\"type\":\"command\",\"commandId\":\"0b1c2d3e-4f50-4162-a374-8596a7b8c9d0\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"op\":\"sale\",\"trace\":\"00-123\",\"frame\":\"eyJvcCI6InNhbGUifQ==\",\"timeoutMs\":60000}",
+      "valid": false
+    },
+    {
+      "name": "command frame min",
+      "raw": "{\"type\":\"command\",\"commandId\":\"0b1c2d3e-4f50-4162-a374-8596a7b8c9d0\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"op\":\"sale\",\"trace\":\"000123\",\"frame\":\"AAAA\",\"timeoutMs\":60000}",
+      "valid": true,
+      "parsed": {
+        "type": "command",
+        "commandId": "0b1c2d3e-4f50-4162-a374-8596a7b8c9d0",
+        "leaseId": "7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d",
+        "terminalId": "3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01",
+        "op": "sale",
+        "trace": "000123",
+        "frame": "AAAA",
+        "timeoutMs": 60000
+      }
+    },
+    {
+      "name": "command frame padded",
+      "raw": "{\"type\":\"command\",\"commandId\":\"0b1c2d3e-4f50-4162-a374-8596a7b8c9d0\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"op\":\"sale\",\"trace\":\"000123\",\"frame\":\"AAA=\",\"timeoutMs\":60000}",
+      "valid": true,
+      "parsed": {
+        "type": "command",
+        "commandId": "0b1c2d3e-4f50-4162-a374-8596a7b8c9d0",
+        "leaseId": "7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d",
+        "terminalId": "3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01",
+        "op": "sale",
+        "trace": "000123",
+        "frame": "AAA=",
+        "timeoutMs": 60000
+      }
+    },
+    {
+      "name": "command frame 3 chars",
+      "raw": "{\"type\":\"command\",\"commandId\":\"0b1c2d3e-4f50-4162-a374-8596a7b8c9d0\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"op\":\"sale\",\"trace\":\"000123\",\"frame\":\"AAA\",\"timeoutMs\":60000}",
+      "valid": false
+    },
+    {
+      "name": "command frame bad padding",
+      "raw": "{\"type\":\"command\",\"commandId\":\"0b1c2d3e-4f50-4162-a374-8596a7b8c9d0\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"op\":\"sale\",\"trace\":\"000123\",\"frame\":\"AA=A\",\"timeoutMs\":60000}",
+      "valid": false
+    },
+    {
+      "name": "command frame newline",
+      "raw": "{\"type\":\"command\",\"commandId\":\"0b1c2d3e-4f50-4162-a374-8596a7b8c9d0\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"op\":\"sale\",\"trace\":\"000123\",\"frame\":\"AAAA\\nAAAA\",\"timeoutMs\":60000}",
+      "valid": false
+    },
+    {
+      "name": "command frame url-safe",
+      "raw": "{\"type\":\"command\",\"commandId\":\"0b1c2d3e-4f50-4162-a374-8596a7b8c9d0\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"op\":\"sale\",\"trace\":\"000123\",\"frame\":\"AA-_\",\"timeoutMs\":60000}",
+      "valid": false
+    },
+    {
+      "name": "command frame 8192",
+      "raw": "{\"type\":\"command\",\"commandId\":\"0b1c2d3e-4f50-4162-a374-8596a7b8c9d0\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"op\":\"sale\",\"trace\":\"000123\",\"frame\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"timeoutMs\":60000}",
+      "valid": true,
+      "parsed": {
+        "type": "command",
+        "commandId": "0b1c2d3e-4f50-4162-a374-8596a7b8c9d0",
+        "leaseId": "7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d",
+        "terminalId": "3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01",
+        "op": "sale",
+        "trace": "000123",
+        "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "timeoutMs": 60000
+      }
+    },
+    {
+      "name": "command frame 8196",
+      "raw": "{\"type\":\"command\",\"commandId\":\"0b1c2d3e-4f50-4162-a374-8596a7b8c9d0\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"op\":\"sale\",\"trace\":\"000123\",\"frame\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"timeoutMs\":60000}",
+      "valid": false
+    },
+    {
+      "name": "command timeout 1000",
+      "raw": "{\"type\":\"command\",\"commandId\":\"0b1c2d3e-4f50-4162-a374-8596a7b8c9d0\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"op\":\"sale\",\"trace\":\"000123\",\"frame\":\"eyJvcCI6InNhbGUifQ==\",\"timeoutMs\":1000}",
+      "valid": true,
+      "parsed": {
+        "type": "command",
+        "commandId": "0b1c2d3e-4f50-4162-a374-8596a7b8c9d0",
+        "leaseId": "7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d",
+        "terminalId": "3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01",
+        "op": "sale",
+        "trace": "000123",
+        "frame": "eyJvcCI6InNhbGUifQ==",
+        "timeoutMs": 1000
+      }
+    },
+    {
+      "name": "command timeout 300000",
+      "raw": "{\"type\":\"command\",\"commandId\":\"0b1c2d3e-4f50-4162-a374-8596a7b8c9d0\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"op\":\"sale\",\"trace\":\"000123\",\"frame\":\"eyJvcCI6InNhbGUifQ==\",\"timeoutMs\":300000}",
+      "valid": true,
+      "parsed": {
+        "type": "command",
+        "commandId": "0b1c2d3e-4f50-4162-a374-8596a7b8c9d0",
+        "leaseId": "7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d",
+        "terminalId": "3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01",
+        "op": "sale",
+        "trace": "000123",
+        "frame": "eyJvcCI6InNhbGUifQ==",
+        "timeoutMs": 300000
+      }
+    },
+    {
+      "name": "command timeout 999",
+      "raw": "{\"type\":\"command\",\"commandId\":\"0b1c2d3e-4f50-4162-a374-8596a7b8c9d0\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"op\":\"sale\",\"trace\":\"000123\",\"frame\":\"eyJvcCI6InNhbGUifQ==\",\"timeoutMs\":999}",
+      "valid": false
+    },
+    {
+      "name": "command timeout 300001",
+      "raw": "{\"type\":\"command\",\"commandId\":\"0b1c2d3e-4f50-4162-a374-8596a7b8c9d0\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"op\":\"sale\",\"trace\":\"000123\",\"frame\":\"eyJvcCI6InNhbGUifQ==\",\"timeoutMs\":300001}",
+      "valid": false
+    },
+    {
+      "name": "command extra amount",
+      "raw": "{\"type\":\"command\",\"commandId\":\"0b1c2d3e-4f50-4162-a374-8596a7b8c9d0\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"op\":\"sale\",\"trace\":\"000123\",\"frame\":\"eyJvcCI6InNhbGUifQ==\",\"timeoutMs\":60000,\"amountIdr\":10000}",
+      "valid": false
+    },
+    {
+      "name": "command missing frame",
+      "raw": "{\"type\":\"command\",\"commandId\":\"0b1c2d3e-4f50-4162-a374-8596a7b8c9d0\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"op\":\"sale\",\"trace\":\"000123\",\"timeoutMs\":60000}",
+      "valid": false
+    },
+    {
+      "name": "ack",
+      "raw": "{\"type\":\"ack\",\"commandId\":\"0b1c2d3e-4f50-4162-a374-8596a7b8c9d0\"}",
+      "valid": true,
+      "parsed": {
+        "type": "ack",
+        "commandId": "0b1c2d3e-4f50-4162-a374-8596a7b8c9d0"
+      }
+    },
+    {
+      "name": "ack extra",
+      "raw": "{\"type\":\"ack\",\"commandId\":\"0b1c2d3e-4f50-4162-a374-8596a7b8c9d0\",\"at\":1}",
+      "valid": false
+    },
+    {
+      "name": "release 1",
+      "raw": "{\"type\":\"sale_record_release\",\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"traces\":[\"000123\"]}",
+      "valid": true,
+      "parsed": {
+        "type": "sale_record_release",
+        "terminalId": "3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01",
+        "traces": ["000123"]
+      }
+    },
+    {
+      "name": "release 500",
+      "raw": "{\"type\":\"sale_record_release\",\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"traces\":[\"T0\",\"T1\",\"T2\",\"T3\",\"T4\",\"T5\",\"T6\",\"T7\",\"T8\",\"T9\",\"T10\",\"T11\",\"T12\",\"T13\",\"T14\",\"T15\",\"T16\",\"T17\",\"T18\",\"T19\",\"T20\",\"T21\",\"T22\",\"T23\",\"T24\",\"T25\",\"T26\",\"T27\",\"T28\",\"T29\",\"T30\",\"T31\",\"T32\",\"T33\",\"T34\",\"T35\",\"T36\",\"T37\",\"T38\",\"T39\",\"T40\",\"T41\",\"T42\",\"T43\",\"T44\",\"T45\",\"T46\",\"T47\",\"T48\",\"T49\",\"T50\",\"T51\",\"T52\",\"T53\",\"T54\",\"T55\",\"T56\",\"T57\",\"T58\",\"T59\",\"T60\",\"T61\",\"T62\",\"T63\",\"T64\",\"T65\",\"T66\",\"T67\",\"T68\",\"T69\",\"T70\",\"T71\",\"T72\",\"T73\",\"T74\",\"T75\",\"T76\",\"T77\",\"T78\",\"T79\",\"T80\",\"T81\",\"T82\",\"T83\",\"T84\",\"T85\",\"T86\",\"T87\",\"T88\",\"T89\",\"T90\",\"T91\",\"T92\",\"T93\",\"T94\",\"T95\",\"T96\",\"T97\",\"T98\",\"T99\",\"T100\",\"T101\",\"T102\",\"T103\",\"T104\",\"T105\",\"T106\",\"T107\",\"T108\",\"T109\",\"T110\",\"T111\",\"T112\",\"T113\",\"T114\",\"T115\",\"T116\",\"T117\",\"T118\",\"T119\",\"T120\",\"T121\",\"T122\",\"T123\",\"T124\",\"T125\",\"T126\",\"T127\",\"T128\",\"T129\",\"T130\",\"T131\",\"T132\",\"T133\",\"T134\",\"T135\",\"T136\",\"T137\",\"T138\",\"T139\",\"T140\",\"T141\",\"T142\",\"T143\",\"T144\",\"T145\",\"T146\",\"T147\",\"T148\",\"T149\",\"T150\",\"T151\",\"T152\",\"T153\",\"T154\",\"T155\",\"T156\",\"T157\",\"T158\",\"T159\",\"T160\",\"T161\",\"T162\",\"T163\",\"T164\",\"T165\",\"T166\",\"T167\",\"T168\",\"T169\",\"T170\",\"T171\",\"T172\",\"T173\",\"T174\",\"T175\",\"T176\",\"T177\",\"T178\",\"T179\",\"T180\",\"T181\",\"T182\",\"T183\",\"T184\",\"T185\",\"T186\",\"T187\",\"T188\",\"T189\",\"T190\",\"T191\",\"T192\",\"T193\",\"T194\",\"T195\",\"T196\",\"T197\",\"T198\",\"T199\",\"T200\",\"T201\",\"T202\",\"T203\",\"T204\",\"T205\",\"T206\",\"T207\",\"T208\",\"T209\",\"T210\",\"T211\",\"T212\",\"T213\",\"T214\",\"T215\",\"T216\",\"T217\",\"T218\",\"T219\",\"T220\",\"T221\",\"T222\",\"T223\",\"T224\",\"T225\",\"T226\",\"T227\",\"T228\",\"T229\",\"T230\",\"T231\",\"T232\",\"T233\",\"T234\",\"T235\",\"T236\",\"T237\",\"T238\",\"T239\",\"T240\",\"T241\",\"T242\",\"T243\",\"T244\",\"T245\",\"T246\",\"T247\",\"T248\",\"T249\",\"T250\",\"T251\",\"T252\",\"T253\",\"T254\",\"T255\",\"T256\",\"T257\",\"T258\",\"T259\",\"T260\",\"T261\",\"T262\",\"T263\",\"T264\",\"T265\",\"T266\",\"T267\",\"T268\",\"T269\",\"T270\",\"T271\",\"T272\",\"T273\",\"T274\",\"T275\",\"T276\",\"T277\",\"T278\",\"T279\",\"T280\",\"T281\",\"T282\",\"T283\",\"T284\",\"T285\",\"T286\",\"T287\",\"T288\",\"T289\",\"T290\",\"T291\",\"T292\",\"T293\",\"T294\",\"T295\",\"T296\",\"T297\",\"T298\",\"T299\",\"T300\",\"T301\",\"T302\",\"T303\",\"T304\",\"T305\",\"T306\",\"T307\",\"T308\",\"T309\",\"T310\",\"T311\",\"T312\",\"T313\",\"T314\",\"T315\",\"T316\",\"T317\",\"T318\",\"T319\",\"T320\",\"T321\",\"T322\",\"T323\",\"T324\",\"T325\",\"T326\",\"T327\",\"T328\",\"T329\",\"T330\",\"T331\",\"T332\",\"T333\",\"T334\",\"T335\",\"T336\",\"T337\",\"T338\",\"T339\",\"T340\",\"T341\",\"T342\",\"T343\",\"T344\",\"T345\",\"T346\",\"T347\",\"T348\",\"T349\",\"T350\",\"T351\",\"T352\",\"T353\",\"T354\",\"T355\",\"T356\",\"T357\",\"T358\",\"T359\",\"T360\",\"T361\",\"T362\",\"T363\",\"T364\",\"T365\",\"T366\",\"T367\",\"T368\",\"T369\",\"T370\",\"T371\",\"T372\",\"T373\",\"T374\",\"T375\",\"T376\",\"T377\",\"T378\",\"T379\",\"T380\",\"T381\",\"T382\",\"T383\",\"T384\",\"T385\",\"T386\",\"T387\",\"T388\",\"T389\",\"T390\",\"T391\",\"T392\",\"T393\",\"T394\",\"T395\",\"T396\",\"T397\",\"T398\",\"T399\",\"T400\",\"T401\",\"T402\",\"T403\",\"T404\",\"T405\",\"T406\",\"T407\",\"T408\",\"T409\",\"T410\",\"T411\",\"T412\",\"T413\",\"T414\",\"T415\",\"T416\",\"T417\",\"T418\",\"T419\",\"T420\",\"T421\",\"T422\",\"T423\",\"T424\",\"T425\",\"T426\",\"T427\",\"T428\",\"T429\",\"T430\",\"T431\",\"T432\",\"T433\",\"T434\",\"T435\",\"T436\",\"T437\",\"T438\",\"T439\",\"T440\",\"T441\",\"T442\",\"T443\",\"T444\",\"T445\",\"T446\",\"T447\",\"T448\",\"T449\",\"T450\",\"T451\",\"T452\",\"T453\",\"T454\",\"T455\",\"T456\",\"T457\",\"T458\",\"T459\",\"T460\",\"T461\",\"T462\",\"T463\",\"T464\",\"T465\",\"T466\",\"T467\",\"T468\",\"T469\",\"T470\",\"T471\",\"T472\",\"T473\",\"T474\",\"T475\",\"T476\",\"T477\",\"T478\",\"T479\",\"T480\",\"T481\",\"T482\",\"T483\",\"T484\",\"T485\",\"T486\",\"T487\",\"T488\",\"T489\",\"T490\",\"T491\",\"T492\",\"T493\",\"T494\",\"T495\",\"T496\",\"T497\",\"T498\",\"T499\"]}",
+      "valid": true,
+      "parsed": {
+        "type": "sale_record_release",
+        "terminalId": "3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01",
+        "traces": [
+          "T0",
+          "T1",
+          "T2",
+          "T3",
+          "T4",
+          "T5",
+          "T6",
+          "T7",
+          "T8",
+          "T9",
+          "T10",
+          "T11",
+          "T12",
+          "T13",
+          "T14",
+          "T15",
+          "T16",
+          "T17",
+          "T18",
+          "T19",
+          "T20",
+          "T21",
+          "T22",
+          "T23",
+          "T24",
+          "T25",
+          "T26",
+          "T27",
+          "T28",
+          "T29",
+          "T30",
+          "T31",
+          "T32",
+          "T33",
+          "T34",
+          "T35",
+          "T36",
+          "T37",
+          "T38",
+          "T39",
+          "T40",
+          "T41",
+          "T42",
+          "T43",
+          "T44",
+          "T45",
+          "T46",
+          "T47",
+          "T48",
+          "T49",
+          "T50",
+          "T51",
+          "T52",
+          "T53",
+          "T54",
+          "T55",
+          "T56",
+          "T57",
+          "T58",
+          "T59",
+          "T60",
+          "T61",
+          "T62",
+          "T63",
+          "T64",
+          "T65",
+          "T66",
+          "T67",
+          "T68",
+          "T69",
+          "T70",
+          "T71",
+          "T72",
+          "T73",
+          "T74",
+          "T75",
+          "T76",
+          "T77",
+          "T78",
+          "T79",
+          "T80",
+          "T81",
+          "T82",
+          "T83",
+          "T84",
+          "T85",
+          "T86",
+          "T87",
+          "T88",
+          "T89",
+          "T90",
+          "T91",
+          "T92",
+          "T93",
+          "T94",
+          "T95",
+          "T96",
+          "T97",
+          "T98",
+          "T99",
+          "T100",
+          "T101",
+          "T102",
+          "T103",
+          "T104",
+          "T105",
+          "T106",
+          "T107",
+          "T108",
+          "T109",
+          "T110",
+          "T111",
+          "T112",
+          "T113",
+          "T114",
+          "T115",
+          "T116",
+          "T117",
+          "T118",
+          "T119",
+          "T120",
+          "T121",
+          "T122",
+          "T123",
+          "T124",
+          "T125",
+          "T126",
+          "T127",
+          "T128",
+          "T129",
+          "T130",
+          "T131",
+          "T132",
+          "T133",
+          "T134",
+          "T135",
+          "T136",
+          "T137",
+          "T138",
+          "T139",
+          "T140",
+          "T141",
+          "T142",
+          "T143",
+          "T144",
+          "T145",
+          "T146",
+          "T147",
+          "T148",
+          "T149",
+          "T150",
+          "T151",
+          "T152",
+          "T153",
+          "T154",
+          "T155",
+          "T156",
+          "T157",
+          "T158",
+          "T159",
+          "T160",
+          "T161",
+          "T162",
+          "T163",
+          "T164",
+          "T165",
+          "T166",
+          "T167",
+          "T168",
+          "T169",
+          "T170",
+          "T171",
+          "T172",
+          "T173",
+          "T174",
+          "T175",
+          "T176",
+          "T177",
+          "T178",
+          "T179",
+          "T180",
+          "T181",
+          "T182",
+          "T183",
+          "T184",
+          "T185",
+          "T186",
+          "T187",
+          "T188",
+          "T189",
+          "T190",
+          "T191",
+          "T192",
+          "T193",
+          "T194",
+          "T195",
+          "T196",
+          "T197",
+          "T198",
+          "T199",
+          "T200",
+          "T201",
+          "T202",
+          "T203",
+          "T204",
+          "T205",
+          "T206",
+          "T207",
+          "T208",
+          "T209",
+          "T210",
+          "T211",
+          "T212",
+          "T213",
+          "T214",
+          "T215",
+          "T216",
+          "T217",
+          "T218",
+          "T219",
+          "T220",
+          "T221",
+          "T222",
+          "T223",
+          "T224",
+          "T225",
+          "T226",
+          "T227",
+          "T228",
+          "T229",
+          "T230",
+          "T231",
+          "T232",
+          "T233",
+          "T234",
+          "T235",
+          "T236",
+          "T237",
+          "T238",
+          "T239",
+          "T240",
+          "T241",
+          "T242",
+          "T243",
+          "T244",
+          "T245",
+          "T246",
+          "T247",
+          "T248",
+          "T249",
+          "T250",
+          "T251",
+          "T252",
+          "T253",
+          "T254",
+          "T255",
+          "T256",
+          "T257",
+          "T258",
+          "T259",
+          "T260",
+          "T261",
+          "T262",
+          "T263",
+          "T264",
+          "T265",
+          "T266",
+          "T267",
+          "T268",
+          "T269",
+          "T270",
+          "T271",
+          "T272",
+          "T273",
+          "T274",
+          "T275",
+          "T276",
+          "T277",
+          "T278",
+          "T279",
+          "T280",
+          "T281",
+          "T282",
+          "T283",
+          "T284",
+          "T285",
+          "T286",
+          "T287",
+          "T288",
+          "T289",
+          "T290",
+          "T291",
+          "T292",
+          "T293",
+          "T294",
+          "T295",
+          "T296",
+          "T297",
+          "T298",
+          "T299",
+          "T300",
+          "T301",
+          "T302",
+          "T303",
+          "T304",
+          "T305",
+          "T306",
+          "T307",
+          "T308",
+          "T309",
+          "T310",
+          "T311",
+          "T312",
+          "T313",
+          "T314",
+          "T315",
+          "T316",
+          "T317",
+          "T318",
+          "T319",
+          "T320",
+          "T321",
+          "T322",
+          "T323",
+          "T324",
+          "T325",
+          "T326",
+          "T327",
+          "T328",
+          "T329",
+          "T330",
+          "T331",
+          "T332",
+          "T333",
+          "T334",
+          "T335",
+          "T336",
+          "T337",
+          "T338",
+          "T339",
+          "T340",
+          "T341",
+          "T342",
+          "T343",
+          "T344",
+          "T345",
+          "T346",
+          "T347",
+          "T348",
+          "T349",
+          "T350",
+          "T351",
+          "T352",
+          "T353",
+          "T354",
+          "T355",
+          "T356",
+          "T357",
+          "T358",
+          "T359",
+          "T360",
+          "T361",
+          "T362",
+          "T363",
+          "T364",
+          "T365",
+          "T366",
+          "T367",
+          "T368",
+          "T369",
+          "T370",
+          "T371",
+          "T372",
+          "T373",
+          "T374",
+          "T375",
+          "T376",
+          "T377",
+          "T378",
+          "T379",
+          "T380",
+          "T381",
+          "T382",
+          "T383",
+          "T384",
+          "T385",
+          "T386",
+          "T387",
+          "T388",
+          "T389",
+          "T390",
+          "T391",
+          "T392",
+          "T393",
+          "T394",
+          "T395",
+          "T396",
+          "T397",
+          "T398",
+          "T399",
+          "T400",
+          "T401",
+          "T402",
+          "T403",
+          "T404",
+          "T405",
+          "T406",
+          "T407",
+          "T408",
+          "T409",
+          "T410",
+          "T411",
+          "T412",
+          "T413",
+          "T414",
+          "T415",
+          "T416",
+          "T417",
+          "T418",
+          "T419",
+          "T420",
+          "T421",
+          "T422",
+          "T423",
+          "T424",
+          "T425",
+          "T426",
+          "T427",
+          "T428",
+          "T429",
+          "T430",
+          "T431",
+          "T432",
+          "T433",
+          "T434",
+          "T435",
+          "T436",
+          "T437",
+          "T438",
+          "T439",
+          "T440",
+          "T441",
+          "T442",
+          "T443",
+          "T444",
+          "T445",
+          "T446",
+          "T447",
+          "T448",
+          "T449",
+          "T450",
+          "T451",
+          "T452",
+          "T453",
+          "T454",
+          "T455",
+          "T456",
+          "T457",
+          "T458",
+          "T459",
+          "T460",
+          "T461",
+          "T462",
+          "T463",
+          "T464",
+          "T465",
+          "T466",
+          "T467",
+          "T468",
+          "T469",
+          "T470",
+          "T471",
+          "T472",
+          "T473",
+          "T474",
+          "T475",
+          "T476",
+          "T477",
+          "T478",
+          "T479",
+          "T480",
+          "T481",
+          "T482",
+          "T483",
+          "T484",
+          "T485",
+          "T486",
+          "T487",
+          "T488",
+          "T489",
+          "T490",
+          "T491",
+          "T492",
+          "T493",
+          "T494",
+          "T495",
+          "T496",
+          "T497",
+          "T498",
+          "T499"
+        ]
+      }
+    },
+    {
+      "name": "release 0",
+      "raw": "{\"type\":\"sale_record_release\",\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"traces\":[]}",
+      "valid": false
+    },
+    {
+      "name": "release 501",
+      "raw": "{\"type\":\"sale_record_release\",\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"traces\":[\"T0\",\"T1\",\"T2\",\"T3\",\"T4\",\"T5\",\"T6\",\"T7\",\"T8\",\"T9\",\"T10\",\"T11\",\"T12\",\"T13\",\"T14\",\"T15\",\"T16\",\"T17\",\"T18\",\"T19\",\"T20\",\"T21\",\"T22\",\"T23\",\"T24\",\"T25\",\"T26\",\"T27\",\"T28\",\"T29\",\"T30\",\"T31\",\"T32\",\"T33\",\"T34\",\"T35\",\"T36\",\"T37\",\"T38\",\"T39\",\"T40\",\"T41\",\"T42\",\"T43\",\"T44\",\"T45\",\"T46\",\"T47\",\"T48\",\"T49\",\"T50\",\"T51\",\"T52\",\"T53\",\"T54\",\"T55\",\"T56\",\"T57\",\"T58\",\"T59\",\"T60\",\"T61\",\"T62\",\"T63\",\"T64\",\"T65\",\"T66\",\"T67\",\"T68\",\"T69\",\"T70\",\"T71\",\"T72\",\"T73\",\"T74\",\"T75\",\"T76\",\"T77\",\"T78\",\"T79\",\"T80\",\"T81\",\"T82\",\"T83\",\"T84\",\"T85\",\"T86\",\"T87\",\"T88\",\"T89\",\"T90\",\"T91\",\"T92\",\"T93\",\"T94\",\"T95\",\"T96\",\"T97\",\"T98\",\"T99\",\"T100\",\"T101\",\"T102\",\"T103\",\"T104\",\"T105\",\"T106\",\"T107\",\"T108\",\"T109\",\"T110\",\"T111\",\"T112\",\"T113\",\"T114\",\"T115\",\"T116\",\"T117\",\"T118\",\"T119\",\"T120\",\"T121\",\"T122\",\"T123\",\"T124\",\"T125\",\"T126\",\"T127\",\"T128\",\"T129\",\"T130\",\"T131\",\"T132\",\"T133\",\"T134\",\"T135\",\"T136\",\"T137\",\"T138\",\"T139\",\"T140\",\"T141\",\"T142\",\"T143\",\"T144\",\"T145\",\"T146\",\"T147\",\"T148\",\"T149\",\"T150\",\"T151\",\"T152\",\"T153\",\"T154\",\"T155\",\"T156\",\"T157\",\"T158\",\"T159\",\"T160\",\"T161\",\"T162\",\"T163\",\"T164\",\"T165\",\"T166\",\"T167\",\"T168\",\"T169\",\"T170\",\"T171\",\"T172\",\"T173\",\"T174\",\"T175\",\"T176\",\"T177\",\"T178\",\"T179\",\"T180\",\"T181\",\"T182\",\"T183\",\"T184\",\"T185\",\"T186\",\"T187\",\"T188\",\"T189\",\"T190\",\"T191\",\"T192\",\"T193\",\"T194\",\"T195\",\"T196\",\"T197\",\"T198\",\"T199\",\"T200\",\"T201\",\"T202\",\"T203\",\"T204\",\"T205\",\"T206\",\"T207\",\"T208\",\"T209\",\"T210\",\"T211\",\"T212\",\"T213\",\"T214\",\"T215\",\"T216\",\"T217\",\"T218\",\"T219\",\"T220\",\"T221\",\"T222\",\"T223\",\"T224\",\"T225\",\"T226\",\"T227\",\"T228\",\"T229\",\"T230\",\"T231\",\"T232\",\"T233\",\"T234\",\"T235\",\"T236\",\"T237\",\"T238\",\"T239\",\"T240\",\"T241\",\"T242\",\"T243\",\"T244\",\"T245\",\"T246\",\"T247\",\"T248\",\"T249\",\"T250\",\"T251\",\"T252\",\"T253\",\"T254\",\"T255\",\"T256\",\"T257\",\"T258\",\"T259\",\"T260\",\"T261\",\"T262\",\"T263\",\"T264\",\"T265\",\"T266\",\"T267\",\"T268\",\"T269\",\"T270\",\"T271\",\"T272\",\"T273\",\"T274\",\"T275\",\"T276\",\"T277\",\"T278\",\"T279\",\"T280\",\"T281\",\"T282\",\"T283\",\"T284\",\"T285\",\"T286\",\"T287\",\"T288\",\"T289\",\"T290\",\"T291\",\"T292\",\"T293\",\"T294\",\"T295\",\"T296\",\"T297\",\"T298\",\"T299\",\"T300\",\"T301\",\"T302\",\"T303\",\"T304\",\"T305\",\"T306\",\"T307\",\"T308\",\"T309\",\"T310\",\"T311\",\"T312\",\"T313\",\"T314\",\"T315\",\"T316\",\"T317\",\"T318\",\"T319\",\"T320\",\"T321\",\"T322\",\"T323\",\"T324\",\"T325\",\"T326\",\"T327\",\"T328\",\"T329\",\"T330\",\"T331\",\"T332\",\"T333\",\"T334\",\"T335\",\"T336\",\"T337\",\"T338\",\"T339\",\"T340\",\"T341\",\"T342\",\"T343\",\"T344\",\"T345\",\"T346\",\"T347\",\"T348\",\"T349\",\"T350\",\"T351\",\"T352\",\"T353\",\"T354\",\"T355\",\"T356\",\"T357\",\"T358\",\"T359\",\"T360\",\"T361\",\"T362\",\"T363\",\"T364\",\"T365\",\"T366\",\"T367\",\"T368\",\"T369\",\"T370\",\"T371\",\"T372\",\"T373\",\"T374\",\"T375\",\"T376\",\"T377\",\"T378\",\"T379\",\"T380\",\"T381\",\"T382\",\"T383\",\"T384\",\"T385\",\"T386\",\"T387\",\"T388\",\"T389\",\"T390\",\"T391\",\"T392\",\"T393\",\"T394\",\"T395\",\"T396\",\"T397\",\"T398\",\"T399\",\"T400\",\"T401\",\"T402\",\"T403\",\"T404\",\"T405\",\"T406\",\"T407\",\"T408\",\"T409\",\"T410\",\"T411\",\"T412\",\"T413\",\"T414\",\"T415\",\"T416\",\"T417\",\"T418\",\"T419\",\"T420\",\"T421\",\"T422\",\"T423\",\"T424\",\"T425\",\"T426\",\"T427\",\"T428\",\"T429\",\"T430\",\"T431\",\"T432\",\"T433\",\"T434\",\"T435\",\"T436\",\"T437\",\"T438\",\"T439\",\"T440\",\"T441\",\"T442\",\"T443\",\"T444\",\"T445\",\"T446\",\"T447\",\"T448\",\"T449\",\"T450\",\"T451\",\"T452\",\"T453\",\"T454\",\"T455\",\"T456\",\"T457\",\"T458\",\"T459\",\"T460\",\"T461\",\"T462\",\"T463\",\"T464\",\"T465\",\"T466\",\"T467\",\"T468\",\"T469\",\"T470\",\"T471\",\"T472\",\"T473\",\"T474\",\"T475\",\"T476\",\"T477\",\"T478\",\"T479\",\"T480\",\"T481\",\"T482\",\"T483\",\"T484\",\"T485\",\"T486\",\"T487\",\"T488\",\"T489\",\"T490\",\"T491\",\"T492\",\"T493\",\"T494\",\"T495\",\"T496\",\"T497\",\"T498\",\"T499\",\"T500\"]}",
+      "valid": false
+    },
+    {
+      "name": "release bad trace",
+      "raw": "{\"type\":\"sale_record_release\",\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"traces\":[\"a b\"]}",
+      "valid": false
+    },
+    {
+      "name": "goodbye protocol_unsupported",
+      "raw": "{\"type\":\"goodbye\",\"reason\":\"protocol_unsupported\"}",
+      "valid": true,
+      "parsed": {
+        "type": "goodbye",
+        "reason": "protocol_unsupported"
+      }
+    },
+    {
+      "name": "goodbye token_revoked",
+      "raw": "{\"type\":\"goodbye\",\"reason\":\"token_revoked\"}",
+      "valid": true,
+      "parsed": {
+        "type": "goodbye",
+        "reason": "token_revoked"
+      }
+    },
+    {
+      "name": "goodbye replaced_by_newer_session",
+      "raw": "{\"type\":\"goodbye\",\"reason\":\"replaced_by_newer_session\"}",
+      "valid": true,
+      "parsed": {
+        "type": "goodbye",
+        "reason": "replaced_by_newer_session"
+      }
+    },
+    {
+      "name": "goodbye server_shutdown",
+      "raw": "{\"type\":\"goodbye\",\"reason\":\"server_shutdown\"}",
+      "valid": true,
+      "parsed": {
+        "type": "goodbye",
+        "reason": "server_shutdown"
+      }
+    },
+    {
+      "name": "goodbye unknown",
+      "raw": "{\"type\":\"goodbye\",\"reason\":\"bye\"}",
+      "valid": false
+    },
+    {
+      "name": "uplink hello is not downlink",
+      "raw": "{\"type\":\"hello\",\"protocolVersion\":1,\"appVersion\":\"0.1.0\",\"unackedResults\":0,\"heldSaleRecords\":0}",
+      "valid": false
+    },
+    {
+      "name": "unknown type",
+      "raw": "{\"type\":\"ping\"}",
+      "valid": false
+    },
+    {
+      "name": "missing type",
+      "raw": "{\"commandId\":\"0b1c2d3e-4f50-4162-a374-8596a7b8c9d0\"}",
+      "valid": false
+    },
+    {
+      "name": "array",
+      "raw": "[{\"type\":\"command\",\"commandId\":\"0b1c2d3e-4f50-4162-a374-8596a7b8c9d0\",\"leaseId\":\"7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d\",\"terminalId\":\"3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01\",\"op\":\"sale\",\"trace\":\"000123\",\"frame\":\"eyJvcCI6InNhbGUifQ==\",\"timeoutMs\":60000}]",
+      "valid": false
+    },
+    {
+      "name": "string",
+      "raw": "\"lease\"",
+      "valid": false
+    },
+    {
+      "name": "bad json",
+      "raw": "{\"type\":\"ack\",",
+      "valid": false
+    },
+    {
+      "name": "trailing comma",
+      "raw": "{\"type\":\"ack\",\"commandId\":\"0b1c2d3e-4f50-4162-a374-8596a7b8c9d0\",}",
+      "valid": false
+    },
+    {
+      "name": "oversize",
+      "raw": "{\"type\":\"goodbye\",\"reason\":\"server_shutdown\",\"pad\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"}",
+      "valid": false
+    }
+  ],
+  "uplink": [
+    {
+      "type": "hello",
+      "protocolVersion": 1,
+      "appVersion": "0.1.0",
+      "unackedResults": 2,
+      "heldSaleRecords": 1
+    },
+    {
+      "type": "result",
+      "commandId": "0b1c2d3e-4f50-4162-b374-8596a7b8c9d1",
+      "terminalId": "3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01",
+      "op": "sale",
+      "trace": "000123",
+      "replayOf": "0b1c2d3e-4f50-4162-b374-8596a7b8c9d1",
+      "completedAt": "2026-11-27T06:58:25.123Z",
+      "answer": {
+        "outcome": "response",
+        "frame": "eyJyYyI6IjAwIn0="
+      }
+    },
+    {
+      "type": "result",
+      "commandId": "0b1c2d3e-4f50-4162-a374-8596a7b8c9d0",
+      "terminalId": "3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01",
+      "op": "void",
+      "trace": "000123",
+      "replayOf": null,
+      "completedAt": "2026-11-27T06:58:25.123Z",
+      "answer": {
+        "outcome": "transport_error",
+        "kind": "timeout"
+      }
+    },
+    {
+      "type": "result",
+      "commandId": "0b1c2d3e-4f50-4162-b374-8596a7b8c9d1",
+      "terminalId": "3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01",
+      "op": "void",
+      "trace": "000123",
+      "replayOf": null,
+      "completedAt": "2026-11-27T06:58:25.123Z",
+      "answer": {
+        "outcome": "transport_error",
+        "kind": "disconnected"
+      }
+    },
+    {
+      "type": "result",
+      "commandId": "0b1c2d3e-4f50-4162-a374-8596a7b8c9d0",
+      "terminalId": "3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01",
+      "op": "sale",
+      "trace": "000123",
+      "replayOf": null,
+      "completedAt": "2026-11-27T06:58:25.123Z",
+      "answer": {
+        "outcome": "transport_error",
+        "kind": "protocol"
+      }
+    },
+    {
+      "type": "result",
+      "commandId": "0b1c2d3e-4f50-4162-b374-8596a7b8c9d1",
+      "terminalId": "3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01",
+      "op": "void",
+      "trace": "000123",
+      "replayOf": null,
+      "completedAt": "2026-11-27T06:58:25.123Z",
+      "answer": {
+        "outcome": "refused",
+        "reason": "lease_invalid"
+      }
+    },
+    {
+      "type": "result",
+      "commandId": "0b1c2d3e-4f50-4162-a374-8596a7b8c9d0",
+      "terminalId": "3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01",
+      "op": "void",
+      "trace": "000123",
+      "replayOf": null,
+      "completedAt": "2026-11-27T06:58:25.123Z",
+      "answer": {
+        "outcome": "refused",
+        "reason": "terminal_busy"
+      }
+    },
+    {
+      "type": "result",
+      "commandId": "0b1c2d3e-4f50-4162-b374-8596a7b8c9d1",
+      "terminalId": "3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01",
+      "op": "sale",
+      "trace": "000123",
+      "replayOf": null,
+      "completedAt": "2026-11-27T06:58:25.123Z",
+      "answer": {
+        "outcome": "refused",
+        "reason": "link_down"
+      }
+    },
+    {
+      "type": "result",
+      "commandId": "0b1c2d3e-4f50-4162-a374-8596a7b8c9d0",
+      "terminalId": "3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01",
+      "op": "void",
+      "trace": "000123",
+      "replayOf": null,
+      "completedAt": "2026-11-27T06:58:25.123Z",
+      "answer": {
+        "outcome": "refused",
+        "reason": "duplicate_in_flight"
+      }
+    },
+    {
+      "type": "result",
+      "commandId": "0b1c2d3e-4f50-4162-b374-8596a7b8c9d1",
+      "terminalId": "3f0e2a4c-1b2d-4c3e-8f40-5a6b7c8d9e01",
+      "op": "void",
+      "trace": "000123",
+      "replayOf": null,
+      "completedAt": "2026-11-27T06:58:25.123Z",
+      "answer": {
+        "outcome": "refused",
+        "reason": "trace_conflict"
+      }
+    }
+  ],
+  "frameSha256": [
+    {
+      "frame": "AAAA",
+      "sha256": "63c1dd951ffedf6f7fd968ad4efa39b8ed584f162f46e715114ee184f8de9201"
+    },
+    {
+      "frame": "eyJvcCI6InNhbGUifQ==",
+      "sha256": "7e9aa2e8912c60fe09ce299f8949128fc2e3f8faf6bd17fa7e80c6307ba97c07"
+    },
+    {
+      "frame": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "sha256": "f8ca02c69621dd84cd1212ebfd7d6cdc9ba6ad658854f29567723531912d1a35"
+    }
+  ],
+  "dedupe": [
+    {
+      "op": "sale",
+      "record": null,
+      "frameSha256": "7e9aa2e8912c60fe09ce299f8949128fc2e3f8faf6bd17fa7e80c6307ba97c07",
+      "decision": {
+        "action": "run"
+      }
+    },
+    {
+      "op": "sale",
+      "record": {
+        "commandId": "0b1c2d3e-4f50-4162-b374-8596a7b8c9d1",
+        "frameSha256": "7e9aa2e8912c60fe09ce299f8949128fc2e3f8faf6bd17fa7e80c6307ba97c07",
+        "state": "done",
+        "answer": {
+          "outcome": "response",
+          "frame": "eyJyYyI6IjAwIn0="
+        }
+      },
+      "frameSha256": "7e9aa2e8912c60fe09ce299f8949128fc2e3f8faf6bd17fa7e80c6307ba97c07",
+      "decision": {
+        "action": "replay",
+        "replayOf": "0b1c2d3e-4f50-4162-b374-8596a7b8c9d1"
+      }
+    },
+    {
+      "op": "sale",
+      "record": {
+        "commandId": "0b1c2d3e-4f50-4162-b374-8596a7b8c9d1",
+        "frameSha256": "7e9aa2e8912c60fe09ce299f8949128fc2e3f8faf6bd17fa7e80c6307ba97c07",
+        "state": "done",
+        "answer": {
+          "outcome": "transport_error",
+          "kind": "timeout"
+        }
+      },
+      "frameSha256": "7e9aa2e8912c60fe09ce299f8949128fc2e3f8faf6bd17fa7e80c6307ba97c07",
+      "decision": {
+        "action": "replay",
+        "replayOf": "0b1c2d3e-4f50-4162-b374-8596a7b8c9d1"
+      }
+    },
+    {
+      "op": "sale",
+      "record": {
+        "commandId": "0b1c2d3e-4f50-4162-b374-8596a7b8c9d1",
+        "frameSha256": "7e9aa2e8912c60fe09ce299f8949128fc2e3f8faf6bd17fa7e80c6307ba97c07",
+        "state": "in_flight",
+        "answer": null
+      },
+      "frameSha256": "7e9aa2e8912c60fe09ce299f8949128fc2e3f8faf6bd17fa7e80c6307ba97c07",
+      "decision": {
+        "action": "refuse",
+        "reason": "duplicate_in_flight"
+      }
+    },
+    {
+      "op": "sale",
+      "record": {
+        "commandId": "0b1c2d3e-4f50-4162-b374-8596a7b8c9d1",
+        "frameSha256": "7e9aa2e8912c60fe09ce299f8949128fc2e3f8faf6bd17fa7e80c6307ba97c07",
+        "state": "done",
+        "answer": null
+      },
+      "frameSha256": "7e9aa2e8912c60fe09ce299f8949128fc2e3f8faf6bd17fa7e80c6307ba97c07",
+      "decision": {
+        "action": "refuse",
+        "reason": "duplicate_in_flight"
+      }
+    },
+    {
+      "op": "sale",
+      "record": {
+        "commandId": "0b1c2d3e-4f50-4162-b374-8596a7b8c9d1",
+        "frameSha256": "7e9aa2e8912c60fe09ce299f8949128fc2e3f8faf6bd17fa7e80c6307ba97c07",
+        "state": "done",
+        "answer": {
+          "outcome": "response",
+          "frame": "eyJyYyI6IjAwIn0="
+        }
+      },
+      "frameSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "decision": {
+        "action": "refuse",
+        "reason": "trace_conflict"
+      }
+    },
+    {
+      "op": "sale",
+      "record": {
+        "commandId": "0b1c2d3e-4f50-4162-b374-8596a7b8c9d1",
+        "frameSha256": "7e9aa2e8912c60fe09ce299f8949128fc2e3f8faf6bd17fa7e80c6307ba97c07",
+        "state": "in_flight",
+        "answer": null
+      },
+      "frameSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "decision": {
+        "action": "refuse",
+        "reason": "trace_conflict"
+      }
+    },
+    {
+      "op": "void",
+      "record": {
+        "commandId": "0b1c2d3e-4f50-4162-b374-8596a7b8c9d1",
+        "frameSha256": "7e9aa2e8912c60fe09ce299f8949128fc2e3f8faf6bd17fa7e80c6307ba97c07",
+        "state": "done",
+        "answer": {
+          "outcome": "response",
+          "frame": "eyJyYyI6IjAwIn0="
+        }
+      },
+      "frameSha256": "7e9aa2e8912c60fe09ce299f8949128fc2e3f8faf6bd17fa7e80c6307ba97c07",
+      "decision": {
+        "action": "run"
+      }
+    },
+    {
+      "op": "cancel",
+      "record": {
+        "commandId": "0b1c2d3e-4f50-4162-b374-8596a7b8c9d1",
+        "frameSha256": "7e9aa2e8912c60fe09ce299f8949128fc2e3f8faf6bd17fa7e80c6307ba97c07",
+        "state": "done",
+        "answer": {
+          "outcome": "response",
+          "frame": "eyJyYyI6IjAwIn0="
+        }
+      },
+      "frameSha256": "7e9aa2e8912c60fe09ce299f8949128fc2e3f8faf6bd17fa7e80c6307ba97c07",
+      "decision": {
+        "action": "run"
+      }
+    },
+    {
+      "op": "inquiry",
+      "record": {
+        "commandId": "0b1c2d3e-4f50-4162-b374-8596a7b8c9d1",
+        "frameSha256": "7e9aa2e8912c60fe09ce299f8949128fc2e3f8faf6bd17fa7e80c6307ba97c07",
+        "state": "in_flight",
+        "answer": null
+      },
+      "frameSha256": "7e9aa2e8912c60fe09ce299f8949128fc2e3f8faf6bd17fa7e80c6307ba97c07",
+      "decision": {
+        "action": "run"
+      }
+    }
+  ],
+  "deletable": [
+    {
+      "ageMs": 0,
+      "released": false,
+      "deletable": false
+    },
+    {
+      "ageMs": 0,
+      "released": true,
+      "deletable": false
+    },
+    {
+      "ageMs": 172799999,
+      "released": false,
+      "deletable": false
+    },
+    {
+      "ageMs": 172799999,
+      "released": true,
+      "deletable": false
+    },
+    {
+      "ageMs": 172800000,
+      "released": false,
+      "deletable": false
+    },
+    {
+      "ageMs": 172800000,
+      "released": true,
+      "deletable": true
+    },
+    {
+      "ageMs": 2591999999,
+      "released": false,
+      "deletable": false
+    },
+    {
+      "ageMs": 2591999999,
+      "released": true,
+      "deletable": true
+    },
+    {
+      "ageMs": 2592000000,
+      "released": false,
+      "deletable": true
+    },
+    {
+      "ageMs": 2592000000,
+      "released": true,
+      "deletable": true
+    },
+    {
+      "ageMs": 2592000001,
+      "released": false,
+      "deletable": true
+    },
+    {
+      "ageMs": 2592000001,
+      "released": true,
+      "deletable": true
+    }
+  ],
+  "framing": [
+    {
+      "bodyHex": "",
+      "framedHex": "0200000303"
+    },
+    {
+      "bodyHex": "00",
+      "framedHex": "020001000302"
+    },
+    {
+      "bodyHex": "48656c6c6f",
+      "framedHex": "02000548656c6c6f0344"
+    },
+    {
+      "bodyHex": "02031506ff",
+      "framedHex": "02000502031506ff03eb"
+    },
+    {
+      "bodyHex": "abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab",
+      "framedHex": "021234abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab0325"
+    }
+  ]
+}
