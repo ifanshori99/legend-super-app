@@ -268,6 +268,8 @@ describe("payment link view", () => {
       enabled: false,
       unavailableReason: "routing_disabled",
       channels: [],
+      guestFeeIdr: null,
+      totalIdr: null,
     });
     expect(view.methods.find((entry) => entry.method === "va")?.enabled).toBe(
       true,
@@ -277,21 +279,46 @@ describe("payment link view", () => {
   it("offers e-wallet with its channels and card without one", async () => {
     const { token } = await openBill();
     const view = await getPaymentLinkView(fx.context, token);
+    // 1272 K1: no guest fee (DUITKU_GUEST_FEE_METHODS empty): every channel
+    // and channel-less method costs the bill.
+    const free = (channel: { code: string; name: string }) => ({
+      ...channel,
+      guestFeeIdr: 0,
+      totalIdr: 100_000,
+    });
     expect(view.methods.filter((entry) => entry.enabled)).toEqual([
-      { method: "qris", enabled: true, unavailableReason: null, channels: [] },
+      {
+        method: "qris",
+        enabled: true,
+        unavailableReason: null,
+        channels: [],
+        guestFeeIdr: 0,
+        totalIdr: 100_000,
+      },
       {
         method: "va",
         enabled: true,
         unavailableReason: null,
-        channels: CHANNELS.va,
+        channels: CHANNELS.va!.map(free),
+        guestFeeIdr: null,
+        totalIdr: null,
       },
       {
         method: "ewallet",
         enabled: true,
         unavailableReason: null,
-        channels: CHANNELS.ewallet,
+        channels: CHANNELS.ewallet!.map(free),
+        guestFeeIdr: null,
+        totalIdr: null,
       },
-      { method: "card", enabled: true, unavailableReason: null, channels: [] },
+      {
+        method: "card",
+        enabled: true,
+        unavailableReason: null,
+        channels: [],
+        guestFeeIdr: 0,
+        totalIdr: 100_000,
+      },
     ]);
   });
 

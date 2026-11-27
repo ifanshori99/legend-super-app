@@ -18,6 +18,7 @@ import {
   type PaymentInstructions,
 } from "@starter/shared/payment";
 import { env } from "../config/env";
+import { HttpError } from "../lib/http-error";
 import { logger } from "../lib/logger";
 import type {
   GatewayHealth,
@@ -26,9 +27,17 @@ import type {
   GatewayMethodAvailability,
   GatewayPaymentMethod,
   GatewayPaymentStatus,
+  GuestFeeSchedule,
   OnlinePaymentMethod,
   PaymentGatewayPort,
 } from "./payment-gateway";
+import {
+  feeQuoteAccepted,
+  guestFeeFor,
+  guestFeeMethodOn,
+  guestFeeRatesOf,
+  type GuestFeeRate,
+} from "./payment-guest-fee";
 import { duitkuSandboxRefused } from "./payment-duitku-sandbox-policy";
 import {
   duitkuGetPaymentMethods,
@@ -49,6 +58,9 @@ const METHODS_CACHE_MS = 60_000;
 /** Amount used to list the merchant's methods when no real amount applies. */
 const PROBE_AMOUNT_IDR = 10_000;
 const DEFAULT_VA_NAME = "Legend";
+/** Duitku's only card code (payment-duitku-wire.ts): a card intent takes no
+ * channel, so its guest fee rate is read under this code. */
+const CARD_CODE = "VC";
 
 type Loaded = {
   integration: { config: Record<string, unknown> };
@@ -123,8 +135,17 @@ export function duitkuCredentialSet(
   return set;
 }
 
+const feeChanged = () =>
+  new HttpError(
+    409,
+    "FEE_CHANGED",
+    "Biaya layanan berubah. Muat ulang lalu pilih metode lagi.",
+  );
+
 type Resolved = {
   integrationId: string;
+  /** 1272 K1: usable guest fee rates by channel code (config `guestFees`). */
+  guestFeeRates: ReadonlyMap<string, GuestFeeRate>;
   /** Current credentials first, then a previous one still in grace. */
   credentials: DuitkuCredentials[];
   notificationEmail: string | null;
@@ -207,12 +228,29 @@ function methodUnlocked(method: GatewayPaymentMethod): boolean {
 
 function withoutLocked(
   groups: readonly GatewayMethodAvailability[],
+  guestFeeRates: ReadonlyMap<string, GuestFeeRate>,
 ): GatewayMethodAvailability[] {
-  return groups.map((entry) =>
-    methodUnlocked(entry.method)
-      ? entry
-      : { method: entry.method, enabled: false, channels: [] },
-  );
+  return groups.map((entry) => {
+    if (!methodUnlocked(entry.method))
+      return { method: entry.method, enabled: false, channels: [] };
+    // 1272 K1 §1: a guest-fee method offers only the channels it has a usable
+    // rate for (card: its one code); never a fee of 0 by omission.
+    if (!guestFeeMethodOn(entry.method, env.DUITKU_GUEST_FEE_METHODS))
+      return entry;
+    const rated = entry.channels.filter((channel) =>
+      guestFeeRates.has(channel.code),
+    );
+    const enabled =
+      entry.enabled &&
+      (entry.method === "card"
+        ? guestFeeRates.has(CARD_CODE)
+        : rated.length > 0);
+    return {
+      method: entry.method,
+      enabled,
+      channels: enabled ? rated : [],
+    };
+  });
 }
 
 /** Records the HTTP outcome of calls so `testConnection` can tell a refused
@@ -258,6 +296,7 @@ export function createDuitkuGateway(
     const { notificationEmail, vaName } = loaded.integration.config;
     return {
       integrationId: loaded.integration.id,
+      guestFeeRates: guestFeeRatesOf(loaded.integration.config),
       credentials,
       notificationEmail:
         typeof notificationEmail === "string" && notificationEmail
@@ -365,8 +404,12 @@ export function createDuitkuGateway(
     if (amountIdr !== undefined && amountIdr !== PROBE_AMOUNT_IDR)
       return withoutLocked(
         groupMethods(await fetchMethods(resolved, amountIdr)),
+        resolved.guestFeeRates,
       );
-    return withoutLocked(groupMethods(await cachedMethods(resolved)));
+    return withoutLocked(
+      groupMethods(await cachedMethods(resolved)),
+      resolved.guestFeeRates,
+    );
   }
 
   async function channels(
@@ -379,9 +422,10 @@ export function createDuitkuGateway(
     if (!methodUnlocked(method)) return [];
     const resolved = await resolveDetailed(context, outletId);
     if (typeof resolved === "string") return [];
-    const group = groupMethods(await cachedMethods(resolved)).find(
-      (entry) => entry.method === method,
-    );
+    const group = withoutLocked(
+      groupMethods(await cachedMethods(resolved)),
+      resolved.guestFeeRates,
+    ).find((entry) => entry.method === method);
     return [...(group?.channels ?? [])];
   }
 
@@ -455,6 +499,35 @@ export function createDuitkuGateway(
     return parsed.data;
   }
 
+  /** 1272 K1: guest fee of one code for the bill (see `GuestFeeSchedule`). */
+  function feeOf(
+    rates: ReadonlyMap<string, GuestFeeRate>,
+    method: GatewayPaymentMethod,
+    channelCode: string | null,
+    baseIdr: number,
+  ): number | null {
+    return guestFeeFor({
+      method,
+      channelCode: method === "card" ? CARD_CODE : channelCode,
+      baseIdr,
+      rates,
+      feeMethods: env.DUITKU_GUEST_FEE_METHODS,
+    });
+  }
+
+  async function guestFeeSchedule(
+    context: ScopedTenantContext,
+    outletId?: string,
+  ): Promise<GuestFeeSchedule> {
+    const resolved = await resolveDetailed(context, outletId);
+    // No account: nothing can be issued anyway. A fee method answers null
+    // (hidden), never 0.
+    const rates: ReadonlyMap<string, GuestFeeRate> =
+      typeof resolved === "string" ? new Map() : resolved.guestFeeRates;
+    return (method, channelCode, baseIdr) =>
+      feeOf(rates, method, channelCode, baseIdr);
+  }
+
   async function createIntent(
     input: GatewayIntentRequest,
   ): Promise<GatewayIntent> {
@@ -464,15 +537,49 @@ export function createDuitkuGateway(
       throw validation("Metode pembayaran tidak tersedia.");
     const resolved = await requireCredentials(input.context, input.outletId);
     if (!resolved.notificationEmail) throw duitkuUnavailable();
-    // Fresh list at the real amount: a method can be out of limits for it.
-    const rows = await fetchMethods(resolved, input.amountIdr);
+    const guestFeeIdr = input.guestFeeIdr ?? 0;
+    // 1272 K1 §1: the fee must be the one this account's rate gives for the
+    // channel now; a fee method without a rate is not offered.
+    const expectedFee = feeOf(
+      resolved.guestFeeRates,
+      input.method,
+      input.channelCode,
+      input.amountIdr,
+    );
+    if (expectedFee === null)
+      throw validation("Metode pembayaran tidak tersedia.");
+    if (expectedFee !== guestFeeIdr) throw feeChanged();
+    const chargedIdr = input.amountIdr + guestFeeIdr;
+    // Fresh list at the charged amount: a method can be out of limits for it,
+    // and its quote is the fee Duitku takes from that amount.
+    const rows = await fetchMethods(resolved, chargedIdr);
     const code = chooseCode(rows, input.method, input.channelCode);
+    // Every flagged method is checked, a zero rate too: a fee 0 against a
+    // quote above 0 leaves the outlet short.
+    if (
+      guestFeeMethodOn(input.method, env.DUITKU_GUEST_FEE_METHODS) &&
+      !feeQuoteAccepted(code.totalFee, guestFeeIdr)
+    ) {
+      // §1: Duitku would take more (outlet short) or clearly less (guest
+      // overpays) than our rate: no intent, ops told to fix the rate.
+      logger.warn(
+        {
+          integrationId: resolved.integrationId,
+          method: input.method,
+          channelCode: code.code,
+          guestFeeIdr,
+          quoteIdr: code.totalFee,
+        },
+        "Duitku fee quote differs from the guest fee rate",
+      );
+      throw feeChanged();
+    }
 
     const expiresAtMs = Date.parse(input.expiresAt);
     const inquiry = await duitkuInquiry({
       creds: current(resolved),
       merchantOrderId: input.intentId,
-      amountIdr: input.amountIdr,
+      amountIdr: chargedIdr,
       paymentMethod: code.code,
       productDetails: `Pembayaran ${input.intentId.slice(0, 8)}`,
       email: resolved.notificationEmail,
@@ -495,6 +602,7 @@ export function createDuitkuGateway(
       instructions: instructionsFor(input.method, code, inquiry),
       expiresAt: input.expiresAt,
       integrationId: resolved.integrationId,
+      feeQuoteIdr: code.totalFee,
     };
   }
 
@@ -601,6 +709,7 @@ export function createDuitkuGateway(
   return {
     provider: "duitku",
     health,
+    guestFeeSchedule,
     createIntent,
     getStatus,
     channels,

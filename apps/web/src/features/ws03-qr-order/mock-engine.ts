@@ -1002,6 +1002,29 @@ export function createEngine(
    * VA is on unless `vaDown` (cookie switch in mock.ts); `emptyBanks` is the
    * provider listing no VA bank (`no_channels`).
    */
+  /** 1272 K1: the mock options name no target, so nothing is priced. */
+  function unpriced(
+    methods: readonly {
+      method: GuestPaymentOptions["methods"][number]["method"];
+      enabled: boolean;
+      unavailableReason: GuestPaymentOptions["methods"][number]["unavailableReason"];
+      banks: readonly { code: string; name: string }[];
+    }[],
+  ): GuestPaymentOptions {
+    return {
+      methods: methods.map((option) => ({
+        ...option,
+        banks: option.banks.map((bank) => ({
+          ...bank,
+          guestFeeIdr: null,
+          chargedIdr: null,
+        })),
+        guestFeeIdr: null,
+        chargedIdr: null,
+      })),
+    };
+  }
+
   function paymentOptions(
     sessionId: string,
     flags: {
@@ -1022,38 +1045,36 @@ export function createEngine(
     const wallets = MOCK_EWALLETS.filter(
       (wallet) => !partial || wallet.code === "DA" || wallet.code === "SA",
     ).map(({ code, name }) => ({ code, name }));
-    return {
-      methods: [
-        { method: "qris", enabled: true, unavailableReason: null, banks: [] },
-        {
-          method: "ewallet",
-          enabled: true,
-          unavailableReason: null,
-          banks: wallets,
-        },
-        partial
-          ? {
-              method: "card",
-              enabled: false,
-              unavailableReason: "routing_disabled",
-              banks: [],
-            }
-          : {
-              method: "card",
-              enabled: true,
-              unavailableReason: null,
-              banks: [],
-            },
-        off
-          ? { method: "va", enabled: false, unavailableReason: off, banks: [] }
-          : {
-              method: "va",
-              enabled: true,
-              unavailableReason: null,
-              banks: MOCK_VA_BANKS.map(({ code, name }) => ({ code, name })),
-            },
-      ],
-    };
+    return unpriced([
+      { method: "qris", enabled: true, unavailableReason: null, banks: [] },
+      {
+        method: "ewallet",
+        enabled: true,
+        unavailableReason: null,
+        banks: wallets,
+      },
+      partial
+        ? {
+            method: "card",
+            enabled: false,
+            unavailableReason: "routing_disabled",
+            banks: [],
+          }
+        : {
+            method: "card",
+            enabled: true,
+            unavailableReason: null,
+            banks: [],
+          },
+      off
+        ? { method: "va", enabled: false, unavailableReason: off, banks: [] }
+        : {
+            method: "va",
+            enabled: true,
+            unavailableReason: null,
+            banks: MOCK_VA_BANKS.map(({ code, name }) => ({ code, name })),
+          },
+    ]);
   }
 
   /** 16 digits: bank prefix + 12 digits of the target (same order, same number). */
@@ -1169,6 +1190,8 @@ export function createEngine(
       target: body.target,
       method: body.method,
       amountIdr: idr(amount),
+      guestFeeIdr: idr(0),
+      chargedIdr: idr(amount),
       status: "pending",
       qrisPayload:
         body.method === "qris"

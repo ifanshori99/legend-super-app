@@ -359,7 +359,12 @@ export const guestPaymentSchema = z
     id: guestPaymentIntentIdSchema,
     target: guestPaymentTargetSchema,
     method: guestPaymentMethodSchema,
+    /** The bill part (what the order is paid with). */
     amountIdr: positiveIdr,
+    /** 1272 K1: guest service fee on top of the bill, never refunded. */
+    guestFeeIdr: nonnegativeIdr,
+    /** What the guest pays the gateway: amountIdr + guestFeeIdr. */
+    chargedIdr: positiveIdr,
     status: paymentStatusSchema,
     /** QRIS payload to render as a QR code (method qris). */
     qrisPayload: z.string().min(1).max(2000).nullable(),
@@ -377,6 +382,12 @@ export const guestPaymentSchema = z
     paidAt: isoDateTimeSchema.nullable(),
   })
   .superRefine((payment, ctx) => {
+    if (payment.chargedIdr !== payment.amountIdr + payment.guestFeeIdr)
+      ctx.addIssue({
+        code: "custom",
+        path: ["chargedIdr"],
+        message: "The charged amount must be the bill plus the guest fee",
+      });
     if ((payment.status === "paid") !== (payment.paidAt !== null))
       ctx.addIssue({
         code: "custom",
@@ -455,6 +466,44 @@ export const createIssueChargePayment = defineEndpoint({
   response: dataResponseSchema(guestPaymentSchema),
 });
 
+/** 1272 K1: a guest fee and its charged total are both set or both null. */
+function requireFeePair(
+  value: { guestFeeIdr: number | null; chargedIdr: number | null },
+  ctx: z.RefinementCtx,
+): void {
+  if ((value.guestFeeIdr === null) !== (value.chargedIdr === null))
+    ctx.addIssue({
+      code: "custom",
+      path: ["chargedIdr"],
+      message: "A guest fee and its charged total go together",
+    });
+  else if (
+    value.guestFeeIdr !== null &&
+    value.chargedIdr !== null &&
+    value.chargedIdr < value.guestFeeIdr
+  )
+    ctx.addIssue({
+      code: "custom",
+      path: ["chargedIdr"],
+      message: "The charged total includes the guest fee",
+    });
+}
+
+/**
+ * 1272 K1: one bank or e-wallet of a method, priced for the bill the guest
+ * named (`guestFeeIdr` on top, `chargedIdr` what the gateway charges). Both
+ * null when the request names no target.
+ */
+export const guestPaymentOptionBankSchema = paymentChannelSchema
+  .extend({
+    guestFeeIdr: nonnegativeIdr.nullable(),
+    chargedIdr: nonnegativeIdr.nullable(),
+  })
+  .superRefine(requireFeePair);
+export type GuestPaymentOptionBank = z.infer<
+  typeof guestPaymentOptionBankSchema
+>;
+
 /**
  * One online method on the guest pay screen. The bank list comes from the
  * provider's channel endpoint, never hard-coded (PRD §3.13 "Metode DOIT").
@@ -467,8 +516,14 @@ export const guestPaymentOptionSchema = z
     unavailableReason: z
       .enum(["gateway_down", "routing_disabled", "no_channels"])
       .nullable(),
-    /** Banks for `va`, e-wallets for `ewallet`; empty for `qris` and `card`. */
-    banks: z.array(paymentChannelSchema),
+    /** Banks for `va`, e-wallets for `ewallet`; empty for `qris` and `card`.
+     * 1272 K1: each priced when the request names a target. */
+    banks: z.array(guestPaymentOptionBankSchema),
+    /** 1272 K1: fee and charged total of a method without banks (`qris`,
+     * `card`) for the named target; null without a target, for a method
+     * with banks (priced per bank), and for a disabled method. */
+    guestFeeIdr: nonnegativeIdr.nullable(),
+    chargedIdr: nonnegativeIdr.nullable(),
   })
   .superRefine((option, ctx) => {
     if (option.enabled === (option.unavailableReason !== null))
@@ -477,6 +532,7 @@ export const guestPaymentOptionSchema = z
         path: ["unavailableReason"],
         message: "A disabled method must say why; an enabled one must not",
       });
+    requireFeePair(option, ctx);
   });
 export type GuestPaymentOption = z.infer<typeof guestPaymentOptionSchema>;
 export const guestPaymentOptionsSchema = z.strictObject({
@@ -484,10 +540,29 @@ export const guestPaymentOptionsSchema = z.strictObject({
 });
 export type GuestPaymentOptions = z.infer<typeof guestPaymentOptionsSchema>;
 
+/**
+ * 1272 K1: the bill the options are priced for, the same order or split part
+ * the create call names. Never an amount: the server reads the bill itself.
+ * Neither key: the options carry no fees (null).
+ */
+export const guestPaymentOptionsQuerySchema = z
+  .strictObject({
+    orderId: orderIdSchema.optional(),
+    billSplitId: billSplitIdSchema.optional(),
+  })
+  .refine(
+    (query) => query.orderId === undefined || query.billSplitId === undefined,
+    { message: "Name one order or one split part, not both" },
+  );
+export type GuestPaymentOptionsQuery = z.infer<
+  typeof guestPaymentOptionsQuerySchema
+>;
+
 export const getGuestPaymentOptions = defineEndpoint({
   method: "GET",
   path: "/api/table-sessions/:sessionId/payment-options",
   params: z.strictObject({ sessionId: tableSessionIdSchema }),
+  query: guestPaymentOptionsQuerySchema,
   response: dataResponseSchema(guestPaymentOptionsSchema),
 });
 

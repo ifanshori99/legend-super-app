@@ -331,7 +331,11 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
     `${AUTO} (pembayaran per metode); §3.13 Orkestrasi Pembayaran`,
     [
       ["gateway_clearing", "debit", "receivedIdr"],
-      ["customer_deposit", "credit", "receivedIdr"],
+      // 1272 K1: the guest service fee is never the guest's deposit; it offsets
+      // the MDR the settlement books (contra expense, no new account). Zero
+      // without a fee, so the line is skipped.
+      ["customer_deposit", "credit", "depositIdr"],
+      ["gateway_fee_expense", "credit", "guestFeeIdr"],
     ],
   ),
   rule(
@@ -341,7 +345,10 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
     `${AUTO} (pembayaran per metode); §3.13 Orkestrasi Pembayaran (PAY-04)`,
     [
       ["gateway_clearing", "debit", "receivedIdr"],
-      ["customer_deposit", "credit", "receivedIdr"],
+      // 1272 K1 §4: a second payment at the charged amount parks only the
+      // bill part; its guest fee is never refunded and offsets the MDR.
+      ["customer_deposit", "credit", "depositIdr"],
+      ["gateway_fee_expense", "credit", "guestFeeIdr"],
     ],
   ),
   rule(

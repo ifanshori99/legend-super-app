@@ -418,21 +418,37 @@ describe("QR guest virtual account (legend-3160)", () => {
     const guest = await seatAtNewTable();
     const options = await as(guest).options();
     expect(options.status).toBe(200);
+    // 1272 K1: no target in the request, so every fee is null.
+    const unpriced = { guestFeeIdr: null, chargedIdr: null };
     expect(options.body.data.methods).toEqual([
-      { method: "qris", enabled: true, unavailableReason: null, banks: [] },
-      { method: "va", enabled: true, unavailableReason: null, banks: BANKS },
+      {
+        method: "qris",
+        enabled: true,
+        unavailableReason: null,
+        banks: [],
+        ...unpriced,
+      },
+      {
+        method: "va",
+        enabled: true,
+        unavailableReason: null,
+        banks: BANKS.map((bank) => ({ ...bank, ...unpriced })),
+        ...unpriced,
+      },
       // No routing rule for e-wallet or card in this tenant: closed by default.
       {
         method: "ewallet",
         enabled: false,
         unavailableReason: "routing_disabled",
         banks: [],
+        ...unpriced,
       },
       {
         method: "card",
         enabled: false,
         unavailableReason: "routing_disabled",
         banks: [],
+        ...unpriced,
       },
     ]);
     expect(gateway.channelOutlets.at(-1)).toBe(tenant.outletId);
@@ -449,6 +465,8 @@ describe("QR guest virtual account (legend-3160)", () => {
         enabled: false,
         unavailableReason: "no_channels",
         banks: [],
+        guestFeeIdr: null,
+        chargedIdr: null,
       });
     } finally {
       gateway.banks = BANKS;

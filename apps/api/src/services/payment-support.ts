@@ -68,6 +68,8 @@ export function toCustomerIntent(row: PaymentIntentRow): CustomerPaymentIntent {
     method: row.method,
     status: row.status,
     amountIdr: row.amountIdr,
+    guestFeeIdr: row.guestFeeIdr,
+    chargedIdr: row.chargedIdr,
     expiresAt: row.expiresAt.toISOString(),
     paidAt: row.paidAt?.toISOString() ?? null,
     paidAfterExpiry: row.flags.includes("late_payment"),

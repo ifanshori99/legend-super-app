@@ -287,6 +287,9 @@ export const paymentFundsUnallocatedEventPayloadSchema = z.strictObject({
   method: paymentMethodSchema,
   provider: ref,
   receivedIdr: positiveIdr,
+  /** 1272 K1: guest fee withheld from the parked fund (never refunded); the
+   * fund is `receivedIdr - guestFeeIdr`. Absent = none. */
+  guestFeeIdr: positiveIdr.optional(),
   receivedAt: isoDateTimeSchema,
   reason: z.enum(["overpayment", "double_payment"]),
 });
@@ -494,6 +497,17 @@ export const paymentChannelSchema = z.strictObject({
   name: z.string().min(1).max(60),
 });
 /**
+ * 1272 K1 (design duitku-fee-passthrough §3): a channel as the GUEST sees it,
+ * with the guest service fee ("Biaya layanan") on top of the bill and the
+ * total the gateway charges. Guest options only; `paymentChannelSchema` stays
+ * the provider's list.
+ */
+export const guestPaymentChannelSchema = paymentChannelSchema.extend({
+  guestFeeIdr: nonnegativeIdr,
+  totalIdr: nonnegativeIdr,
+});
+export type GuestPaymentChannel = z.infer<typeof guestPaymentChannelSchema>;
+/**
  * The online methods a guest can pick. The list comes from the provider and
  * routing configuration, never hard-coded in the screen (PRD §3.13
  * "Metode DOIT": the active method list is read from DOIT's endpoint).
@@ -521,7 +535,11 @@ export const customerPaymentMethodSchema = z
     method: customerPaymentMethodCodeSchema,
     enabled: z.boolean(),
     unavailableReason: z.enum(["gateway_down", "routing_disabled"]).nullable(),
-    channels: z.array(paymentChannelSchema),
+    channels: z.array(guestPaymentChannelSchema),
+    /** 1272 K1: guest fee and total of a method without a channel pick (QRIS,
+     * card) while enabled; null otherwise (each channel carries its own). */
+    guestFeeIdr: nonnegativeIdr.nullable(),
+    totalIdr: nonnegativeIdr.nullable(),
   })
   .superRefine((method, ctx) => {
     if (method.enabled === (method.unavailableReason !== null))
@@ -648,7 +666,12 @@ export const customerPaymentIntentSchema = z
     id,
     method: customerPaymentIntentMethodCodeSchema,
     status: paymentStatusSchema,
+    /** The bill part (what the order is paid with). */
     amountIdr: positiveIdr,
+    /** 1272 K1: guest service fee on top of the bill, never refunded. */
+    guestFeeIdr: nonnegativeIdr,
+    /** What the guest pays the gateway: amountIdr + guestFeeIdr. */
+    chargedIdr: positiveIdr,
     expiresAt: isoDateTimeSchema,
     paidAt: isoDateTimeSchema.nullable(),
     /** PRD "Siklus Pembayaran": a payment that lands after expiry is accepted and flagged. */
@@ -656,6 +679,12 @@ export const customerPaymentIntentSchema = z
     instructions: paymentInstructionsSchema,
   })
   .superRefine((intent, ctx) => {
+    if (intent.chargedIdr !== intent.amountIdr + intent.guestFeeIdr)
+      ctx.addIssue({
+        code: "custom",
+        path: ["chargedIdr"],
+        message: "The charged amount must be the bill plus the guest fee",
+      });
     const settled = settledPaymentStatuses.includes(intent.status);
     if (settled !== (intent.paidAt !== null))
       ctx.addIssue({
@@ -833,6 +862,8 @@ export const qrisPendingIntentFixture = {
   method: "qris",
   status: "pending",
   amountIdr: 144375,
+  guestFeeIdr: 0,
+  chargedIdr: 144375,
   expiresAt: pendingExpiry,
   paidAt: null,
   paidAfterExpiry: false,
@@ -889,29 +920,44 @@ export const failedVaIntentFixture = {
   expiresAt: "2026-11-01T04:52:00.000Z",
 };
 
+const fixtureChannel = (code: string, name: string) =>
+  ({ code, name, guestFeeIdr: 0, totalIdr: 144375 }) as const;
 export const customerPaymentMethodsFixture = [
-  { method: "qris", enabled: true, unavailableReason: null, channels: [] },
+  {
+    method: "qris",
+    enabled: true,
+    unavailableReason: null,
+    channels: [],
+    guestFeeIdr: 0,
+    totalIdr: 144375,
+  },
   {
     method: "va",
     enabled: true,
     unavailableReason: null,
     channels: [
-      { code: "bca", name: "BCA" },
-      { code: "mandiri", name: "Mandiri" },
-      { code: "bni", name: "BNI" },
+      fixtureChannel("bca", "BCA"),
+      fixtureChannel("mandiri", "Mandiri"),
+      fixtureChannel("bni", "BNI"),
     ],
+    guestFeeIdr: null,
+    totalIdr: null,
   },
   {
     method: "bank_transfer",
     enabled: true,
     unavailableReason: null,
-    channels: [{ code: "bca", name: "BCA" }],
+    channels: [fixtureChannel("bca", "BCA")],
+    guestFeeIdr: null,
+    totalIdr: null,
   },
 ] as const;
 const downMethods = customerPaymentMethodsFixture.map((method) => ({
   ...method,
   enabled: false,
   unavailableReason: "gateway_down" as const,
+  guestFeeIdr: null,
+  totalIdr: null,
 }));
 const linkViewBase = {
   methods: [...customerPaymentMethodsFixture],

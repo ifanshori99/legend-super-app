@@ -100,7 +100,11 @@ export const paymentQuery = (sessionId: string, paymentId: string) =>
 /** Online methods the guest may use now; the VA bank list comes from the provider. */
 export const paymentOptionsQuery = (sessionId: string) =>
   queryOptions({
-    ...endpointQueryOptions(paymentOptionsEndpoint, { params: { sessionId } }),
+    ...endpointQueryOptions(paymentOptionsEndpoint, {
+      params: { sessionId },
+      // 1272 K1: no target yet, so no fees; K3 names the order or part.
+      query: {},
+    }),
     staleTime: 60_000,
   });
 

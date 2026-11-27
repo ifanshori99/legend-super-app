@@ -1173,7 +1173,11 @@ describe("Auto-journal receipt-first rules and late adjustment", () => {
       .reduce((total, l) => total + l[side], 0);
 
   test("payment.paid receives into customer_deposit; payment.refunded pays it out of gateway_clearing", () => {
-    const received = linesFor("payment.paid", { receivedIdr: 275_000 });
+    const received = linesFor("payment.paid", {
+      receivedIdr: 275_000,
+      depositIdr: 275_000,
+      guestFeeIdr: 0,
+    });
     assert.equal(sum(received, "1202", "debitIdr"), 275_000);
     assert.equal(sum(received, "2107", "creditIdr"), 275_000);
     const paidOut = linesFor("payment.refunded", { amountIdr: 50_000 });
@@ -1190,6 +1194,8 @@ describe("Auto-journal receipt-first rules and late adjustment", () => {
   test("payment.funds_unallocated receives into customer_deposit like payment.paid", () => {
     const received = linesFor("payment.funds_unallocated", {
       receivedIdr: 125_000,
+      depositIdr: 125_000,
+      guestFeeIdr: 0,
     });
     assert.equal(sum(received, "1202", "debitIdr"), 125_000);
     assert.equal(sum(received, "2107", "creditIdr"), 125_000);

@@ -38,7 +38,7 @@ import {
   payAtCashierAcknowledgementSchema,
   type CreatePaymentIntentInput,
   type CustomerPaymentIntent,
-  type PaymentChannel,
+  type GuestPaymentChannel,
   type PaymentInstructions,
   type PaymentIntent,
   type PaymentLinkView,
@@ -109,6 +109,7 @@ import {
   assertNoActiveQrisHold,
 } from "./pos-qris-hold.ts";
 import {
+  NO_GUEST_FEE,
   paymentGatewayFor,
   registeredGatewayProviders,
   type GatewayCancelRequest,
@@ -146,6 +147,7 @@ import {
   type PaymentLinkRow,
 } from "./payment-support";
 import { recordProviderRefundInTx } from "./payment-provider-partial-refund";
+import { priceForGuest } from "./payment-guest-fee";
 import { OWN_REFUND_FAILED_UNVERIFIED } from "./refund-recon-hold.service.ts";
 import type { Tx } from "./permission-resolver";
 
@@ -378,7 +380,10 @@ type RoutedMethod = {
   readonly provider: string;
   readonly enabled: boolean;
   readonly unavailableReason: "gateway_down" | "routing_disabled" | null;
-  readonly channels: PaymentChannel[];
+  readonly channels: GuestPaymentChannel[];
+  /** 1272 K1: fee and total of a channel-less method while enabled. */
+  readonly guestFeeIdr: number | null;
+  readonly totalIdr: number | null;
 };
 
 /** Routing rules for the three online methods, read in one transaction. */
@@ -428,11 +433,32 @@ async function onlineMethods(
       gatewayUsable &&
       (await gatewayListsMethod(context, port, entry.method, link.outletId));
     const needsChannel = entry.method !== "qris" && entry.method !== "card";
-    const channels =
+    const providerChannels =
       needsChannel && listed
         ? await port.channels(context, entry.method, link.outletId)
         : [];
-    const configured = listed && (!needsChannel || channels.length > 0);
+    // 1272 K1: each channel priced for the guest; one without a usable rate
+    // is hidden, never shown at fee 0.
+    const schedule =
+      listed && port.guestFeeSchedule
+        ? await port.guestFeeSchedule(context, link.outletId)
+        : NO_GUEST_FEE;
+    const baseIdr = outstandingIdr(link);
+    const channels: GuestPaymentChannel[] = [];
+    for (const channel of providerChannels) {
+      const price = priceForGuest(
+        schedule,
+        entry.method,
+        channel.code,
+        baseIdr,
+      );
+      if (price) channels.push({ ...channel, ...price });
+    }
+    const methodPrice = needsChannel
+      ? null
+      : priceForGuest(schedule, entry.method, null, baseIdr);
+    const configured =
+      listed && (needsChannel ? channels.length > 0 : methodPrice !== null);
     const enabled = entry.routing.enabled && gatewayUsable && configured;
     const unavailableReason = !entry.routing.enabled
       ? ("routing_disabled" as const)
@@ -452,6 +478,8 @@ async function onlineMethods(
       enabled,
       unavailableReason,
       channels,
+      guestFeeIdr: enabled && methodPrice ? methodPrice.guestFeeIdr : null,
+      totalIdr: enabled && methodPrice ? methodPrice.totalIdr : null,
     });
   }
   return result;
@@ -538,6 +566,8 @@ export async function getPaymentLinkView(
       enabled: entry.enabled,
       unavailableReason: entry.unavailableReason,
       channels: entry.channels,
+      guestFeeIdr: entry.guestFeeIdr,
+      totalIdr: entry.totalIdr,
     })),
     gateway: { status: health.status },
     activeIntent: activeIntent ? toCustomerIntent(activeIntent) : null,
@@ -1390,6 +1420,23 @@ async function createIntentCore(
   );
   // Same key, same id, same DOIT request: see intentIdFor.
   const intentId = intentIdFor(context.tenant.tenantId, parsed.idempotencyKey);
+  // 1272 K1 (design duitku-fee-passthrough §2): the guest service fee on top
+  // of the bill, from the gateway's own rates (no provider call). A method
+  // that should carry one and has no rate is not offered, never fee 0.
+  const guestFeeSchedule = selected.port.guestFeeSchedule
+    ? await selected.port.guestFeeSchedule(context, plan.link.outletId)
+    : NO_GUEST_FEE;
+  const guestFeeIdr = guestFeeSchedule(
+    parsed.method,
+    parsed.channelCode,
+    amountIdr,
+  );
+  if (guestFeeIdr === null)
+    throw new HttpError(
+      422,
+      "VALIDATION_ERROR",
+      "This payment method is not available.",
+    );
   const created: GatewayIntent = await selected.port.createIntent({
     context,
     outletId: plan.link.outletId,
@@ -1398,6 +1445,7 @@ async function createIntentCore(
     method: parsed.method,
     channelCode: parsed.channelCode,
     amountIdr,
+    guestFeeIdr,
     idempotencyKey: parsed.idempotencyKey,
     expiresAt: requestedExpiry.toISOString(),
   });
@@ -1515,6 +1563,11 @@ async function createIntentCore(
           method: parsed.method,
           provider: selected.provider,
           amountIdr: idr(amountIdr),
+          guestFeeIdr: idr(guestFeeIdr),
+          gatewayFeeQuoteIdr:
+            created.feeQuoteIdr === undefined || created.feeQuoteIdr === null
+              ? null
+              : idr(created.feeQuoteIdr),
           billSplitId: part?.billSplitId ?? null,
           idempotencyKey: parsed.idempotencyKey,
           providerRef: created.providerRef,
@@ -1579,6 +1632,7 @@ async function createIntentCore(
             method: parsed.method,
             provider: selected.provider,
             amountIdr: idr(amountIdr),
+            guestFeeIdr: idr(guestFeeIdr),
             billSplitId: part?.billSplitId ?? null,
             idempotencyKey: parsed.idempotencyKey,
             providerRef: created.providerRef,
@@ -1901,6 +1955,21 @@ export async function recordUnsettledGatewayFunds(
   return outcome !== "none";
 }
 
+/**
+ * 1272 K1 (design duitku-fee-passthrough §4): the guest fee is never paid
+ * back. A second payment of the same code at its charged amount carried the
+ * fee too and the gateway keeps its MDR, so only the bill part is parked
+ * (refundable); the fee part offsets the MDR in the receipt journal. Any other
+ * amount is parked whole.
+ */
+export function guestFeeWithheldOf(
+  intent: Pick<PaymentIntentRow, "guestFeeIdr" | "chargedIdr">,
+  paidIdr: number,
+): number {
+  const fee = Number(intent.guestFeeIdr);
+  return fee > 0 && paidIdr === Number(intent.chargedIdr) ? fee : 0;
+}
+
 /** The same recording inside the caller's transaction (and lock order).
  * Returns `inserted` for newly written funds, `found` for a replay of the same
  * provider transaction (already on record), and `none` when there is no
@@ -1944,7 +2013,8 @@ export async function recordUnsettledGatewayFundsInTx(
   )
     return "found";
   const reason =
-    paid > Number(intent.amountIdr) ? "overpayment" : "double_payment";
+    paid > Number(intent.chargedIdr) ? "overpayment" : "double_payment";
+  const withheld = guestFeeWithheldOf(intent, paid);
   {
     const [inserted] = await tx
       .insert(paymentEvidence)
@@ -1976,7 +2046,7 @@ export async function recordUnsettledGatewayFundsInTx(
         paymentIntentId: intent.id,
         // The payout refunds exactly this transaction (legend-knev).
         evidenceId: inserted.id,
-        amountIdr: idr(paid),
+        amountIdr: idr(paid - withheld),
         reason,
       })
       .returning({ id: paymentUnallocatedFunds.id });
@@ -1993,6 +2063,7 @@ export async function recordUnsettledGatewayFundsInTx(
         method: funds.method ?? intent.method,
         provider: funds.provider,
         receivedIdr: paid,
+        ...(withheld > 0 ? { guestFeeIdr: withheld } : {}),
         receivedAt: funds.receivedAt.toISOString(),
         reason,
       },
@@ -2016,7 +2087,7 @@ export async function recordUnsettledGatewayFundsInTx(
           before: { status: intent.status },
           after: {
             status: intent.status,
-            unallocatedIdr: paid,
+            unallocatedIdr: paid - withheld,
             providerRef: funds.providerRef,
           },
         },
@@ -2156,7 +2227,7 @@ export async function holdGatewayAmountMismatch(
             after: {
               status,
               paidIdr: input.paidAmountIdr,
-              dueIdr: Number(current.amountIdr),
+              dueIdr: Number(current.chargedIdr),
               source: input.source,
             },
           },
@@ -2210,7 +2281,7 @@ export async function holdGatewayAmountMismatch(
         // hold keeps the helper's default text. A callback amount that
         // disagrees with the provider's status answer is not "different from
         // the bill", so it gets its own wording.
-        const dueIdr = Number(current.amountIdr);
+        const dueIdr = Number(current.chargedIdr);
         const body =
           hold.state === "closed"
             ? undefined
@@ -2268,7 +2339,7 @@ async function assertStrictAmount(
   const paidAmountIdr = paid.amountIdr;
   if (
     STRICT_SETTLEMENT_PROVIDERS.has(intent.provider) &&
-    paidAmountIdr !== Number(intent.amountIdr)
+    paidAmountIdr !== Number(intent.chargedIdr)
   ) {
     await holdGatewayAmountMismatch(
       context,
@@ -3142,7 +3213,8 @@ async function applyConfirmation(
       {
         status: current.status,
         method: current.method,
-        amountIdr: current.amountIdr,
+        // 1272 K1: the gateway charged the bill plus the guest fee.
+        amountIdr: current.chargedIdr,
         providerRef: current.providerRef,
         expiresAt: current.expiresAt.toISOString(),
         flags: current.flags,
@@ -3272,6 +3344,7 @@ async function applyConfirmation(
         )
         .returning();
       if (!row) throw new Error("Payment intent update returned no row");
+      const withheld = guestFeeWithheldOf(current, decision.amountIdr);
       const [fund] = await tx
         .insert(paymentUnallocatedFunds)
         .values({
@@ -3279,7 +3352,7 @@ async function applyConfirmation(
           outletId: current.outletId,
           paymentIntentId: current.id,
           evidenceId,
-          amountIdr: idr(decision.amountIdr),
+          amountIdr: idr(decision.amountIdr - withheld),
           reason: "double_payment",
         })
         .returning({ id: paymentUnallocatedFunds.id });
@@ -3299,6 +3372,7 @@ async function applyConfirmation(
           method: confirmation.method,
           provider: current.provider,
           receivedIdr: decision.amountIdr,
+          ...(withheld > 0 ? { guestFeeIdr: withheld } : {}),
           receivedAt: new Date(confirmation.at).toISOString(),
           reason: "double_payment",
         },
@@ -3321,7 +3395,7 @@ async function applyConfirmation(
             before: { status: current.status },
             after: {
               status: row.status,
-              unallocatedIdr: decision.amountIdr,
+              unallocatedIdr: decision.amountIdr - withheld,
               providerRef: confirmation.providerRef,
             },
           },
@@ -3356,7 +3430,13 @@ async function applyConfirmation(
       current.amountIdr,
       outstandingIdr(freshLink),
     );
-    const unallocatedNow = Math.max(0, confirmation.amountIdr - allocatableNow);
+    // 1272 K1 §3: the guest fee is never overpayment. The decision above
+    // settles only at the charged amount or more, so the fee came in whole.
+    const guestFeeNow = Number(current.guestFeeIdr);
+    const unallocatedNow = Math.max(
+      0,
+      confirmation.amountIdr - guestFeeNow - allocatableNow,
+    );
     const reasonNow: "overpayment" | "double_payment" | null =
       unallocatedNow === 0
         ? null
@@ -3428,6 +3508,7 @@ async function applyConfirmation(
         provider: row.provider,
         amountIdr: row.amountIdr,
         receivedIdr: confirmation.amountIdr,
+        ...(guestFeeNow > 0 ? { guestFeeIdr: guestFeeNow } : {}),
         allocatedIdr: allocatableNow,
         unallocatedIdr: unallocatedNow,
         providerRef: confirmation.providerRef,

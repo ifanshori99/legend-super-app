@@ -392,6 +392,8 @@ const paymentPaidSchema = z.object({
   intentId: z.string().uuid(),
   receivedIdr: idr,
   paidAt: time.nullable().optional(),
+  /** 1272 K1: trail only; the journal reads the fee from the intent row. */
+  guestFeeIdr: idr.optional(),
 });
 
 const fundsUnallocatedSchema = z.object({
@@ -399,6 +401,8 @@ const fundsUnallocatedSchema = z.object({
   intentId: z.string().uuid(),
   receivedIdr: idr,
   receivedAt: time,
+  /** 1272 K1: the guest fee withheld from the parked fund (never refunded). */
+  guestFeeIdr: idr.optional(),
 });
 
 const paymentRefundedSchema = z.object({
@@ -1841,6 +1845,7 @@ async function intentOf(tx: Tx, tenantId: TenantId, intentId: string) {
     .select({
       outletId: paymentIntents.outletId,
       edcTransactionId: paymentIntents.edcTransactionId,
+      guestFeeIdr: paymentIntents.guestFeeIdr,
     })
     .from(paymentIntents)
     .where(
@@ -3027,9 +3032,24 @@ export async function autoJournalFactOf(
       if (p.receivedIdr <= 0) return null;
       const intent = await intentOf(tx, tenantId, p.intentId);
       if (intent.edcTransactionId !== null) return null;
+      // 1272 K1 (design §3): the guest fee of the intent row leaves the
+      // deposit and offsets the MDR. A payment is settled only at the charged
+      // amount, so the fee is never above what came in.
+      const guestFeeIdr = Number(intent.guestFeeIdr);
+      if (
+        guestFeeIdr > p.receivedIdr ||
+        (p.guestFeeIdr !== undefined && p.guestFeeIdr !== guestFeeIdr)
+      )
+        throw new AutoJournalPayloadInvalid(
+          "Guest fee of the event differs from its payment intent",
+        );
       return {
         ruleEvent: "payment.paid",
-        amounts: { receivedIdr: p.receivedIdr },
+        amounts: {
+          receivedIdr: p.receivedIdr,
+          depositIdr: p.receivedIdr - guestFeeIdr,
+          guestFeeIdr,
+        },
         sourceId: p.intentId,
         outletId: intent.outletId,
         moneyTime: new Date(p.paidAt ?? stored.occurredAt),
@@ -3051,21 +3071,31 @@ export async function autoJournalFactOf(
             eq(paymentUnallocatedFunds.id, p.unallocatedFundId),
           ),
         );
+      const withheldIdr = p.guestFeeIdr ?? 0;
       if (
         !fund ||
         fund.paymentIntentId !== p.intentId ||
-        Number(fund.amountIdr) !== p.receivedIdr
+        Number(fund.amountIdr) + withheldIdr !== p.receivedIdr
       )
         throw new AutoJournalPayloadInvalid(
           "Unallocated fund of the event not found or different",
         );
       const intent = await intentOf(tx, tenantId, p.intentId);
+      // 1272 K1: only the intent's own guest fee is ever withheld.
+      if (withheldIdr > 0 && withheldIdr !== Number(intent.guestFeeIdr))
+        throw new AutoJournalPayloadInvalid(
+          "Guest fee of the event differs from its payment intent",
+        );
       // Same as payment.refunded: the payout of a fund on an EDC-linked
       // intent books nothing, so its receipt books nothing either.
       if (intent.edcTransactionId !== null) return null;
       return {
         ruleEvent: "payment.funds_unallocated",
-        amounts: { receivedIdr: p.receivedIdr },
+        amounts: {
+          receivedIdr: p.receivedIdr,
+          depositIdr: Number(fund.amountIdr),
+          guestFeeIdr: withheldIdr,
+        },
         sourceId: p.unallocatedFundId,
         outletId: fund.outletId,
         moneyTime: new Date(p.receivedAt),

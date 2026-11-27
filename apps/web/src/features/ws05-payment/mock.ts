@@ -220,6 +220,8 @@ function mintIntent(
     method,
     status: "pending",
     amountIdr,
+    guestFeeIdr: idr(0),
+    chargedIdr: amountIdr,
     expiresAt: at(CODE_LIFETIME_MS),
     paidAt: null,
     paidAfterExpiry: false,

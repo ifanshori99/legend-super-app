@@ -287,6 +287,8 @@ describe("duitku adapter: createIntent", () => {
       },
       expiresAt: intentRequest().expiresAt,
       integrationId: INTEGRATION_ID,
+      // 1272 K1: Duitku's quote for the charged amount (SP totalFee 0).
+      feeQuoteIdr: 0,
     });
   });
 

@@ -357,6 +357,20 @@ const schema = z
           .filter(Boolean),
       )
       .pipe(z.array(z.enum(["qris", "va", "ewallet", "card"]))),
+    // 1272 K1 (design duitku-fee-passthrough §0-§2): Duitku methods whose MDR
+    // the guest pays as a separate "Biaya layanan", comma-separated (va,
+    // ewallet, card). QRIS never (§5). Empty by default: the outlet bears the
+    // MDR exactly as before.
+    DUITKU_GUEST_FEE_METHODS: z
+      .string()
+      .optional()
+      .transform((value) =>
+        (value ?? "")
+          .split(",")
+          .map((item) => item.trim())
+          .filter(Boolean),
+      )
+      .pipe(z.array(z.enum(["va", "ewallet", "card"]))),
     // A Duitku sandbox account is refused in production (its "paid" is not
     // money). Only staging, which runs production builds, sets this; a process
     // in production mode or with real data refuses to start with it.

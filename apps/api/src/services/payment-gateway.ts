@@ -62,8 +62,13 @@ export type GatewayIntentRequest = {
    * report as enabled from `methods()`. */
   readonly method: GatewayPaymentMethod;
   readonly channelCode: string | null;
-  /** Server-priced amount (PAY-01). */
+  /** Server-priced amount (PAY-01): the bill, never the guest fee. */
   readonly amountIdr: number;
+  /** 1272 K1: guest service fee from `guestFeeSchedule` (design
+   * duitku-fee-passthrough §2). The gateway charges `amountIdr + guestFeeIdr`
+   * and refuses a fee it does not compute itself for that channel. Absent = 0;
+   * a gateway without `guestFeeSchedule` refuses any other value. */
+  readonly guestFeeIdr?: number;
   readonly idempotencyKey: string;
   readonly expiresAt: string;
 };
@@ -77,7 +82,24 @@ export type GatewayIntent = {
    * intent so status checks and webhooks use the same account later. Absent
    * for a gateway without per-tenant integrations. */
   readonly integrationId?: string | null;
+  /** 1272 K1: the provider's own fee quote for the charged amount, when it
+   * gave one (Duitku `totalFee`). Absent or null = no quote. */
+  readonly feeQuoteIdr?: number | null;
 };
+
+/**
+ * 1272 K1: guest service fee of paying `baseIdr` (the bill) with a method and
+ * channel: 0 = the method carries no fee; null = it should and the channel has
+ * no usable rate (hide it, never a silent 0); else the fee on top of the bill.
+ */
+export type GuestFeeSchedule = (
+  method: GatewayPaymentMethod,
+  channelCode: string | null,
+  baseIdr: number,
+) => number | null;
+
+/** No fee on anything: every gateway without `guestFeeSchedule`. */
+export const NO_GUEST_FEE: GuestFeeSchedule = () => 0;
 
 export type GatewayPaymentStatus = {
   readonly status: "pending" | "paid" | "expired" | "failed";
@@ -154,6 +176,12 @@ export interface PaymentGatewayPort {
     outletId?: string,
     amountIdr?: number,
   ): Promise<readonly GatewayMethodAvailability[]>;
+  /** 1272 K1: the outlet's guest fee schedule, read from its integration
+   * config without a provider call. Optional: absent = `NO_GUEST_FEE`. */
+  guestFeeSchedule?(
+    context: ScopedTenantContext,
+    outletId?: string,
+  ): Promise<GuestFeeSchedule>;
   /**
    * Best effort: closes a superseded code at the provider so it stops taking
    * money (a VA lives 3 hours). Optional; a code paid anyway is still settled
