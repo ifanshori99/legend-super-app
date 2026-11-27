@@ -39,14 +39,18 @@ import {
   canCollect,
   chargePhase,
   codeFacts,
+  CHARGE_POLL_MS,
   COLLECT_DEADLINE_MS,
+  EDC_START_DEADLINE_MS,
   PRECHECK_DEADLINE_MS,
+  RESOLVE_DEADLINE_MS,
   readWithin,
   requestSignature,
   withDeadline,
   type EdcStartFacts,
 } from "./charge-method-logic";
 import {
+  chargeApproversQuery,
   chargeTerminalsQuery,
   issueChargeKeys,
   issueChargeQuery,
@@ -85,12 +89,13 @@ function withStorage<T>(
 }
 
 /**
- * Nothing was sent. `read`: the charge could not be read before sending (the
- * deadline passed or the server refused); otherwise the charge changed, or
- * another attempt is still without an answer.
+ * Nothing was sent. `not_read`: the charge could not be read before sending
+ * (the deadline passed or the server refused). `changed`: the charge read
+ * differently than the screen showed. `held`: another attempt of this browser
+ * is still without an answer.
  */
 class NotSentError extends Error {
-  constructor(readonly read: boolean) {
+  constructor(readonly reason: "not_read" | "changed" | "held") {
     super("");
   }
 }
@@ -100,6 +105,26 @@ export function useIssueCharge(chargeId: string) {
   return useQuery({
     ...issueChargeQuery(outletId, chargeId),
     enabled: (API_MOCK || outletId !== "") && chargeId !== "",
+  });
+}
+
+/**
+ * Who may approve the settle at this outlet, without the caller (the server
+ * refuses the caller as approver).
+ */
+export function useChargeApprovers(
+  action: "void" | "edc_standalone",
+  callerId: string,
+  enabled: boolean,
+) {
+  const outletId = useOutletId();
+  return useQuery({
+    ...chargeApproversQuery(outletId, action),
+    enabled: enabled && (API_MOCK || outletId !== ""),
+    select: (options) =>
+      options.filter(
+        (option) => option.userId.toLowerCase() !== callerId.toLowerCase(),
+      ),
   });
 }
 
@@ -133,8 +158,7 @@ export function useChargeAttempts(
   // another tab's attempt, and whether it was that key's first send.
   const attempt = useRef<{ key: string; firstSend: boolean } | null>(null);
   // The last refusal ended its key: nothing can be recorded for it, so it
-  // reads as a refusal even when its status alone would be unknown (503
-  // EDC_AGENT_NOT_READY on a first send).
+  // reads as a refusal (401/403/429 on a first send).
   const [lastEnded, setLastEnded] = useState(false);
   const scope: ChargeKeyScope = { outletId, chargeId };
   const queryKey = issueChargeKeys.charge(outletId, chargeId);
@@ -182,14 +206,14 @@ export function useChargeAttempts(
         (signal) => fetchIssueCharge(chargeId, signal),
         PRECHECK_DEADLINE_MS,
       ).catch(() => {
-        throw new NotSentError(true);
+        throw new NotSentError("not_read");
       });
       queryClient.setQueryData(queryKey, read);
       const allowed =
         request.method === "edc_start"
           ? chargePhase(read) === "choose"
           : canCollect(read, request);
-      if (!allowed) throw new NotSentError(false);
+      if (!allowed) throw new NotSentError("changed");
       // The charge was just read open: together with the server's 409/422 for
       // the key, this is what lets the cashier change method.
       store((storage) => markChecked(storage, scope));
@@ -202,19 +226,28 @@ export function useChargeAttempts(
           codeFacts(read),
         ),
       );
-      if (begun.conflict) throw new NotSentError(false);
+      if (begun.conflict) throw new NotSentError("held");
       attempt.current = { key: begun.key, firstSend: begun.firstSend };
       // A request that never answers must not lock the screen: after the
       // deadline the result is unknown (the status check follows).
       if (request.method === "edc_start") {
-        const sale = await withDeadline(
-          startChargeEdc(chargeId, {
-            terminalId: request.terminalId,
-            idempotencyKey: begun.key,
-          }),
-          COLLECT_DEADLINE_MS,
-        );
-        return { kind: "edc" as const, saleId: sale.id };
+        // The agent answers when the terminal is done (up to 120 s): the
+        // screen keeps reading the server meanwhile, so the sale shows.
+        const poll = setInterval(() => {
+          void queryClient.refetchQueries({ queryKey }).catch(() => undefined);
+        }, CHARGE_POLL_MS);
+        try {
+          const sale = await withDeadline(
+            startChargeEdc(chargeId, {
+              terminalId: request.terminalId,
+              idempotencyKey: begun.key,
+            }),
+            EDC_START_DEADLINE_MS,
+          );
+          return { kind: "edc" as const, saleId: sale.id };
+        } finally {
+          clearInterval(poll);
+        }
       }
       const answer = await withDeadline(
         collectCharge(chargeId, {
@@ -258,7 +291,7 @@ export function useChargeAttempts(
       const { key, firstSend } = attempt.current;
       const action =
         request.method === "edc_start"
-          ? edcStartKeyAfter(error.status, error.code, firstSend)
+          ? edcStartKeyAfter(error.status, firstSend)
           : collectKeyAfter(error.status, firstSend);
       if (action === "refused")
         store((storage) => markRefused(storage, scope, key));
@@ -278,12 +311,12 @@ export function useChargeAttempts(
   // before sending that failed sent nothing: it says so, and the lock stays.
   const { error } = mutation;
   let failure: {
-    kind: "unknown" | "failed" | "not_read";
+    kind: "unknown" | "failed" | "not_read" | "changed" | "held";
     code: string | null;
     message: string;
   } | null = null;
-  if (error instanceof NotSentError && error.read)
-    failure = { kind: "not_read", code: null, message: "" };
+  if (error instanceof NotSentError)
+    failure = { kind: error.reason, code: null, message: "" };
   else if (error instanceof ApiError)
     failure = {
       kind: lastEnded ? "failed" : chargeFailureKind(error.status),
@@ -325,6 +358,22 @@ export function useChargeAttempts(
     },
     /** Nothing was sent (the read before sending failed): back to the form. */
     clear: () => mutation.reset(),
+    /**
+     * Reads the charge now within a deadline (the status check): the result,
+     * or null when the server did not answer in time.
+     */
+    checkNow: async (): Promise<IssueChargeDetail | null> => {
+      try {
+        const read = await readWithin(
+          (signal) => fetchIssueCharge(chargeId, signal),
+          PRECHECK_DEADLINE_MS,
+        );
+        queryClient.setQueryData(queryKey, read);
+        return read;
+      } catch {
+        return null;
+      }
+    },
     /** A supervisor settled the attempt with this key: it is answered. */
     settledAttempt: (key: string) => {
       store((storage) => endAttempt(storage, scope, key));
@@ -347,10 +396,15 @@ export function useResolveChargeAttempt(chargeId: string) {
     ResolveChargeAttemptInput
   >({
     retry: false,
-    mutationFn: (input) => resolveChargeAttempt(chargeId, input),
+    // The settle is replayed safely with the same key: after the deadline the
+    // dialog may be opened and sent again.
+    mutationFn: (input) =>
+      withDeadline(resolveChargeAttempt(chargeId, input), RESOLVE_DEADLINE_MS),
     onSuccess: (answer) => {
       queryClient.setQueryData(queryKey, answer.charge);
       void queryClient.invalidateQueries({ queryKey });
     },
+    // Whatever happened, the screen reads the server again.
+    onError: () => void queryClient.invalidateQueries({ queryKey }),
   });
 }

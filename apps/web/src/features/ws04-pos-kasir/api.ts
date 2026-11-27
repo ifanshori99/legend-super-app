@@ -678,7 +678,8 @@ export async function fetchEdcTerminals(
     id: terminal.id,
     label: `${terminal.bankCode.toUpperCase()} · ${terminal.model}`,
     bank: terminal.bankCode.toUpperCase(),
-    // No route sends an amount to a machine yet, whatever the server says.
+    // The bill payment panel does not drive the terminal (the dearer-swap
+    // charge does, through its own start route): the cashier keys the sale.
     integrated: false,
     status: "ready" as const,
     assignedTo: `•••• ${terminal.terminalIdLast4}`,

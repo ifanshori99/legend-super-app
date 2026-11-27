@@ -26,8 +26,9 @@ import {
   Notice,
   SupervisorPinDialog,
 } from "@/features/ws04-pos-kasir/components/shared";
-import { useResolveApprovers } from "@/features/ws04-pos-kasir/hooks";
-import { useResolveChargeAttempt } from "../charge-hooks";
+import { useActorId } from "@/features/ws04-pos-kasir/hooks";
+import { useChargeApprovers, useResolveChargeAttempt } from "../charge-hooks";
+import { CollectDeadlineError } from "../charge-method-logic";
 
 export type ResolvableAttempt = {
   method: "cash" | "edc";
@@ -40,6 +41,8 @@ type Statement = "failed" | "paid";
 
 const SLIP_CODE = /^[A-Za-z0-9]{1,24}$/;
 const APPROVAL_CODE = /^[A-Za-z0-9]{1,12}$/;
+
+type Field = "approver" | "statement" | "rrn" | "approval" | "amount";
 
 export function ChargeResolveDialog({
   chargeId,
@@ -58,20 +61,23 @@ export function ChargeResolveDialog({
 }) {
   const t = useT();
   const resolve = useResolveChargeAttempt(chargeId);
-  const approvers = useResolveApprovers(
+  // The caller is never offered: the server refuses them as approver.
+  const approvers = useChargeApprovers(
     attempt.method === "cash" ? "void" : "edc_standalone",
+    useActorId(),
     open,
   );
   const [pickedId, setPickedId] = useState<string>();
+  const [touched, setTouched] = useState<ReadonlySet<Field>>(new Set());
   const [statement, setStatement] = useState<Statement>();
   const [rrn, setRrn] = useState("");
   const [approval, setApproval] = useState("");
   const [slipAmount, setSlipAmount] = useState("");
-  const [formError, setFormError] = useState<string | null>(null);
 
   const options = approvers.data ?? [];
-  const approverUserId = (
-    options.find((option) => option.userId === pickedId) ?? options[0]
+  // No approver is chosen for the supervisor: they pick themselves.
+  const approverUserId = options.find(
+    (option) => option.userId === pickedId,
   )?.userId;
   const serverCode =
     resolve.error instanceof ApiError ? resolve.error.code : null;
@@ -82,16 +88,37 @@ export function ChargeResolveDialog({
       serverCode === ISSUE_CHARGE_EDC_STATEMENT_REQUIRED ||
       serverCode === ISSUE_CHARGE_SLIP_REQUIRED);
   const serverError =
-    serverCode === ISSUE_CHARGE_EDC_STATEMENT_REQUIRED
-      ? t("posIssueCharge.resolve.statementRequired")
-      : serverCode === ISSUE_CHARGE_SLIP_REQUIRED
-        ? t("posIssueCharge.resolve.slipRequired")
-        : (resolve.error?.message ?? null);
+    resolve.error instanceof CollectDeadlineError
+      ? t("posIssueCharge.resolve.timeout")
+      : serverCode === ISSUE_CHARGE_EDC_STATEMENT_REQUIRED
+        ? t("posIssueCharge.resolve.statementRequired")
+        : serverCode === ISSUE_CHARGE_SLIP_REQUIRED
+          ? t("posIssueCharge.resolve.slipRequired")
+          : (resolve.error?.message ?? null);
+  const slipShown = askStatement && statement === "paid";
+  // Each field says what is wrong next to it (on leaving it, and on the PIN),
+  // and a field error never empties the PIN.
+  const problems: Partial<Record<Field, string>> = {};
+  if (!approverUserId)
+    problems.approver = t("posIssueCharge.resolve.approverRequired");
+  if (askStatement && !statement)
+    problems.statement = t("posIssueCharge.resolve.statementRequired");
+  if (slipShown && !SLIP_CODE.test(rrn.trim()))
+    problems.rrn = t("posIssueCharge.resolve.rrnInvalid");
+  if (slipShown && !APPROVAL_CODE.test(approval.trim()))
+    problems.approval = t("posIssueCharge.resolve.approvalInvalid");
+  if (slipShown && !(Number(slipAmount) > 0))
+    problems.amount = t("posIssueCharge.resolve.amountInvalid");
+  const shown = (field: Field) =>
+    touched.has(field) ? problems[field] : undefined;
+  const touch = (field: Field) =>
+    setTouched((current) => new Set(current).add(field));
   const amount = formatRupiah(amountIdr);
   const busy = resolve.isPending;
 
   const reset = () => {
-    setFormError(null);
+    setPickedId(undefined);
+    setTouched(new Set());
     setStatement(undefined);
     setRrn("");
     setApproval("");
@@ -103,9 +130,9 @@ export function ChargeResolveDialog({
     <SupervisorPinDialog
       open={open}
       onOpenChange={(next) => {
-        // Stay open while the server decides.
-        if (!next && busy) return;
-        reset();
+        // Closing while the server decides keeps the request going; the
+        // screen reads the server again (the settle replays with its key).
+        if (!busy) reset();
         onOpenChange(next);
       }}
       title={t("posIssueCharge.resolve.title")}
@@ -120,24 +147,31 @@ export function ChargeResolveDialog({
           {(approvers.isError || approvers.data?.length === 0) && (
             <Notice
               tone="warning"
-              title={t(
+              title={
                 approvers.isError
-                  ? "posCorrection.approval.supervisorsError"
-                  : "posCorrection.approval.supervisorsEmpty",
-              )}
+                  ? t("posCorrection.approval.supervisorsError")
+                  : t("posIssueCharge.resolve.approversNone")
+              }
             />
           )}
           <FormField
             label={t("posCorrection.approval.supervisorLabel")}
             hint={t("posCorrection.approval.supervisorHint")}
+            error={shown("approver")}
             required
           >
             <Select
               value={approverUserId ?? ""}
-              onValueChange={(next) => setPickedId(next || undefined)}
+              onValueChange={(next) => {
+                setPickedId(next || undefined);
+                touch("approver");
+              }}
               disabled={busy}
             >
-              <SelectTrigger className="h-control">
+              <SelectTrigger
+                className="h-control"
+                onBlur={() => touch("approver")}
+              >
                 <SelectValue
                   placeholder={t(
                     "posCorrection.approval.supervisorPlaceholder",
@@ -157,17 +191,21 @@ export function ChargeResolveDialog({
             <FormField
               label={t("posIssueCharge.resolve.statementLabel")}
               hint={t("posIssueCharge.resolve.statementHint")}
+              error={shown("statement")}
               required
             >
               <Select
                 value={statement ?? ""}
                 onValueChange={(next) => {
                   setStatement((next || undefined) as Statement | undefined);
-                  setFormError(null);
+                  touch("statement");
                 }}
                 disabled={busy}
               >
-                <SelectTrigger className="h-control">
+                <SelectTrigger
+                  className="h-control"
+                  onBlur={() => touch("statement")}
+                >
                   <SelectValue
                     placeholder={t(
                       "posIssueCharge.resolve.statementPlaceholder",
@@ -185,13 +223,18 @@ export function ChargeResolveDialog({
               </Select>
             </FormField>
           )}
-          {askStatement && statement === "paid" && (
+          {slipShown && (
             <div className="grid gap-3 md:grid-cols-2">
-              <FormField label={t("posIssueCharge.resolve.slipRrn")} required>
+              <FormField
+                label={t("posIssueCharge.resolve.slipRrn")}
+                error={shown("rrn")}
+                required
+              >
                 <Input
                   name="slipRrn"
                   value={rrn}
                   onChange={(event) => setRrn(event.target.value)}
+                  onBlur={() => touch("rrn")}
                   autoComplete="off"
                   spellCheck={false}
                   className="tabular"
@@ -200,12 +243,14 @@ export function ChargeResolveDialog({
               </FormField>
               <FormField
                 label={t("posIssueCharge.resolve.slipApproval")}
+                error={shown("approval")}
                 required
               >
                 <Input
                   name="slipApprovalCode"
                   value={approval}
                   onChange={(event) => setApproval(event.target.value)}
+                  onBlur={() => touch("approval")}
                   autoComplete="off"
                   spellCheck={false}
                   className="tabular"
@@ -219,6 +264,7 @@ export function ChargeResolveDialog({
                     ? formatRupiah(Number(slipAmount))
                     : t("posIssueCharge.resolve.slipAmountHint")
                 }
+                error={shown("amount")}
                 required
               >
                 <Input
@@ -229,6 +275,7 @@ export function ChargeResolveDialog({
                       event.target.value.replace(/\D/g, "").slice(0, 12),
                     )
                   }
+                  onBlur={() => touch("amount")}
                   inputMode="numeric"
                   autoComplete="off"
                   className="tabular"
@@ -241,28 +288,19 @@ export function ChargeResolveDialog({
       }
       onSubmit={({ reason, pin }) => {
         if (busy) return;
-        if (!approverUserId)
-          return setFormError(
-            t("posCorrection.approval.supervisorPlaceholder"),
-          );
-        if (askStatement && !statement)
-          return setFormError(t("posIssueCharge.resolve.statementRequired"));
-        const slip =
-          askStatement && statement === "paid"
-            ? {
-                rrn: rrn.trim(),
-                approvalCode: approval.trim(),
-                chargedAmountIdr: Number(slipAmount),
-              }
-            : null;
-        if (
-          slip &&
-          (!SLIP_CODE.test(slip.rrn) ||
-            !APPROVAL_CODE.test(slip.approvalCode) ||
-            !(slip.chargedAmountIdr > 0))
-        )
-          return setFormError(t("posIssueCharge.resolve.slipRequired"));
-        setFormError(null);
+        const missing = Object.keys(problems) as Field[];
+        if (missing.length > 0) {
+          setTouched(new Set(missing));
+          return;
+        }
+        if (!approverUserId) return;
+        const slip = slipShown
+          ? {
+              rrn: rrn.trim(),
+              approvalCode: approval.trim(),
+              chargedAmountIdr: Number(slipAmount),
+            }
+          : null;
         resolve.mutate(
           {
             method: attempt.method,
@@ -283,7 +321,7 @@ export function ChargeResolveDialog({
         );
       }}
       pending={busy}
-      error={formError ?? serverError}
+      error={serverError}
       minReasonLength={3}
     />
   );

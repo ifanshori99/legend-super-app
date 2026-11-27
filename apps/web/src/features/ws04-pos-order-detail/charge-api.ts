@@ -5,8 +5,12 @@
 import type { z } from "@starter/shared/core";
 import { callEndpoint } from "@/lib/api/endpoint";
 import { API_MOCK } from "@/lib/api/mock-flag";
-import { fetchEdcTerminals } from "@/features/ws04-pos-kasir/api";
+import {
+  fetchEdcTerminals,
+  fetchResolveApprovers,
+} from "@/features/ws04-pos-kasir/api";
 import type { EdcTransaction } from "@starter/shared/edc";
+import { PRECHECK_DEADLINE_MS, readWithin } from "./charge-method-logic";
 import type {
   CollectChargeAtPosInput,
   GuestPayment,
@@ -103,7 +107,10 @@ export async function fetchChargeTerminals(
   outletId: string,
 ): Promise<ChargeTerminal[]> {
   if (API_MOCK) return MOCK_TERMINALS;
-  const terminals = await fetchEdcTerminals(outletId);
+  const terminals = await readWithin(
+    () => fetchEdcTerminals(outletId),
+    PRECHECK_DEADLINE_MS,
+  );
   return terminals
     .filter((item) => !item.modes || item.modes.includes("card"))
     .map((item) => ({
@@ -111,4 +118,24 @@ export async function fetchChargeTerminals(
       label: item.label,
       detail: item.assignedTo,
     }));
+}
+
+export type ChargeApprover = { userId: string; name: string };
+
+// Mock mode: a supervisor other than the mock cashier, so the settle can be
+// shown end to end.
+const MOCK_APPROVERS: ChargeApprover[] = [
+  { userId: "00000000-0000-4000-8000-000000000611", name: "Supervisor 02" },
+];
+
+/** Who may approve a settle at this outlet (cash: void; card: EDC). */
+export async function fetchChargeApprovers(
+  outletId: string,
+  action: "void" | "edc_standalone",
+): Promise<ChargeApprover[]> {
+  if (API_MOCK) return MOCK_APPROVERS;
+  return readWithin(
+    () => fetchResolveApprovers(outletId, action),
+    PRECHECK_DEADLINE_MS,
+  );
 }

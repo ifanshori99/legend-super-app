@@ -1,7 +1,11 @@
 // Query keys and options of the charge screen. Every key carries the outlet so
 // a cashier who switches outlet never reads another outlet's charge.
 import { queryOptions } from "@tanstack/react-query";
-import { fetchChargeTerminals, fetchIssueCharge } from "./charge-api";
+import {
+  fetchChargeApprovers,
+  fetchChargeTerminals,
+  fetchIssueCharge,
+} from "./charge-api";
 import { chargePollMs } from "./charge-method-logic";
 
 export const issueChargeKeys = {
@@ -10,7 +14,19 @@ export const issueChargeKeys = {
     ["pos-order-detail", outletId, "charge", chargeId] as const,
   terminals: (outletId: string) =>
     ["pos-order-detail", outletId, "charge-terminals"] as const,
+  approvers: (outletId: string, action: string) =>
+    ["pos-order-detail", outletId, "charge-approvers", action] as const,
 };
+
+export const chargeApproversQuery = (
+  outletId: string,
+  action: "void" | "edc_standalone",
+) =>
+  queryOptions({
+    queryKey: issueChargeKeys.approvers(outletId, action),
+    queryFn: () => fetchChargeApprovers(outletId, action),
+    retry: false,
+  });
 
 export const chargeTerminalsQuery = (outletId: string) =>
   queryOptions({
