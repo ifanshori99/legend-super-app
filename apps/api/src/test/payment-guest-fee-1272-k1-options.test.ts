@@ -188,11 +188,13 @@ const pay = (
   orderId: string,
   method: "qris" | "va" | "ewallet" | "card",
   bankCode?: string,
+  expectedChargedIdr?: number | null,
 ) =>
   fx.guestPost(guest, "/payments", {
     target: { kind: "order", orderId },
     method,
     ...(bankCode === undefined ? {} : { bankCode }),
+    ...(expectedChargedIdr == null ? {} : { expectedChargedIdr }),
     idempotencyKey: randomUUID(),
   });
 
@@ -276,7 +278,13 @@ describe("1272 K1 guest options: priced for the named order", () => {
       expect(price.guestFeeIdr).not.toBeNull();
 
       const before = gw.created.length;
-      const created = await pay(guest, order.id, method, bankCode);
+      const created = await pay(
+        guest,
+        order.id,
+        method,
+        bankCode,
+        price.chargedIdr,
+      );
       expect(created.status, JSON.stringify(created.body)).toBe(201);
       expect(created.body.data).toMatchObject({
         amountIdr: order.totalIdr,
@@ -288,21 +296,44 @@ describe("1272 K1 guest options: priced for the named order", () => {
     });
   }
 
-  it("the create call recomputes: a rate changed after the quote wins", async () => {
+  it("a rate changed after the quote: 409 FEE_CHANGED, nothing issued; the new total is accepted", async () => {
     gw.rates = RATES();
     const { guest, order } = await wholeOrder();
     const quoted = await options(guest, { orderId: order.id });
-    const quotedFee = methodOf(quoted.body, "ewallet").banks[0]!.guestFeeIdr;
+    const quote = methodOf(quoted.body, "ewallet").banks[0]!;
     gw.rates = new Map([...RATES(), ["OV", { bps: 300, flatIdr: 0 }]]);
-    const created = await pay(guest, order.id, "ewallet", "OV");
-    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const before = gw.created.length;
+    const stale = await pay(guest, order.id, "ewallet", "OV", quote.chargedIdr);
+    expect(stale.status, JSON.stringify(stale.body)).toBe(409);
+    expect(stale.body.error.code).toBe("FEE_CHANGED");
+    expect(gw.created).toHaveLength(before);
     const fee = grossUpGuestFee(order.totalIdr, { bps: 300, flatIdr: 0 });
-    expect(fee).not.toBe(quotedFee);
+    expect(fee).not.toBe(quote.guestFeeIdr);
+    const created = await pay(
+      guest,
+      order.id,
+      "ewallet",
+      "OV",
+      order.totalIdr + fee,
+    );
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
     expect(created.body.data).toMatchObject({
       guestFeeIdr: fee,
       chargedIdr: order.totalIdr + fee,
     });
     gw.rates = RATES();
+  });
+
+  it("a method with a fee needs the total the guest saw; QRIS does not", async () => {
+    gw.rates = RATES();
+    const { guest, order } = await wholeOrder();
+    const before = gw.created.length;
+    const missing = await pay(guest, order.id, "ewallet", "OV");
+    expect(missing.status, JSON.stringify(missing.body)).toBe(409);
+    expect(missing.body.error.code).toBe("FEE_CHANGED");
+    expect(gw.created).toHaveLength(before);
+    const qris = await pay(guest, order.id, "qris");
+    expect(qris.status, JSON.stringify(qris.body)).toBe(201);
   });
 });
 

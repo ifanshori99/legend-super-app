@@ -743,6 +743,11 @@ export const createPaymentIntentInputSchema = z
     /** Optional earlier expiry (e.g. the QR guest session ends sooner); the
      * server caps it at the method's default lifetime. */
     expiresAt: isoDateTimeSchema.optional(),
+    /** 1272 fee second opinion P2-2: the total the guest saw (bill + fee).
+     * Required for a method with a guest fee (the server answers 409
+     * FEE_CHANGED when the price is now different); QRIS and other no-fee
+     * methods may leave it out. */
+    expectedChargedIdr: positiveIdr.optional(),
   })
   .superRefine((input, ctx) => {
     const needsChannel = input.method !== "qris" && input.method !== "card";

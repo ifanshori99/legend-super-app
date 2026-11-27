@@ -895,6 +895,14 @@ export async function cancelSupersededAtGateway(
 export type CreateIntentOptions = {
   orderLockedByCaller?: boolean;
   /**
+   * 1272 fee second opinion P2-2: a guest-facing caller (QR order, payment
+   * link, cashier) must send the total the payer saw (`expectedChargedIdr`)
+   * for a method with a guest fee; without it the code is refused (409
+   * FEE_CHANGED). Any caller that sends it gets 409 FEE_CHANGED when the price
+   * differs.
+   */
+  requireExpectedCharged?: boolean;
+  /**
    * 1269 C3a review P3 2: the code may come from this provider only. The rule
    * must name it and its fallback is never used; anything else is refused
    * before the provider is called (the cashier VA / e-wallet: Duitku).
@@ -1436,6 +1444,23 @@ async function createIntentCore(
       422,
       "VALIDATION_ERROR",
       "This payment method is not available.",
+    );
+  // 1272 fee second opinion P2-2: the payer confirmed a total; a different
+  // price now (rate, remaining balance) is never charged unseen.
+  // A caller that saw no total for a method that now carries a fee saw a
+  // different price too (the fee is new): the same 409.
+  if (
+    guestFeeIdr > 0
+      ? parsed.expectedChargedIdr === undefined
+        ? options.requireExpectedCharged === true
+        : parsed.expectedChargedIdr !== amountIdr + guestFeeIdr
+      : parsed.expectedChargedIdr !== undefined &&
+        parsed.expectedChargedIdr !== amountIdr
+  )
+    throw new HttpError(
+      409,
+      "FEE_CHANGED",
+      "Biaya layanan pembayaran berubah. Muat ulang lalu pilih metode lagi.",
     );
   const created: GatewayIntent = await selected.port.createIntent({
     context,
