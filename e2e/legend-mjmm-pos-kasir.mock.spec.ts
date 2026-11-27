@@ -867,14 +867,16 @@ test("legend-mjmm DAY-01 day close shows the 04.00 cutoff, recap and per-bank se
     await expect(area).toContainText(new RegExp(`${method}\\s*${rp(amount)}`));
   }
   await expect(area).toContainText("Settlement EDC");
-  await expect(area).toContainText(
-    new RegExp(`BCA\\s*·\\s*${rp("1.600.000")}`),
-  );
-  await expect(area).toContainText(
-    new RegExp(`Mandiri\\s*·\\s*${rp("800.000")}`),
-  );
+  // X2-UI (legend-wasr7.18): per terminal, struk vs bank vs selisih. BCA's
+  // bank file is in; Mandiri's has not arrived (no Rp 0 for the bank).
+  await expect(area).toContainText(/EDC-SNP-01\s*·\s*BCA/);
+  await expect(area).toContainText(new RegExp(`Struk\\s*${rp("1.600.000")}`));
+  await expect(area).toContainText(new RegExp(`Bank\\s*${rp("1.200.000")}`));
+  await expect(area).toContainText(new RegExp(`Selisih\\s*${rp("400.000")}`));
+  await expect(area).toContainText(/EDC-SNP-02\s*·\s*MANDIRI/);
+  await expect(area).toContainText("Menunggu file bank");
   await expect(area).toContainText("Semua shift ditutup");
-  await expect(area).toContainText(/2 transaksi standalone/);
+  await expect(area).toContainText(/1 transaksi EDC masih perlu dicek/);
   await shot(page, "supervisor-day-close");
 
   await page.getByRole("button", { name: "Settlement & tutup hari" }).click();
