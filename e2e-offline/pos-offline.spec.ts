@@ -11,7 +11,16 @@
 // the queue is not empty -> internet back -> the queue sends itself, the
 // cloud holds the sale once -> sign-out allowed.
 import { createHmac, randomUUID } from "node:crypto";
-import { expect, request, test, type Page } from "@playwright/test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  chromium,
+  expect,
+  request,
+  test as base,
+  type Page,
+} from "@playwright/test";
 import pg from "pg";
 import {
   OFFLINE_API_URL,
@@ -256,6 +265,31 @@ async function browserCall(
   );
 }
 
+// Service workers and the Cache API exist only in secure contexts, and the
+// test origins are plain http on a non-localhost name (production is https).
+// Chromium treats them as secure only with a user data directory, so this
+// spec runs in a persistent context. Harness only.
+const test = base.extend({
+  context: async ({ baseURL }, use) => {
+    const dir = mkdtempSync(join(tmpdir(), "o5-chromium-"));
+    const context = await chromium.launchPersistentContext(dir, {
+      // The new headless mode (full Chromium) honors the secure-origin flag;
+      // the old headless shell ignores it.
+      channel: "chromium",
+      baseURL,
+      serviceWorkers: "allow",
+      viewport: { width: 390, height: 844 },
+      args: [
+        "--host-resolver-rules=MAP *.legend.test 127.0.0.1",
+        `--unsafely-treat-insecure-origin-as-secure=${OFFLINE_WEB_URL},${OFFLINE_API_URL}`,
+      ],
+    });
+    await use(context);
+    await context.close();
+    rmSync(dir, { recursive: true, force: true });
+  },
+});
+
 test.describe.configure({ mode: "serial" });
 
 test.beforeAll(async () => {
@@ -313,20 +347,9 @@ test("the offline till: sell, queue, close refused, ingest once, sign out", asyn
   test.setTimeout(240_000);
   await page.addInitScript((token) => {
     window.localStorage.setItem("legend.device.token", token);
-    // Harness only: these http test origins are not secure contexts (production
-    // is https), so Chromium hides crypto.randomUUID, which the cart needs for
-    // its line ids. Found 27 Nov: without it "Kopi Susu" never reaches the cart.
-    if (typeof crypto.randomUUID !== "function")
-      (crypto as { randomUUID: () => string }).randomUUID = () =>
-        "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) =>
-          (
-            Number(c) ^
-            (crypto.getRandomValues(new Uint8Array(1))[0]! &
-              (15 >> (Number(c) / 4)))
-          ).toString(16),
-        ) as `${string}-${string}-${string}-${string}-${string}`;
   }, deviceToken());
   await page.goto("/sign-in");
+  expect(await page.evaluate(() => window.isSecureContext)).toBe(true);
   const signIn = await browserCall(page, "POST", "/api/auth/sign-in/email", {
     email: cashier.email,
     password: PASSWORD,
@@ -402,6 +425,22 @@ test("the offline till: sell, queue, close refused, ingest once, sign out", asyn
   // Nothing reached the cloud while the tablet was offline.
   expect(await offlineSales()).toEqual([]);
 
+  // Still offline: the close screen was never opened on this tablet, so its
+  // code comes from the service worker's precache (CTO 27 Nov, 6 a), and the
+  // screen says it needs the internet and holds the count (6 b and c).
+  await page.evaluate(() => {
+    window.history.pushState({}, "", "/pos/shift/tutup");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+  await expect(
+    page.getByText("Tutup shift butuh internet").first(),
+  ).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText("Tutup shift · Hitung kas")).toHaveCount(0);
+  await expect(
+    page.getByRole("link", { name: "Kembali ke kasir" }),
+  ).toBeVisible();
+  await shotBoth(page, "tutup-offline");
+
   // Shift close is refused while the queue is not empty. The tablet gets its
   // internet back but the batch endpoint keeps failing (a flaky link), so the
   // two sales stay on the tablet; the close screen is a real page load.
@@ -417,11 +456,16 @@ test("the offline till: sell, queue, close refused, ingest once, sign out", asyn
   // The till frame has no sign-out button; a cashier signs out from the member
   // page, which holds the same queue guard.
   await page.goto("/member");
+  await page
+    .locator("html[data-hydrated='true']")
+    .waitFor({ state: "attached" });
   await expect(
     page.getByRole("button", { name: "Sign out" }).first(),
   ).toBeVisible({ timeout: 15_000 });
   await page.getByRole("button", { name: "Sign out" }).first().click();
-  await expect(page.getByText("Belum bisa keluar").first()).toBeVisible();
+  await expect(page.getByText("Belum bisa keluar").first()).toBeVisible({
+    timeout: 15_000,
+  });
   await shotBoth(page, "keluar");
   await page.getByRole("button", { name: "Tetap di sini" }).click();
   expect(await offlineSales()).toEqual([]);

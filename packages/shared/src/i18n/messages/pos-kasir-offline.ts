@@ -142,6 +142,12 @@ export const posKasirOfflineMessages = {
     forceHint:
       "Tablet rusak atau tidak bisa tersambung? Minta supervisor tutup paksa dari layar persetujuan shift. Finance mendapat pemberitahuan, dan penjualan yang datang belakangan tetap dicatat.",
   },
+  closeNeedsInternet: {
+    title: "Tutup shift butuh internet",
+    body: "Hitung kas dicatat di cloud, jadi layar ini menunggu tablet tersambung lagi. Penjualan offline tetap aman di tablet dan jalan terus.",
+    pending: "{count} penjualan offline menunggu dikirim lebih dulu.",
+    back: "Kembali ke kasir",
+  },
   dayClose: {
     openShiftsLabel: "Shift yang masih buka",
     openShift: "Shift {shiftNo} · buka {time}",
