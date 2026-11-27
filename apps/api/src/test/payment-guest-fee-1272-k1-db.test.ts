@@ -43,10 +43,7 @@ import { paymentIntents } from "../db/schema";
 import { resetPaymentWebhookRateLimits } from "../routes/payment-webhook.routes";
 import { resetPaymentGateways } from "../services/payment-gateway";
 import { refundableBalance } from "../services/payment-admin.service";
-import {
-  confirmPayment,
-  createPaymentLink,
-} from "../services/payment.service";
+import { confirmPayment, createPaymentLink } from "../services/payment.service";
 import {
   setIntegrationStatus,
   upsertIntegration,

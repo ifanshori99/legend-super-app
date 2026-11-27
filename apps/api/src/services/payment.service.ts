@@ -446,7 +446,12 @@ async function onlineMethods(
     const baseIdr = outstandingIdr(link);
     const channels: GuestPaymentChannel[] = [];
     for (const channel of providerChannels) {
-      const price = priceForGuest(schedule, entry.method, channel.code, baseIdr);
+      const price = priceForGuest(
+        schedule,
+        entry.method,
+        channel.code,
+        baseIdr,
+      );
       if (price) channels.push({ ...channel, ...price });
     }
     const methodPrice = needsChannel

@@ -41,7 +41,12 @@ const config = (guestFees: Record<string, unknown>) => ({
   guestFees,
 });
 
-const fullRates = { OV: OV_RATE, BC: BC_RATE, VC: VC_RATE, SP: { bps: 70, flatIdr: 0 } };
+const fullRates = {
+  OV: OV_RATE,
+  BC: BC_RATE,
+  VC: VC_RATE,
+  SP: { bps: 70, flatIdr: 0 },
+};
 
 type Calls = { methodsAt: number[]; inquiryAmounts: number[] };
 
@@ -51,7 +56,10 @@ function gateway(
   quote: (code: string, amount: number) => number = () => 0,
 ) {
   const calls: Calls = { methodsAt: [], inquiryAmounts: [] };
-  const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+  const fetchImpl = (async (
+    url: string | URL | Request,
+    init?: RequestInit,
+  ) => {
     const body = JSON.parse(String(init?.body ?? "{}"));
     let answer: unknown;
     if (String(url).endsWith("getpaymentmethod")) {
@@ -78,7 +86,11 @@ function gateway(
     return new Response(JSON.stringify(answer), { status: 200 });
   }) as typeof fetch;
   const loaded = {
-    integration: { id: INTEGRATION_ID, outletId: null, config: config(guestFees) },
+    integration: {
+      id: INTEGRATION_ID,
+      outletId: null,
+      config: config(guestFees),
+    },
     credentials: { merchantCode: "DS1272", apiKey: "api-key-SECRET" },
   };
   const port = createDuitkuGateway({
@@ -154,7 +166,9 @@ describe("DUITKU_GUEST_FEE_METHODS empty: exactly the old behaviour", () => {
       expect(schedule(method, code, BILL)).toBe(0);
     const listed = await port.methods!(context, undefined, BILL);
     expect(
-      listed.find((entry) => entry.method === "va")?.channels.map((c) => c.code),
+      listed
+        .find((entry) => entry.method === "va")
+        ?.channels.map((c) => c.code),
     ).toEqual(["BC", "M2"]);
     expect(listed.find((entry) => entry.method === "card")?.enabled).toBe(true);
     const created = await port.createIntent(request("ewallet", "OV"));
@@ -196,7 +210,10 @@ describe("guest fee on", () => {
   });
 
   it("QRIS never carries a fee, even with a filled rate", async () => {
-    const { port, calls } = gateway(fullRates, mdr({ SP: { bps: 70, flatIdr: 0 } }));
+    const { port, calls } = gateway(
+      fullRates,
+      mdr({ SP: { bps: 70, flatIdr: 0 } }),
+    );
     const schedule = await port.guestFeeSchedule!(context);
     expect(schedule("qris", null, BILL)).toBe(0);
     await expectFeeChanged(port.createIntent(request("qris", null, 350)));
@@ -256,9 +273,10 @@ describe("guest fee on", () => {
       ["va", "BC"],
       ["card", null],
     ] as const) {
-      const error = await port
-        .createIntent(request(method, code, 0))
-        .then(() => null, (caught: unknown) => caught);
+      const error = await port.createIntent(request(method, code, 0)).then(
+        () => null,
+        (caught: unknown) => caught,
+      );
       expect(error).toBeTruthy();
     }
     expect(calls.inquiryAmounts).toEqual([]);

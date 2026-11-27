@@ -13,8 +13,7 @@ import {
 
 /** Independent reference: the first g >= 0 with fee(B+g) <= g, by scanning. */
 function scanMinimal(base: number, rate: GuestFeeRate): number {
-  for (let g = 0; ; g += 1)
-    if (gatewayFeeOf(base + g, rate) <= g) return g;
+  for (let g = 0; ; g += 1) if (gatewayFeeOf(base + g, rate) <= g) return g;
 }
 
 /** Deterministic pseudo-random sequence (no flaky property test). */
@@ -73,8 +72,7 @@ describe("grossUpGuestFee", () => {
         bill,
       );
       expect(gatewayFeeOf(charged, rate)).toBeLessThanOrEqual(g);
-      if (g > 0)
-        expect(gatewayFeeOf(charged - 1, rate)).toBeGreaterThan(g - 1);
+      if (g > 0) expect(gatewayFeeOf(charged - 1, rate)).toBeGreaterThan(g - 1);
     }
   });
 
@@ -167,16 +165,31 @@ describe("guestFeeFor", () => {
 
   it("grosses up the channel's rate when the method is on", () => {
     expect(
-      guestFeeFor({ ...base, method: "va", channelCode: "BC", feeMethods: ["va"] }),
+      guestFeeFor({
+        ...base,
+        method: "va",
+        channelCode: "BC",
+        feeMethods: ["va"],
+      }),
     ).toBe(4_000);
     expect(
-      guestFeeFor({ ...base, method: "card", channelCode: "VC", feeMethods: ["card"] }),
+      guestFeeFor({
+        ...base,
+        method: "card",
+        channelCode: "VC",
+        feeMethods: ["card"],
+      }),
     ).toBe(grossUpGuestFee(100_000, { bps: 290, flatIdr: 2_000 }));
   });
 
   it("is null (hidden, never a silent 0) for a fee method without a rate", () => {
     expect(
-      guestFeeFor({ ...base, method: "va", channelCode: "M2", feeMethods: ["va"] }),
+      guestFeeFor({
+        ...base,
+        method: "va",
+        channelCode: "M2",
+        feeMethods: ["va"],
+      }),
     ).toBeNull();
     expect(
       guestFeeFor({
@@ -188,7 +201,12 @@ describe("guestFeeFor", () => {
     ).toBeNull();
     // A channel code of another method's category is not this method's rate.
     expect(
-      guestFeeFor({ ...base, method: "ewallet", channelCode: "BC", feeMethods: ["ewallet"] }),
+      guestFeeFor({
+        ...base,
+        method: "ewallet",
+        channelCode: "BC",
+        feeMethods: ["ewallet"],
+      }),
     ).toBeNull();
   });
 });

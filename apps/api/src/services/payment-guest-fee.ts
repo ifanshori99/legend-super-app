@@ -32,9 +32,7 @@ function assertRate(rate: GuestFeeRate): void {
 
 function feeBig(amount: bigint, rate: GuestFeeRate): bigint {
   // ceil(amount * bps / 10000) + flat, whole rupiah.
-  return (
-    (amount * BigInt(rate.bps) + BPS - 1n) / BPS + BigInt(rate.flatIdr)
-  );
+  return (amount * BigInt(rate.bps) + BPS - 1n) / BPS + BigInt(rate.flatIdr);
 }
 
 /** The gateway's fee on an amount: `ceil(x * bps / 10000) + flatIdr`. */
@@ -149,7 +147,10 @@ export function guestFeeFor(input: {
  * most our fee g and short of it by at most one rupiah (rounding). Anything
  * else means the rate changed: no intent.
  */
-export function feeQuoteAccepted(quoteIdr: number, guestFeeIdr: number): boolean {
+export function feeQuoteAccepted(
+  quoteIdr: number,
+  guestFeeIdr: number,
+): boolean {
   return quoteIdr <= guestFeeIdr && guestFeeIdr - quoteIdr <= 1;
 }
 
