@@ -198,6 +198,83 @@ async function place(guest: Guest) {
 }
 
 /**
+ * The order's WS-05 link is paid by a verified QRIS payment of `paidIdr`
+ * (link `paid_idr`, intent, evidence); `providerRefundIdr` > 0 then records a
+ * refund the provider made on its own (legend-9yw78.12). The link's
+ * `paid_idr` stays gross, as the provider refund never touches it.
+ */
+async function payViaLink(
+  orderId: string,
+  paidIdr: number,
+  providerRefundIdr = 0,
+) {
+  const linkId = randomUUID();
+  const intentId = randomUUID();
+  await asOwnerTenant(async (client) => {
+    await client.query(
+      `INSERT INTO payment_links (id, tenant_id, outlet_id, token_hash, reference, subtotal_idr, total_idr, paid_idr, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $6, $6, 'test')`,
+      [
+        linkId,
+        tenant.tenantId,
+        tenant.outletId,
+        randomUUID().replaceAll("-", "").repeat(2),
+        `OB-${randomUUID().slice(0, 8)}`,
+        paidIdr,
+      ],
+    );
+    await client.query(
+      `INSERT INTO payment_intents
+         (id, tenant_id, outlet_id, payment_link_id, method, provider,
+          amount_idr, idempotency_key, status, instructions, expires_at, paid_at)
+       VALUES ($1, $2, $3, $4, 'qris', 'doit', $5, $6, $7,
+         '{"method":"qris","qrPayload":"00020101021226TEST","issuer":null}',
+         now() + interval '1 hour', now())`,
+      [
+        intentId,
+        tenant.tenantId,
+        tenant.outletId,
+        linkId,
+        paidIdr,
+        `ob-pay-${intentId}`,
+        providerRefundIdr > 0 ? "partially_refunded" : "paid",
+      ],
+    );
+    await client.query(
+      `INSERT INTO payment_evidence
+         (tenant_id, outlet_id, payment_intent_id, provider, provider_ref, method, source, amount_idr, received_at)
+       VALUES ($1, $2, $3, 'doit', $4, 'qris', 'verified_webhook', $5, now())`,
+      [
+        tenant.tenantId,
+        tenant.outletId,
+        intentId,
+        `ob-evidence-${intentId}`,
+        paidIdr,
+      ],
+    );
+    if (providerRefundIdr > 0)
+      await client.query(
+        `INSERT INTO payment_provider_refunds
+           (tenant_id, outlet_id, payment_intent_id, provider, provider_refund_id,
+            provider_payment_ref, amount_idr, source)
+         VALUES ($1, $2, $3, 'doit', $4, $5, $6, 'payment_webhook')`,
+        [
+          tenant.tenantId,
+          tenant.outletId,
+          intentId,
+          `rf_${randomUUID().slice(0, 12)}`,
+          `pay_${intentId.slice(0, 12)}`,
+          providerRefundIdr,
+        ],
+      );
+    await client.query(
+      `UPDATE orders SET payment_link_id = $3, payment_link_token_sealed = 'sealed-test' WHERE tenant_id = $1 AND id = $2`,
+      [tenant.tenantId, ulidToUuid(orderId), linkId],
+    );
+  });
+}
+
+/**
  * The cashier takes the order over (a POS extension row) and records
  * tenders on it, as the POS payment panel does; `complete` then closes it.
  */
@@ -446,25 +523,7 @@ describe("open-bill value limit", () => {
     const firstId = first.body.data.order.id as string;
 
     // Paid in full: the order no longer counts, so the next one fits.
-    const linkId = randomUUID();
-    await asOwnerTenant(async (client) => {
-      await client.query(
-        `INSERT INTO payment_links (id, tenant_id, outlet_id, token_hash, reference, subtotal_idr, total_idr, paid_idr, created_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $6, $6, 'test')`,
-        [
-          linkId,
-          tenant.tenantId,
-          tenant.outletId,
-          randomUUID().replaceAll("-", "").repeat(2),
-          `OB-${randomUUID().slice(0, 8)}`,
-          total,
-        ],
-      );
-      await client.query(
-        `UPDATE orders SET payment_link_id = $3, payment_link_token_sealed = 'sealed-test' WHERE tenant_id = $1 AND id = $2`,
-        [tenant.tenantId, ulidToUuid(firstId), linkId],
-      );
-    });
+    await payViaLink(firstId, total);
     const second = await place();
     expect(second.status).toBe(201);
     const secondId = second.body.data.order.id as string;
@@ -489,6 +548,25 @@ describe("open-bill value limit", () => {
       ),
     );
     expect((await place()).status).toBe(201);
+  });
+
+  it("a provider's own refund of a link payment counts the refunded part as unpaid again (legend-9yw78.12)", async () => {
+    await setLimit(100_000);
+    const guest = await seat("open_bill");
+    await confirm(guest);
+    const first = await place(guest);
+    expect(first.status).toBe(201);
+    const total = first.body.data.order.totalIdr as number;
+    // Without payment a second order would pass Rp100.000.
+    expect(total * 2).toBeGreaterThan(100_000);
+    const refunded = Math.ceil(total / 2);
+
+    // The link took the whole order, then the provider gave half back on its
+    // own. The link's gross paid_idr still says paid in full; the bill is not.
+    await payViaLink(first.body.data.order.id as string, total, refunded);
+    const refused = await place(guest);
+    expect(refused.status).toBe(409);
+    expect(await breachedBills(guest.sessionId)).toEqual([refunded]);
   });
 
   it("a cashier cash payment frees room; a completed order no longer counts", async () => {

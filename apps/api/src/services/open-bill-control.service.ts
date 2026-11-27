@@ -77,6 +77,7 @@ import { attemptApproverPin } from "./staff-pin-proof.service";
 import { currentStaffPinPepperVersion } from "./device-pin-pepper";
 import { outletContext, outletTarget } from "./device-pin-support";
 import { createNotificationConsumer } from "./notification-consumer";
+import { netAllocatedIdrSql } from "./payment-net-allocated-sql";
 import {
   loadTenantAccessInTransaction,
   resolveAccessSnapshot,
@@ -333,7 +334,8 @@ async function appendOpenBillEvent(
  * What the session owes and has not paid: per live order (not voided, draft
  * or completed), its total minus the reservation deposit applied to it, the
  * captured cashier tenders (cash, EDC, QRIS, points; `pos_order_tenders`)
- * and what verified payments allocated to its WS-05 link, floored at 0
+ * and what verified payments allocated to its WS-05 link (net of the
+ * provider's own refunds), floored at 0
  * (`remainingIdr`, the POS payment panel's balance). The limit is credit
  * exposure, so any payment frees room for the next order. A `completed`
  * order was settled in full at the cashier and is left out; a POS-04 refund
@@ -373,9 +375,23 @@ async function unpaidExposureOfSession(
         .filter((id): id is string => id !== null),
     ),
   ];
+  // legend-9yw78.12: the link's `paid_idr` is gross and never drops when the
+  // provider refunds on its own, so count what its settled intents still net
+  // (`netAllocatedIdrSql`), capped at `paid_idr`. Restrictive: a partly
+  // refunded link never frees the whole order. The outer columns are written
+  // out: Drizzle leaves them unqualified, and inside the subquery they would
+  // bind to the intent.
   const links = linkIds.length
     ? await tx
-        .select({ id: paymentLinks.id, paidIdr: paymentLinks.paidIdr })
+        .select({
+          id: paymentLinks.id,
+          paidIdr: sql<string>`least(${paymentLinks.paidIdr}, coalesce((
+            SELECT sum(${netAllocatedIdrSql(sql`i.tenant_id`, sql`i.id`)})
+              FROM payment_intents i
+             WHERE i.tenant_id = payment_links.tenant_id
+               AND i.payment_link_id = payment_links.id
+               AND i.status IN ('paid', 'partially_refunded', 'refunded')), 0))::text`,
+        })
         .from(paymentLinks)
         .where(
           and(
@@ -384,7 +400,7 @@ async function unpaidExposureOfSession(
           ),
         )
     : [];
-  const linkPaid = new Map(links.map((row) => [row.id, row.paidIdr]));
+  const linkPaid = new Map(links.map((row) => [row.id, Number(row.paidIdr)]));
   const exposure = live.reduce((sum, order) => {
     const ofOrder = tenders.filter((tender) => tender.orderId === order.id);
     const viaLink =
