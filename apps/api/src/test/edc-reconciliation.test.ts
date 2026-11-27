@@ -1681,6 +1681,24 @@ describe("X2 EDC settlement CSV import matches terminal + RRN + amount and never
     expect(await row(id)).toMatchObject({ needs_reconciliation: true });
   });
 
+  // 1273: a supervisor let a used slip number through, so two sales carry one
+  // RRN. The bank file shows one line for it: it must not clear either flag.
+  it("two sales sharing one slip number are never cleared by the file (1273)", async () => {
+    const first = await manualSlip("X2RRN127340");
+    const second = await manualSlip("X2-RRN-127340");
+    expect(second.order.totalIdr).toBe(first.order.totalIdr);
+    const res = await importCsv(
+      financeUser,
+      file(line(1, "tid-recon", "X2RRN127340", String(first.order.totalIdr))),
+    );
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.data).toMatchObject({ cleared: 0 });
+    expect(await row(first.id)).toMatchObject({ needs_reconciliation: true });
+    expect(await row(second.id)).toMatchObject({ needs_reconciliation: true });
+    expect(await auditRows(first.id)).toHaveLength(0);
+    expect(await auditRows(second.id)).toHaveLength(0);
+  });
+
   it("an unknown ECR sale is never approved by an import (no status change)", async () => {
     const order = await newOrder();
     const id = await ledgerSale({

@@ -62,6 +62,15 @@ export function rawIntent(scope: IntentScope): string | null {
   }
 }
 
+const usedSlips = new Set<string>();
+
+/** 1273: the server named this request's slip number as already used. */
+export function markSlipUsed(key: string): void {
+  usedSlips.add(key);
+  notify();
+}
+export const isSlipUsed = (key: string): boolean => usedSlips.has(key);
+
 const sending = new Map<string, number>();
 
 /** This tab is sending this request now: its own panel shows the progress. */

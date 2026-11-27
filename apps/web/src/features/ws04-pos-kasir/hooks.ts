@@ -44,6 +44,7 @@ import {
 } from "./api";
 import {
   isSendingIntent,
+  isSlipUsed,
   rawIntent,
   subscribeIntents,
 } from "./payment-intent-browser";
@@ -296,6 +297,8 @@ export function useUnresolvedPayment(orderId: string) {
     /** The server repeats a request only for the cashier who sent it. */
     mine: state.intent.actorId === actorId,
     slip: slipNote(state.intent),
+    /** 1273: the server said this slip number already paid a bill. */
+    slipUsed: isSlipUsed(state.intent.key),
   };
 }
 

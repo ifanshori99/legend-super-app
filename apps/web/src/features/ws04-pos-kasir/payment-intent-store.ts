@@ -54,6 +54,8 @@ export const INTENT_STORAGE_UNAVAILABLE = "INTENT_STORAGE_UNAVAILABLE";
 
 /** The supervisor approval of a hand-keyed EDC payment is spent or too old. */
 export const EDC_APPROVAL_REQUIRED = "EDC_STANDALONE_APPROVAL_REQUIRED";
+/** 1273: this slip number already paid a bill; only a supervisor may allow it. */
+export const EDC_SLIP_REF_USED = "EDC_SLIP_REF_USED";
 /** The slip's amount is not what the bill still owes. */
 export const EDC_SLIP_AMOUNT_MISMATCH = "EDC_SLIP_AMOUNT_MISMATCH";
 /** The bill was paid, but not by the slip the supervisor typed. */

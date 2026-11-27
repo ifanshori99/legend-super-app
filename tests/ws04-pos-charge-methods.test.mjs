@@ -568,6 +568,25 @@ describe("legend-f1mmf web review P1: a card start that answered late", () => {
 });
 
 describe("legend-f1mmf recheck: errors and background reads", () => {
+  // 1273 P3-4: the card start of a charge is edge-only (cloud answers 503
+  // EDC_AGENT_NOT_READY), so the sentence must point to what works there.
+  test("the cloud 503 of the card start names QRIS, cash and the supervisor's slip way out", async () => {
+    const { chargeErrorKey } = await failures();
+    const { posIssueChargeMessages } = await messages();
+    assert.equal(
+      chargeErrorKey("EDC_AGENT_NOT_READY"),
+      "posIssueCharge.edc.notReady",
+    );
+    const text = posIssueChargeMessages.edc.notReady;
+    assert.match(text, /QRIS/);
+    assert.match(text, /tunai/);
+    assert.match(text, /slip/);
+    // 1273 review P2: resolving a never-started card closes the attempt only,
+    // so the sentence must not promise the slip gets recorded there.
+    assert.doesNotMatch(text, /lewat penyelesaian/);
+    assert.match(text, /jangan tagih lagi/);
+  });
+
   test("an unknown server code reads as the catalog's plain sentence, never the server's text", async () => {
     const { chargeErrorKey } = await failures();
     const { posIssueChargeMessages } = await messages();

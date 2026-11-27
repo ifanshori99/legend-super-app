@@ -347,6 +347,12 @@ export const posStandaloneEdcSchema = z
      * supervisor override is still accepted and spent when the till sends one.
      */
     overrideId: posOverrideIdSchema.optional(),
+    /**
+     * 1273: a slip number that already paid a bill is refused unless this is
+     * true AND the supervisor override is sent. The row stays flagged and is
+     * marked as a duplicate reference; the bank file never clears it by itself.
+     */
+    acknowledgeDuplicateSlip: z.literal(true).optional(),
   })
   .strict();
 

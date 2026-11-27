@@ -80,6 +80,10 @@ export const posKasirPaymentMessages = {
     slipTerminal: "Pilih terminal EDC",
     edcBody:
       "Kartu mungkin sudah terdebit. Semua cara bayar tagihan ini terkunci sampai pembayaran EDC ini tercatat atau diselesaikan dengan PIN supervisor.",
+    slipUsedTitle: "Nomor slip ini sudah dipakai",
+    slipUsedBody:
+      "Nomor referensi slip ini sudah tercatat untuk tagihan lain, jadi pembayaran belum dicatat. Periksa nomor di slip. Bila slip memang benar, minta supervisor menyetujui dengan PIN; pembayaran tetap ditandai perlu dicek.",
+    askSupervisor: "Minta persetujuan supervisor",
     paidCardTitle: "Kartu mungkin terdebit",
     paidCardBody:
       "Tagihan sudah lunas. Cocokkan slip dulu; jangan void bila sudah tercatat. Bila slip ini tidak tercatat di tagihan, void di mesin EDC, lalu selesaikan dengan PIN supervisor.",

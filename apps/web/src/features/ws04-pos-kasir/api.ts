@@ -41,12 +41,14 @@ import { runPosKasirMock, type PosKasirEngine } from "./mock-engine";
 import { remainingToPayIdr } from "./payment-due";
 import {
   intentStorage,
+  markSlipUsed,
   rawIntent,
   whileSending,
 } from "./payment-intent-browser";
 import {
   EDC_SLIP_AMOUNT_MISMATCH,
   EDC_SLIP_NOT_RECORDED,
+  EDC_SLIP_REF_USED,
   PAYMENT_UNRESOLVED,
   beginIntent,
   endIntent,
@@ -767,6 +769,8 @@ async function settleIntent<T>(
       endIntent(storage, scope, intent.key);
       return result;
     } catch (error) {
+      if (error instanceof ApiError && error.code === EDC_SLIP_REF_USED)
+        markSlipUsed(intent.key);
       if (isDefinitiveRefusal(intent.kind, error, replay)) {
         endIntent(storage, scope, intent.key);
         markRefused(error as ApiError);
@@ -1076,7 +1080,16 @@ async function newSlipRequest(
     amountIdr,
     standalone,
     signature: `resolved:${overrideId}`,
-    body: { method, standalone: { ...standalone, overrideId } },
+    // 1273: the supervisor's approval also covers a slip number the server
+    // already knows; a fresh slip ignores the flag.
+    body: {
+      method,
+      standalone: {
+        ...standalone,
+        overrideId,
+        acknowledgeDuplicateSlip: true,
+      },
+    },
   };
 }
 

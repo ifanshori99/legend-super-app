@@ -728,6 +728,8 @@ export async function addPosTender(
                   bankRef: input.standalone.bankRef,
                   approvalCode: input.standalone.approvalCode ?? null,
                   overrideId: input.standalone.overrideId ?? null,
+                  allowDuplicateSlip:
+                    input.standalone.acknowledgeDuplicateSlip === true,
                   cashierId: caller.userId,
                   deviceId: caller.deviceId,
                   at: now,
