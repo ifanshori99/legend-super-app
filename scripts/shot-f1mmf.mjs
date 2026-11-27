@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-// Screenshots for legend-f1mmf (Tagih selisih: ready, EDC waiting, unknown,
+// Screenshots for legend-f1mmf (Tagih selisih: ready, EDC picked, waiting, unknown,
 // supervisor settle, paid): starts the mock dev server and the browser inside
 // one heavy job.
 //   heavy --browser node scripts/shot-f1mmf.mjs
-// Output: docs/review/img/f1mmf-<state>-<390|1280>.png
+// Output: docs/review/img/f1mmf-<state>-<390|1280>.png, plus
+// f1mmf-<state>-panel-390.png (the charge panel in full at 390)
 import { spawn } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { join, dirname } from "node:path";
@@ -80,12 +81,29 @@ try {
     page.on("console", (m) => {
       if (m.type() === "error") errors.push(m.text().slice(0, 300));
     });
+    // The POS shell scrolls inside its own container, so fullPage only
+    // captures the first screen. At 390 take the viewport (sticky footer
+    // visible) plus the whole charge panel.
+    const panel = page.locator('[data-slot="pos-panel"]').filter({
+      has: page.getByRole("heading", { name: "Penagihan selisih" }),
+    });
     const shot = async (name, full = true) => {
       await page.waitForTimeout(400);
-      await page.screenshot({
-        path: join(OUT, `f1mmf-${name}-${vp.w}.png`),
-        fullPage: full,
-      });
+      const path = join(OUT, `f1mmf-${name}-${vp.w}.png`);
+      if (vp.w < 768 && full) {
+        await panel.scrollIntoViewIfNeeded();
+        await page.screenshot({ path });
+        // The scroll container clips element shots, so grow the viewport
+        // to the panel's height, shoot the panel, then restore.
+        await page.setViewportSize({ width: vp.w, height: 2400 });
+        await page.waitForTimeout(300);
+        await panel.screenshot({
+          path: join(OUT, `f1mmf-${name}-panel-${vp.w}.png`),
+        });
+        await page.setViewportSize({ width: vp.w, height: vp.h });
+      } else {
+        await page.screenshot({ path, fullPage: full });
+      }
       console.log("ok", name, vp.w, errors.length ? errors : "");
     };
     try {
@@ -97,17 +115,20 @@ try {
       await shot("siap-bayar");
       await page.getByText("EDC kartu", { exact: true }).click();
       await page.getByText("BCA · EDC 01").waitFor();
+      await shot("edc-dipilih");
       await page.getByRole("button", { name: /Kirim .* ke mesin EDC/ }).click();
       await page
-        .getByText("Menunggu pelanggan di mesin EDC")
+        .getByText("Kartu sedang diproses di mesin")
         .waitFor({ timeout: 15000 });
       await shot("menunggu-edc");
       await page.getByText("Hasil EDC belum pasti").waitFor({ timeout: 30000 });
       await shot("unknown");
       await page
-        .getByRole("button", { name: "Minta supervisor menyelesaikan" })
+        .getByRole("button", { name: "Minta supervisor", exact: true })
         .click();
       const dialog = page.getByRole("dialog");
+      await dialog.getByRole("combobox").nth(0).click();
+      await page.getByRole("option", { name: "Supervisor 02" }).click();
       await dialog.getByRole("combobox").nth(1).click();
       await page
         .getByRole("option", { name: "Kartu terdebet, ada slip" })
@@ -123,7 +144,7 @@ try {
       await page.keyboard.type("123456");
       await page
         .getByText("Penagihan tercatat")
-        .or(page.getByText("Percobaan sudah tercatat"))
+        .or(page.getByText("Pembayaran tadi sudah tercatat"))
         .waitFor({ timeout: 15000 });
       await shot("lunas");
     } catch (error) {

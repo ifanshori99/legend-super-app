@@ -99,3 +99,15 @@ Sudah:
 
 Sisa:
 - Review K (architect) untuk web + P3, second-opinion area.
+
+### Fix review K web + audit UI (27 Nov, ui-engineer), commit 36a305f26..HEAD
+
+Sudah (keputusan CTO 27 Nov di `docs/qa/1272-f1mmf-web-review.md`):
+- P1: batas start EDC 150 dtk (`EDC_START_DEADLINE_MS`), status dibaca tiap poll selama menunggu. Kunci `edc:<mesin>` pindah ke `edc_card:<id>` hanya bila GET server memuat penjualan disetujui yang cocok (tagihan, mesin, nominal server) (`startAnswered`). Test gagal dulu.
+- P3-1: 503 EDC_AGENT_NOT_READY = belum pasti, kunci tetap, layar baca server dulu; test (b) diubah. Gagal dulu.
+- P3-2: batas waktu periksa status, resolve, daftar mesin; dialog resolve bisa ditutup saat menunggu. P3-3: penyetuju tidak dipilih otomatis, pemanggil tidak ada di daftar. P3-4, P3-5 dibetulkan.
+- Audit UI P1/P2: track grid `minmax(0,1fr)` + tombol panjang boleh wrap; daftar EDC hanya baca (tanpa opacity); pill "Menunggu pelanggan" vs "Belum pasti"; panel penagihan lebih dulu di bawah md; kesalahan per bidang di dialog; P3 istilah kasir ("sistem", "Catat tunai diterima {amount}").
+- Screenshot ulang: `f1mmf-{siap-bayar,edc-dipilih,menunggu-edc,unknown,resolve-supervisor,lunas}-{390,1280}.png` + `f1mmf-<state>-panel-390.png` (panel utuh). 390 kini memperlihatkan pemilih metode, mesin, dan tombol footer.
+- Test node charge + text-contract lulus; web typecheck lulus; prettier/eslint bersih.
+
+Sisa (tidak dikerjakan): audit P3-16(c) keypad PIN di 390 perlu gulir, P3-16(d) fokus awal dialog belum diperiksa keyboard, P3-17 pesan server tak dikenal tampil apa adanya; banner shell di luar diff. Berikut: re-review architect + ui-auditor (CTO).

@@ -164,7 +164,7 @@ export const posIssueChargeMessages = {
     slipApproval: "Kode approval di slip",
     slipAmount: "Nominal di slip",
     slipAmountHint:
-      "Ketik persis seperti tercetak. Server mencocokkannya dengan tagihan.",
+      "Ketik persis seperti tercetak. Sistem mencocokkannya dengan tagihan.",
     statementRequired: "Pilih hasil di mesin EDC dulu.",
     slipRequired: "Isi RRN, kode approval, dan nominal dari slip EDC.",
     rrnInvalid: "Isi RRN dari slip: huruf dan angka saja, maksimal 24.",
