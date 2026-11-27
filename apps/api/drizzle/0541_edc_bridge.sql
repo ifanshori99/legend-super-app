@@ -69,7 +69,14 @@ ALTER TABLE "payment_edc_terminals" ADD COLUMN "link_port" integer;--> statement
 ALTER TABLE "payment_edc_terminals" ADD COLUMN "link_baud_rate" integer;--> statement-breakpoint
 CREATE INDEX "edc_bridge_commands_trace_idx" ON "edc_bridge_commands" USING btree ("tenant_id","terminal_id","trace");--> statement-breakpoint
 CREATE INDEX "edc_bridge_commands_device_release_idx" ON "edc_bridge_commands" USING btree ("tenant_id","device_id","release_sent_at");--> statement-breakpoint
+-- The migrator may be a plain table owner: the new foreign key scans
+-- payment_edc_terminals through RLS, so FORCE is lifted and restored right after
+-- (contracts.md "Migrations: foreign keys into FORCE RLS tables", pattern 2).
+ALTER TABLE public.payment_edc_terminals NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
 ALTER TABLE "payment_edc_terminals" ADD CONSTRAINT "payment_edc_terminals_bridge_device_fk" FOREIGN KEY ("tenant_id","outlet_id","bridge_device_id") REFERENCES "public"."edc_bridge_devices"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE public.payment_edc_terminals FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
 ALTER TABLE "payment_edc_terminals" ADD CONSTRAINT "payment_edc_terminals_connection_kind_check" CHECK ("payment_edc_terminals"."connection_kind" IN ('bridge','bca_cloud'));--> statement-breakpoint
 ALTER TABLE "payment_edc_terminals" ADD CONSTRAINT "payment_edc_terminals_link_port_check" CHECK ("payment_edc_terminals"."link_port" IS NULL OR "payment_edc_terminals"."link_port" BETWEEN 1 AND 65535);--> statement-breakpoint
 ALTER TABLE "payment_edc_terminals" ADD CONSTRAINT "payment_edc_terminals_link_baud_check" CHECK ("payment_edc_terminals"."link_baud_rate" IS NULL OR "payment_edc_terminals"."link_baud_rate" IN (9600,19200,38400,57600,115200));--> statement-breakpoint
