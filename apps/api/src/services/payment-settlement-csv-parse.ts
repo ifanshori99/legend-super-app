@@ -52,7 +52,12 @@ const wholeRupiah = (raw: string, min: number): number | null => {
   return Number.isSafeInteger(amount) && amount >= min ? amount : null;
 };
 
+// 1273 P3-4: a reference that starts like a spreadsheet formula is refused, so
+// it cannot run as one when a later export is opened in a spreadsheet.
+const FORMULA_START = /^[=+\-@\t\r]/;
+
 const validReference = (value: string) =>
+  !FORMULA_START.test(value) &&
   value.length >= 1 &&
   value.length <= 100 &&
   [...value].every((ch) => ch.charCodeAt(0) >= 32 && ch.charCodeAt(0) !== 127);
@@ -97,7 +102,10 @@ function parseTemplateV1(text: string): GatewaySettlementCsvLine[] {
       continue;
     }
     const reference = cells[at.reference]!.trim();
-    if (!validReference(reference)) {
+    if (
+      FORMULA_START.test(cells[at.reference]!) ||
+      !validReference(reference)
+    ) {
       errors.push({ row, reason: "reference" });
       continue;
     }

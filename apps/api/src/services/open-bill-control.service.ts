@@ -402,11 +402,23 @@ async function unpaidExposureOfSession(
     : [];
   const linkPaid = new Map(links.map((row) => [row.id, Number(row.paidIdr)]));
   const exposure = live.reduce((sum, order) => {
-    const ofOrder = tenders.filter((tender) => tender.orderId === order.id);
     const viaLink =
       order.paymentLinkId === null
         ? 0
         : (linkPaid.get(order.paymentLinkId) ?? 0);
+    // legend-7adhb: a captured tender that rides the order's own link is the
+    // same money as the link's, already counted in `viaLink`; skip it so an
+    // old row is not counted twice (same rule as `countedLinks` in the QR
+    // order settlement). A link that nets nothing counts no tender away.
+    const ofOrder = tenders.filter(
+      (tender) =>
+        tender.orderId === order.id &&
+        !(
+          viaLink > 0 &&
+          tender.paymentLinkId !== null &&
+          tender.paymentLinkId === order.paymentLinkId
+        ),
+    );
     return sum + Math.max(0, remainingIdr(order, ofOrder) - viaLink);
   }, 0);
   return idr(exposure);
