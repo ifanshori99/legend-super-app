@@ -106,6 +106,7 @@ function view(
     receivedIdr: row.receivedIdr,
     varianceIdr: row.varianceIdr,
     reason: row.reason,
+    kind: row.kind,
     status: row.status,
     note: row.note,
     requestedByName,

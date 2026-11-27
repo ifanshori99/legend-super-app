@@ -53,6 +53,10 @@ import {
   loadActiveIntegrationCredentials,
   loadIntegrationCredentialsById,
 } from "./platform-integration.service";
+import {
+  lockedGuestFeeChannels,
+  withoutLockedGuestFees,
+} from "./payment-guest-fee-lock";
 
 const METHODS_CACHE_MS = 60_000;
 /** Amount used to list the merchant's methods when no real amount applies. */
@@ -152,8 +156,25 @@ type Resolved = {
   vaName: string;
 };
 
-const defaultLoader: DuitkuCredentialLoader = (context, outletId) =>
-  loadActiveIntegrationCredentials(context, "duitku", outletId);
+// 1272 K2: a channel with an open guest_fee_shortfall case loses its guest
+// fee rate here, so a guest-fee method hides it and createIntent refuses it
+// (payment-guest-fee-lock.ts). A failed lock read fails the load (closed).
+const defaultLoader: DuitkuCredentialLoader = async (context, outletId) => {
+  const loaded = await loadActiveIntegrationCredentials(
+    context,
+    "duitku",
+    outletId,
+  );
+  if (!loaded || env.DUITKU_GUEST_FEE_METHODS.length === 0) return loaded;
+  const locked = await lockedGuestFeeChannels(context);
+  return {
+    ...loaded,
+    integration: {
+      ...loaded.integration,
+      config: withoutLockedGuestFees(loaded.integration.config, locked),
+    },
+  };
+};
 
 // By id = a payment already minted on that integration: no plan check (a
 // revoked plan blocks new intents through `defaultLoader`, never the

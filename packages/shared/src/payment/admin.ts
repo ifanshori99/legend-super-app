@@ -622,6 +622,14 @@ export const reconciliationCaseViewSchema = z
     varianceIdr: idrSchema,
     reason: z.string().min(1).max(500),
     /**
+     * `amount`: the money differs from POS (mismatch, unmatched or missing).
+     * `guest_fee_shortfall` (1272 K2): the line matched, but the gateway fee
+     * was above the guest service fee collected, so the outlet got less than
+     * the bill; the variance is that shortfall, and the Duitku channel's guest
+     * fee stays locked until the case is closed.
+     */
+    kind: z.enum(["amount", "guest_fee_shortfall"]),
+    /**
      * `pending_approval`: closing was requested and waits for an approver who
      * is not the requester; the case closes only when that approval passes.
      * `matched`: a later settlement report listed the sale, so the "missing"
@@ -1681,6 +1689,7 @@ const caseFixtures = [
     receivedIdr: 4_145_000,
     varianceIdr: -52_500,
     reason: "MDR dipotong dua kali pada settlement bank.",
+    kind: "amount",
     status: "open",
     requestedBy: null,
     requestedByName: null,
@@ -1706,6 +1715,7 @@ const caseFixtures = [
     receivedIdr: 0,
     varianceIdr: -285_000,
     reason: "Transaksi EDC mode standalone belum muncul di settlement.",
+    kind: "amount",
     status: "open",
     requestedBy: null,
     requestedByName: null,
@@ -1731,6 +1741,7 @@ const caseFixtures = [
     receivedIdr: 878_000,
     varianceIdr: -14_500,
     reason: "Biaya layanan gateway lebih besar dari perkiraan.",
+    kind: "amount",
     status: "resolved",
     requestedBy: "d4e5f6a7-0002-4d02-8e02-000000000002",
     requestedByName: "Dodi Kasir",
