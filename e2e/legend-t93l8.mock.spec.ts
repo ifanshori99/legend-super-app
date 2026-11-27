@@ -35,7 +35,7 @@ const pick = (page: Page, label: string) =>
 async function expectLocked(page: Page) {
   await expect(methods(page)).toHaveCount(0);
   await expect(
-    button(page, /Tagih selisih · Tunai|Buat QRIS|Catat EDC/),
+    button(page, /Catat tunai diterima|Buat QRIS|Catat EDC/),
   ).toHaveCount(0);
   await expect(button(page, /Periksa status/)).toBeVisible();
 }
@@ -119,7 +119,7 @@ test("t93l8 refresh after a lost cash answer: check first, same key", async ({
   page,
 }) => {
   await open(page, "selisih-belum-pasti");
-  await button(page, /Tagih selisih · Tunai/).click();
+  await button(page, /Catat tunai diterima/).click();
   await expect(
     page.getByText("Status penagihan belum dapat dipastikan"),
   ).toBeVisible();
@@ -130,7 +130,7 @@ test("t93l8 refresh after a lost cash answer: check first, same key", async ({
   await expectLocked(page);
   await button(page, /Periksa status/).click();
   await expect(page.getByText("Penagihan belum tercatat")).toBeVisible();
-  await button(page, /Tagih selisih · Tunai/).click();
+  await button(page, /Catat tunai diterima/).click();
   await expect(
     page.getByText("Status penagihan belum dapat dipastikan"),
   ).toBeVisible();
@@ -139,11 +139,11 @@ test("t93l8 refresh after a lost cash answer: check first, same key", async ({
   await expect(page.getByText("Penagihan tercatat")).toBeVisible();
 });
 
-test("1267 after a lost cash answer another method is refused, no code made", async ({
+test("1267 after a lost cash answer another method is not offered, no code made", async ({
   page,
 }) => {
   await open(page, "selisih-belum-pasti");
-  await button(page, /Tagih selisih · Tunai/).click();
+  await button(page, /Catat tunai diterima/).click();
   await expect(
     page.getByText("Status penagihan belum dapat dipastikan"),
   ).toBeVisible();
@@ -151,12 +151,12 @@ test("1267 after a lost cash answer another method is refused, no code made", as
   await open(page, "selisih-belum-pasti");
   await button(page, /Periksa status/).click();
   await expect(page.getByText("Penagihan belum tercatat")).toBeVisible();
-  // The cash answer was never seen: a code could pay the charge twice.
-  await pick(page, "QRIS");
-  await button(page, /Buat QRIS/).click();
-  await expect(
-    page.getByText("Status penagihan belum dapat dipastikan"),
-  ).toBeVisible();
+  // The cash answer was never seen: a code could pay the charge twice, so the
+  // picker offers only the held method (legend-f1mmf, ab1327325): QRIS cannot
+  // even be chosen.
+  await expect(methods(page).getByText("Tunai", { exact: true })).toBeVisible();
+  await expect(methods(page).getByText("QRIS", { exact: true })).toHaveCount(0);
+  await expect(button(page, /Buat QRIS/)).toHaveCount(0);
   await expect(page.locator("svg title")).toHaveCount(0);
   expect(await storedKey(page)).toBe(key);
 });
@@ -168,7 +168,7 @@ test("t93l8 an unresolved attempt in another tab locks this one", async ({
   await open(page);
   const other = await context.newPage();
   await open(other, "selisih-belum-pasti");
-  await button(other, /Tagih selisih · Tunai/).click();
+  await button(other, /Catat tunai diterima/).click();
   await expect(
     other.getByText("Status penagihan belum dapat dipastikan"),
   ).toBeVisible();
@@ -177,7 +177,7 @@ test("t93l8 an unresolved attempt in another tab locks this one", async ({
 
 test("t93l8 a double tap settles once", async ({ page }) => {
   await open(page);
-  await button(page, /Tagih selisih · Tunai/).evaluate((el) => {
+  await button(page, /Catat tunai diterima/).evaluate((el) => {
     (el as HTMLButtonElement).click();
     (el as HTMLButtonElement).click();
   });
@@ -185,22 +185,23 @@ test("t93l8 a double tap settles once", async ({ page }) => {
   expect(await storedKey(page)).toBeNull();
 });
 
-test("t93l8 EDC: no amount field, only the server's approved sale", async ({
+test("t93l8 EDC: no amount field, the amount goes to the terminal, only the approved sale is recorded", async ({
   page,
 }) => {
   await open(page);
   await pick(page, "EDC kartu");
-  await expect(
-    page.getByText("Belum ada transaksi EDC yang disetujui"),
-  ).toBeVisible();
+  // The charge amount is sent to the machine (legend-f1mmf, e5382a136): no
+  // amount is typed here and no sale is recorded before the bank approves one.
+  await expect(page.getByRole("group", { name: "Mesin EDC" })).toBeVisible();
+  await expect(button(page, /Kirim .* ke mesin EDC/)).toBeVisible();
   await expect(page.getByRole("textbox")).toHaveCount(0);
   await expect(button(page, /Catat EDC/)).toHaveCount(0);
 
   await open(page, "selisih-edc-disetujui");
-  // The bank holds the money: cash and QRIS are gone.
+  // The bank holds the money: cash and QRIS are gone, and the one sale that
+  // pays the charge exactly is picked for the cashier (ab1327325).
   await expect(methods(page)).toHaveCount(0);
-  await expect(button(page, /Catat EDC/)).toBeDisabled();
-  await page.getByText("EDC BCA 01").click();
+  await expect(button(page, /Catat EDC/)).toBeEnabled();
   await button(page, /Catat EDC/).click();
   await expect(page.getByText("Penagihan tercatat")).toBeVisible();
 });
@@ -226,7 +227,7 @@ test("t93l8 a refused EDC sale frees the other methods", async ({ page }) => {
   await expect(page.getByText("Saldo tidak cukup")).toBeVisible();
   await expect(button(page, /Catat EDC/)).toHaveCount(0);
   await pick(page, "Tunai");
-  await expect(button(page, /Tagih selisih · Tunai/)).toBeEnabled();
+  await expect(button(page, /Catat tunai diterima/)).toBeEnabled();
 });
 
 const STATES: [string, string | undefined, string | undefined][] = [

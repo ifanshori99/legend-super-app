@@ -216,9 +216,10 @@ test("ZX8K-06 the five operations reports render their default split", async ({
   for (const [route, heading, cell] of reports) {
     await openReport(page, `/reports/facility/${route}?mock=normal`, heading);
     if (route === "cleaning-time" || route === "product-revenue") {
-      // These sources are not built: no mock rows may fabricate their values.
+      // These sources are not built: no mock rows may fabricate their values,
+      // and the viewer says the source is not connected (6bfca4094).
       await expect(
-        page.getByText("Belum ada data untuk periode ini"),
+        page.getByText("Sumber data belum tersambung"),
       ).toBeVisible();
       await expect(page.getByRole("table")).toHaveCount(0);
     } else {
