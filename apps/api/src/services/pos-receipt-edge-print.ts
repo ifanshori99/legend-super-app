@@ -50,7 +50,9 @@ export function receiptData(document: ReceiptDocument): ReceiptData {
       method: tender.method,
       amount: tender.amountIdr,
     })),
-    ...(document.guestFeeIdr ? { guestFee: document.guestFeeIdr } : {}),
+    ...(document.guestFeeIdr && document.paidTotalIdr
+      ? { guestFee: document.guestFeeIdr, paidTotal: document.paidTotalIdr }
+      : {}),
   };
 }
 

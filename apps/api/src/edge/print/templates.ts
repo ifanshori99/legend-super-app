@@ -128,16 +128,10 @@ export function renderReceipt(
   }
   // 1272 K4: the guest service fee is not part of the order total (no PB1,
   // no service charge): its own line, then what the guest paid in all.
-  if (data.guestFee && data.guestFee > 0) {
+  if (data.guestFee && data.guestFee > 0 && data.paidTotal !== undefined) {
     const labels = messagesId.deviceRegistry.receiptPrintLabels;
     b.columns(labels.guestFee, formatRupiah(data.guestFee), width);
-    b.columns(
-      labels.paidTotal,
-      formatRupiah(
-        data.payments.reduce((sum, row) => sum + row.amount, 0) + data.guestFee,
-      ),
-      width,
-    );
+    b.columns(labels.paidTotal, formatRupiah(data.paidTotal), width);
   }
   if (data.change) b.columns("Kembali", formatRupiah(data.change), width);
 

@@ -137,7 +137,7 @@ function ReceiptPaper({ document }: { document: ReceiptDocument }) {
         </PaperRow>
       ))}
       {/* 1272 K4: the guest service fee is not part of the order total. */}
-      {document.guestFeeIdr ? (
+      {document.guestFeeIdr && document.paidTotalIdr ? (
         <>
           <PaperRow label={t("posCorrection.receipt.guestFee")}>
             <Money
@@ -147,12 +147,7 @@ function ReceiptPaper({ document }: { document: ReceiptDocument }) {
           </PaperRow>
           <PaperRow label={t("posCorrection.receipt.paidTotal")}>
             <Money
-              amount={
-                document.tenders.reduce(
-                  (sum, tender) => sum + Number(tender.amountIdr),
-                  0,
-                ) + Number(document.guestFeeIdr)
-              }
+              amount={Number(document.paidTotalIdr)}
               className="font-semibold"
             />
           </PaperRow>

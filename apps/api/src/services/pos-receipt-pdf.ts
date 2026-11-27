@@ -225,16 +225,10 @@ function buildRows(doc: Document): Row[] {
     );
   }
   // 1272 K4: the guest service fee is not part of the order total.
-  if (doc.guestFeeIdr) {
+  if (doc.guestFeeIdr && doc.paidTotalIdr) {
     const labels = messagesId.deviceRegistry.receiptPrintLabels;
     pair(labels.guestFee, formatRupiah(doc.guestFeeIdr));
-    pair(
-      labels.paidTotal,
-      formatRupiah(
-        doc.tenders.reduce((sum, row) => sum + row.amountIdr, 0) +
-          doc.guestFeeIdr,
-      ),
-    );
+    pair(labels.paidTotal, formatRupiah(doc.paidTotalIdr));
   }
 
   if (doc.documentKind === "kuitansi") {

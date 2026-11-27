@@ -873,11 +873,15 @@ export async function getPosQrisStatus(
     // pays the gateway; the hold amount stays the bill (tender = bill).
     const guestFeeIdr = Number(code?.guestFeeIdr ?? 0);
     const dto = await holdDto(tx, tenantId, hold);
+    // A fee code whose bill no longer matches the hold would show a code with
+    // no fee (and a total the guest does not owe): show nothing instead.
+    const feeMismatch =
+      online &&
+      guestFeeIdr > 0 &&
+      Number(code?.amountIdr) !== Number(dto.amountIdr);
     return {
       ...dto,
-      ...(online &&
-      guestFeeIdr > 0 &&
-      Number(code?.amountIdr) === Number(dto.amountIdr)
+      ...(online && guestFeeIdr > 0 && !feeMismatch
         ? {
             guestFeeIdr: idr(guestFeeIdr),
             chargedIdr: idr(Number(dto.amountIdr) + guestFeeIdr),
@@ -890,9 +894,10 @@ export async function getPosQrisStatus(
       // 1269 C3a: a VA / e-wallet hold carries its code instead of a QR.
       ...(online
         ? {
-            instructions: access.canAcceptPayment
-              ? await showableOnlineCode(tx, context, hold, now)
-              : null,
+            instructions:
+              access.canAcceptPayment && !feeMismatch
+                ? await showableOnlineCode(tx, context, hold, now)
+                : null,
           }
         : {}),
     };

@@ -283,7 +283,12 @@ export async function buildReceiptDocument(
       amountIdr: tender.amountIdr,
       reference: tender.reference,
     })),
-    ...(guestFeeIdr > 0 ? { guestFeeIdr: idr(guestFeeIdr) } : {}),
+    ...(guestFeeIdr > 0
+      ? {
+          guestFeeIdr: idr(guestFeeIdr),
+          paidTotalIdr: idr(Number(order.totalIdr) + guestFeeIdr),
+        }
+      : {}),
     cashierName,
     // The customer profile is not read: the document never needs a name (POS-07).
     customerName: null,

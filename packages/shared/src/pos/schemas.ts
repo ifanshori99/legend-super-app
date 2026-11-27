@@ -2430,6 +2430,8 @@ function checkDocumentTotals(
     roundingIdr: Idr;
     totalIdr: Idr;
     pricesIncludeTax: boolean;
+    guestFeeIdr?: Idr;
+    paidTotalIdr?: Idr;
   },
   ctx: z.RefinementCtx,
 ): void {
@@ -2534,6 +2536,27 @@ function checkDocumentTotals(
       path: ["tenders"],
       message: "Tender methods plus DP must sum to the total (POS-07)",
     });
+  // 1272 K4: the total paid is the server's figure = total + guest fee (tenders
+  // plus DP already equal the total); present only with a guest fee.
+  if (
+    (document.guestFeeIdr === undefined) !==
+    (document.paidTotalIdr === undefined)
+  )
+    ctx.addIssue({
+      code: "custom",
+      path: ["paidTotalIdr"],
+      message: "A guest fee and the total paid go together",
+    });
+  else if (
+    document.guestFeeIdr !== undefined &&
+    Number(document.paidTotalIdr) !==
+      Number(document.totalIdr) + Number(document.guestFeeIdr)
+  )
+    ctx.addIssue({
+      code: "custom",
+      path: ["paidTotalIdr"],
+      message: "paidTotalIdr must equal the total plus the guest fee",
+    });
 }
 
 export const receiptDocumentBaseShape = {
@@ -2563,9 +2586,11 @@ export const receiptDocumentBaseShape = {
    * 1272 K4: the guest service fee ("Biaya layanan") the captured online
    * tenders' gateway codes added on top of the bill. Not part of the order
    * (no service charge, no PB1): printed after the order total, with the
-   * total paid = tenders + fee. Absent when no tender carried a fee.
+   * total paid = tenders + DP + fee. Absent when no tender carried a fee.
    */
   guestFeeIdr: positiveIdr.optional(),
+  /** 1272 K4: the total paid, computed by the server (total + guest fee). */
+  paidTotalIdr: positiveIdr.optional(),
   cashierName: z.string().min(1).max(150).nullable(),
   customerName: z.string().min(1).max(150).nullable(),
 };

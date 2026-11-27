@@ -202,9 +202,7 @@ function ReceiptBody({ document }: { document: ReceiptDocument }) {
       ) : null}
       <Line label={t("posReceiptPublic.paid")}>
         <Money
-          amount={
-            paidIdr(document.tenders, deposit) + (document.guestFeeIdr ?? 0)
-          }
+          amount={document.paidTotalIdr ?? paidIdr(document.tenders, deposit)}
           className="font-semibold"
         />
       </Line>
