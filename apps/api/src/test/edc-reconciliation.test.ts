@@ -273,6 +273,8 @@ async function ledgerSale(input: {
    * past the point where the terminal could still answer. Override to test the
    * window itself. */
   dispatchedAt?: Date;
+  /** Another registered terminal; defaults to the suite's terminal. */
+  terminal?: string;
 }): Promise<string> {
   const id = randomUUID();
   const final = ["approved", "declined", "cancelled", "failed"].includes(
@@ -290,7 +292,7 @@ async function ledgerSale(input: {
         id,
         tenant.tenantId,
         tenant.outletId,
-        terminalId,
+        input.terminal ?? terminalId,
         input.reference,
         randomUUID(),
         input.amountIdr,
@@ -1498,13 +1500,14 @@ describe("X2 EDC settlement CSV import matches terminal + RRN + amount and never
   const file = (...lines: string[]) => [header, ...lines].join("\r\n");
 
   /** A hand-keyed slip booked as a live tender, flagged, as X1 leaves it. */
-  async function manualSlip(rrn: string) {
+  async function manualSlip(rrn: string, terminal?: string) {
     const order = await newOrder();
     const id = await ledgerSale({
       reference: order.number,
       amountIdr: order.totalIdr,
       status: "approved",
       flagged: false,
+      terminal,
     });
     expect((await payEdc(order, id)).status).toBe(201);
     await asOwnerTenant((client) =>
@@ -1752,8 +1755,149 @@ describe("X2 EDC settlement CSV import matches terminal + RRN + amount and never
         settledCount: 1,
         flaggedCount: 1,
         mismatchCount: 0,
+        differenceIdr: open.order.totalIdr,
+        bankStatus: "matched",
       },
     ]);
+  });
+
+  describe("X2-UI server figures: difference and bank status per terminal", () => {
+    /** A new bank-BCA terminal, so its day group holds only this test's sales. */
+    async function newTerminal(code: string) {
+      const id = randomUUID();
+      await asOwnerTenant((client) =>
+        client.query(
+          `INSERT INTO payment_edc_terminals
+             (id, tenant_id, outlet_id, bank_code, terminal_id, merchant_id, model,
+              connection, ip_address, supported_methods, status)
+           VALUES ($1, $2, $3, 'bca', $4, 'MID-X2UI', 'Test EDC', 'lan',
+                   '10.0.0.8', ARRAY['card'], 'active')`,
+          [id, tenant.tenantId, tenant.outletId, code],
+        ),
+      );
+      return id;
+    }
+
+    async function completedSlip(rrn: string, terminal: string) {
+      const slip = await manualSlip(rrn, terminal);
+      const current = await pos().get(slip.order.orderId);
+      const done = await pos().complete(
+        slip.order.orderId,
+        current.body.data.status as string,
+      );
+      expect(done.status, JSON.stringify(done.body)).toBe(200);
+      return slip;
+    }
+
+    async function terminalRow(orderId: string, terminal: string) {
+      const { rows } = await owner.query<{ business_date: string }>(
+        `SELECT business_date::text AS business_date FROM orders WHERE id = $1`,
+        [ulidToUuid(orderId)],
+      );
+      const recap = await ownerUser.client
+        .get(`/api/outlets/${encodeURIComponent(tenant.outletId)}/pos/day`)
+        .query({ businessDate: rows[0]!.business_date })
+        .set(headers)
+        .set(originHeader);
+      expect(recap.status, JSON.stringify(recap.body)).toBe(200);
+      return (
+        recap.body.data.edcSettlement as Array<Record<string, unknown>>
+      ).find((entry) => entry.terminalId === terminal);
+    }
+
+    it("no bank file yet: awaiting, and the difference is the whole receipt", async () => {
+      const terminal = await newTerminal("TID-X2UI-A");
+      const slip = await completedSlip("X2UIRRN0001", terminal);
+      expect(await terminalRow(slip.order.orderId, terminal)).toMatchObject({
+        receiptIdr: slip.order.totalIdr,
+        settledIdr: 0,
+        differenceIdr: slip.order.totalIdr,
+        bankStatus: "awaiting",
+      });
+    });
+
+    it("a file that names the terminal but none of the day's sales: no_match", async () => {
+      const terminal = await newTerminal("TID-X2UI-B");
+      const slip = await completedSlip("X2UIRRN0002", terminal);
+      const res = await importCsv(
+        financeUser,
+        file(line(1, "TID-X2UI-B", "X2UINOSUCH01", "12000")),
+      );
+      expect(res.body.data).toMatchObject({ matched: 0, unmatched: 1 });
+      expect(await terminalRow(slip.order.orderId, terminal)).toMatchObject({
+        settledIdr: 0,
+        settledCount: 0,
+        differenceIdr: slip.order.totalIdr,
+        bankStatus: "no_match",
+      });
+    });
+
+    it("a file for another terminal does not end the wait of this one", async () => {
+      const terminal = await newTerminal("TID-X2UI-C");
+      const slip = await completedSlip("X2UIRRN0003", terminal);
+      const res = await importCsv(
+        financeUser,
+        file(line(1, "TID-X2UI-OTHER", "X2UINOSUCH02", "12000")),
+      );
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(await terminalRow(slip.order.orderId, terminal)).toMatchObject({
+        bankStatus: "awaiting",
+      });
+    });
+
+    it("some sales confirmed: matched, the difference is what the bank did not confirm", async () => {
+      const terminal = await newTerminal("TID-X2UI-D");
+      const settled = await completedSlip("X2UIRRN0004", terminal);
+      const open = await completedSlip("X2UIRRN0005", terminal);
+      const res = await importCsv(
+        financeUser,
+        file(
+          line(1, "TID-X2UI-D", "X2UIRRN0004", String(settled.order.totalIdr)),
+        ),
+      );
+      expect(res.body.data).toMatchObject({ matched: 1 });
+      expect(await terminalRow(settled.order.orderId, terminal)).toMatchObject({
+        receiptIdr: settled.order.totalIdr + open.order.totalIdr,
+        settledIdr: settled.order.totalIdr,
+        differenceIdr: open.order.totalIdr,
+        bankStatus: "matched",
+      });
+    });
+
+    it("a bank line with another amount: mismatch, nothing confirmed", async () => {
+      const terminal = await newTerminal("TID-X2UI-E");
+      const slip = await completedSlip("X2UIRRN0006", terminal);
+      const res = await importCsv(
+        financeUser,
+        file(
+          line(1, "TID-X2UI-E", "X2UIRRN0006", String(slip.order.totalIdr + 1)),
+        ),
+      );
+      expect(res.body.data).toMatchObject({ mismatch: 1 });
+      expect(await terminalRow(slip.order.orderId, terminal)).toMatchObject({
+        settledIdr: 0,
+        differenceIdr: slip.order.totalIdr,
+        mismatchCount: 1,
+        bankStatus: "mismatch",
+      });
+    });
+
+    it("an unreadable file answers 422 with the unreadable lines as rowErrors, no content", async () => {
+      const bad = await importCsv(
+        financeUser,
+        file(
+          line(1, "TID-RECON", "X2UIRRN0007", "55000"),
+          line(2, "TID-RECON", "X2UIRRN0008", "55000,50"),
+        ),
+      );
+      expect(bad.status, JSON.stringify(bad.body)).toBe(422);
+      expect(bad.body.error.code).toBe("VALIDATION_ERROR");
+      expect(bad.body.error.rowErrors).toEqual([
+        { row: 3, reason: "unreadable" },
+      ]);
+      expect(JSON.stringify(bad.body)).not.toContain("4111");
+      expect(JSON.stringify(bad.body)).not.toContain("X2UIRRN0008");
+    });
   });
 
   describe("X2 review K fixes", () => {
