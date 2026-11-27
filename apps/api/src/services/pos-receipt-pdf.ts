@@ -4,6 +4,7 @@
 // the same document is byte-identical (the "CETAK ULANG" mark is a document
 // field, not render state).
 
+import { messagesId } from "@starter/shared/i18n";
 import type { InvoiceDocument, ReceiptDocument } from "@starter/shared/pos";
 
 type Document = ReceiptDocument | InvoiceDocument;
@@ -221,6 +222,18 @@ function buildRows(doc: Document): Row[] {
     pair(
       tender.reference ? `${label} (${tender.reference})` : label,
       formatRupiah(tender.amountIdr),
+    );
+  }
+  // 1272 K4: the guest service fee is not part of the order total.
+  if (doc.guestFeeIdr) {
+    const labels = messagesId.deviceRegistry.receiptPrintLabels;
+    pair(labels.guestFee, formatRupiah(doc.guestFeeIdr));
+    pair(
+      labels.paidTotal,
+      formatRupiah(
+        doc.tenders.reduce((sum, row) => sum + row.amountIdr, 0) +
+          doc.guestFeeIdr,
+      ),
     );
   }
 

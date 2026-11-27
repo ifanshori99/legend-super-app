@@ -175,6 +175,8 @@ export const posCorrectionMessages = {
     tax: "Pajak",
     rounding: "Pembulatan",
     total: "Total",
+    guestFee: "Biaya layanan",
+    paidTotal: "Total dibayar",
     itemLine: "{quantity} × {name}",
     printedTitle: "Struk dikirim ke printer",
     printedBody: "Struk {receiptNo} masuk antrean cetak.",

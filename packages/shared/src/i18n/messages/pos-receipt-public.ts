@@ -29,6 +29,8 @@ export const posReceiptPublicMessages = {
   payment: "Pembayaran",
   deposit: "Uang muka (DP)",
   paid: "Jumlah dibayar",
+  /** 1272 K4: guest service fee of an online code, not part of the order. */
+  guestFee: "Biaya layanan",
   tender: {
     cash: "Tunai",
     qris: "QRIS",
