@@ -8,7 +8,7 @@
 
 ## Sedang
 
-- Typecheck web (shared berubah). Langkah 2-4 menunggu keputusan di bawah.
+- Typecheck web hijau. Langkah 2-4 menunggu keputusan di bawah (panel rekonsiliasi juga belum punya pemilih outlet, sedangkan daftar butuh outletId).
 
 ## Perlu keputusan CTO (langkah 2)
 
