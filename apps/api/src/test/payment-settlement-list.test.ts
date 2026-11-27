@@ -138,8 +138,10 @@ async function seed(o: Seed): Promise<string> {
   return id;
 }
 
-const list = (client: ReturnType<typeof agent>, query: Record<string, string>) =>
-  client.get(LIST).set(originHeader).query(query);
+const list = (
+  client: ReturnType<typeof agent>,
+  query: Record<string, string>,
+) => client.get(LIST).set(originHeader).query(query);
 
 const ids = (body: { data: { id: string }[] }) => body.data.map((r) => r.id);
 

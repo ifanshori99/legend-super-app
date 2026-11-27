@@ -484,6 +484,20 @@ paymentAdminRouter.get(
     });
   },
 );
+// C4b: the outlet's imported settlement reports (same access as the import).
+paymentAdminRouter.get(
+  route(contract.listSettlements.path),
+  reconcileQuery,
+  async (req, res) => {
+    res.json(
+      await settlementImport.listSettlements(
+        scope(req),
+        actor(req),
+        contract.listSettlements.query.parse(req.query),
+      ),
+    );
+  },
+);
 paymentAdminRouter.post(
   route(contract.importSettlement.path),
   jsonBody,

@@ -3,12 +3,15 @@
 // data and RECORDS differences as reconciliation cases: it never creates
 // payouts, refunds, journals or unallocated funds.
 import { createHash } from "node:crypto";
-import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { alias, type AnyPgColumn } from "drizzle-orm/pg-core";
 import {
   assertTrustedScopedContext,
   createUlid,
+  decodeCursor,
+  encodeCursor,
   idr,
+  uuidSchema,
   type OutletId,
   type ScopedTenantContext,
   type TenantId,
@@ -17,7 +20,9 @@ import { eventEnvelopeSchema } from "@starter/shared/events";
 import { GATEWAY_SETTLEMENT_PROVIDERS } from "@starter/shared/payment";
 import {
   importSettlement as importEndpoint,
+  listSettlements as listEndpoint,
   settlementImportViewSchema,
+  settlementListItemSchema,
 } from "@starter/shared/payment/admin";
 import { guardDataImport } from "../config/data-import.ts";
 import { db } from "../db/index.ts";
@@ -738,5 +743,111 @@ export async function importSettlement(
         }
       },
     );
+  });
+}
+
+/**
+ * C4b: one outlet's imported reports, newest first. Same access as the import
+ * (payment.reconcile at the outlet); tenant and outlet are filtered in SQL.
+ * Amounts are the stored report totals, the counts come from lines and cases.
+ */
+export async function listSettlements(
+  context: ScopedTenantContext,
+  actorId: string,
+  input: unknown,
+) {
+  assertTrustedScopedContext(context);
+  const query = listEndpoint.query.parse(input);
+  if (
+    query.periodFrom !== undefined &&
+    query.periodTo !== undefined &&
+    query.periodTo < query.periodFrom
+  )
+    throw new HttpError(
+      422,
+      "VALIDATION_ERROR",
+      "periodTo must not be before periodFrom.",
+    );
+  const tenantId = context.tenant.tenantId;
+  return withTenant(db, context, async (tx) => {
+    await assertPaymentPermission(
+      tx,
+      context,
+      actorId,
+      "payment.reconcile",
+      { type: "outlet", id: query.outletId },
+      new Date(),
+    );
+    let cursor = sql`TRUE`;
+    if (query.cursor) {
+      let keys: unknown[];
+      try {
+        keys = decodeCursor(query.cursor);
+      } catch {
+        keys = [];
+      }
+      const [createdAt, id] = keys;
+      if (
+        typeof createdAt !== "string" ||
+        !uuidSchema.safeParse(id).success ||
+        !Number.isFinite(Date.parse(createdAt))
+      )
+        throw new HttpError(422, "VALIDATION_ERROR", "Invalid cursor.");
+      cursor = sql`(${settlements.createdAt}, ${settlements.id}) < (${createdAt}::timestamptz, ${id}::uuid)`;
+    }
+    const rows = await tx
+      .select()
+      .from(settlements)
+      .where(
+        and(
+          eq(settlements.tenantId, tenantId),
+          eq(settlements.outletId, query.outletId),
+          query.source ? eq(settlements.source, query.source) : sql`TRUE`,
+          query.provider ? eq(settlements.provider, query.provider) : sql`TRUE`,
+          // Reports whose period overlaps the window.
+          query.periodFrom
+            ? sql`${settlements.periodEnd} >= ${query.periodFrom}::date`
+            : sql`TRUE`,
+          query.periodTo
+            ? sql`${settlements.periodStart} <= ${query.periodTo}::date`
+            : sql`TRUE`,
+          cursor,
+        ),
+      )
+      .orderBy(desc(settlements.createdAt), desc(settlements.id))
+      .limit(query.limit + 1);
+    const page = rows.slice(0, query.limit);
+    const data = [];
+    for (const row of page)
+      data.push(
+        settlementListItemSchema.parse({
+          id: row.id,
+          outletId: row.outletId,
+          source: row.source,
+          provider: row.provider,
+          reference: row.reference,
+          terminalId: row.terminalId,
+          batchNo: row.batchNo,
+          periodStart: row.periodStart,
+          periodEnd: row.periodEnd,
+          grossIdr: row.grossIdr,
+          feeIdr: row.feeIdr,
+          netIdr: row.netIdr,
+          lineCount: row.lineCount,
+          ...(await countsOf(tx, tenantId, row.id)),
+          createdAt: row.createdAt.toISOString(),
+        }),
+      );
+    const last = page.at(-1);
+    return {
+      data,
+      meta: {
+        limit: query.limit,
+        nextCursor:
+          rows.length > query.limit && last
+            ? encodeCursor([last.createdAt.toISOString(), last.id])
+            : null,
+      },
+    };
   });
 }
