@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* global window */
+/* global window, document */
 // Screenshots for X2-UI (legend-wasr7.18: Tutup Hari EDC per terminal, unggah CSV settlement):
 // starts the mock dev server and the browser inside one heavy job.
 //   heavy --browser node scripts/shot-x2ui.mjs
@@ -109,9 +109,16 @@ try {
         await page.getByText("Settlement EDC").first().scrollIntoViewIfNeeded();
         await shot(name, false);
         if (name === "tutup-hari") {
-          await page
-            .getByRole("button", { name: "Settlement & tutup hari" })
-            .scrollIntoViewIfNeeded();
+          await page.evaluate(() => {
+            // Scroll every scrollable ancestor of the action button to its end.
+            let node = document.querySelector('[data-slot="pos-panel"] footer');
+            while (node) {
+              if (node.scrollHeight > node.clientHeight + 1)
+                node.scrollTop = node.scrollHeight;
+              node = node.parentElement;
+            }
+          });
+          await page.waitForTimeout(300);
           await shot("tutup-hari-bawah", false);
         }
       }

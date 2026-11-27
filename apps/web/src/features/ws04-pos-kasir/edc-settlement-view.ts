@@ -83,8 +83,8 @@ export function edcTerminalView(row: EdcTerminalSettlement): EdcTerminalView {
  * Sales still "perlu dicek" after the bank file reached their terminal. A
  * terminal still waiting says so on its own line, so its flags are not counted
  * here (review P3 7: the plain sum was too wide). null means unknown, never
- * "nothing flagged": no EDC figures, no terminal, or every terminal still
- * waiting for its file (review K P2: do not reassure before the file).
+ * "nothing flagged": no EDC figures, no terminal, or a zero while any terminal
+ * still waits for its file (review K P2: do not reassure before the file).
  */
 export function flaggedAfterBankFile(
   rows: readonly EdcTerminalSettlement[] | null,
@@ -92,7 +92,11 @@ export function flaggedAfterBankFile(
   if (rows === null) return null;
   const reached = rows.filter((row) => row.bankStatus !== "awaiting");
   if (reached.length === 0) return null;
-  return reached.reduce((sum, row) => sum + row.flaggedCount, 0);
+  const flagged = reached.reduce((sum, row) => sum + row.flaggedCount, 0);
+  // Re-review K: "nothing left to check" needs every terminal to have a bank
+  // file. While one still waits, a zero is unknown; real flags still count.
+  if (flagged === 0 && reached.length < rows.length) return null;
+  return flagged;
 }
 
 /**

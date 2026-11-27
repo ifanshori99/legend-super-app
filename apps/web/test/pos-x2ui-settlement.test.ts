@@ -154,6 +154,31 @@ describe("flaggedAfterBankFile", () => {
     ).toBeNull();
   });
 
+  // Re-review K: the "nothing to check" sentence needs EVERY terminal to have
+  // a bank file; one still waiting keeps the count unknown.
+  it("is null when one terminal reached 0 flagged but another still waits", () => {
+    expect(
+      flaggedAfterBankFile([
+        row({
+          settledIdr: 1_600_000,
+          settledCount: 4,
+          differenceIdr: 0,
+          bankStatus: "matched",
+        }),
+        row({ terminalId: "00000000-0000-4000-8000-000000000002" }),
+      ]),
+    ).toBeNull();
+  });
+
+  it("still counts real flags while another terminal waits", () => {
+    expect(
+      flaggedAfterBankFile([
+        row({ settledCount: 1, flaggedCount: 2, bankStatus: "matched" }),
+        row({ terminalId: "00000000-0000-4000-8000-000000000002" }),
+      ]),
+    ).toBe(2);
+  });
+
   it("is null without any terminal (no EDC sale to check)", () => {
     expect(flaggedAfterBankFile([])).toBeNull();
   });
