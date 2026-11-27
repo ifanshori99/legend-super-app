@@ -6,15 +6,9 @@
 - Test gagal-dulu `apps/api/src/test/payment-settlement-list.test.ts` (7 gagal: route belum ada). Commit 0a091dce8.
 - Langkah 1 selesai: service `listSettlements` (`payment-settlement-import.service.ts`) + route GET (`payment-admin.routes.ts`, `reconcileQuery`). Test terarah 7/7 lulus, prettier/eslint bersih, typecheck api hijau.
 
+- Keputusan CTO: (a) endpoint CSV server `legend_template_v1`, (b) MFA nyata di kedua impor, (c) pemilih outlet di panel rekonsiliasi.
+- Langkah 2a server selesai: POST `/reconciliation/settlements/csv` (`importGatewaySettlementCsv`), parser `payment-settlement-csv-parse.ts`, `MFA_REQUIRED` di impor JSON dan CSV (cek outlet+izin+MFA sebelum membaca berkas), registry `payment-settlement.csv-import`, dokumen `docs/design/settlement-csv-template.md`, bead legend-osqou.53 (format asli Duitku). Test: csv 7, list 7, import, emit, registry = 183 lulus. Typecheck api hijau.
+
 ## Sedang
 
-- Typecheck web hijau. Langkah 2-4 menunggu keputusan di bawah (panel rekonsiliasi juga belum punya pemilih outlet, sedangkan daftar butuh outletId).
-
-## Perlu keputusan CTO (langkah 2)
-
-1. Format berkas: impor C4a menerima JSON baris (reference, amountIdr, feeIdr + total), bukan berkas. Pola X2 = server mengurai CSV. Untuk Duitku tidak ada parser dan format ekspor Duitku belum terdokumentasi di repo. Pilihan: (a) endpoint server baru pengurai CSV Duitku (butuh contoh berkas asli), (b) templat CSV milik kita diurai di browser (angka uang dari klien, bertentangan dengan "semua angka uang dari server").
-2. MFA: `importSettlement` server tidak memeriksa faktor kedua. Step-up di layar hanya hiasan kecuali server menolak dengan `MFA_REQUIRED` (mengubah perilaku C4a, test impor yang ada perlu sesi MFA; helper test sudah memverifikasi MFA).
-
-## Berikut
-
-- Langkah 3 (panel rekonsiliasi: daftar settlement terakhir, hapus cabang 503) bisa jalan setelah langkah 1.
+- Langkah 2b web: layar impor Duitku, lalu langkah 3 (panel + pemilih outlet), langkah 4 (katalog teks, screenshot).

@@ -509,6 +509,25 @@ paymentAdminRouter.post(
         actor(req),
         contract.importSettlement.body.parse(req.body),
         key(req),
+        { mfaVerified: (await sessionMfaVerifiedAt(req)) !== null },
+      ),
+    });
+  },
+);
+// C4b: a gateway settlement CSV. The service checks payment.reconcile at the
+// outlet and the session's second factor before it reads the file.
+paymentAdminRouter.post(
+  route(contract.importGatewaySettlementCsv.path),
+  jsonBody,
+  reconcileBody,
+  async (req, res) => {
+    res.json({
+      data: await settlementImport.importGatewaySettlementCsv(
+        scope(req),
+        actor(req),
+        req.body,
+        key(req),
+        { mfaVerified: (await sessionMfaVerifiedAt(req)) !== null },
       ),
     });
   },

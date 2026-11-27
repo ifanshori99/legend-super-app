@@ -19,11 +19,14 @@ import {
 import { eventEnvelopeSchema } from "@starter/shared/events";
 import { GATEWAY_SETTLEMENT_PROVIDERS } from "@starter/shared/payment";
 import {
+  importGatewaySettlementCsv as csvEndpoint,
   importSettlement as importEndpoint,
   listSettlements as listEndpoint,
   settlementImportViewSchema,
   settlementListItemSchema,
+  type ImportGatewaySettlementCsvInput,
 } from "@starter/shared/payment/admin";
+import { AccessError } from "@starter/shared/access";
 import { guardDataImport } from "../config/data-import.ts";
 import { db } from "../db/index.ts";
 import { edcTransactions } from "../db/schema/edc.ts";
@@ -38,7 +41,7 @@ import {
 } from "../db/schema/payment-settlement.ts";
 import { paymentIntents } from "../db/schema/payment.ts";
 import { withTenant } from "../db/tenant.ts";
-import { HttpError } from "../lib/http-error.ts";
+import { HttpError, RowErrorsHttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { idempotentPaymentAdminWrite } from "./payment-admin-idempotency.ts";
@@ -50,6 +53,11 @@ import {
   assertPaymentPermission,
   EVENT_DESTINATION,
 } from "./payment-support.ts";
+import {
+  GatewaySettlementCsvError,
+  parseGatewaySettlementCsv,
+  type GatewaySettlementCsvLine,
+} from "./payment-settlement-csv-parse.ts";
 import { openLateFundsCorrection } from "./payment-reconciliation-correction.service.ts";
 import { cancelApprovalRequest } from "./platform-approval.service.ts";
 import type { Tx } from "./permission-resolver.ts";
@@ -349,16 +357,24 @@ function view(
   });
 }
 
-export async function importSettlement(
+/** Who is asking: set by the route from the session, never by the body. */
+export type SettlementImportOptions = { readonly mfaVerified: boolean };
+
+/**
+ * One import, whatever its body (JSON lines or a CSV file). The outlet
+ * permission and the second factor are checked first; only then is the report
+ * read (`readInput`), so a caller who may not import learns nothing about it.
+ */
+async function importChecked(
   context: ScopedTenantContext,
   actorId: string,
-  body: unknown,
+  outletId: OutletId,
+  readInput: () => Input,
   key: string,
+  operation: string,
+  request: unknown,
+  options: SettlementImportOptions,
 ) {
-  assertTrustedScopedContext(context);
-  // Data import guard: classify the upload before any write.
-  guardDataImport("payment-settlement.import");
-  const input = importEndpoint.body.parse(body);
   const tenantId = context.tenant.tenantId;
   return withTenant(db, context, async (tx) => {
     const now = new Date();
@@ -367,9 +383,13 @@ export async function importSettlement(
       context,
       actorId,
       "payment.reconcile",
-      { type: "outlet", id: input.outletId },
+      { type: "outlet", id: outletId },
       now,
     );
+    // A settlement import opens and closes reconciliation cases (money
+    // differences): a fresh second factor always, as for the X2 CSV.
+    if (!options.mfaVerified) throw new AccessError("MFA_REQUIRED");
+    const input = readInput();
     // The provider and terminal must be real before anything is recorded.
     if (input.source === "gateway") {
       if (
@@ -732,8 +752,8 @@ export async function importSettlement(
       context,
       actorId,
       key,
-      "reconciliation.import_settlement",
-      input,
+      operation,
+      request,
       async () => {
         try {
           return await run();
@@ -744,6 +764,90 @@ export async function importSettlement(
       },
     );
   });
+}
+
+export async function importSettlement(
+  context: ScopedTenantContext,
+  actorId: string,
+  body: unknown,
+  key: string,
+  options: SettlementImportOptions,
+) {
+  assertTrustedScopedContext(context);
+  // Data import guard: classify the upload before any write.
+  guardDataImport("payment-settlement.import");
+  const input = importEndpoint.body.parse(body);
+  return importChecked(
+    context,
+    actorId,
+    input.outletId,
+    () => input,
+    key,
+    "reconciliation.import_settlement",
+    input,
+    options,
+  );
+}
+
+/**
+ * The CSV as an import body. Every amount comes from the file and every total
+ * is summed here; the browser sends none. Unreadable lines refuse the file
+ * with their row number and a reason code (never the content).
+ */
+function readGatewayCsv(input: ImportGatewaySettlementCsvInput): Input {
+  let lines: GatewaySettlementCsvLine[];
+  try {
+    lines = parseGatewaySettlementCsv(input.format, input.csv);
+  } catch (error) {
+    if (error instanceof GatewaySettlementCsvError) {
+      if (error.rowErrors.length > 0)
+        throw new RowErrorsHttpError(
+          "VALIDATION_ERROR",
+          error.message,
+          error.rowErrors,
+        );
+      throw new HttpError(422, "VALIDATION_ERROR", error.message);
+    }
+    throw error;
+  }
+  const grossIdr = lines.reduce((sum, line) => sum + line.amountIdr, 0);
+  const feeIdr = lines.reduce((sum, line) => sum + line.feeIdr, 0);
+  return importEndpoint.body.parse({
+    outletId: input.outletId,
+    source: "gateway",
+    provider: input.provider,
+    reference: input.reference,
+    periodStart: input.periodStart,
+    periodEnd: input.periodEnd,
+    grossIdr,
+    feeIdr,
+    netIdr: grossIdr - feeIdr,
+    lines,
+  });
+}
+
+/** C4b: a gateway (Duitku) settlement CSV, imported exactly like importSettlement. */
+export async function importGatewaySettlementCsv(
+  context: ScopedTenantContext,
+  actorId: string,
+  body: unknown,
+  key: string,
+  options: SettlementImportOptions,
+) {
+  assertTrustedScopedContext(context);
+  // Data import guard: classify the upload before any write.
+  guardDataImport("payment-settlement.csv-import");
+  const input = csvEndpoint.body.parse(body);
+  return importChecked(
+    context,
+    actorId,
+    input.outletId,
+    () => readGatewayCsv(input),
+    key,
+    "reconciliation.import_settlement_csv",
+    input,
+    options,
+  );
 }
 
 /**

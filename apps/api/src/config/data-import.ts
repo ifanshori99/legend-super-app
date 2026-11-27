@@ -56,9 +56,17 @@ export const DATA_IMPORT_SOURCES = {
     classification: "deployment",
     file: "apps/api/src/services/payment-settlement-import.service.ts",
     entry: "export async function importSettlement(",
-    beforeWrite: "withTenant(",
+    beforeWrite: "importChecked(",
     description:
       "Gateway and EDC bank settlement report upload committed by importSettlement.",
+  },
+  "payment-settlement.csv-import": {
+    classification: "deployment",
+    file: "apps/api/src/services/payment-settlement-import.service.ts",
+    entry: "export async function importGatewaySettlementCsv(",
+    beforeWrite: "importChecked(",
+    description:
+      "Gateway (Duitku) settlement CSV upload read by the server and committed by importGatewaySettlementCsv (C4b).",
   },
   "edc-settlement.csv-import": {
     classification: "deployment",
