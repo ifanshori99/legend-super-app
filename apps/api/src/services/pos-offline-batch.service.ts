@@ -63,7 +63,11 @@ import {
 } from "@starter/shared/pos";
 import { formatRupiah } from "@starter/shared/i18n";
 import { db } from "../db/index.ts";
-import { posOfflineKits } from "../db/schema/pos-offline.ts";
+import {
+  posOfflineCatalogSnapshots,
+  posOfflineKits,
+  type PosOfflineKitSnapshot,
+} from "../db/schema/pos-offline.ts";
 import { posOfflineSales } from "../db/schema/pos-offline-sale.ts";
 import {
   posOrderItems,
@@ -119,7 +123,10 @@ const NO_DEVICE = "Sinkron offline hanya untuk perangkat kasir terdaftar.";
 const FUTURE_SKEW_MS = 5 * 60 * 1000;
 const sameId = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
-type KitRow = typeof posOfflineKits.$inferSelect;
+/** A kit with its snapshot resolved (inline for pre-0542 kits). */
+type KitRow = Omit<typeof posOfflineKits.$inferSelect, "snapshot"> & {
+  snapshot: PosOfflineKitSnapshot;
+};
 type RunRow = typeof receiptSequences.$inferSelect;
 
 /** A refusal of the sale itself: stored `held` with this code. */
@@ -367,15 +374,33 @@ async function ingestInTransaction(
 
   // 1. The kit names the device, the outlet and the run. Anything else is one
   //    answer, so a device learns nothing about another device's kits.
-  const [kit] = await tx
-    .select()
+  const [kitRow] = await tx
+    .select({
+      kit: posOfflineKits,
+      stored: posOfflineCatalogSnapshots.snapshot,
+    })
     .from(posOfflineKits)
+    .leftJoin(
+      posOfflineCatalogSnapshots,
+      and(
+        eq(posOfflineCatalogSnapshots.tenantId, posOfflineKits.tenantId),
+        eq(posOfflineCatalogSnapshots.outletId, posOfflineKits.outletId),
+        eq(
+          posOfflineCatalogSnapshots.catalogVersion,
+          posOfflineKits.catalogVersion,
+        ),
+      ),
+    )
     .where(
       and(
         eq(posOfflineKits.tenantId, tenantId),
         eq(posOfflineKits.id, event.kitId),
       ),
     );
+  // Kits issued before 0542 hold their snapshot inline; later ones name it.
+  const snapshot = kitRow?.kit.snapshot ?? kitRow?.stored ?? null;
+  const kit: KitRow | null =
+    kitRow && snapshot ? { ...kitRow.kit, snapshot } : null;
   if (
     !kit ||
     !sameId(kit.deviceId, deviceId) ||

@@ -16,3 +16,20 @@ END $$;
 --> statement-breakpoint
 CREATE TRIGGER pos_offline_kits_guard BEFORE UPDATE OR DELETE ON public.pos_offline_kits
 FOR EACH ROW EXECUTE FUNCTION app.guard_pos_offline_kit();
+--> statement-breakpoint
+-- O1 review P3 2 (0542, legend-wasr7.15): the snapshot table is stored once per
+-- (outlet, catalogue version). Tenant RLS plus the outlet backstop, and
+-- append-only like the kits: what a kit was priced from never changes.
+SELECT app.enforce_tenant_rls('public.pos_offline_catalog_snapshots'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_outlet_rls('public.pos_offline_catalog_snapshots'::regclass);
+--> statement-breakpoint
+CREATE FUNCTION app.guard_pos_offline_catalog_snapshot() RETURNS trigger
+LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+BEGIN
+  RAISE EXCEPTION 'POS-06: offline catalogue snapshot % is append-only', OLD.id
+    USING ERRCODE = '23514';
+END $$;
+--> statement-breakpoint
+CREATE TRIGGER pos_offline_catalog_snapshots_guard BEFORE UPDATE OR DELETE ON public.pos_offline_catalog_snapshots
+FOR EACH ROW EXECUTE FUNCTION app.guard_pos_offline_catalog_snapshot();

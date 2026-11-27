@@ -3697,6 +3697,13 @@
       "when": 1795735993668,
       "tag": "0541_edc_bridge",
       "breakpoints": true
+    },
+    {
+      "idx": 542,
+      "version": "7",
+      "when": 1795742135155,
+      "tag": "0542_pos_offline_catalog_snapshots",
+      "breakpoints": true
     }
   ]
 }
