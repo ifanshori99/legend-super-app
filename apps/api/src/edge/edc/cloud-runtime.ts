@@ -186,12 +186,15 @@ export class CloudEdcProviderRegistry implements EdcProviderLookup {
       if (!any) throw new EdcError("EDC_PROVIDER_UNKNOWN");
       return any;
     }
+    const cloud = target.connectionKind === "bca_cloud" && bank === "bca";
     const provider =
       target.connectionKind === "bridge"
         ? this.#bridge.get(bank)
-        : target.connectionKind === "bca_cloud" && bank === "bca"
+        : cloud
           ? this.#bcaCloud
           : null;
+    // B5a: no BCA credentials in this process = not ready (EDC manual X1).
+    if (!provider && cloud) throw new EdcError("EDC_AGENT_NOT_READY");
     if (!provider) throw new EdcError("EDC_PROVIDER_UNKNOWN");
     if (!provider.ready(target)) throw new EdcError("EDC_AGENT_NOT_READY");
     return provider;
@@ -205,12 +208,28 @@ export type CloudEdcProvider = EdcProvider & {
   /** Outlets with an active terminal of this provider: their lock is taken
    * at boot (`startOutlets`), since no tablet ever says `hello` for them. */
   outlets(): Promise<ReadonlyArray<{ tenantId: string; outletId: string }>>;
+  /** Before a sale or the payment options of one of its outlets: gets what
+   * `ready` needs (B5a: a fresh access token). Never throws. */
+  prepare?(): Promise<void>;
 };
+
+/** The terminal rows `prepareSale` may get (payment options loaded them). */
+export type CloudEdcTerminalHint = Pick<
+  TerminalRow,
+  "bankCode" | "connectionKind" | "status"
+>;
+
+/** An active terminal the `bca_cloud` provider serves. */
+const servedByBcaCloud = (row: CloudEdcTerminalHint) =>
+  row.connectionKind === "bca_cloud" &&
+  row.bankCode === "bca" &&
+  row.status === "active";
 
 export type CloudEdcRuntimeOptions = {
   db?: Database;
   codecs?: readonly EdcBridgeCodec[];
-  /** B5a slot: the `bca_cloud` provider. None until then. */
+  /** The `bca_cloud` provider (B5a, bca-cloud-provider.ts); none without
+   * BCA credentials. */
   bcaCloud?: CloudEdcProvider | null;
   saleTimeoutMs?: number;
   /** Inquiry, cancel and void on the terminal. */
@@ -366,11 +385,54 @@ export class CloudEdcRuntime {
   }
 
   /** Before a sale or the payment options of an outlet: with a cloud
-   * provider configured, the outlet is taken lazily (an outlet added after
-   * boot). No-op without one: bridge outlets wait for their tablet. */
-  async prepareSale(tenantId: string, outletId: string): Promise<void> {
-    if (!this.#bcaCloud || this.#owned.has(keyOf(tenantId, outletId))) return;
-    await this.#ensureOutlet(tenantId, outletId);
+   * provider configured and an active `bca_cloud` terminal at the outlet,
+   * the provider is prepared and the outlet taken lazily (an outlet added
+   * after boot). No-op otherwise (B2 review P3): an outlet without such a
+   * terminal never takes a lock here, and bridge outlets wait for their
+   * tablet. `terminals`: the outlet's terminal rows when the caller has them
+   * (payment options); without them one row is read. Never throws. */
+  async prepareSale(
+    tenantId: string,
+    outletId: string,
+    terminals?: readonly CloudEdcTerminalHint[],
+  ): Promise<void> {
+    const provider = this.#bcaCloud;
+    if (!provider || this.#stopped) return;
+    const serves = terminals
+      ? terminals.some(servedByBcaCloud)
+      : await this.#hasCloudTerminal(tenantId, outletId);
+    if (!serves) return;
+    await provider.prepare?.();
+    if (!this.#owned.has(keyOf(tenantId, outletId)))
+      await this.#ensureOutlet(tenantId, outletId);
+  }
+
+  async #hasCloudTerminal(tenantId: string, outletId: string) {
+    try {
+      const ctx = edcBridgeDeviceContext(tenantId, outletId);
+      const [row] = await withTenant(this.#db, ctx, (tx) =>
+        tx
+          .select({ id: paymentEdcTerminals.id })
+          .from(paymentEdcTerminals)
+          .where(
+            and(
+              eq(paymentEdcTerminals.tenantId, ctx.tenant.tenantId),
+              eq(paymentEdcTerminals.outletId, outletIdSchema.parse(outletId)),
+              eq(paymentEdcTerminals.connectionKind, "bca_cloud"),
+              eq(paymentEdcTerminals.bankCode, "bca"),
+              eq(paymentEdcTerminals.status, "active"),
+            ),
+          )
+          .limit(1),
+      );
+      return row !== undefined;
+    } catch (error) {
+      logger.warn(
+        { ...errClass(error), outletId },
+        "The cloud EDC runtime could not read the outlet's terminals",
+      );
+      return false;
+    }
   }
 
   /** The agent, when this process owns the outlet. */

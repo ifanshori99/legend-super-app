@@ -6,7 +6,10 @@
 import type { OutletId, TenantId } from "@starter/shared/core";
 import type { paymentEdcTerminals } from "../../db/schema/index.ts";
 import type { EdcAgent } from "./agent.ts";
-import { getCloudEdcRuntime } from "./cloud-runtime.ts";
+import {
+  getCloudEdcRuntime,
+  type CloudEdcTerminalHint,
+} from "./cloud-runtime.ts";
 import { getEdgeEdcAgent } from "./runtime.ts";
 
 export type ResolvedEdcAgent = {
@@ -17,13 +20,15 @@ export type ResolvedEdcAgent = {
 };
 
 /** Before resolving for a sale (or its payment options): lets the cloud take
- * a cloud-provider outlet lazily (`prepareSale`). No-op on the edge. */
+ * an outlet with an active `bca_cloud` terminal lazily (`prepareSale`).
+ * `terminals`: the outlet's rows when already loaded. No-op on the edge. */
 export async function prepareEdcAgent(
   tenantId: TenantId,
   outletId: OutletId,
+  terminals?: readonly CloudEdcTerminalHint[],
 ): Promise<void> {
   if (getEdgeEdcAgent()) return;
-  await getCloudEdcRuntime()?.prepareSale(tenantId, outletId);
+  await getCloudEdcRuntime()?.prepareSale(tenantId, outletId, terminals);
 }
 
 export function resolveEdcAgent(

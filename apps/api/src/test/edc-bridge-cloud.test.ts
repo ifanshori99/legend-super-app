@@ -835,15 +835,19 @@ describe("B2 cloud provider slot (bca_cloud, B5a)", () => {
     const outletC = await addOutlet("C");
     const outletD = await addOutlet("D");
     const terminalC = randomUUID();
-    await asTenant(
-      fx.tenant.tenantId,
-      `INSERT INTO payment_edc_terminals
-         (id, tenant_id, outlet_id, bank_code, terminal_id, merchant_id, model,
-          connection, ip_address, supported_methods, status, connection_kind)
-       VALUES ($1, $2, $3, 'bca', 'TID-B2-C1', 'MID-B2', 'BCA cloud', 'lan', '10.0.0.9',
-               ARRAY['card','qris'], 'active', 'bca_cloud')`,
-      [terminalC, fx.tenant.tenantId, outletC],
-    );
+    const addCloudTerminal = (id: string, outletId: string, tid: string) =>
+      asTenant(
+        fx.tenant.tenantId,
+        `INSERT INTO payment_edc_terminals
+           (id, tenant_id, outlet_id, bank_code, terminal_id, merchant_id, model,
+            connection, ip_address, supported_methods, status, connection_kind)
+         VALUES ($1, $2, $3, 'bca', $4, 'MID-B2', 'BCA cloud', 'lan', '10.0.0.9',
+                 ARRAY['card','qris'], 'active', 'bca_cloud')`,
+        [id, fx.tenant.tenantId, outletId, tid],
+      );
+    await addCloudTerminal(terminalC, outletC, "TID-B2-C1");
+    // B5a: only an outlet with an active bca_cloud terminal is taken lazily.
+    await addCloudTerminal(randomUUID(), outletD, "TID-B2-D1");
     let ready = true;
     const unused = () => Promise.reject(new Error("not called"));
     const fake: CloudEdcProvider = {
