@@ -20,6 +20,11 @@ import { Button } from "@/components/ui/button";
 import { PushOwnerGuard } from "@/features/ws05-notifications/components/push-owner-guard";
 import { isScreenClosedOnSharedDevice } from "@/lib/areas/guard";
 import { loadAreaAccess } from "@/lib/areas/load-access";
+import {
+  loadWithOfflineFallback,
+  recallRootContext,
+  rememberRootContext,
+} from "@/lib/offline-navigation";
 import type { AreaAccess } from "@/lib/areas/access";
 import { getSessionFn, type Session } from "@/lib/session";
 import { getTenantBrandFn } from "@/lib/tenant-brand-fn";
@@ -49,38 +54,53 @@ export type RouterContext = {
   textOverrides: MessageOverrides;
 };
 
+type RootContext = Pick<
+  RouterContext,
+  "session" | "access" | "tenantTheme" | "textOverrides"
+>;
+
+async function loadRootContext(): Promise<RootContext> {
+  const [session, brand] = await Promise.all([
+    getSessionFn(),
+    getTenantBrandFn(),
+  ]);
+  const isBrowser = typeof window !== "undefined";
+  let tenantTheme: TenantThemeConfig | null;
+  if (brand.kind === "error") {
+    // A transient API failure keeps the theme the browser already showed.
+    // Browser only: a module variable on the server would leak across hosts.
+    tenantTheme = isBrowser ? lastTenantTheme : null;
+  } else {
+    tenantTheme = brandContextToThemeConfig(
+      brand.kind === "brand" ? brand.brand : null,
+    );
+    if (isBrowser) lastTenantTheme = tenantTheme;
+  }
+  const access = await loadAreaAccess(session);
+  return { session, access, tenantTheme, textOverrides: brand.overrides };
+}
+
 export const Route = createRootRouteWithContext<RouterContext>()({
   // One session read per navigation (the API, via the auth middleware), shared
   // with every route as context. Layouts decide what to do with it; the API
   // still authenticates every request on its own.
   beforeLoad: async ({ location }) => {
-    const [session, brand] = await Promise.all([
-      getSessionFn(),
-      getTenantBrandFn(),
-    ]);
     const isBrowser = typeof window !== "undefined";
-    let tenantTheme: TenantThemeConfig | null;
-    if (brand.kind === "error") {
-      // A transient API failure keeps the theme the browser already showed.
-      // Browser only: a module variable on the server would leak across hosts.
-      tenantTheme = isBrowser ? lastTenantTheme : null;
-    } else {
-      tenantTheme = brandContextToThemeConfig(
-        brand.kind === "brand" ? brand.brand : null,
-      );
-      if (isBrowser) lastTenantTheme = tenantTheme;
-    }
-    const access = await loadAreaAccess(session);
+    // Browser only: with the internet gone (offline till) the last context the
+    // browser resolved stays in force (see lib/offline-navigation).
+    const { session, access, tenantTheme, textOverrides } = isBrowser
+      ? await loadWithOfflineFallback(
+          loadRootContext,
+          recallRootContext<RootContext>(),
+        )
+      : await loadRootContext();
+    if (isBrowser)
+      rememberRootContext({ session, access, tenantTheme, textOverrides });
     // Shared tablet (founder Q29): screens outside the allowlist do not exist
     // there, in every area. The API refuses their requests as well.
     if (isScreenClosedOnSharedDevice(access, location.pathname))
       throw notFound({ data: { sharedDevice: true } });
-    return {
-      session,
-      access,
-      tenantTheme,
-      textOverrides: brand.overrides,
-    };
+    return { session, access, tenantTheme, textOverrides };
   },
   head: () => ({
     meta: [
@@ -101,10 +121,15 @@ export const Route = createRootRouteWithContext<RouterContext>()({
 });
 
 function RootLayout() {
-  const userId = useRouteContext({
-    from: rootRouteId,
-    select: (context) => context.session?.user.id ?? null,
-  });
+  const rootContext = useRouteContext({ from: rootRouteId });
+  const userId = rootContext.session?.user.id ?? null;
+  // The first page is rendered by the server, so the browser has not resolved
+  // a context itself yet: remember the one it hydrated with, for the offline
+  // till (see lib/offline-navigation).
+  useEffect(() => {
+    const { session, access, tenantTheme, textOverrides } = rootContext;
+    rememberRootContext({ session, access, tenantTheme, textOverrides });
+  }, [rootContext]);
   return (
     <>
       <PushOwnerGuard userId={userId} />

@@ -335,14 +335,16 @@ describe("legend-ofq4f sign-out revokes the push subscription first", () => {
         },
         "@tanstack/react-query": {
           useQueryClient: () => ({
-            removeQueries: (filters) => {
-              calls.push("removeQueries");
-              removed.push(filters);
+            clear: () => {
+              calls.push("clear");
+              removed.push("all");
             },
           }),
         },
-        "@/features/ws10-hris-employee/queries": {
-          hrisKeys: { all: ["hris"] },
+        "@/lib/offline-navigation": {
+          forgetRootContext() {
+            calls.push("forgetRootContext");
+          },
         },
         "lucide-react": { LogOut: "LogOut" },
         "@/components/ui/button": { Button: "Button" },
@@ -355,6 +357,19 @@ describe("legend-ofq4f sign-out revokes the push subscription first", () => {
           },
         },
         "@/lib/api/acting-staff": { endActingStaffMode() {} },
+        // O3 guard: nothing is queued on this tablet, so sign-out goes on.
+        "@/features/ws04-pos-kasir/offline/queue": {
+          countPendingOfflineSales: async () => 0,
+        },
+        "@/features/ws04-pos-kasir/offline/store": {
+          defaultOfflineBackend: () => ({}),
+        },
+        "@/features/ws04-pos-kasir/offline/shell": {
+          clearPosShell: async () => {},
+        },
+        "@/features/ws04-pos-kasir/offline/sign-out-blocked-dialog": {
+          SignOutBlockedDialog: "SignOutBlockedDialog",
+        },
         "@/lib/retained-attempt-key": {
           clearRetainedAttempt() {
             calls.push("clearRetainedAttempt");
@@ -381,17 +396,23 @@ describe("legend-ofq4f sign-out revokes the push subscription first", () => {
     );
   });
 
-  test("the cached employee data is dropped after a successful sign-out", async () => {
+  test("every cached query and the last root context are dropped after a successful sign-out", async () => {
     const { click, calls, removed } = signOutClick();
     await click();
-    assert.deepEqual(removed, [{ queryKey: ["hris"] }]);
+    // Review K O5 P2: the whole query cache, not only the employee data, and
+    // the root context kept for offline navigation.
+    assert.deepEqual(removed, ["all"]);
+    assert.ok(
+      calls.indexOf("forgetRootContext") > calls.indexOf("signOut"),
+      `the root context must be forgotten after signOut, saw ${JSON.stringify(calls)}`,
+    );
     assert.ok(
       calls.indexOf("clearRetainedAttempt") > calls.indexOf("signOut"),
       `kept idempotency keys must be dropped after signOut, saw ${JSON.stringify(calls)}`,
     );
     assert.ok(
-      calls.indexOf("removeQueries") > calls.indexOf("signOut"),
-      `removeQueries must follow signOut, saw ${JSON.stringify(calls)}`,
+      calls.indexOf("clear") > calls.indexOf("signOut"),
+      `clear must follow signOut, saw ${JSON.stringify(calls)}`,
     );
   });
 });

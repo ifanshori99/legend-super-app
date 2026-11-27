@@ -11,7 +11,7 @@ import { defaultOfflineBackend } from "@/features/ws04-pos-kasir/offline/store";
 import { SignOutBlockedDialog } from "@/features/ws04-pos-kasir/offline/sign-out-blocked-dialog";
 import { Button } from "@/components/ui/button";
 import { clearRetainedAttempt } from "@/lib/retained-attempt-key";
-import { hrisKeys } from "@/features/ws10-hris-employee/queries";
+import { forgetRootContext } from "@/lib/offline-navigation";
 
 export function SignOutButton() {
   const [pending, setPending] = useState(false);
@@ -48,9 +48,11 @@ export function SignOutButton() {
       clearRetainedAttempt();
       // O3: the /pos pages cached for offline belong to this login.
       await clearPosShell();
-      // The next account on this tab must not see the employee data cached
-      // for this one (profile, history, corrections).
-      queryClient.removeQueries({ queryKey: hrisKeys.all });
+      // The next account on this tab must not see anything cached for this
+      // one: the last root context (kept for offline navigation) and every
+      // cached query (profile, history, corrections, till data). Review K O5 P2.
+      forgetRootContext();
+      queryClient.clear();
       await router.invalidate();
       await navigate({ to: "/sign-in", replace: true });
     } catch {

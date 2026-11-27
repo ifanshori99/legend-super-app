@@ -78,6 +78,14 @@ export const offlineSaleTenderSchema = z.discriminatedUnion("method", [
 ]);
 export type OfflineSaleTender = z.infer<typeof offlineSaleTenderSchema>;
 
+/**
+ * O5 (1): an unclear order holds every cart that shares a line with it. The
+ * cashier's way out is "pelanggan lain" with a written reason (4 to 200
+ * characters); the sale is then flagged `other_customer` for Finance.
+ */
+export const OFFLINE_OTHER_CUSTOMER_REASON_MIN = 4;
+export const OFFLINE_OTHER_CUSTOMER_REASON_MAX = 200;
+
 export const offlineSaleEventSchema = z.strictObject({
   /** ULID of the sale; also the cloud order id. */
   eventId: orderIdSchema,
@@ -98,6 +106,16 @@ export const offlineSaleEventSchema = z.strictObject({
   /** The tax rows behind `taxIdr`, as the tablet computed them. */
   taxes: z.array(orderPaidTaxSchema).max(50).optional(),
   tenders: z.array(offlineSaleTenderSchema).min(1).max(4),
+  /**
+   * O5 (1): why this sale was made although an earlier order request of the
+   * same lines was still unclear ("pelanggan lain"). Absent for a normal sale.
+   */
+  otherCustomerReason: z
+    .string()
+    .trim()
+    .min(OFFLINE_OTHER_CUSTOMER_REASON_MIN)
+    .max(OFFLINE_OTHER_CUSTOMER_REASON_MAX)
+    .optional(),
 });
 export type OfflineSaleEvent = z.infer<typeof offlineSaleEventSchema>;
 
@@ -150,6 +168,12 @@ export const OFFLINE_SALE_FLAGS = [
    * the offline clearing account (like `shift_closed`).
    */
   "event_conflict",
+  /**
+   * O5 (1): the cashier sold lines that an unclear order request also held,
+   * saying it was another customer. The sale stands (cash in its open drawer);
+   * Finance checks it is not the same order twice.
+   */
+  "other_customer",
 ] as const;
 export const offlineSaleFlagSchema = z.enum(OFFLINE_SALE_FLAGS);
 export type OfflineSaleFlag = z.infer<typeof offlineSaleFlagSchema>;

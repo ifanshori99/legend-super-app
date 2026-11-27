@@ -7,6 +7,8 @@ import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Money } from "@/components/ui/money";
 import { ApiError } from "@/lib/api/errors";
 import { useActiveShift, useSubmitBlindCount } from "../../shift-hooks";
+import { closeScreenMode } from "../../offline/close-gate";
+import { CloseNeedsInternet } from "../../offline/close-needs-internet";
 import { usePosOffline } from "../../offline/hooks";
 import { OfflineCloseBlock } from "../../offline/offline-close-block";
 import { SHIFT_COUNT_LIMIT_CODE } from "../../shift-extra-types";
@@ -181,6 +183,16 @@ export function BlindCountScreen() {
   // Review O3 P3: the queue keeps sending while the cashier counts the drawer.
   // O4: while offline sales are on this tablet, the drawer is not counted.
   const offline = usePosOffline();
+  // O5 (CTO 27 Nov, 6 b and c): without internet the count is not started, and
+  // a shift read lost at the network does not become a loading error.
+  if (
+    closeScreenMode({
+      online: offline.online,
+      shiftError: shift.error,
+      kit: offline.kit,
+    }) === "needs_internet"
+  )
+    return <CloseNeedsInternet pending={offline.pending} />;
   if (shift.isPending)
     return <ShiftScreenSkeleton label={t("posKasirShift.loading")} />;
   if (shift.isError)

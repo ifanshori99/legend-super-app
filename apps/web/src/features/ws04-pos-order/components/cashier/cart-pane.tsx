@@ -49,6 +49,10 @@ export interface CartPaneProps {
     onPay: () => void;
     /** Why this cart cannot be sold offline now; null when it can. */
     blocked: string | null;
+    /** O5 (1): the way out of an unclear-order hold ("pelanggan lain"). */
+    blockedAction?: { label: string; onClick: () => void };
+    /** O5 (1): the cart is marked "pelanggan lain"; the text and its undo. */
+    marked?: { text: string; clearLabel: string; onClear: () => void };
   };
   className?: string;
 }
@@ -208,6 +212,31 @@ export function CartPane({
               >
                 {offline.blocked}
               </p>
+            )}
+            {offline.blocked && offline.blockedAction && (
+              <Button
+                type="button"
+                variant="outline"
+                size="lg"
+                onClick={offline.blockedAction.onClick}
+                className="w-full font-bold"
+              >
+                {offline.blockedAction.label}
+              </Button>
+            )}
+            {offline.marked && (
+              <div className="grid gap-1 rounded-control bg-warning-subtle px-3 py-2 text-base">
+                <p className="font-semibold">{offline.marked.text}</p>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={offline.marked.onClear}
+                  className="justify-self-start font-bold"
+                >
+                  {offline.marked.clearLabel}
+                </Button>
+              </div>
             )}
             <Button
               type="button"

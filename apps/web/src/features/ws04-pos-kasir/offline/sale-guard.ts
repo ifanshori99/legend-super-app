@@ -3,12 +3,25 @@
 // was lost, e.g. a timeout as the internet went down) may already be an order
 // there; selling it again offline could make it twice. Only a new cart is sold
 // offline. Pure: Node tests load it directly.
-import { OFFLINE_KIT_SERVICE_TYPES } from "@starter/shared/pos";
+import {
+  OFFLINE_KIT_SERVICE_TYPES,
+  OFFLINE_OTHER_CUSTOMER_REASON_MIN,
+} from "@starter/shared/pos";
 import type {
   CartLine,
   OrderSnapshot,
   SaleChannel,
 } from "@/features/ws04-pos-order/types";
+
+export { OFFLINE_OTHER_CUSTOMER_REASON_MIN };
+
+/** O5 (1): the written reason of "pelanggan lain", trimmed; null if too short. */
+export function otherCustomerReasonOf(
+  value: string | null | undefined,
+): string | null {
+  const reason = value?.trim() ?? "";
+  return reason.length >= OFFLINE_OTHER_CUSTOMER_REASON_MIN ? reason : null;
+}
 
 export type OfflineSaleBlock =
   /** Review K P2 2: this cashier may not take payment. */
@@ -54,12 +67,20 @@ export function offlineSaleBlock(input: {
   cloudOrderId: string | null | undefined;
   /** `pos.payment.accept`: an offline sale is taken payment. */
   canAcceptPayment: boolean;
+  /**
+   * O5 (1): the cashier marked the cart "pelanggan lain" and wrote why. It
+   * opens only the unclear-order hold; the sale then goes to Finance flagged.
+   */
+  otherCustomerReason?: string | null;
 }): OfflineSaleBlock | null {
   if (!input.canAcceptPayment) return "noPermission";
   if (input.submitting) return "sending";
   // Compared by lines only: a changed table or channel is still the same food.
-  if (input.pending && sharesLine(input.lines, input.pending.lines))
-    return "uncertain_order";
+  const held =
+    input.pending !== null &&
+    sharesLine(input.lines, input.pending.lines) &&
+    otherCustomerReasonOf(input.otherCustomerReason) === null;
+  if (held) return "uncertain_order";
   if (input.cloudOrderId) return "cloud_order";
   if (input.lines.length === 0) return "empty";
   if (!(OFFLINE_KIT_SERVICE_TYPES as readonly string[]).includes(input.channel))

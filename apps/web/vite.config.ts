@@ -7,6 +7,7 @@ import viteReact from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { i18nChunks } from "./vite-i18n-chunks.ts";
 import { assertNoMockInDeployedBuild } from "./vite-mock-guard.ts";
+import { posPrecache } from "./vite-pos-precache.ts";
 
 // Both apps share the repository root's .env.local / .env.
 const envDir = resolve(import.meta.dirname, "../..");
@@ -139,6 +140,7 @@ export default defineConfig(({ command, mode }) => {
       i18nChunks({ split: true }),
       tailwindcss(),
       demoSampleAssets(demo),
+      posPrecache(),
       tanstackStart(),
       // Nitro is the deployment adapter; development uses Start's own server.
       command === "build" && nitro(),

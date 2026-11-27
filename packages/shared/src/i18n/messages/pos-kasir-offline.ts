@@ -38,6 +38,19 @@ export const posKasirOfflineMessages = {
         "Bekal offline tidak tersedia. Sambungkan tablet ke internet untuk jualan.",
     },
   },
+  otherCustomer: {
+    action: "Ini pelanggan lain",
+    title: "Pelanggan lain?",
+    body: "Menu ini sama dengan pesanan tadi yang belum pasti. Tandai hanya bila ini pelanggan lain, bukan pesanan yang sama. Penjualan tetap disimpan dan dicek Finance.",
+    reason: "Alasan",
+    reasonHint:
+      "Tulis singkat, minimal {min} huruf. Contoh: meja 4, pelanggan lain.",
+    short: "Tulis alasannya, minimal 4 huruf.",
+    cancel: "Kembali",
+    confirm: "Tandai pelanggan lain",
+    marked: "Ditandai pelanggan lain: {reason}",
+    clear: "Batalkan tanda",
+  },
   pay: {
     title: "Bayar · offline",
     summary: "Total {amount} · harga daftar, tanpa promo",
@@ -128,6 +141,12 @@ export const posKasirOfflineMessages = {
       "Tutup shift dari tablet kasir pemegang bekal, atau minta supervisor menutup paksa. Finance mendapat pemberitahuan.",
     forceHint:
       "Tablet rusak atau tidak bisa tersambung? Minta supervisor tutup paksa dari layar persetujuan shift. Finance mendapat pemberitahuan, dan penjualan yang datang belakangan tetap dicatat.",
+  },
+  closeNeedsInternet: {
+    title: "Tutup shift butuh internet",
+    body: "Hitung kas dicatat di cloud, jadi layar ini menunggu tablet tersambung lagi. Penjualan offline tetap aman di tablet dan jalan terus.",
+    pending: "{count} penjualan offline menunggu dikirim lebih dulu.",
+    back: "Kembali ke kasir",
   },
   dayClose: {
     openShiftsLabel: "Shift yang masih buka",

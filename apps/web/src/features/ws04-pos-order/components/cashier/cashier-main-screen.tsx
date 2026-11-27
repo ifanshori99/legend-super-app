@@ -36,6 +36,7 @@ import {
   OfflineSavedDialog,
   type OfflineSaved,
 } from "@/features/ws04-pos-kasir/offline/offline-pay-dialog";
+import { OtherCustomerDialog } from "@/features/ws04-pos-kasir/offline/other-customer-dialog";
 import { OfflineQueueSheet } from "@/features/ws04-pos-kasir/offline/offline-queue-sheet";
 import { priceOfflineSale } from "@/features/ws04-pos-kasir/offline/price";
 import { offlineSaleBlock } from "@/features/ws04-pos-kasir/offline/sale-guard";
@@ -94,6 +95,9 @@ export function CashierMainScreen() {
   const isOffline = !offline.online;
   const [payOpen, setPayOpen] = useState(false);
   const [saved, setSaved] = useState<OfflineSaved | null>(null);
+  // O5 (1): "pelanggan lain" for a cart held by an unclear order.
+  const [otherOpen, setOtherOpen] = useState(false);
+  const [otherReason, setOtherReason] = useState<string | null>(null);
   const [queueOpen, setQueueOpen] = useState(false);
   const access = (useRouteContext({ strict: false }) as { access?: AreaAccess })
     .access;
@@ -206,13 +210,22 @@ export function CashierMainScreen() {
       return null;
     }
   }, [isOffline, offlineKit, offlineCart, cart.lines.length]);
-  const offlineBlock = offlineSaleBlock({
+  const offlineGuard = {
     lines: cart.lines,
     channel: meta.channel,
     pending: pendingOrder.pending,
     submitting: submit.isPending,
     cloudOrderId: draft,
     canAcceptPayment,
+  };
+  // The mark counts only while the unclear order still holds this cart.
+  const heldByUnclear =
+    offlineSaleBlock({ ...offlineGuard, otherCustomerReason: null }) ===
+    "uncertain_order";
+  const otherCustomerReason = heldByUnclear ? otherReason : null;
+  const offlineBlock = offlineSaleBlock({
+    ...offlineGuard,
+    otherCustomerReason,
   });
 
   useEffect(() => {
@@ -355,6 +368,7 @@ export function CashierMainScreen() {
       {
         onSuccess: () => {
           cart.clear();
+          setOtherReason(null);
           restoreNow();
         },
         onSettled: pendingPark.refresh,
@@ -370,6 +384,7 @@ export function CashierMainScreen() {
       {
         onSuccess: () => {
           cart.clear();
+          setOtherReason(null);
           setStatus({ key: "parkedOk" });
         },
         onSettled: pendingPark.refresh,
@@ -390,7 +405,10 @@ export function CashierMainScreen() {
           // Same cart as the one parked: it is on the held list now, so it
           // leaves the screen. A different cart stays: it is a new order.
           // Read again now: an item added while this was sending must stay.
-          if (sameOrder(readDraft(draftKey), meta, snapshot)) cart.clear();
+          if (sameOrder(readDraft(draftKey), meta, snapshot)) {
+            cart.clear();
+            setOtherReason(null);
+          }
           setStatus({ key: "parkedOk" });
         },
         onSettled: pendingPark.refresh,
@@ -715,6 +733,22 @@ export function CashierMainScreen() {
                   : offlineBlock
                     ? t(`posKasirOffline.cart.blocked.${offlineBlock}`)
                     : null,
+                blockedAction:
+                  offlineKit && offlineBlock === "uncertain_order"
+                    ? {
+                        label: t("posKasirOffline.otherCustomer.action"),
+                        onClick: () => setOtherOpen(true),
+                      }
+                    : undefined,
+                marked: otherCustomerReason
+                  ? {
+                      text: t("posKasirOffline.otherCustomer.marked", {
+                        reason: otherCustomerReason,
+                      }),
+                      clearLabel: t("posKasirOffline.otherCustomer.clear"),
+                      onClear: () => setOtherReason(null),
+                    }
+                  : undefined,
               }
             : undefined
         }
@@ -752,15 +786,22 @@ export function CashierMainScreen() {
           cart={offlineCart}
           itemCount={totals.itemCount}
           queue={offline.queue}
+          otherCustomerReason={otherCustomerReason}
           onSaved={(result) => {
             // The sale is on the tablet now: this cart is done.
             cart.clear();
+            setOtherReason(null);
             setPayOpen(false);
             setSaved(result);
             void offline.refresh();
           }}
         />
       )}
+      <OtherCustomerDialog
+        open={otherOpen}
+        onOpenChange={setOtherOpen}
+        onConfirm={setOtherReason}
+      />
       <OfflineSavedDialog
         saved={saved}
         pending={offline.pending}

@@ -18,9 +18,13 @@ import {
 //   pnpm test      → API integration tests (vitest) + root node:test suites
 //   pnpm test:coverage → the same, with the business-logic coverage gate
 //   pnpm test:e2e  → production builds of both apps + Playwright
+//   node scripts/test.mjs e2e-offline → the same builds, but reached under
+//     `*.legend.test` tenant hosts (API on `api.legend.test`, cookie domain
+//     `.legend.test`) for the offline cashier drill (legend-wasr7.9, O5)
 const mode = process.argv[2];
-if (!["unit", "e2e"].includes(mode))
+if (!["unit", "e2e", "e2e-offline"].includes(mode))
   throw new Error("Use pnpm test or pnpm test:e2e.");
+const offlineE2e = mode === "e2e-offline";
 const databaseName = process.env.LEGEND_TEST_DB_NAME || "starter_test";
 if (!/^[a-z_][a-z0-9_]{0,62}$/.test(databaseName))
   throw new Error("LEGEND_TEST_DB_NAME must be a lowercase PostgreSQL name.");
@@ -63,8 +67,14 @@ const coverage =
   (process.argv.includes("--coverage") || process.env.LEGEND_COVERAGE === "1");
 
 // Fixed local origins for test servers, distinct from development.
-export const TEST_API_URL = "http://localhost:4101";
-export const TEST_WEB_URL = "http://localhost:3101";
+// The offline drill needs a tenant host in the browser (localhost is never a
+// tenant domain) and one cookie domain for the API and the tenant's web host.
+export const TEST_API_URL = offlineE2e
+  ? "http://api.legend.test:4101"
+  : "http://localhost:4101";
+export const TEST_WEB_URL = offlineE2e
+  ? "http://o5-offline.legend.test:3101"
+  : "http://localhost:3101";
 
 const project = `starter-pg-test-${randomBytes(8).toString("hex")}`;
 const password = randomBytes(24).toString("hex");
@@ -184,6 +194,7 @@ try {
     BETTER_AUTH_URL: TEST_API_URL,
     WEB_URL: TEST_WEB_URL,
     VITE_API_URL: TEST_API_URL,
+    ...(offlineE2e ? { COOKIE_DOMAIN: ".legend.test" } : {}),
   };
   await run(pnpmCommand(), ["run", "db:migrate"], testEnv);
   await provisionRoles({
@@ -282,13 +293,20 @@ try {
     // VITE_API_URL is also inlined, so build against the test API. turbo.json
     // hashes NODE_ENV and VITE_* for the build task (legend-mlb6), so this
     // build never replays a cached bundle made in another mode.
-    await run(pnpmCommand(), ["run", "build"], {
-      ...testEnv,
-      NODE_ENV: "production",
-    });
+    // LEGEND_E2E_SKIP_BUILD=1 reuses the last builds (spec-only iteration of
+    // `e2e-offline`; the builds must come from that mode: same VITE_API_URL).
+    if (!(offlineE2e && process.env.LEGEND_E2E_SKIP_BUILD === "1"))
+      await run(pnpmCommand(), ["run", "build"], {
+        ...testEnv,
+        NODE_ENV: "production",
+      });
     await run(
       process.execPath,
-      [resolve(root, "node_modules/@playwright/test/cli.js"), "test"],
+      [
+        resolve(root, "node_modules/@playwright/test/cli.js"),
+        "test",
+        ...(offlineE2e ? ["-c", "playwright.offline.config.ts"] : []),
+      ],
       testEnv,
     );
   }

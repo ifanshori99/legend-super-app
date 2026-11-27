@@ -309,6 +309,32 @@ describe("recording an offline sale", () => {
     expect(await queue.pendingCount()).toBe(2);
   });
 
+  it("O5 (1): a sale for another customer carries its written reason to the cloud; a short reason is refused", async () => {
+    const backend = createMemoryOfflineBackend();
+    const cloud = fakeCloud();
+    const queue = queueOver(backend, cloud.submit);
+    const kit = kitOf();
+    await queue.saveKit(kit);
+    const total = priceOfflineSale(kit, cart, clock).totalIdr;
+    await expect(
+      queue.recordSale(cart, [cash(total)], { otherCustomerReason: " ab " }),
+    ).rejects.toMatchObject({ code: "SALE_INVALID" });
+    // Nothing was taken: no number used, no sale queued.
+    expect(await queue.pendingCount()).toBe(0);
+    const event = await queue.recordSale(cart, [cash(total)], {
+      otherCustomerReason: "  Meja 4, pelanggan lain pesan sama  ",
+    });
+    expect(event.sequenceNumber).toBe(1);
+    expect(event.otherCustomerReason).toBe("Meja 4, pelanggan lain pesan sama");
+    const plain = await queue.recordSale(cart, [cash(total)]);
+    expect(plain.otherCustomerReason).toBeUndefined();
+    const report = await queue.sync();
+    expect(report.remaining).toBe(0);
+    expect(cloud.stored.get(event.eventId)?.otherCustomerReason).toBe(
+      "Meja 4, pelanggan lain pesan sama",
+    );
+  });
+
   it("refuses QRIS, points or a voucher offline, a short tender (promo), and an EDC without slip", async () => {
     const backend = createMemoryOfflineBackend();
     const queue = queueOver(backend, fakeCloud().submit);

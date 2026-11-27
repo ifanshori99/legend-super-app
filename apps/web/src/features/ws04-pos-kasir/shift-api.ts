@@ -23,6 +23,7 @@ import {
   getPosOverride,
   listPosOverrideApprovers,
 } from "@starter/shared/access/override";
+import { PAGE_LIMIT_MAX } from "@starter/shared/core";
 import { callEndpoint } from "@/lib/api/endpoint";
 import { ApiError } from "@/lib/api/errors";
 import { API_MOCK } from "@/lib/api/mock-flag";
@@ -224,23 +225,42 @@ export async function fetchActiveShift(
 }
 
 /**
- * Review K P1: the shifts of a business day that are still open (a supervisor
- * sees every cashier's), for the links to their force close on the day close.
+ * Review K P1 + O5 (2): every shift still open, a supervisor sees every
+ * cashier's, for the links to their force close on the day close. No business
+ * day limit: a shift left open since yesterday (or earlier) is listed too, so
+ * the day cannot be closed past it unseen. The API filters `status=open`; every
+ * page is read (newest first).
+ * `businessDate` only names the day on screen; it is not sent.
  */
 export async function fetchOpenShiftsOfDay(
   outletId: string,
-  businessDate: string,
+  _businessDate: string,
   signal?: AbortSignal,
 ): Promise<ActiveShift[]> {
   if (API_MOCK) return runPosKasirMock((engine) => engine.openShiftsOfDay());
-  const page = await callEndpoint(
-    listPosShifts,
-    { params: { outletId }, query: { businessDate } },
-    { signal },
-  );
-  return page.data
-    .filter((shift) => shift.status === "open")
-    .map(activeShiftFrom);
+  const open: ActiveShift[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await callEndpoint(
+      listPosShifts,
+      {
+        params: { outletId },
+        query: {
+          limit: PAGE_LIMIT_MAX,
+          status: "open",
+          ...(cursor ? { cursor } : {}),
+        },
+      },
+      { signal },
+    );
+    for (const shift of page.data)
+      if (shift.status === "open") open.push(activeShiftFrom(shift));
+    // Review K O5 P3 6: a cursor that does not move would loop for ever.
+    const next = page.meta.nextCursor ?? undefined;
+    if (next === cursor) break;
+    cursor = next;
+  } while (cursor);
+  return open;
 }
 
 export async function openShift(

@@ -61,6 +61,7 @@ export function OfflinePayDialog({
   cart,
   itemCount,
   queue,
+  otherCustomerReason,
   onSaved,
 }: {
   open: boolean;
@@ -69,6 +70,8 @@ export function OfflinePayDialog({
   cart: OfflineCart;
   itemCount: number;
   queue: Pick<OfflineQueue, "recordSale">;
+  /** O5 (1): "pelanggan lain", sent with the sale for Finance. */
+  otherCustomerReason?: string | null;
   onSaved: (saved: OfflineSaved) => void;
 }) {
   const t = useT();
@@ -81,6 +84,7 @@ export function OfflinePayDialog({
             cart={cart}
             itemCount={itemCount}
             queue={queue}
+            otherCustomerReason={otherCustomerReason}
             onSaved={onSaved}
             onCancel={() => onOpenChange(false)}
             t={t}
@@ -96,6 +100,7 @@ export function PayBody({
   cart,
   itemCount,
   queue,
+  otherCustomerReason,
   onSaved,
   onCancel,
   t,
@@ -105,6 +110,7 @@ export function PayBody({
   cart: OfflineCart;
   itemCount: number;
   queue: Pick<OfflineQueue, "recordSale">;
+  otherCustomerReason?: string | null;
   onSaved: (saved: OfflineSaved) => void;
   onCancel: () => void;
   t: ReturnType<typeof useT>;
@@ -147,7 +153,9 @@ export function PayBody({
     setSaving(true);
     setError(null);
     try {
-      onSaved(await saveOfflineSale(queue, kit, cart, tender));
+      onSaved(
+        await saveOfflineSale(queue, kit, cart, tender, otherCustomerReason),
+      );
     } catch (failure) {
       const code =
         failure instanceof OfflineSaleError && isErrorCode(failure.code)
