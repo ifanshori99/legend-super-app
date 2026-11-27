@@ -57,6 +57,7 @@ export const gatewaySettlementMessages = {
       amount: "amount_idr harus angka rupiah utuh tanpa titik atau koma",
       fee: "fee_idr harus angka rupiah utuh, tidak melebihi amount_idr",
       duplicate: "reference sudah muncul di baris lain",
+      formula: "reference tidak boleh diawali =, +, -, @, tab, atau enter",
       other: "Baris tidak dapat dibaca",
     },
     moreRows:
