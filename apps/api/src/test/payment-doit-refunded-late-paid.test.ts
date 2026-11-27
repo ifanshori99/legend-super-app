@@ -549,7 +549,9 @@ describe("legend-3wpf/952 P1 refunded code is never paid by a late paid webhook"
   it("a refunded code never blocks a different, genuinely paid code of the same bill (paid once)", async () => {
     const bill = await openBill();
     const refunded = await newCode(bill);
-    await pollRefunded(refunded);
+    // legend-osqou.41 (1bdbf0a8b): the next code is issued only once the
+    // provider answer is final, i.e. after the refunded code lapsed.
+    await pollRefunded(refunded, "10 minutes");
     expectNotServerError((await payAtDoit(refunded)).status);
     await expectNothingBooked(bill, refunded);
 

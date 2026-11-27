@@ -4,7 +4,9 @@
 // `supersedePending` (payment.service.ts) only flips it to `expired` in our
 // database (reason `superseded`). The gateway has no cancel call, so the old
 // DOIT payment stays payable at DOIT. These tests trace what happens when the
-// guest pays that old code anyway.
+// guest pays that old code anyway. Since legend-osqou.41 the route refuses a
+// second live code on a link with no order (409 ORDER_CODE_ACTIVE); the
+// superseded state is built directly (see `supersededBill`).
 //
 // Observed behaviour (asserted below):
 // - Webhook for the old (expired, superseded) intent while a newer one is
@@ -388,7 +390,20 @@ async function supersededBill(): Promise<{
 }> {
   const bill = await openBill();
   const oldCode = await newCode(bill);
+  // legend-osqou.41 (1bdbf0a8b, CTO 27 Nov): a link with no order refuses a
+  // new code while the old one is live, so the route no longer supersedes.
+  // The superseded state (expired here, not final at DOIT) still exists for
+  // codes issued before that rule; it is built by closing the old code just
+  // long enough to issue the newer one, then reopening it at the provider.
+  await owner.query(
+    "UPDATE payment_intents SET status = 'expired', provider_final_at = now() WHERE tenant_id = $1 AND id = $2",
+    [tenantA, oldCode.id],
+  );
   const newerCode = await newCode(bill);
+  await owner.query(
+    "UPDATE payment_intents SET provider_final_at = NULL WHERE tenant_id = $1 AND id = $2",
+    [tenantA, oldCode.id],
+  );
   expect((await intentRow(oldCode.id)).status).toBe("expired");
   expect((await intentRow(newerCode.id)).status).toBe("pending");
   return { bill, oldCode, newerCode };
