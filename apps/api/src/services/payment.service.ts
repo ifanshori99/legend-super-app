@@ -1277,7 +1277,21 @@ async function createIntentCore(
   options: CreateIntentOptions = {},
 ): Promise<CustomerPaymentIntent> {
   const plan = await readIntentPlan(context, token, parsed, now, part);
-  if (plan.existing) return toCustomerIntent(plan.existing);
+  if (plan.existing) {
+    // Fee second opinion re-review P3-c: a replay that names a different
+    // total than the stored code was priced at is a payer who saw another
+    // price; the old code is not handed back as if it matched.
+    if (
+      parsed.expectedChargedIdr !== undefined &&
+      parsed.expectedChargedIdr !== Number(plan.existing.chargedIdr)
+    )
+      throw new HttpError(
+        409,
+        "FEE_CHANGED",
+        "Biaya layanan pembayaran berubah. Muat ulang lalu pilih metode lagi.",
+      );
+    return toCustomerIntent(plan.existing);
+  }
   const amountIdr = part ? part.amountIdr : outstandingIdr(plan.link);
   if (amountIdr <= 0)
     throw new HttpError(409, "CONFLICT", "This bill is already paid.");
@@ -2795,6 +2809,10 @@ export async function refreshIntent(
       0,
       100,
     );
+  // Fee second opinion re-review P2: a code with a guest fee is replaced only
+  // at the total the guest saw on the old one; another price is 409
+  // FEE_CHANGED (the guest sees the new price and chooses again).
+  const priced = Number(current.guestFeeIdr) > 0;
   return createIntent(
     context,
     parsedToken,
@@ -2802,8 +2820,10 @@ export async function refreshIntent(
       method,
       channelCode: current.channelCode,
       idempotencyKey,
+      ...(priced ? { expectedChargedIdr: Number(current.chargedIdr) } : {}),
     }),
     now,
+    priced ? { requireExpectedCharged: true } : {},
   );
 }
 

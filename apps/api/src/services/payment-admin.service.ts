@@ -107,16 +107,20 @@ export async function refundableBalance(
       (SELECT coalesce(sum(deposit_forfeited_idr), 0) FROM reservations
        WHERE tenant_id = ${intent.tenantId} AND deposit_payment_id = ${intent.id}::uuid
          AND status IN ('cancelled', 'no_show'))::text AS forfeited,
+      (SELECT count(*) FROM payment_evidence
+       WHERE tenant_id = ${intent.tenantId} AND payment_intent_id = ${intent.id}::uuid
+         AND amount_idr >= ${String(intent.chargedIdr)}::numeric)::text AS fee_payments,
       ${providerRefundedForeignIdrSql(sql`${intent.tenantId}`, sql`${intent.id}::uuid`)}::text AS provider_refunded
   `);
   const row = result.rows[0]!;
   // 1272 fee second opinion P2-1: the guest fee is never bill money; it comes
-  // off once (a code paid late parked the bill, so received - unallocated - fee
-  // is 0 there), then the bill caps it below.
+  // off once per payment at or above the charged amount (each withheld it; a
+  // code paid late parked the bill, so received - unallocated - fees is 0
+  // there), then the bill caps it below (re-review P3-b).
   const allocated =
     BigInt(String(row.received)) -
     BigInt(String(row.unallocated)) -
-    BigInt(intent.guestFeeIdr);
+    BigInt(intent.guestFeeIdr) * BigInt(String(row.fee_payments));
   const gross =
     allocated < 0n
       ? 0n

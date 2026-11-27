@@ -8,10 +8,13 @@ import { providerRefundedForeignIdrSql } from "./payment-provider-refunded-forei
  * SQL: the bill part of what an intent brought in (`grossSql`: its evidence
  * less the funds parked). 1272 K1 and the fee second opinion (P2-1): the
  * guest fee is taken off ONCE, never capped away. An intent with a fee counts
- * `greatest(least(gross - fee, amount_idr), 0)`: a code paid late after the
+ * `greatest(least(gross - fees, amount_idr), 0)`: a code paid late after the
  * bill was covered parked the bill (not the fee), so evidence - funds - fee is
- * 0 and the fee does not turn into refundable bill money. An intent without a
- * fee counts `grossSql` as it was.
+ * 0 and the fee does not turn into refundable bill money. Each payment at or
+ * above the charged amount carried the fee and withheld it from what it parked
+ * (`guestFeeWithheldOf`), so `fees` is the fee times the count of such
+ * evidence (fee second opinion re-review P3-b: a code paid late twice has net
+ * 0, not one fee). An intent without a fee counts `grossSql` as it was.
  */
 export function guestFeeBillSql(
   tenantIdSql: SQL,
@@ -19,7 +22,11 @@ export function guestFeeBillSql(
   grossSql: SQL,
 ): SQL {
   return sql`(SELECT CASE WHEN pi.guest_fee_idr > 0
-                          THEN greatest(least((${grossSql}) - pi.guest_fee_idr, pi.amount_idr), 0)
+                          THEN greatest(least((${grossSql}) - pi.guest_fee_idr * (
+                                 SELECT count(*) FROM payment_evidence fe
+                                  WHERE fe.tenant_id = pi.tenant_id
+                                    AND fe.payment_intent_id = pi.id
+                                    AND fe.amount_idr >= pi.charged_idr), pi.amount_idr), 0)
                           ELSE (${grossSql}) END
                FROM payment_intents pi
               WHERE pi.tenant_id = ${tenantIdSql} AND pi.id = ${intentIdSql})`;

@@ -448,6 +448,8 @@ export const createIssueChargePaymentInputSchema = clientInputSchema({
   method: z.enum(["qris", "va"]),
   bankCode: guestPaymentBankCodeSchema.nullable().optional(),
   idempotencyKey: idempotencyKeySchema,
+  /** The total (bill + fee) the guest saw; required for a VA with a guest fee (409 FEE_CHANGED), QRIS carries none. */
+  expectedChargedIdr: positiveIdr.optional(),
 }).superRefine(requireBankForChannelMethods);
 
 export const listSessionIssueCharges = defineEndpoint({

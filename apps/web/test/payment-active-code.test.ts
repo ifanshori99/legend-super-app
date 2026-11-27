@@ -193,6 +193,24 @@ describe("guest payment: rejected replacement keeps the existing code", () => {
     expect(html).not.toContain("8808123456789012");
   });
 
+  test("refresh 409 FEE_CHANGED stops on the new price: picker shown, old code not shown or opened (1272 re-review P2)", () => {
+    state.view = paymentLinkViewSchema.parse(paymentLinkVaPendingFixture);
+    state.refreshError = new ApiError(
+      409,
+      "FEE_CHANGED",
+      "Provider internal detail",
+    );
+    state.refreshSubmittedAt = 100;
+
+    const html = renderPage();
+
+    expect(html).toContain(t("payment.redirect.fee.changed"));
+    expect(html).toContain(t("payment.chooseTitle"));
+    expect(html).toContain(t("payment.continue"));
+    expect(html).not.toContain("8808123456789012");
+    expect(html).not.toContain(t("payment.vaStep1"));
+  });
+
   test.each(codes)("settled payment hides stale 409 %s guidance", (code) => {
     const view = paymentLinkViewSchema.parse(paymentLinkVaPendingFixture);
     state.view = {

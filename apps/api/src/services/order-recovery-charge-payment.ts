@@ -361,6 +361,9 @@ export async function createIssueChargePayment(
           {
             method: parsed.method,
             channelCode: bankCode,
+            ...(parsed.expectedChargedIdr === undefined
+              ? {}
+              : { expectedChargedIdr: parsed.expectedChargedIdr }),
             // The WS-05 key is unique per tenant; derive it from the charge so
             // a guest key can never collide with another session's payment.
             idempotencyKey: `qic-${createHash("sha256")
@@ -374,7 +377,7 @@ export async function createIssueChargePayment(
             }),
           },
           now,
-          { orderLockedByCaller: true },
+          { orderLockedByCaller: true, requireExpectedCharged: true },
         );
         await tx
           .update(orderIssueCharges)

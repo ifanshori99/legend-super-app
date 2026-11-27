@@ -124,7 +124,16 @@ export function PaymentPage({ token }: { token: string }) {
     );
 
   const data = link.data;
-  const phase = paymentPhase(data, switching ? null : intent);
+  // 1272 fee second opinion re-review P2: a code the server would not replace
+  // at the new price (409 FEE_CHANGED on refresh) is not shown or opened again;
+  // the guest sees the picker with the new prices and continues from there.
+  const refreshFeeChanged =
+    isFeeChangedError(refresh.error) &&
+    (refresh.submittedAt ?? 0) > latestSuccessAt;
+  const phase = paymentPhase(
+    data,
+    switching || refreshFeeChanged ? null : intent,
+  );
   const methods = pickerMethods(data.methods);
   const selectedMethod =
     selection.method ??
