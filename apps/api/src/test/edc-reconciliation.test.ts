@@ -1718,6 +1718,23 @@ describe("X2 EDC settlement CSV import matches terminal + RRN + amount and never
     expect(await row(id)).toMatchObject({ needs_reconciliation: true });
   });
 
+  it("review K P3: the checks (outlet, permission, second factor) come before the file is read, so an unreadable file never earns a 422 for a caller who may not import", async () => {
+    const unreadable = file(
+      line(1, "TID-RECON", "X2UIRRN0090", "55000"),
+      line(2, "TID-RECON", "X2UIRRN0091", "55000,50"),
+    );
+    const foreign = await importCsv(financeUser, unreadable, {
+      outletId: otherOutletId,
+    });
+    expect(foreign.status, JSON.stringify(foreign.body)).toBe(404);
+    const byCashier = await importCsv(cashier, unreadable);
+    expect(byCashier.status, JSON.stringify(byCashier.body)).toBe(403);
+    const noMfa = await importCsv(ownerNoMfa, unreadable);
+    expect(noMfa.status, JSON.stringify(noMfa.body)).toBe(403);
+    expect(noMfa.body.error?.code).toBe("MFA_REQUIRED");
+    expect(noMfa.body.error?.rowErrors).toBeUndefined();
+  });
+
   it("the Tutup Hari recap compares the day's EDC receipts per terminal with the bank lines matched to them", async () => {
     const settled = await manualSlip("X2RRN000070");
     const open = await manualSlip("X2RRN000071");
