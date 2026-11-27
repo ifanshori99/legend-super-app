@@ -15,13 +15,22 @@ import {
 } from "lucide-react";
 import { RadioGroup } from "radix-ui";
 import { cn } from "cn";
-import type { GuestPaymentOption, QrOrder } from "@starter/shared/qr-order";
+import type {
+  GuestPaymentOption,
+  OrderId,
+  QrOrder,
+} from "@starter/shared/qr-order";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Money } from "@/components/ui/money";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ApiError } from "@/lib/api/errors";
+import {
+  FeeNoRefund,
+  FeeQuote,
+  hasGuestFee,
+} from "@/features/ws05-payment/components/fee-parts";
 import { useTableJourney } from "../../context";
 import {
   useGuestPayment,
@@ -245,6 +254,7 @@ const steps = [
 /** Bank list from the payment options; the guest picks one, then creates the VA. */
 function BankPicker({
   sessionId,
+  orderId,
   qrToken,
   bank,
   onBank,
@@ -253,6 +263,7 @@ function BankPicker({
   error,
 }: {
   sessionId: string;
+  orderId: OrderId;
   qrToken: string;
   bank: string | null;
   onBank: (bankCode: string) => void;
@@ -261,7 +272,8 @@ function BankPicker({
   error: unknown;
 }) {
   const t = useT();
-  const options = useGuestPaymentOptions(sessionId);
+  // 1272 K3: priced for this order, the same one the create call names.
+  const options = useGuestPaymentOptions(sessionId, { orderId });
 
   if (options.isError)
     return (
@@ -271,7 +283,8 @@ function BankPicker({
         onRetry={() => void options.refetch()}
       />
     );
-  if (!options.data)
+  // The older list kept while this order's priced one loads has no fees: wait.
+  if (!options.data || options.isPlaceholderData)
     return (
       <div aria-busy="true" className="grid gap-4">
         <span className="sr-only">{t("qrGlass.pay.va.loading")}</span>
@@ -332,7 +345,13 @@ function BankPicker({
                   "disabled:opacity-60",
                 )}
               >
-                <span className="min-w-0 flex-1">{item.name}</span>
+                <span className="grid min-w-0 flex-1 gap-0.5">
+                  <span>{item.name}</span>
+                  <FeeQuote
+                    feeIdr={item.guestFeeIdr}
+                    chargedIdr={item.chargedIdr}
+                  />
+                </span>
                 <span
                   aria-hidden="true"
                   className="grid size-6 shrink-0 place-items-center rounded-full border-2 border-input group-data-[state=checked]:border-primary"
@@ -343,6 +362,9 @@ function BankPicker({
             ))}
           </RadioGroup.Root>
         </fieldset>
+        <FeeNoRefund
+          feeIdr={va.banks.find((item) => item.code === bank)?.guestFeeIdr}
+        />
       </section>
 
       {error ? <Notice tone="danger" title={startErrorText(t, error)} /> : null}
@@ -384,6 +406,8 @@ function VaDetails({
   payment: {
     status: string;
     amountIdr: number;
+    guestFeeIdr: number;
+    chargedIdr: number;
     vaNumber: string | null;
     bankName: string | null;
     expiresAt: string;
@@ -478,14 +502,35 @@ function VaDetails({
 
         <hr className="border-t border-dashed border-input" />
 
+        {hasGuestFee(payment.guestFeeIdr) && (
+          <dl className="grid gap-1 text-sm">
+            <div className="flex items-baseline justify-between gap-3">
+              <dt className="text-muted-foreground">
+                {t("payment.redirect.fee.billRow")}
+              </dt>
+              <dd>
+                <Money amount={payment.amountIdr} size="sm" />
+              </dd>
+            </div>
+            <div className="flex items-baseline justify-between gap-3">
+              <dt className="text-muted-foreground">
+                {t("payment.redirect.fee.label")}
+              </dt>
+              <dd>
+                <Money amount={payment.guestFeeIdr} size="sm" />
+              </dd>
+            </div>
+          </dl>
+        )}
         <div className="flex items-baseline justify-between gap-3">
           <span>{t("qrGlass.pay.va.amountLabel")}</span>
           <Money
-            amount={payment.amountIdr}
+            amount={payment.chargedIdr}
             size="xl"
             className="text-2xl font-bold"
           />
         </div>
+        <FeeNoRefund feeIdr={payment.guestFeeIdr} />
 
         <div className="grid justify-items-start gap-1">
           {/* Reserves the pill's height so the page does not jump on mount. */}
@@ -574,7 +619,7 @@ function VaFlow({
   const t = useT();
   const refresh = useRefreshSession(sessionId);
   const start = useStartPayment(sessionId);
-  const options = useGuestPaymentOptions(sessionId);
+  const options = useGuestPaymentOptions(sessionId, { orderId: order.id });
   // Read once: the page only renders in the browser (the guest session
   // lives in browser storage), so this never differs from the server markup.
   const [initial] = useState(() =>
@@ -644,6 +689,7 @@ function VaFlow({
       <PaymentSuccess
         order={order}
         amountIdr={payment.amountIdr}
+        feeIdr={payment.guestFeeIdr}
         method="va"
         returnTo={`/t/${encodeURIComponent(qrToken)}/bayar/${encodeURIComponent(order.id)}?metode=${method}`}
       />
@@ -684,6 +730,7 @@ function VaFlow({
   return shell(
     <BankPicker
       sessionId={sessionId}
+      orderId={order.id}
       qrToken={qrToken}
       bank={bank}
       onBank={setBank}

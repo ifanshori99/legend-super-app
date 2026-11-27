@@ -97,12 +97,16 @@ function Points({
 export function PaymentSuccess({
   order,
   amountIdr,
+  feeIdr = 0,
   method,
   returnTo,
 }: {
   /** The paid order when it is known; the receipt rows hide without it. */
   order: QrOrder | null;
+  /** The bill part that was paid. */
   amountIdr: number;
+  /** 1272 K3: the guest service fee paid on top of the bill, never refunded. */
+  feeIdr?: number;
   method: PaymentSuccessMethod;
   /** App-local path of the page that renders this (sign-in comes back here). */
   returnTo: string;
@@ -172,10 +176,30 @@ export function PaymentSuccess({
             <span className="font-semibold">{methodLabel}</span>
           </div>
           <Money
-            amount={amountIdr}
+            amount={amountIdr + feeIdr}
             size="xl"
             className="text-[2.5rem] leading-none font-bold tracking-tight"
           />
+          {feeIdr > 0 && (
+            <dl className="mt-1 grid gap-1 text-sm">
+              <div className="flex justify-between gap-3">
+                <dt className="text-muted-foreground">
+                  {t("payment.redirect.fee.billRow")}
+                </dt>
+                <dd className="font-semibold tabular">
+                  {formatRupiah(amountIdr)}
+                </dd>
+              </div>
+              <div className="flex justify-between gap-3">
+                <dt className="text-muted-foreground">
+                  {t("payment.redirect.fee.label")}
+                </dt>
+                <dd className="font-semibold tabular">
+                  {formatRupiah(feeIdr)}
+                </dd>
+              </div>
+            </dl>
+          )}
         </div>
         {order && (
           <>

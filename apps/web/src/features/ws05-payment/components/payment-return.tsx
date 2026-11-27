@@ -23,12 +23,14 @@ import {
   CircleX,
   Clock,
   Hourglass,
+  Info,
   Link2Off,
   RefreshCw,
   TriangleAlert,
   Undo2,
 } from "lucide-react";
 import { cn } from "cn";
+import { formatRupiah } from "@starter/shared/i18n";
 import { getGuestPayment } from "@starter/shared/qr-order";
 import type { PaymentStatus } from "@starter/shared/payment";
 import { DEFAULT_TIME_ZONE } from "@starter/shared/core";
@@ -47,6 +49,8 @@ import { TenantThemeStyle } from "@/lib/theme";
 import "@/features/ws03-qr-order/session-store";
 import { startPayment as startGuestPayment } from "@/features/ws03-qr-order/api";
 import { fetchPaymentIntent, startPaymentIntent } from "../api";
+import { FeeNoRefund } from "./fee-parts";
+import { priceForRetry, type RetryPrice } from "../retry-price";
 import {
   openPaymentUrl,
   readReturnRecordSnapshot,
@@ -73,7 +77,9 @@ import {
 
 type Answer = {
   status: PaymentStatus;
+  /** What the guest pays the gateway: the bill plus the service fee. */
   amountIdr: number;
+  guestFeeIdr: number;
   paidAt: string | null;
 };
 
@@ -89,7 +95,8 @@ async function askServer(
     );
     return {
       status: data.status,
-      amountIdr: data.amountIdr,
+      amountIdr: data.chargedIdr,
+      guestFeeIdr: data.guestFeeIdr,
       paidAt: data.paidAt,
     };
   }
@@ -100,7 +107,8 @@ async function askServer(
   );
   return {
     status: intent.status,
-    amountIdr: intent.amountIdr,
+    amountIdr: intent.chargedIdr,
+    guestFeeIdr: intent.guestFeeIdr,
     paidAt: intent.paidAt,
   };
 }
@@ -287,15 +295,35 @@ export function PaymentReturnPage() {
   // "Coba lagi dengan DANA": a new payment for the same order or link, then
   // straight back to the gateway page. A refusal shows a plain message.
   const queryClient = useQueryClient();
+  // 1272 K3: a retry whose method carries a service fee waits for the guest's
+  // confirmation of the fresh fee and total before the new payment is made.
+  const [retryConfirm, setRetryConfirm] = useState<RetryPrice | null>(null);
   const retry = useMutation({
-    mutationFn: async (current: ReturnRecord) => {
+    mutationFn: async ({
+      record: current,
+      confirmedChargedIdr,
+    }: {
+      record: ReturnRecord;
+      confirmedChargedIdr?: number;
+    }): Promise<{ confirm: RetryPrice } | undefined> => {
       // Ask the server first (round-trip, never the page's older answer): a
       // payment that settled late must not be paid a second time. Anything
       // but a fresh failed or expired answer, including no answer, stops here.
       const fresh = await askServer(current, new AbortController().signal);
       queryClient.setQueryData(answerKey(current), fresh);
       if (!canStartNewPayment(fresh.status)) return;
-      let next: { id: string; amountIdr: number; url: string | null };
+      // Fresh price first: a method that left the list stops here (the guest
+      // picks another), and a fee the guest has not confirmed asks first.
+      const price = await priceForRetry(current);
+      if (!price) throw new Error("Method is no longer offered");
+      if (price.feeIdr > 0 && price.chargedIdr !== confirmedChargedIdr)
+        return { confirm: price };
+      let next: {
+        id: string;
+        amountIdr: number;
+        guestFeeIdr: number;
+        url: string | null;
+      };
       if (current.kind === "table") {
         if (!current.orderId) throw new Error("No order to pay");
         const { data } = await startGuestPayment(current.sessionId, {
@@ -308,7 +336,8 @@ export function PaymentReturnPage() {
         });
         next = {
           id: data.id,
-          amountIdr: data.amountIdr,
+          amountIdr: data.chargedIdr,
+          guestFeeIdr: data.guestFeeIdr,
           url: data.redirectUrl,
         };
       } else {
@@ -320,7 +349,8 @@ export function PaymentReturnPage() {
         const instructions = intent.instructions;
         next = {
           id: intent.id,
-          amountIdr: intent.amountIdr,
+          amountIdr: intent.chargedIdr,
+          guestFeeIdr: intent.guestFeeIdr,
           url:
             instructions.method === "ewallet" || instructions.method === "card"
               ? instructions.paymentUrl
@@ -332,9 +362,11 @@ export function PaymentReturnPage() {
         ...current,
         paymentId: next.id,
         amountIdr: next.amountIdr,
+        guestFeeIdr: next.guestFeeIdr,
       });
       if (!openPaymentUrl(next.url)) throw new Error("Payment page refused");
     },
+    onSuccess: (result) => setRetryConfirm(result?.confirm ?? null),
   });
 
   const methodName = !record
@@ -355,7 +387,9 @@ export function PaymentReturnPage() {
       ? t("payment.redirect.back.placeTable", { place, table })
       : (place ??
         (table ? t("payment.redirect.back.tableOnly", { table }) : null));
-  const rows = [
+  const amountIdr = answer.data?.amountIdr ?? record?.amountIdr ?? 0;
+  const guestFeeIdr = answer.data?.guestFeeIdr ?? record?.guestFeeIdr ?? 0;
+  const baseRows = [
     { label: t("payment.redirect.back.rowMethod"), value: methodRow },
     ...(orderNumber
       ? [{ label: t("payment.redirect.back.rowOrder"), value: orderNumber }]
@@ -364,7 +398,23 @@ export function PaymentReturnPage() {
       ? [{ label: t("payment.redirect.back.rowPlace"), value: placeValue }]
       : []),
   ];
-  const amountIdr = answer.data?.amountIdr ?? record?.amountIdr ?? 0;
+  // The fee rows of the payment on record sit right under the method.
+  const rows = [
+    baseRows[0]!,
+    ...(guestFeeIdr > 0 && guestFeeIdr < amountIdr
+      ? [
+          {
+            label: t("payment.redirect.fee.billRow"),
+            value: formatRupiah(amountIdr - guestFeeIdr),
+          },
+          {
+            label: t("payment.redirect.fee.label"),
+            value: formatRupiah(guestFeeIdr),
+          },
+        ]
+      : []),
+    ...baseRows.slice(1),
+  ];
   const isTable = record?.kind === "table";
 
   let pill: ReactNode;
@@ -682,7 +732,7 @@ export function PaymentReturnPage() {
               className={textLink}
               disabled={retry.isPending || retry.isSuccess}
               aria-busy={retry.isPending}
-              onClick={() => retry.mutate(record)}
+              onClick={() => retry.mutate({ record })}
             >
               {retry.isPending || retry.isSuccess
                 ? t("payment.redirect.back.retrying")
@@ -739,6 +789,70 @@ export function PaymentReturnPage() {
           {t("payment.redirect.back.reopen")}
         </Button>
       );
+  }
+
+  // 1272 K3: the fresh fee of a retry, shown before the new payment is made.
+  if (retryConfirm && record) {
+    pill = (
+      <StatusPill tone="neutral" icon={<Info aria-hidden="true" />}>
+        {t("payment.redirect.fee.confirmPill")}
+      </StatusPill>
+    );
+    title = t("payment.redirect.fee.confirmTitle");
+    lead = t("payment.redirect.fee.confirmLead", { method: methodName });
+    paper = (
+      <AmountPaper
+        label={t("payment.redirect.fee.totalLabel")}
+        amountIdr={retryConfirm.chargedIdr}
+        rows={[
+          ...baseRows,
+          {
+            label: t("payment.redirect.fee.billRow"),
+            value: formatRupiah(retryConfirm.amountIdr),
+          },
+          {
+            label: t("payment.redirect.fee.label"),
+            value: formatRupiah(retryConfirm.feeIdr),
+          },
+        ]}
+      />
+    );
+    extras = null;
+    footer = (
+      <>
+        {retry.isError && (
+          <p role="alert" className="text-sm leading-5 text-danger">
+            {t("payment.redirect.back.retryFailed")}
+          </p>
+        )}
+        <FeeNoRefund feeIdr={retryConfirm.feeIdr} />
+        <Button
+          type="button"
+          loading={retry.isPending}
+          onClick={() =>
+            retry.mutate({
+              record,
+              confirmedChargedIdr: retryConfirm.chargedIdr,
+            })
+          }
+        >
+          {t("payment.redirect.fee.confirmPay", {
+            total: formatRupiah(retryConfirm.chargedIdr),
+          })}
+        </Button>
+        <button
+          type="button"
+          className={textLink}
+          disabled={retry.isPending}
+          onClick={() => {
+            setRetryConfirm(null);
+            retry.reset();
+          }}
+        >
+          {t("payment.redirect.opening.otherMethod")}
+        </button>
+      </>
+    );
   }
 
   const invalid = phase === "invalid";

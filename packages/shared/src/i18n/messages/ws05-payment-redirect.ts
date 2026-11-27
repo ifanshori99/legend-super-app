@@ -1,8 +1,29 @@
 // Guest e-wallet and card payment through Duitku's page, and the single return
 // page `/bayar/kembali` (C2b, legend-osqou.4; design/mockups/c2b-tamu-bayar,
-// approved by the founder 27 Nov). No fee line: a guest fee waits for the
-// founder's legal decision (docs/design/duitku-fee-passthrough.md §0).
+// approved by the founder 27 Nov). `fee`: the guest service fee line of
+// 1272 K3 (docs/design/duitku-fee-passthrough.md §0, founder 27 Nov: not
+// refunded in any case). Shown only for a method or bank that carries a fee.
 export const paymentRedirectMessages = {
+  fee: {
+    label: "Biaya layanan",
+    line: "Biaya layanan {fee}",
+    total: "Total dibayar {total}",
+    totalLabel: "Total dibayar",
+    noRefund: "Biaya layanan tidak dikembalikan bila pesanan dibatalkan.",
+    billRow: "Tagihan",
+    // The step before Duitku's page when the method carries a fee (1272 K3).
+    confirmPill: "Periksa dulu",
+    confirmTitle: "Ada biaya layanan",
+    confirmLead:
+      "Pembayaran dengan {method} dikenai biaya layanan. Pesanan Anda tersimpan dan belum dibayar.",
+    confirmPay: "Bayar {total}",
+    gone: "{method} sedang tidak tersedia untuk pesanan ini. Pilih metode lain.",
+    loadFailed:
+      "Biaya layanan belum bisa dimuat, jadi metode ini belum bisa dibayar.",
+    reload: "Muat ulang",
+    checkFailed:
+      "Biaya layanan belum bisa diperiksa, jadi pembayaran belum dibuka. Pesanan Anda tersimpan, coba bayar lagi dari sini.",
+  },
   method: {
     ewallet: "E-wallet",
     ewalletLegend: "Aplikasi e-wallet",

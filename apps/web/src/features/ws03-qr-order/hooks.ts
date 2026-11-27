@@ -14,6 +14,7 @@ import type {
   CreateSplitsInput,
   CustomerOrderIssueResolution,
   GuestPaymentMethod,
+  GuestPaymentOptionsQuery,
   GuestPaymentTarget,
   TableSessionView,
 } from "@starter/shared/qr-order";
@@ -132,10 +133,19 @@ export function useGuestPayment(sessionId: string, paymentId: string | null) {
   });
 }
 
-/** Which online methods are on and, for VA, the provider's bank list. */
-export function useGuestPaymentOptions(sessionId: string | null) {
+const NO_TARGET: GuestPaymentOptionsQuery = {};
+
+/**
+ * Which online methods are on and, for VA, the provider's bank list. With a
+ * target (the order or split part the create call names) each bank and
+ * method also carries its service fee and charged total (1272 K3).
+ */
+export function useGuestPaymentOptions(
+  sessionId: string | null,
+  target: GuestPaymentOptionsQuery = NO_TARGET,
+) {
   return useQuery({
-    ...paymentOptionsQuery(sessionId ?? "none"),
+    ...paymentOptionsQuery(sessionId ?? "none", target),
     enabled: sessionId !== null,
   });
 }

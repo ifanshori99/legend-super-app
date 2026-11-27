@@ -24,6 +24,10 @@ import {
   StatusPill,
 } from "@/features/ws05-payment/components/redirect-parts";
 import {
+  FeeNoRefund,
+  hasGuestFee,
+} from "@/features/ws05-payment/components/fee-parts";
+import {
   claimAutoOpen,
   isOpenablePaymentUrl,
   openPaymentUrl,
@@ -53,7 +57,7 @@ export function useRedirectNames(
     : { title: wallet, page: wallet };
 }
 
-function useOrderRow(orderId: string | null) {
+export function useOrderRow(orderId: string | null) {
   const t = useT();
   const { menu, view } = useTableJourney();
   const number = orderId
@@ -67,6 +71,19 @@ function useOrderRow(orderId: string | null) {
       ? t("payment.redirect.opening.orderValue", { number, table })
       : number,
   };
+}
+
+/** 1272 K3: the bill and the service fee behind the total, when there is a fee. */
+function useFeeRows(amountIdr: number, feeIdr: number) {
+  const t = useT();
+  if (!hasGuestFee(feeIdr)) return [];
+  return [
+    {
+      label: t("payment.redirect.fee.billRow"),
+      value: formatRupiah(amountIdr),
+    },
+    { label: t("payment.redirect.fee.label"), value: formatRupiah(feeIdr) },
+  ];
 }
 
 function Layout({
@@ -177,6 +194,7 @@ export function GatewayOpening({ payment }: { payment: GuestPayment }) {
   const target = payment.target;
   const orderId = target.kind === "order" ? target.orderId : null;
   const orderRow = useOrderRow(orderId);
+  const feeRows = useFeeRows(payment.amountIdr, payment.guestFeeIdr);
   const url = payment.redirectUrl;
   const openable = url !== null && isOpenablePaymentUrl(url);
   // Opened automatically once per payment and tab (never rendered on the
@@ -205,7 +223,9 @@ export function GatewayOpening({ payment }: { payment: GuestPayment }) {
       method,
       channelCode: payment.bankCode,
       channelName: payment.bankName,
-      amountIdr: payment.amountIdr,
+      // What the guest pays the gateway, with the service fee inside it.
+      amountIdr: payment.chargedIdr,
+      ...(payment.guestFeeIdr > 0 ? { guestFeeIdr: payment.guestFeeIdr } : {}),
       placeName: place,
       timeZone: outletTimeZone(menu),
       theme: menu?.theme
@@ -244,7 +264,7 @@ export function GatewayOpening({ payment }: { payment: GuestPayment }) {
       <GatewayOpenFailed
         method={method}
         walletName={payment.bankName}
-        amountIdr={payment.amountIdr}
+        amountIdr={payment.chargedIdr}
         orderId={orderId}
         onRetry={() => window.location.reload()}
         retrying={false}
@@ -257,7 +277,7 @@ export function GatewayOpening({ payment }: { payment: GuestPayment }) {
       />
     );
 
-  const total = formatRupiah(payment.amountIdr);
+  const total = formatRupiah(payment.chargedIdr);
   return (
     <Layout
       title={t("payment.redirect.opening.title", { method: names.title })}
@@ -294,9 +314,10 @@ export function GatewayOpening({ payment }: { payment: GuestPayment }) {
         </div>
         <AmountPaper
           label={t("payment.redirect.opening.totalLabel")}
-          amountIdr={payment.amountIdr}
-          rows={orderRow ? [orderRow] : []}
+          amountIdr={payment.chargedIdr}
+          rows={[...(orderRow ? [orderRow] : []), ...feeRows]}
         />
+        <FeeNoRefund feeIdr={payment.guestFeeIdr} />
         <NumberedSteps
           steps={[
             {

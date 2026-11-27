@@ -38,6 +38,7 @@ import {
   updateCartLine,
 } from "@starter/shared/qr-order";
 import { pointClaimFixture } from "@starter/shared/qr-order/sample";
+import { ApiError } from "@/lib/api/errors";
 import {
   createEngine,
   type MockDuitkuMode,
@@ -136,7 +137,12 @@ function duitkuMode(): MockDuitkuMode {
     mode === "refunded" ||
     mode === "no-login" ||
     mode === "down" ||
-    mode === "expired"
+    mode === "expired" ||
+    mode === "fee" ||
+    mode === "fee-slow" ||
+    mode === "fee-error" ||
+    mode === "fee-gone" ||
+    mode === "fee-failed"
     ? mode
     : "normal";
 }
@@ -194,13 +200,22 @@ handle(listSessionOrderIssues, ({ params, scenario }) => ({
 handle(chooseOrderIssueResolution, ({ params, body }) => ({
   data: store().chooseResolution(params.orderIssueId, body),
 }));
-handle(getGuestPaymentOptions, ({ params, scenario }) => ({
-  data: store().paymentOptions(params.sessionId, {
-    vaDown: vaDown(),
-    emptyBanks: scenario === "empty",
-    duitku: duitkuMode(),
-  }),
-}));
+handle(getGuestPaymentOptions, async ({ params, query, scenario }) => {
+  const duitku = duitkuMode();
+  const named = query.orderId !== undefined || query.billSplitId !== undefined;
+  // 1272 K3 test switches: the priced list of a named bill is slow or fails.
+  if (named && duitku === "fee-slow")
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+  if (named && duitku === "fee-error")
+    throw new ApiError(503, "GATEWAY_UNAVAILABLE", "Biaya belum bisa dimuat.");
+  return {
+    data: store().paymentOptions(
+      params.sessionId,
+      { vaDown: vaDown(), emptyBanks: scenario === "empty", duitku },
+      query,
+    ),
+  };
+});
 handle(createGuestPayment, ({ params, body }) => ({
   data: store().startPayment(params.sessionId, body, { duitku: duitkuMode() }),
 }));

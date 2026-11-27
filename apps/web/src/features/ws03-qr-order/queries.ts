@@ -1,6 +1,7 @@
 // Query keys and queryOptions. Endpoint ids are the hierarchy root, so
 // invalidateQueries({ queryKey: [endpoint.id] }) refreshes one resource.
-import { queryOptions } from "@tanstack/react-query";
+import { keepPreviousData, queryOptions } from "@tanstack/react-query";
+import type { GuestPaymentOptionsQuery } from "@starter/shared/qr-order";
 import { endpointQueryOptions, endpointQueryKey } from "@/lib/api/endpoint";
 import {
   billEndpoint,
@@ -98,14 +99,23 @@ export const paymentQuery = (sessionId: string, paymentId: string) =>
   });
 
 /** Online methods the guest may use now; the VA bank list comes from the provider. */
-export const paymentOptionsQuery = (sessionId: string) =>
+export const paymentOptionsQuery = (
+  sessionId: string,
+  target: GuestPaymentOptionsQuery = {},
+) =>
   queryOptions({
     ...endpointQueryOptions(paymentOptionsEndpoint, {
       params: { sessionId },
-      // 1272 K1: no target yet, so no fees; K3 names the order or part.
-      query: {},
+      // 1272 K1/K3: the same order or split part the create call names, so
+      // each bank carries its service fee; no target, no fees.
+      query: target,
     }),
-    staleTime: 60_000,
+    // The key changes once the order is placed (it names the order): keep the
+    // list on screen meanwhile, or the chosen method would look "turned off"
+    // and fall back to QRIS for a moment.
+    placeholderData: keepPreviousData,
+    // A priced list follows the bill, so it goes stale sooner.
+    staleTime: Object.keys(target).length > 0 ? 10_000 : 60_000,
   });
 
 export const sessionKey = (sessionId: string) =>

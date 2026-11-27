@@ -6,6 +6,8 @@
 // the kitchen and is paid at the end. Menu prices exclude tax and service
 // charge, so the breakdown shows both (owner rule, ORD-03).
 import { useRef, useState, type ReactNode } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { cn } from "cn";
 import { Link, useNavigate, useRouteContext } from "@tanstack/react-router";
 import { ChevronLeft, ChevronRight, Clock, ShoppingBasket } from "lucide-react";
 import { formatRupiah } from "@starter/shared/i18n";
@@ -17,6 +19,10 @@ import { Money } from "@/components/ui/money";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
+import {
+  FeeNoRefund,
+  hasGuestFee,
+} from "@/features/ws05-payment/components/fee-parts";
 import { WaiterOrderNotice } from "@/features/ws02-edge/components/waiter-order-notice";
 import { useTableJourney } from "../../context";
 import { orderHasPaidShare } from "../../domain.ts";
@@ -28,6 +34,7 @@ import {
   useSessionBill,
   useStartPayment,
 } from "../../hooks";
+import { paymentOptionsQuery } from "../../queries";
 import { idempotencyKey } from "../../lib/ids.ts";
 import { gatewayUnreachable } from "../../lib/pay-failure.ts";
 import { formatAvailableFrom } from "../../lib/item-options.ts";
@@ -43,11 +50,14 @@ import { Notice } from "../notice";
 import { SessionEnded } from "../session-states";
 import { CartLineRow } from "./cart-line-row";
 import { CodeField } from "./code-field";
+import { FeeConfirm } from "./fee-confirm";
 import { GatewayOpenFailed } from "./gateway-opening";
 import {
   PICK_WALLET_ID,
   PaymentMethods,
+  useChosenFee,
   useCtaLabel,
+  usePricedState,
   useWalletName,
   type PayChoice,
 } from "./payment-methods";
@@ -153,7 +163,24 @@ export function CheckoutPage() {
     wallet: null,
   });
   const method = choice.method;
-  const walletName = useWalletName(choice.wallet);
+  // 1272 K3: a placed order waiting for payment names the bill the options are
+  // priced for; a cart not placed yet has no bill, so no service fee to show.
+  const waitingId =
+    view && view.cart.lines.length === 0
+      ? view.orders.find((order) => order.status === "awaiting_payment")?.id
+      : undefined;
+  const feeTarget = waitingId ? { orderId: waitingId } : undefined;
+  const walletName = useWalletName(choice.wallet, feeTarget);
+  const chosenFee = useChosenFee(choice, feeTarget);
+  // 1272 K3: an e-wallet or card on a placed order is paid only once the
+  // options of that order have loaded: until then (or after an error) the fee
+  // is not known, and the guest must not reach Duitku with a fee unseen.
+  const priced = usePricedState(feeTarget);
+  const feeUnknown =
+    (method === "ewallet" || method === "card") &&
+    (priced.waiting || priced.failed);
+  // The guest waits while the fee of a just-placed order is read.
+  const [checking, setChecking] = useState(false);
   // An e-wallet needs an app picked by the guest (nothing is preselected).
   const needsWallet = method === "ewallet" && !choice.wallet;
   // C2b: Duitku's page for e-wallet or card could not be opened for this order.
@@ -161,6 +188,16 @@ export function CheckoutPage() {
     orderId: OrderId;
     amountIdr: number;
   } | null>(null);
+  // 1272 K3: an e-wallet or card with a service fee waits here, after the
+  // order is placed and before Duitku's page opens, until the guest has seen
+  // the fee and the total.
+  const [confirm, setConfirm] = useState<{
+    orderId: OrderId;
+    amountIdr: number;
+    feeIdr: number;
+    chargedIdr: number;
+  } | null>(null);
+  const queryClient = useQueryClient();
   const codes = code
     ? VOUCHER.test(code)
       ? { voucherCode: code }
@@ -311,6 +348,93 @@ export function CheckoutPage() {
     );
   };
 
+  // 1272 K3: pay the order that was just placed. An e-wallet or card is priced
+  // for that order first: with a service fee the guest confirms it before the
+  // gateway opens; without one (or QRIS) it goes straight on, as before. A
+  // method that left the options, or a list that cannot be read, never opens
+  // the gateway: the guest lands on the placed order's method list.
+  const payPlaced = async (orderId: OrderId, amountIdr: number) => {
+    if (method !== "ewallet" && method !== "card") {
+      payOrder(orderId, amountIdr);
+      return;
+    }
+    setChecking(true);
+    try {
+      const options = await queryClient.fetchQuery({
+        ...paymentOptionsQuery(sessionId, { orderId }),
+        staleTime: 0,
+        retry: false,
+      });
+      const entry = options.data.methods.find((item) => item.method === method);
+      const pricedEntry =
+        method === "ewallet"
+          ? entry?.banks.find((bank) => bank.code === choice.wallet)
+          : entry;
+      // The method vanished: say so and land on the placed order's list.
+      if (!entry?.enabled || !pricedEntry) {
+        toast({
+          title: t("payment.redirect.fee.gone", {
+            method:
+              method === "card"
+                ? t("payment.redirect.cardName")
+                : (walletName ?? t("payment.redirect.method.ewallet")),
+          }),
+          tone: "danger",
+        });
+        window.setTimeout(
+          () => document.getElementById("method-title")?.focus(),
+          400,
+        );
+        return;
+      }
+      if (
+        hasGuestFee(pricedEntry.guestFeeIdr) &&
+        pricedEntry.chargedIdr !== null
+      ) {
+        setConfirm({
+          orderId,
+          amountIdr,
+          feeIdr: pricedEntry.guestFeeIdr,
+          chargedIdr: pricedEntry.chargedIdr,
+        });
+        return;
+      }
+      payOrder(orderId, amountIdr);
+    } catch {
+      toast({
+        title: t("payment.redirect.fee.checkFailed"),
+        tone: "danger",
+      });
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  if (confirm && (method === "ewallet" || method === "card"))
+    return (
+      <Shell qrToken={qrToken}>
+        <FeeConfirm
+          method={method}
+          walletName={walletName}
+          orderId={confirm.orderId}
+          amountIdr={confirm.amountIdr}
+          feeIdr={confirm.feeIdr}
+          chargedIdr={confirm.chargedIdr}
+          onPay={() => {
+            const { orderId, chargedIdr } = confirm;
+            setConfirm(null);
+            payOrder(orderId, chargedIdr);
+          }}
+          onOtherMethod={() => {
+            setConfirm(null);
+            requestAnimationFrame(() =>
+              document.getElementById("method-title")?.focus(),
+            );
+          }}
+        />
+      </Shell>
+    );
+
   // C2b: Duitku's page could not be opened. Nothing was paid; the order and
   // the cart stay as they are (design/mockups/c2b-tamu-bayar "membuka-gagal").
   if (openFailed && (method === "ewallet" || method === "card"))
@@ -336,10 +460,16 @@ export function CheckoutPage() {
   const payFailure = start.isError && (
     <Notice tone="danger" title={t("qrOrders.bill.payFailed")} />
   );
-  const total = (amount: number) => (
+  // `compact`: with a fee line above, the phone footer keeps its height down.
+  const total = (amount: number, compact = false) => (
     <div className="flex items-baseline justify-between gap-3 px-1">
       <span>{t("qrGlass.checkout.total")}</span>
-      <span className="text-[1.75rem] leading-8 font-bold tracking-tight tabular">
+      <span
+        className={cn(
+          "font-bold tracking-tight tabular",
+          compact ? "text-xl leading-7" : "text-[1.75rem] leading-8",
+        )}
+      >
         {formatRupiah(amount)}
       </span>
     </div>
@@ -355,20 +485,33 @@ export function CheckoutPage() {
       bill.data?.data.splits ?? [],
       awaitingOrder.id,
     );
+    // The bill plus the service fee of the chosen method, when it has one.
+    const payTotal = chosenFee?.chargedIdr ?? awaitingOrder.totalIdr;
     const action = (
       <div className="grid gap-3">
         {payFailure}
-        {total(awaitingOrder.totalIdr)}
+        {chosenFee && (
+          <div className="flex items-baseline justify-between gap-3 px-1 text-sm">
+            <span className="text-muted-foreground">
+              {t("payment.redirect.fee.label")}
+            </span>
+            <span className="font-semibold tabular">
+              {formatRupiah(chosenFee.feeIdr)}
+            </span>
+          </div>
+        )}
+        {total(payTotal, chosenFee !== null)}
+        <FeeNoRefund feeIdr={chosenFee?.feeIdr} className="px-1" />
         <Button
           type="button"
           size="lg"
           className={payCta}
-          loading={start.isPending}
-          disabled={needsWallet}
+          loading={start.isPending || (feeUnknown && priced.waiting)}
+          disabled={needsWallet || feeUnknown}
           aria-describedby={needsWallet ? PICK_WALLET_ID : undefined}
-          onClick={() => payOrder(awaitingOrder.id, awaitingOrder.totalIdr)}
+          onClick={() => payOrder(awaitingOrder.id, payTotal)}
         >
-          {ctaLabel(choice, awaitingOrder.totalIdr, walletName)}
+          {ctaLabel(choice, payTotal, walletName)}
           <ChevronRight aria-hidden="true" />
         </Button>
       </div>
@@ -419,6 +562,7 @@ export function CheckoutPage() {
                 value={choice}
                 onChange={setChoice}
                 disabled={start.isPending}
+                target={feeTarget}
               />
               <div className="hidden border-t border-border pt-4 lg:block">
                 {action}
@@ -456,7 +600,7 @@ export function CheckoutPage() {
   const plainQuote = codeApplied ? (base.data?.data ?? null) : quote;
   const payable = plainQuote?.totalIdr ?? null;
   const shortfall = quote.minimumSpend.shortfallIdr;
-  const busy = place.isPending || start.isPending;
+  const busy = place.isPending || start.isPending || checking;
   // WS-02: the outlet's edge link is down (the view says so, or the order was
   // just refused with EDGE_LINK_DOWN): the guest asks a waiter instead.
   const orderingAvailable =
@@ -505,7 +649,7 @@ export function CheckoutPage() {
             return;
           }
           if (data.kitchenFire === "held_for_payment")
-            payOrder(data.order.id, data.order.totalIdr);
+            void payPlaced(data.order.id, data.order.totalIdr);
           else {
             toast({
               title: t("qrCart.checkout.sentToast"),
