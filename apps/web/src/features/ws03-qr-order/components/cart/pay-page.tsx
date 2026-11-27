@@ -29,6 +29,7 @@ import {
   qrRoundIcon,
   qrTextLink,
 } from "../glass/qr-primitives";
+import { GatewayOpening } from "./gateway-opening";
 import { PaymentSuccess } from "./payment-success";
 
 const QR_PNG_PX = 1024;
@@ -331,8 +332,7 @@ export function PayPage({ paymentId }: { paymentId: string }) {
             : null
         }
         amountIdr={payment.amountIdr}
-        // Guest gateway methods are QRIS and VA; e-wallet is not offered.
-        method={payment.method === "qris" ? "qris" : "va"}
+        method={payment.method}
         returnTo={`/t/${encodeURIComponent(qrToken)}/pay/${encodeURIComponent(paymentId)}`}
       />
     );
@@ -393,6 +393,10 @@ export function PayPage({ paymentId }: { paymentId: string }) {
         }
       />
     );
+
+  // C2b: e-wallet and card are paid on Duitku's page.
+  if (payment.method === "ewallet" || payment.method === "card")
+    return <GatewayOpening payment={payment} />;
 
   return <PayWaiting payment={payment} />;
 }

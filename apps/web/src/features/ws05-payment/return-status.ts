@@ -59,6 +59,8 @@ export type TableReturnRecord = RecordBase & {
   kind: "table";
   qrToken: string;
   sessionId: string;
+  /** The order paid, so "Coba lagi" can open a new payment for it. */
+  orderId: string | null;
   orderNumber: string | null;
   tableCode: string | null;
 };
@@ -124,6 +126,7 @@ export function parseReturnRecord(
   };
   if (value.kind === "table") {
     if (!isString(value.qrToken) || !isString(value.sessionId)) return null;
+    if (!isNullableString(value.orderId)) return null;
     if (!isNullableString(value.orderNumber)) return null;
     if (!isNullableString(value.tableCode)) return null;
     return {
@@ -131,6 +134,7 @@ export function parseReturnRecord(
       kind: "table",
       qrToken: value.qrToken,
       sessionId: value.sessionId,
+      orderId: value.orderId,
       orderNumber: value.orderNumber,
       tableCode: value.tableCode,
     };

@@ -49,6 +49,7 @@ import { posIssueChargeMessages } from "./pos-issue-charge.ts";
 import { posReceiptPublicMessages } from "./pos-receipt-public.ts";
 import { paymentDuitkuMessages } from "./ws05-duitku-credentials.ts";
 import { paymentManualSettleMessages } from "./ws05-manual-settle.ts";
+import { paymentRedirectMessages } from "./ws05-payment-redirect.ts";
 import { paymentRefundFollowupMessages } from "./ws05-refund-followup.ts";
 import { reservationMessages } from "./reservation.ts";
 import { reservationGuestMessages } from "./reservation-guest.ts";
@@ -1716,6 +1717,8 @@ export const id = {
   // Customer payment pages (bead legend-2w5, PRD §3.13 F13). The screen never
   // marks itself paid from a gateway redirect (PAY-02).
   payment: {
+    // E-wallet and card through Duitku, return page (C2b, legend-osqou.4).
+    redirect: paymentRedirectMessages,
     title: "Pembayaran",
     back: "Kembali",
     billTitle: "Rincian tagihan",

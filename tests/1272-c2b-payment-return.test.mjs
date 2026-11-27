@@ -25,6 +25,7 @@ const tableRecord = {
   paymentId,
   qrToken: `v1.${"C".repeat(40)}.${"D".repeat(43)}`,
   sessionId: "7f8e1b2a-3c4d-4e5f-8a9b-0c1d2e3f4a5b",
+  orderId: "01JD5Z8Q4N7K2M3P4R5S6T7V8W",
   orderNumber: "QR-0044",
   tableCode: "A01",
   method: "ewallet",
