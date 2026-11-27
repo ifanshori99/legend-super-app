@@ -185,6 +185,19 @@ export const paymentIntents = pgTable(
     /** Server-priced, whole rupiah (PAY-01). */
     amountIdr: idrColumn("amount_idr").notNull(),
     feeIdr: idrColumn("fee_idr").notNull().default(idr(0)),
+    /** 1272 K1: the guest service fee ("Biaya layanan", design
+     * duitku-fee-passthrough §3) on top of the bill. Never part of the order,
+     * never refunded (§4); only a Duitku va, ewallet or card intent carries one
+     * (CHECK below). */
+    guestFeeIdr: idrColumn("guest_fee_idr").notNull().default(idr(0)),
+    /** The gateway's own fee quote for the charged amount at creation, when it
+     * gave one; null on rows minted before 0544. */
+    gatewayFeeQuoteIdr: idrColumn("gateway_fee_quote_idr"),
+    /** What the gateway charges the payer: `amount_idr + guest_fee_idr`. Every
+     * comparison with gateway money uses this, never `amount_idr`. */
+    chargedIdr: idrColumn("charged_idr")
+      .notNull()
+      .generatedAlwaysAs(sql`amount_idr + guest_fee_idr`),
     idempotencyKey: varchar("idempotency_key", { length: 100 }).notNull(),
     providerRef: varchar("provider_ref", { length: 100 }),
     /** `tenant_integrations` row whose credentials minted `provider_ref`.
@@ -310,6 +323,16 @@ export const paymentIntents = pgTable(
       .where(sql`${table.reservationId} IS NOT NULL`),
     check("payment_intents_amount_check", sql`${table.amountIdr} > 0`),
     check("payment_intents_fee_check", sql`${table.feeIdr} >= 0`),
+    // 1272 K1 §3/§5: never a negative fee, and a fee only on a Duitku va,
+    // ewallet or card intent (QRIS never).
+    check(
+      "payment_intents_guest_fee_check",
+      sql`${table.guestFeeIdr} >= 0 AND (${table.guestFeeIdr} = 0 OR (${table.provider} = 'duitku' AND ${table.method} IN ('va', 'ewallet', 'card')))`,
+    ),
+    check(
+      "payment_intents_gateway_fee_quote_check",
+      sql`${table.gatewayFeeQuoteIdr} IS NULL OR ${table.gatewayFeeQuoteIdr} >= 0`,
+    ),
     check(
       "payment_intents_status_check",
       sql`${table.status} IN ('pending', 'paid', 'expired', 'failed', 'refunded', 'partially_refunded')`,

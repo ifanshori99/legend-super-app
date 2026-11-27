@@ -3711,6 +3711,13 @@
       "when": 1795743199138,
       "tag": "0543_edc_bridge_pair_codes",
       "breakpoints": true
+    },
+    {
+      "idx": 544,
+      "version": "7",
+      "when": 1795765822393,
+      "tag": "0544_guest_service_fee",
+      "breakpoints": true
     }
   ]
 }
