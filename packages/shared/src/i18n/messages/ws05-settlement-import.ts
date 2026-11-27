@@ -27,17 +27,18 @@ export const gatewaySettlementMessages = {
     periodTooLong: "Satu laporan paling lama 31 hari.",
     file: "Berkas CSV",
     fileHint:
-      "Pakai template Legend: kolom reference, amount_idr, fee_idr. Format .csv, hingga 90.000 karakter.",
+      "Pakai template Legend: kolom reference, amount_idr, fee_idr. Berkas .csv atau .txt, hingga 90 kB.",
     fileChosen: "{name} · {count} baris data",
     template: "Unduh template",
     submit: "Impor dan cocokkan",
     submitting: "Mencocokkan…",
+    needsFile: "Pilih berkas CSV dulu untuk mengimpor.",
     another: "Impor laporan lain",
   },
   checks: {
     empty: "Berkas kosong. Pilih laporan yang berisi transaksi.",
     tooLarge:
-      "Berkas terlalu besar (maksimal 90.000 karakter). Pecah per tanggal, lalu impor satu per satu.",
+      "Berkas terlalu besar (maksimal 90 kB). Pecah per tanggal, lalu impor satu per satu.",
     notCsv: "Hanya berkas .csv atau .txt yang dapat diimpor.",
     unreadable: "Berkas tidak bisa dibaca. Pilih ulang berkasnya.",
   },
@@ -60,13 +61,18 @@ export const gatewaySettlementMessages = {
     },
     moreRows:
       "Baris lain mungkin ikut bermasalah; periksa setelah memperbaiki.",
-    message: "Berkas belum bisa diimpor: {detail}",
+    invalid:
+      "Berkas belum bisa diimpor: isinya tidak sesuai template Legend. Pastikan baris pertama berisi reference, amount_idr, fee_idr dan ada baris transaksi, lalu impor ulang.",
     conflict:
       "Nomor laporan ini sudah pernah diimpor dengan isi berbeda. Periksa nomor laporan atau berkasnya.",
     forbidden:
       "Akun ini tidak punya izin rekonsiliasi di outlet tersebut. Minta pemilik memberi izin, lalu coba lagi.",
     notFound:
       "Outlet tidak ditemukan atau di luar akses akun ini. Pilih outlet lain.",
+    session: "Sesi habis. Masuk ulang, lalu impor lagi.",
+    rateLimited: "Terlalu sering mencoba. Tunggu sebentar, lalu impor lagi.",
+    rateLimitedSeconds:
+      "Terlalu sering mencoba. Tunggu {seconds} detik, lalu impor lagi.",
     offline: "Tidak ada koneksi. Sambungkan internet, lalu impor lagi.",
     generic: "Impor gagal. Berkas tidak diimpor; coba lagi sebentar lagi.",
   },
@@ -74,6 +80,8 @@ export const gatewaySettlementMessages = {
     title: "Verifikasi MFA untuk mengimpor",
     mfaHint:
       "Impor settlement membuka dan menutup kasus selisih uang, jadi perlu kode dari aplikasi autentikator.",
+    again:
+      "Server masih meminta verifikasi. Masukkan kode terbaru dari aplikasi autentikator.",
   },
   result: {
     title: "Hasil pencocokan",
@@ -95,6 +103,8 @@ export const gatewaySettlementMessages = {
   },
   list: {
     title: "Settlement terakhir",
+    outletHint:
+      "Untuk daftar settlement dan impor. Kasus terbuka mencakup semua outlet.",
     emptyTitle: "Belum ada settlement diimpor",
     emptyHint:
       "Laporan settlement yang diimpor untuk outlet ini tampil di sini.",

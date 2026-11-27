@@ -17,7 +17,9 @@ export function checkSettlementCsv(
 ): SettlementCsvCheck | null {
   if (!/\.(csv|txt)$/i.test(fileName.trim())) return "notCsv";
   if (csv.trim() === "") return "empty";
-  if (csv.length > EDC_SETTLEMENT_CSV_MAX_CHARS) return "tooLarge";
+  // In bytes (UTF-8, what the request body carries): a file of non-ASCII text
+  // weighs more than its characters and must stay under the 100 kB body cap.
+  if (new Blob([csv]).size > EDC_SETTLEMENT_CSV_MAX_CHARS) return "tooLarge";
   return null;
 }
 
@@ -60,15 +62,25 @@ export type SettlementErrorView =
       kind: "rows";
       rows: { row: number; reason: SettlementRowReason }[];
     }
-  | { kind: "message"; detail: string }
+  | { kind: "rateLimited"; seconds: number | null }
   | {
-      kind: "conflict" | "forbidden" | "notFound" | "offline" | "generic";
+      kind:
+        | "invalid"
+        | "conflict"
+        | "forbidden"
+        | "notFound"
+        | "session"
+        | "offline"
+        | "generic";
     };
 
 export function settlementErrorView(error: unknown): SettlementErrorView {
   if (!(error instanceof ApiError)) return { kind: "generic" };
   if (error.code === "NETWORK_ERROR") return { kind: "offline" };
   if (error.code === "SETTLEMENT_CONFLICT") return { kind: "conflict" };
+  if (error.status === 401) return { kind: "session" };
+  if (error.status === 429)
+    return { kind: "rateLimited", seconds: error.retryAfterSeconds ?? null };
   if (error.status === 403) return { kind: "forbidden" };
   if (error.status === 404) return { kind: "notFound" };
   if (error.status === 422) {
@@ -84,12 +96,22 @@ export function settlementErrorView(error: unknown): SettlementErrorView {
             : "other",
         })),
       };
-    return { kind: "message", detail: error.message };
+    // The server's own message is English; the screen keeps its own words.
+    return { kind: "invalid" };
   }
   return { kind: "generic" };
 }
 
-/** "2026-11-01" or "2026-11-01 – 2026-11-03". */
+const periodFormat = new Intl.DateTimeFormat("id-ID", {
+  day: "numeric",
+  month: "short",
+  year: "numeric",
+  timeZone: "UTC",
+});
+
+/** "1 Nov 2026" or "1–3 Nov 2026" (dates are calendar days, read as UTC). */
 export function periodLabel(start: string, end: string): string {
-  return start === end ? start : `${start} – ${end}`;
+  const from = new Date(`${start}T00:00:00Z`);
+  if (start === end) return periodFormat.format(from);
+  return periodFormat.formatRange(from, new Date(`${end}T00:00:00Z`));
 }

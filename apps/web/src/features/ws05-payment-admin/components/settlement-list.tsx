@@ -97,8 +97,10 @@ export function SettlementList({
                   })}
                 </p>
               </div>
-              <dl className="grid grid-cols-3 gap-3 text-sm lg:text-right">
-                <div>
+              {/* Phone: one amount per line, label left and amount right, so a
+                  tens-of-millions figure never runs past the screen. */}
+              <dl className="grid gap-1 text-sm sm:grid-cols-3 sm:gap-3 lg:text-right">
+                <div className="flex items-baseline justify-between gap-3 sm:block">
                   <dt className="text-muted-foreground">
                     {t("gatewaySettlement.list.gross")}
                   </dt>
@@ -106,7 +108,7 @@ export function SettlementList({
                     <Money amount={entry.grossIdr} size="sm" />
                   </dd>
                 </div>
-                <div>
+                <div className="flex items-baseline justify-between gap-3 sm:block">
                   <dt className="text-muted-foreground">
                     {t("gatewaySettlement.list.fee")}
                   </dt>
@@ -114,7 +116,7 @@ export function SettlementList({
                     <Money amount={entry.feeIdr} size="sm" />
                   </dd>
                 </div>
-                <div>
+                <div className="flex items-baseline justify-between gap-3 sm:block">
                   <dt className="text-muted-foreground">
                     {t("gatewaySettlement.list.net")}
                   </dt>

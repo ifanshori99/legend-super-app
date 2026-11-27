@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { waitForHydration } from "./hydration";
 
 // C4b UI audit P1-2 (legend-osqou.8): the MFA step-up of the Duitku and EDC
 // settlement imports sits beside the upload form, not inside it. Pressing
@@ -41,6 +42,7 @@ async function openAtStepUp(page: Page, screen: Screen, reference: string) {
     ]);
   await page.goto(`${screen.path}?mock=normal`);
   await page.getByRole("button", { name: screen.submit }).waitFor(WAIT);
+  await waitForHydration(page);
   if (screen === gateway) {
     await page.getByLabel("Nomor laporan settlement").fill(reference);
     await page.getByLabel("Periode mulai").fill("2026-11-11");
@@ -97,7 +99,9 @@ for (const screen of [gateway, edc]) {
       await openAtStepUp(page, screen, "STL-C4B-ENTER-RIGHT");
       if (screen === gateway)
         // The upload fields are frozen while the step-up is open.
-        await expect(page.getByLabel("Nomor laporan settlement")).toBeDisabled();
+        await expect(
+          page.getByLabel("Nomor laporan settlement"),
+        ).toBeDisabled();
       const code = page.getByLabel("Kode 6 digit");
       await code.fill(RIGHT_CODE);
       await code.press("Enter");

@@ -2,11 +2,13 @@
 // report and its period, choose the CSV (Legend template), see what the server
 // matched. The browser sends the file as text and no amount: the server reads
 // and sums every rupiah. The API needs payment.reconcile at the outlet and a
-// fresh second factor: MFA_REQUIRED opens the step-up panel and the same
-// upload is sent again with the same idempotency key.
+// session verified with the second factor (same check as the EDC upload):
+// MFA_REQUIRED opens the step-up panel and the same upload is sent again with
+// the same idempotency key. The step-up is its own form beside the upload
+// form, never inside it: a submit in the panel must not send the upload.
 import * as React from "react";
 import { CircleAlert, Download, Upload } from "lucide-react";
-import { Link } from "@tanstack/react-router";
+import { Link, useSearch } from "@tanstack/react-router";
 import type { OutletId } from "@starter/shared/core";
 import type { SettlementImportView } from "@starter/shared/payment/admin";
 import { useT } from "@/components/i18n";
@@ -75,8 +77,12 @@ function ErrorNotice({ view }: { view: SettlementErrorView }) {
       </div>
     );
   const text =
-    view.kind === "message"
-      ? t("gatewaySettlement.errors.message", { detail: view.detail })
+    view.kind === "rateLimited"
+      ? view.seconds === null
+        ? t("gatewaySettlement.errors.rateLimited")
+        : t("gatewaySettlement.errors.rateLimitedSeconds", {
+            seconds: view.seconds,
+          })
       : t(`gatewaySettlement.errors.${view.kind}`);
   return (
     <p
@@ -107,6 +113,7 @@ export function GatewaySettlementImportPage() {
   const importCsv = useImportGatewaySettlementCsv();
   const stepUp = useStepUp();
   const attempt = useAttemptKey();
+  const search = useSearch({ strict: false }) as { outletId?: string };
   const [outletId, setOutletId] = React.useState<string | null>(null);
   const [reference, setReference] = React.useState("");
   const [periodStart, setPeriodStart] = React.useState("");
@@ -120,8 +127,19 @@ export function GatewaySettlementImportPage() {
   const [result, setResult] = React.useState<SettlementImportView | null>(null);
   // Bumped to remount the file input: a browser keeps the chosen file in it.
   const [fileKey, setFileKey] = React.useState(0);
+  // The server asked for the second factor again right after a verification.
+  const [stepUpAgain, setStepUpAgain] = React.useState(false);
   const titleRef = React.useRef<HTMLHeadingElement>(null);
-  const selectedOutletId = outletId ?? outlets[0]?.id ?? null;
+  const referenceRef = React.useRef<HTMLInputElement>(null);
+  const periodStartRef = React.useRef<HTMLInputElement>(null);
+  const periodEndRef = React.useRef<HTMLInputElement>(null);
+  const fileRef = React.useRef<HTMLInputElement>(null);
+  const submitRef = React.useRef<HTMLButtonElement>(null);
+  // The reconciliation panel passes the outlet it was showing.
+  const linkedOutletId = outlets.some((outlet) => outlet.id === search.outletId)
+    ? (search.outletId ?? null)
+    : null;
+  const selectedOutletId = outletId ?? linkedOutletId ?? outlets[0]?.id ?? null;
   const trimmedReference = reference.trim();
   const periodProblem: PeriodCheck | null = checkPeriod(periodStart, periodEnd);
 
@@ -145,16 +163,31 @@ export function GatewaySettlementImportPage() {
     setPicked({ name: file.name, csv, lines: dataRowCount(csv) });
   };
 
+  // Closing the step-up returns focus to the upload button.
+  const stepUpWasOpen = React.useRef(false);
+  React.useEffect(() => {
+    if (stepUpWasOpen.current && !stepUp.active) submitRef.current?.focus();
+    stepUpWasOpen.current = stepUp.active;
+  }, [stepUp.active]);
+
   const send = async () => {
+    if (importCsv.isPending || selectedOutletId === null) return;
     setTouched(true);
-    if (
-      importCsv.isPending ||
-      !picked ||
-      selectedOutletId === null ||
-      trimmedReference === "" ||
-      periodProblem !== null
-    )
+    // The first field still missing takes focus, in screen order.
+    const firstProblem =
+      trimmedReference === ""
+        ? referenceRef
+        : periodProblem === "periodRequired" && !periodStart
+          ? periodStartRef
+          : periodProblem !== null
+            ? periodEndRef
+            : !picked
+              ? fileRef
+              : null;
+    if (firstProblem || !picked) {
+      firstProblem?.current?.focus();
       return;
+    }
     setError(null);
     const body = {
       outletId: selectedOutletId as OutletId,
@@ -173,13 +206,19 @@ export function GatewaySettlementImportPage() {
       });
       attempt.settle();
       stepUp.reset();
+      setStepUpAgain(false);
       setResult(response.data);
       setPicked(null);
       setTouched(false);
       setFileKey((n) => n + 1);
     } catch (caught) {
-      if (stepUp.capture(caught)) return;
+      const wasVerifying = stepUp.active;
+      if (stepUp.capture(caught)) {
+        setStepUpAgain(wasVerifying);
+        return;
+      }
       stepUp.reset();
+      setStepUpAgain(false);
       setError(settlementErrorView(caught));
     }
   };
@@ -201,104 +240,145 @@ export function GatewaySettlementImportPage() {
         />
       </div>
     ) : (
-      <form
-        aria-label={t("gatewaySettlement.form.label")}
-        noValidate
-        className="grid gap-4 rounded-container border-(length:--border-w) bg-card p-card shadow-hairline"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void send();
-        }}
-      >
-        <div className="grid gap-3 md:grid-cols-2">
-          <FormField label={t("gatewaySettlement.form.outlet")} required>
-            <Select
-              value={selectedOutletId ?? undefined}
-              onValueChange={(value) => {
-                setOutletId(value);
-                setError(null);
-              }}
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {outlets.map((outlet) => (
-                  <SelectItem key={outlet.id} value={outlet.id}>
-                    {outlet.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </FormField>
-          <FormField
-            label={t("gatewaySettlement.form.reference")}
-            required
-            hint={t("gatewaySettlement.form.referenceHint")}
-            error={
-              touched && trimmedReference === ""
-                ? t("gatewaySettlement.form.referenceRequired")
-                : undefined
-            }
-          >
-            <Input
-              value={reference}
-              maxLength={100}
-              autoComplete="off"
-              onChange={(event) => setReference(event.target.value)}
-            />
-          </FormField>
-          <FormField
-            label={t("gatewaySettlement.form.periodStart")}
-            required
-            error={
-              touched && periodProblem === "periodRequired" && !periodStart
-                ? t("gatewaySettlement.form.periodRequired")
-                : undefined
-            }
-          >
-            <Input
-              type="date"
-              value={periodStart}
-              onChange={(event) => setPeriodStart(event.target.value)}
-            />
-          </FormField>
-          <FormField
-            label={t("gatewaySettlement.form.periodEnd")}
-            required
-            error={
-              touched && periodProblem !== null && periodStart
-                ? t(`gatewaySettlement.form.${periodProblem}`)
-                : undefined
-            }
-          >
-            <Input
-              type="date"
-              value={periodEnd}
-              onChange={(event) => setPeriodEnd(event.target.value)}
-            />
-          </FormField>
-        </div>
-        <FormField
-          label={t("gatewaySettlement.form.file")}
-          required
-          hint={
-            picked && error?.kind !== "rows"
-              ? t("gatewaySettlement.form.fileChosen", {
-                  name: picked.name,
-                  count: picked.lines,
-                })
-              : t("gatewaySettlement.form.fileHint")
-          }
-          error={check ? t(`gatewaySettlement.checks.${check}`) : undefined}
+      <div className="grid gap-4 rounded-container border-(length:--border-w) bg-card p-card shadow-hairline">
+        <form
+          aria-label={t("gatewaySettlement.form.label")}
+          noValidate
+          className="grid gap-4"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void send();
+          }}
         >
-          <Input
-            key={fileKey}
-            type="file"
-            accept=".csv,.txt,text/csv,text/plain"
-            onChange={(event) => void pick(event.target.files?.[0])}
-          />
-        </FormField>
+          {/* Frozen while the step-up is open: the upload it verifies stays the one sent. */}
+          <fieldset disabled={stepUp.active} className="grid min-w-0 gap-4">
+            <div className="grid gap-3 md:grid-cols-2">
+              <FormField label={t("gatewaySettlement.form.outlet")} required>
+                <Select
+                  value={selectedOutletId ?? undefined}
+                  onValueChange={(value) => {
+                    setOutletId(value);
+                    setError(null);
+                  }}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {outlets.map((outlet) => (
+                      <SelectItem key={outlet.id} value={outlet.id}>
+                        {outlet.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </FormField>
+              <FormField
+                label={t("gatewaySettlement.form.reference")}
+                required
+                hint={t("gatewaySettlement.form.referenceHint")}
+                error={
+                  touched && trimmedReference === ""
+                    ? t("gatewaySettlement.form.referenceRequired")
+                    : undefined
+                }
+              >
+                <Input
+                  ref={referenceRef}
+                  value={reference}
+                  maxLength={100}
+                  autoComplete="off"
+                  onChange={(event) => setReference(event.target.value)}
+                />
+              </FormField>
+              <FormField
+                label={t("gatewaySettlement.form.periodStart")}
+                required
+                error={
+                  touched && periodProblem === "periodRequired" && !periodStart
+                    ? t("gatewaySettlement.form.periodRequired")
+                    : undefined
+                }
+              >
+                <Input
+                  ref={periodStartRef}
+                  type="date"
+                  value={periodStart}
+                  onChange={(event) => setPeriodStart(event.target.value)}
+                />
+              </FormField>
+              <FormField
+                label={t("gatewaySettlement.form.periodEnd")}
+                required
+                error={
+                  touched && periodProblem !== null && periodStart
+                    ? t(`gatewaySettlement.form.${periodProblem}`)
+                    : undefined
+                }
+              >
+                <Input
+                  ref={periodEndRef}
+                  type="date"
+                  value={periodEnd}
+                  onChange={(event) => setPeriodEnd(event.target.value)}
+                />
+              </FormField>
+            </div>
+            <FormField
+              label={t("gatewaySettlement.form.file")}
+              required
+              hint={
+                picked && error?.kind !== "rows"
+                  ? t("gatewaySettlement.form.fileChosen", {
+                      name: picked.name,
+                      count: picked.lines,
+                    })
+                  : t("gatewaySettlement.form.fileHint")
+              }
+              error={
+                check
+                  ? t(`gatewaySettlement.checks.${check}`)
+                  : touched && !picked
+                    ? t("gatewaySettlement.form.needsFile")
+                    : undefined
+              }
+            >
+              <Input
+                key={fileKey}
+                ref={fileRef}
+                type="file"
+                accept=".csv,.txt,text/csv,text/plain"
+                onChange={(event) => void pick(event.target.files?.[0])}
+              />
+            </FormField>
+          </fieldset>
+
+          {error && !stepUp.active && <ErrorNotice view={error} />}
+
+          {!stepUp.active && (
+            <div className="flex flex-wrap gap-2">
+              <Button
+                ref={submitRef}
+                type="submit"
+                loading={importCsv.isPending}
+                disabled={importCsv.isPending}
+              >
+                <Upload aria-hidden="true" />
+                {importCsv.isPending
+                  ? t("gatewaySettlement.form.submitting")
+                  : t("gatewaySettlement.form.submit")}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={downloadTemplate}
+              >
+                <Download aria-hidden="true" />
+                {t("gatewaySettlement.form.template")}
+              </Button>
+            </div>
+          )}
+        </form>
 
         {stepUp.active && (
           <VerifyPanel
@@ -309,31 +389,15 @@ export function GatewaySettlementImportPage() {
             }}
             needs={stepUp.needs}
             busy={importCsv.isPending}
+            error={stepUpAgain ? t("gatewaySettlement.verify.again") : null}
             onVerified={() => void send()}
-            onCancel={() => stepUp.reset()}
+            onCancel={() => {
+              stepUp.reset();
+              setStepUpAgain(false);
+            }}
           />
         )}
-        {error && !stepUp.active && <ErrorNotice view={error} />}
-
-        {!stepUp.active && (
-          <div className="flex flex-wrap gap-2">
-            <Button
-              type="submit"
-              loading={importCsv.isPending}
-              disabled={!picked || importCsv.isPending}
-            >
-              <Upload aria-hidden="true" />
-              {importCsv.isPending
-                ? t("gatewaySettlement.form.submitting")
-                : t("gatewaySettlement.form.submit")}
-            </Button>
-            <Button type="button" variant="outline" onClick={downloadTemplate}>
-              <Download aria-hidden="true" />
-              {t("gatewaySettlement.form.template")}
-            </Button>
-          </div>
-        )}
-      </form>
+      </div>
     );
 
   return (
@@ -354,8 +418,9 @@ export function GatewaySettlementImportPage() {
               {t("gatewaySettlement.breadcrumbPayments")}
             </Link>
           </li>
-          <li aria-hidden="true">/</li>
-          <li>
+          {/* Each "/" sits with the item after it, so a wrap never leaves it hanging. */}
+          <li className="flex items-center gap-x-1.5">
+            <span aria-hidden="true">/</span>
             <Link
               to="/kelola/pembayaran"
               search={{ tab: "reconciliation" }}
@@ -364,8 +429,8 @@ export function GatewaySettlementImportPage() {
               {t("gatewaySettlement.breadcrumbReconciliation")}
             </Link>
           </li>
-          <li aria-hidden="true">/</li>
-          <li aria-current="page">
+          <li className="flex items-center gap-x-1.5" aria-current="page">
+            <span aria-hidden="true">/</span>
             {t("gatewaySettlement.breadcrumbCurrent")}
           </li>
         </ol>

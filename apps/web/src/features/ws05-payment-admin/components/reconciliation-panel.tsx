@@ -20,7 +20,7 @@ import {
   PendingDialog,
   PendingDialogContent,
 } from "@/components/ui/pending-dialog";
-import { ErrorState } from "@/components/ui/feedback-state";
+import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { FormField } from "@/components/ui/form-field";
 import { Money } from "@/components/ui/money";
 import {
@@ -71,13 +71,15 @@ function sourceLabel(
 
 export function ReconciliationPanel() {
   const t = useT();
-  // C4b: one outlet at a time, the first of the account's outlets by default
-  // (the API checks payment.reconcile at that outlet on every request).
+  // Open cases and the summary stay tenant-wide, so a difference at another
+  // outlet is never out of sight. C4b: the outlet picker scopes the settlement
+  // list and the import link only, the first of the account's outlets by
+  // default (the API checks payment.reconcile at that outlet on every request).
   const outlets = useAccountOutlets();
   const [outletId, setOutletId] = React.useState<string | null>(null);
   const selectedOutletId = outletId ?? outlets[0]?.id ?? null;
-  const summary = useReconciliationSummary(selectedOutletId ?? undefined);
-  const cases = useReconciliationCases(selectedOutletId ?? undefined);
+  const summary = useReconciliationSummary();
+  const cases = useReconciliationCases();
   const [status, setStatus] = React.useState<
     ReconciliationCaseView["status"] | "all"
   >(ALL);
@@ -109,16 +111,11 @@ export function ReconciliationPanel() {
           </p>
         </div>
         <div className="grid w-full gap-3 sm:flex sm:w-auto sm:items-end">
-          <Button asChild variant="outline">
-            <Link to="/kelola/pembayaran/settlement-duitku">
-              <Upload aria-hidden="true" />
-              {t("gatewaySettlement.entryLink")}
-            </Link>
-          </Button>
           {outlets.length > 0 && (
             <FormField
               label={t("paymentAdmin.routing.outlet")}
               required
+              hint={t("gatewaySettlement.list.outletHint")}
               className="sm:w-64"
             >
               <Select
@@ -141,6 +138,17 @@ export function ReconciliationPanel() {
               </Select>
             </FormField>
           )}
+          <Button asChild variant="outline">
+            <Link
+              to="/kelola/pembayaran/settlement-duitku"
+              search={
+                selectedOutletId === null ? {} : { outletId: selectedOutletId }
+              }
+            >
+              <Upload aria-hidden="true" />
+              {t("gatewaySettlement.entryLink")}
+            </Link>
+          </Button>
         </div>
       </div>
 
@@ -197,8 +205,15 @@ export function ReconciliationPanel() {
         </StatStrip>
       )}
 
-      {selectedOutletId !== null && (
+      {selectedOutletId !== null ? (
         <SettlementList outletId={selectedOutletId} />
+      ) : (
+        <div className="rounded-container border-(length:--border-w) bg-card">
+          <EmptyState
+            title={t("gatewaySettlement.noOutlets.title")}
+            description={t("gatewaySettlement.noOutlets.description")}
+          />
+        </div>
       )}
 
       <div id="reconciliation-cases" className="min-w-0">

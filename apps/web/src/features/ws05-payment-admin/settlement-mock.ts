@@ -51,7 +51,7 @@ function sample(
 }
 
 const settlements: SettlementListItem[] = [
-  sample(2, { gross: 1_845_000, fee: 12_915 }),
+  sample(2, { gross: 48_645_000, fee: 340_515 }),
   sample(1, {
     gross: 1_320_000,
     fee: 9_240,

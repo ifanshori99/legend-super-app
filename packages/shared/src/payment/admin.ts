@@ -1253,7 +1253,8 @@ export const getReconciliationSummary = defineEndpoint({
 });
 /**
  * EDC-06: a settlement report is matched to POS; each difference is a case.
- * Needs payment.reconcile at the outlet and a fresh second factor (C4b).
+ * Needs payment.reconcile at the outlet and an MFA-verified session (C4b,
+ * same session check as the EDC settlement CSV).
  */
 export const importSettlement = defineEndpoint({
   method: "POST",
@@ -1263,7 +1264,8 @@ export const importSettlement = defineEndpoint({
 });
 /**
  * C4b: a gateway settlement CSV (Duitku). Needs payment.reconcile at the outlet
- * and a fresh second factor, both checked before the file is read; then it is
+ * and an MFA-verified session (same check as the EDC settlement CSV), both
+ * checked before the file is read; then it is
  * imported exactly like importSettlement (same matching, cases and replay).
  */
 export const importGatewaySettlementCsv = defineEndpoint({

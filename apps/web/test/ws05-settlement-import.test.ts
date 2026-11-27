@@ -14,6 +14,7 @@ import {
   checkPeriod,
   checkSettlementCsv,
   dataRowCount,
+  periodLabel,
   settlementErrorView,
   settlementTemplateCsv,
 } from "@/features/ws05-payment-admin/settlement-lib.ts";
@@ -35,6 +36,19 @@ describe("C4b Duitku settlement import rules", () => {
       ),
     ).toBe("tooLarge");
     expect(checkSettlementCsv("laporan.CSV", "reference\n")).toBeNull();
+    // The cap is in bytes: non-ASCII text weighs more than its characters.
+    expect(
+      checkSettlementCsv(
+        "laporan.csv",
+        "é".repeat(EDC_SETTLEMENT_CSV_MAX_CHARS / 2 + 1),
+      ),
+    ).toBe("tooLarge");
+    expect(
+      checkSettlementCsv(
+        "laporan.csv",
+        "é".repeat(EDC_SETTLEMENT_CSV_MAX_CHARS / 2),
+      ),
+    ).toBeNull();
     expect(
       dataRowCount("reference,amount_idr,fee_idr\r\nA,1,0\r\n\r\nB,2,0"),
     ).toBe(2);
@@ -44,6 +58,15 @@ describe("C4b Duitku settlement import rules", () => {
     expect(checkPeriod("2026-11-01", "2026-12-01")).toBeNull();
     expect(checkPeriod("2026-11-01", "2026-11-30")).toBeNull();
     expect(checkPeriod("2026-11-01", "2026-11-01")).toBeNull();
+  });
+
+  it("writes periods as Indonesian dates", () => {
+    expect(periodLabel("2026-11-01", "2026-11-01")).toBe("1 Nov 2026");
+    expect(periodLabel("2026-11-01", "2026-11-03")).toBe("1–3 Nov 2026");
+    // Intl puts thin spaces around the dash of a range across months.
+    expect(periodLabel("2026-10-30", "2026-11-02").replace(/\s/g, " ")).toBe(
+      "30 Okt – 2 Nov 2026",
+    );
   });
 
   it("offers the template header only", () => {
@@ -68,7 +91,20 @@ describe("C4b Duitku settlement import rules", () => {
       settlementErrorView(
         new ApiError(422, "VALIDATION_ERROR", "Kolom harus tepat"),
       ),
-    ).toEqual({ kind: "message", detail: "Kolom harus tepat" });
+    ).toEqual({ kind: "invalid" });
+    expect(settlementErrorView(new ApiError(401, "UNAUTHORIZED", "x"))).toEqual(
+      { kind: "session" },
+    );
+    expect(
+      settlementErrorView(
+        new ApiError(429, "RATE_LIMITED", "x", undefined, {
+          retryAfterSeconds: 30,
+        }),
+      ),
+    ).toEqual({ kind: "rateLimited", seconds: 30 });
+    expect(settlementErrorView(new ApiError(429, "RATE_LIMITED", "x"))).toEqual(
+      { kind: "rateLimited", seconds: null },
+    );
     expect(
       settlementErrorView(new ApiError(409, "SETTLEMENT_CONFLICT", "x")),
     ).toEqual({ kind: "conflict" });

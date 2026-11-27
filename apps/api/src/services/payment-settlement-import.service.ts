@@ -387,7 +387,8 @@ async function importChecked(
       now,
     );
     // A settlement import opens and closes reconciliation cases (money
-    // differences): a fresh second factor always, as for the X2 CSV.
+    // differences): the session must be MFA-verified (any time while it
+    // lives, the same session check as the X2 EDC CSV), always.
     if (!options.mfaVerified) throw new AccessError("MFA_REQUIRED");
     const input = readInput();
     // The provider and terminal must be real before anything is recorded.
