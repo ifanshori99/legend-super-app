@@ -1965,7 +1965,8 @@ describe("X2 EDC settlement CSV import matches terminal + RRN + amount and never
       (
         await owner.query<{ payload: Record<string, unknown> }>(
           `SELECT payload FROM notification_outbox
-           WHERE tenant_id = $1 AND event_type = $2`,
+           WHERE tenant_id = $1 AND event_type = $2
+           ORDER BY created_at, id`,
           [tenant.tenantId, event],
         )
       ).rows;
