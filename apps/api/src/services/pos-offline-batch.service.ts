@@ -344,7 +344,8 @@ export async function reportPosOfflineConflict(
 /** The staff session on the tablet; the device token may be gone (revoked). */
 export type OfflineStuckCaller = { userId: UserId; deviceId: string | null };
 
-const STUCK_KIT_UNKNOWN = "Bekal offline penjualan ini tidak dikenal di outlet ini.";
+const STUCK_KIT_UNKNOWN =
+  "Bekal offline penjualan ini tidak dikenal di outlet ini.";
 
 /**
  * POST .../pos/offline-stuck (1273 second opinion P2-1, CTO). A sale the batch

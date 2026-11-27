@@ -240,7 +240,8 @@ export function createOfflineQueue(options: {
       };
     } catch (error) {
       if (isDeviceRefused(error))
-        for (const event of chunk) stuckMarks.set(event.eventId, "device_refused");
+        for (const event of chunk)
+          stuckMarks.set(event.eventId, "device_refused");
       if (!isEventConflict(error)) throw error;
     }
     if (chunk.length === 1) {

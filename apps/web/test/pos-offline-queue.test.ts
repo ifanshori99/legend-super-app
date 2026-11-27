@@ -736,14 +736,15 @@ describe("a sale the cloud refuses for good", () => {
     ).rejects.toBeInstanceOf(TypeError);
     expect(await queue.pendingCount()).toBe(2);
     answer("rejected");
-    expect(
-      (await queue.reportStuck(sales[0]!.eventId, approval)).status,
-    ).toBe("rejected");
+    expect((await queue.reportStuck(sales[0]!.eventId, approval)).status).toBe(
+      "rejected",
+    );
     expect(await queue.pendingCount()).toBe(2);
     answer("held");
-    expect(await queue.reportStuck(sales[0]!.eventId, approval)).toMatchObject(
-      { status: "held", reason: "stuck_kit_unknown" },
-    );
+    expect(await queue.reportStuck(sales[0]!.eventId, approval)).toMatchObject({
+      status: "held",
+      reason: "stuck_kit_unknown",
+    });
     expect(sent.at(-1)).toBe(
       `${sales[0]!.eventId}:kit_unknown:${approval.approverUserId}`,
     );
