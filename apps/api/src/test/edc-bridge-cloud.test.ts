@@ -13,6 +13,10 @@
 // - no bridge = EDC_AGENT_NOT_READY and nothing written; manual EDC (X1)
 //   still refused while the sale is pending/unknown;
 // - revoked token: socket closed, reconnect refused, no new command;
+// - device API: `payment.edc.manage` at the outlet (403), other outlet or
+//   tenant = 404, token shown once (no-store) and never in audit or log,
+//   revoke closes the socket; a terminal with an unfinished sale is never
+//   moved, re-linked or released (EDC_TERMINAL_BUSY);
 // - outlet lock lost with a sale on the wire (CTO decision): the API process
 //   lives, other outlets go on, the sale ends `unknown`, new requests of that
 //   outlet are refused until the lock is taken again;
@@ -21,6 +25,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { inspect } from "node:util";
 import {
   afterAll,
   afterEach,
@@ -41,8 +46,10 @@ import {
   stopCloudEdcRuntime,
   type CloudEdcRuntime,
 } from "../edge/edc/cloud-runtime.ts";
+import { logger } from "../lib/logger.ts";
 import { attachEdcBridgeRealtime } from "../routes/edc-bridge.routes.ts";
 import { owner, seedTenantOutlets } from "./floor-test-helpers.ts";
+import { agent, originHeader, signUp } from "./helpers.ts";
 import {
   connectBridge,
   responseOf,
@@ -610,6 +617,176 @@ describe("B2 outlet lock lost", () => {
     expect(
       (await back.waitFor("lease", renewed)).grants.map((g) => g.terminalId),
     ).toEqual([terminalA1]);
+  });
+});
+
+describe("B2 device API", () => {
+  const DEVICES = "/api/edc-bridge/devices";
+  let managerA1: ReturnType<typeof agent>;
+  const as = (client: ReturnType<typeof agent>) => ({
+    get: (path: string) => client.get(path).set(fx.headers).set(originHeader),
+    post: (path: string, body: Record<string, unknown>) =>
+      client.post(path).set(fx.headers).set(originHeader).send(body),
+    put: (path: string, body: Record<string, unknown>) =>
+      client.put(path).set(fx.headers).set(originHeader).send(body),
+  });
+
+  beforeAll(async () => {
+    await owner.query(
+      "UPDATE roles SET permissions = permissions || $2::jsonb WHERE id = $1",
+      [fx.tenant.roleId, JSON.stringify(["payment.edc.manage"])],
+    );
+    // A manager of outlet A1 only.
+    managerA1 = agent(fx.app);
+    await signUp(managerA1, "B2 Manager A1");
+    const session = await managerA1.get("/api/auth/get-session");
+    await owner.query(
+      `INSERT INTO role_assignments
+         (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+       VALUES ($1, $2, $3, 'outlet', $4, now() - interval '1 minute', $2)`,
+      [
+        fx.tenant.tenantId,
+        session.body.user.id,
+        fx.tenant.roleId,
+        fx.tenant.outletId,
+      ],
+    );
+  });
+
+  it("b2-13 a terminal with an unfinished sale is not moved, re-linked or released (EDC_TERMINAL_BUSY); a free one is", async () => {
+    const api = as(fx.staff.client);
+    await asTenant(
+      fx.tenant.tenantId,
+      `INSERT INTO edc_transactions
+         (tenant_id, outlet_id, terminal_id, bank, reference, idempotency_key,
+          request_fingerprint, amount_idr, method, status, trace)
+       VALUES ($1, $2, $3, 'bca', $4, $5, 'fp', 25000, 'card', 'unknown', $6)`,
+      [
+        fx.tenant.tenantId,
+        outletA2,
+        terminalA2,
+        `B2BUSY${randomUUID().slice(0, 8)}`,
+        randomUUID(),
+        `T${Date.now()}`.slice(0, 12),
+      ],
+    );
+    const spare = await addDevice(fx.tenant.tenantId, outletA2);
+    const busy = [
+      // Move to another tablet.
+      await api.put(`${DEVICES}/${spare.id}/terminals`, {
+        terminals: [
+          { terminalId: terminalA2, linkPort: 9100, linkBaudRate: null },
+        ],
+      }),
+      // Same tablet, another port.
+      await api.put(`${DEVICES}/${deviceA2.id}/terminals`, {
+        terminals: [
+          { terminalId: terminalA2, linkPort: 9200, linkBaudRate: null },
+        ],
+      }),
+      // Released.
+      await api.put(`${DEVICES}/${deviceA2.id}/terminals`, { terminals: [] }),
+    ];
+    for (const res of busy) {
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(res.body.error.message).toMatch(/^EDC_TERMINAL_BUSY: /);
+    }
+    const { rows } = await owner.query<{ device: string; port: number }>(
+      `SELECT bridge_device_id::text AS device, link_port AS port
+         FROM payment_edc_terminals WHERE id = $1`,
+      [terminalA2],
+    );
+    expect(rows[0]).toEqual({ device: ulidToUuid(deviceA2.id), port: 9100 });
+    // Unchanged assignment of a busy terminal: allowed.
+    const same = await api.put(`${DEVICES}/${deviceA2.id}/terminals`, {
+      terminals: [
+        { terminalId: terminalA2, linkPort: 9100, linkBaudRate: null },
+      ],
+    });
+    expect(same.status, JSON.stringify(same.body)).toBe(200);
+    // A terminal with no open sale moves freely.
+    const free = randomUUID();
+    await addTerminal(fx.tenant.tenantId, outletA2, free, "TID-B2-FREE");
+    const moved = await api.put(`${DEVICES}/${spare.id}/terminals`, {
+      terminals: [{ terminalId: free, linkPort: 9300, linkBaudRate: null }],
+    });
+    expect(moved.status, JSON.stringify(moved.body)).toBe(200);
+    expect(moved.body.data.terminalIds).toEqual([free]);
+  });
+
+  it("b2-14 permission per outlet, 404 across outlet and tenant, token once and never logged, revoke closes the socket", async () => {
+    const manager = as(managerA1);
+    // No payment.edc.manage at outlet A2: 403 on list and issue.
+    expect((await manager.get(`${DEVICES}?outletId=${outletA2}`)).status).toBe(
+      403,
+    );
+    expect(
+      (await manager.post(DEVICES, { outletId: outletA2, label: "X" })).status,
+    ).toBe(403);
+    // A device of outlet A2 or of tenant B: 404, not 403.
+    for (const device of [deviceA2, deviceB1]) {
+      const revoke = await manager.post(`${DEVICES}/${device.id}/revoke`, {});
+      expect(revoke.status, JSON.stringify(revoke.body)).toBe(404);
+      const put = await manager.put(`${DEVICES}/${device.id}/terminals`, {
+        terminals: [],
+      });
+      expect(put.status, JSON.stringify(put.body)).toBe(404);
+    }
+    expect(
+      (await as(fx.staff.client).get(`${DEVICES}?outletId=${outletB1}`)).status,
+    ).not.toBe(200);
+
+    // Issue on outlet A1: token in this answer only, never cached or logged.
+    const spies = (
+      ["trace", "debug", "info", "warn", "error", "fatal"] as const
+    ).map((level) => vi.spyOn(logger, level));
+    let token: string;
+    let issuedId: string;
+    try {
+      const issued = await manager.post(DEVICES, {
+        outletId: fx.tenant.outletId,
+        label: "Tablet kasir",
+      });
+      expect(issued.status, JSON.stringify(issued.body)).toBe(201);
+      expect(issued.headers["cache-control"]).toBe("no-store");
+      token = issued.body.data.token as string;
+      issuedId = issued.body.data.device.id as string;
+      expect(token.startsWith(`edcb_${issuedId}_`)).toBe(true);
+      const list = await manager.get(
+        `${DEVICES}?outletId=${fx.tenant.outletId}`,
+      );
+      expect(list.status).toBe(200);
+      expect(JSON.stringify(list.body)).not.toContain(token);
+      const tablet = await bridge({ id: issuedId, token });
+      expect(tablet.opened).toEqual({ ok: true });
+      await tablet.hello();
+      // Revoke through the route: goodbye, socket closed, token refused.
+      const revoked = await manager.post(`${DEVICES}/${issuedId}/revoke`, {});
+      expect(revoked.status, JSON.stringify(revoked.body)).toBe(200);
+      expect(await tablet.waitFor("goodbye")).toEqual({
+        type: "goodbye",
+        reason: "token_revoked",
+      });
+      expect(await tablet.closed()).not.toBeNull();
+      expect((await bridge({ id: issuedId, token })).opened).toEqual({
+        ok: false,
+        status: 401,
+      });
+      for (const spy of spies)
+        expect(inspect(spy.mock.calls, { depth: 8 })).not.toContain(token);
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
+    const audit = await owner.query<{ row: string }>(
+      `SELECT row_to_json(a)::text AS row FROM audit_logs a
+        WHERE tenant_id = $1 AND event->>'objectType' = 'edc_bridge_device' AND event->>'objectId' = $2`,
+      [fx.tenant.tenantId, issuedId],
+    );
+    expect(audit.rows.length).toBeGreaterThanOrEqual(2);
+    for (const { row } of audit.rows) {
+      expect(row).not.toContain(token);
+      expect(row).not.toContain(hashEdcBridgeToken(token));
+    }
   });
 });
 

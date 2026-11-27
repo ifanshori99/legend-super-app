@@ -3,7 +3,7 @@
 // the row's own outlet. The token is shown once; only its SHA-256 is stored
 // and nothing here logs it. Every write leaves an audit row.
 import { randomBytes } from "node:crypto";
-import { and, asc, eq, inArray, isNull, notInArray } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, or } from "drizzle-orm";
 import {
   CoreError,
   assertOutletInScope,
@@ -11,6 +11,7 @@ import {
   type OutletId,
   type ScopedTenantContext,
 } from "@starter/shared/core";
+import { EdcError } from "@starter/shared/edc";
 import {
   edcBridgeDeviceSchema,
   type AssignEdcBridgeTerminalsInput,
@@ -21,6 +22,7 @@ import {
 import { db } from "../db/index.ts";
 import {
   edcBridgeDevices,
+  edcTransactions,
   paymentEdcTerminals,
   type EdcBridgeDeviceRow,
 } from "../db/schema/index.ts";
@@ -33,6 +35,9 @@ import { recordAudit } from "./core-audit.ts";
 import { assertPaymentPermission } from "./payment-support.ts";
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+const TERMINAL_BUSY =
+  "EDC_TERMINAL_BUSY: Terminal masih punya transaksi EDC yang belum selesai. Selesaikan atau rekonsiliasi dulu sebelum memindah tablet, mengganti port/baud, atau melepasnya. Sementara itu pakai EDC manual.";
 
 const notFound = () =>
   new CoreError("NOT_FOUND", "Perangkat jembatan EDC tidak ditemukan.");
@@ -266,25 +271,41 @@ export async function assignEdcBridgeTerminals(
     const ids = input.terminals.map((terminal) => terminal.terminalId);
     if (new Set(ids).size !== ids.length)
       throw new CoreError("VALIDATION_ERROR", "Terminal tercantum dua kali.");
-    // Only active bridge terminals of the device's own outlet.
-    const found =
-      ids.length === 0
-        ? []
-        : await tx
-            .select({
-              id: paymentEdcTerminals.id,
-              connection: paymentEdcTerminals.connection,
-              connectionKind: paymentEdcTerminals.connectionKind,
-            })
-            .from(paymentEdcTerminals)
-            .where(
-              and(
-                eq(paymentEdcTerminals.tenantId, ctx.tenant.tenantId),
-                eq(paymentEdcTerminals.outletId, row.outletId),
-                inArray(paymentEdcTerminals.id, ids),
-              ),
-            )
-            .for("update");
+    // The device's current terminals and the requested ones (its own outlet
+    // only), locked: a new sale's insert needs a key-share lock on the
+    // terminal row, so none slips in between the busy check and the write.
+    const locked = await tx
+      .select({
+        id: paymentEdcTerminals.id,
+        outletId: paymentEdcTerminals.outletId,
+        connection: paymentEdcTerminals.connection,
+        connectionKind: paymentEdcTerminals.connectionKind,
+        bridgeDeviceId: paymentEdcTerminals.bridgeDeviceId,
+        linkPort: paymentEdcTerminals.linkPort,
+        linkBaudRate: paymentEdcTerminals.linkBaudRate,
+      })
+      .from(paymentEdcTerminals)
+      .where(
+        and(
+          eq(paymentEdcTerminals.tenantId, ctx.tenant.tenantId),
+          or(
+            eq(paymentEdcTerminals.bridgeDeviceId, row.id),
+            ...(ids.length > 0
+              ? [
+                  and(
+                    eq(paymentEdcTerminals.outletId, row.outletId),
+                    inArray(paymentEdcTerminals.id, ids),
+                  ),
+                ]
+              : []),
+          ),
+        ),
+      )
+      .orderBy(asc(paymentEdcTerminals.id))
+      .for("update");
+    const found = locked.filter(
+      (entry) => entry.outletId === row.outletId && ids.includes(entry.id),
+    );
     if (found.length !== ids.length)
       throw new CoreError(
         "NOT_FOUND",
@@ -304,16 +325,56 @@ export async function assignEdcBridgeTerminals(
           "Terminal ini tidak dapat dipakai lewat jembatan dengan pengaturan itu.",
         );
     }
-    await tx
-      .update(paymentEdcTerminals)
-      .set({ bridgeDeviceId: null, updatedAt: new Date() })
-      .where(
-        and(
-          eq(paymentEdcTerminals.tenantId, ctx.tenant.tenantId),
-          eq(paymentEdcTerminals.bridgeDeviceId, row.id),
-          ...(ids.length > 0 ? [notInArray(paymentEdcTerminals.id, ids)] : []),
-        ),
+    // An inquiry goes to whatever tablet and link the row names now. With an
+    // unfinished sale (pending, unknown, or still on the wire) the terminal
+    // must not move tablet, change port/baud, or be released: another
+    // device's `not_found` could free a second charge (EDC-03). The cafe
+    // keeps selling through EDC manual (X1) meanwhile.
+    const released = locked.filter(
+      (entry) => entry.bridgeDeviceId === row.id && !ids.includes(entry.id),
+    );
+    const moved = input.terminals.filter((terminal) => {
+      const stored = found.find((entry) => entry.id === terminal.terminalId)!;
+      return (
+        stored.bridgeDeviceId !== row.id ||
+        stored.linkPort !== terminal.linkPort ||
+        stored.linkBaudRate !== terminal.linkBaudRate
       );
+    });
+    const changed = [
+      ...released.map((entry) => entry.id),
+      ...moved.map((terminal) => terminal.terminalId),
+    ];
+    if (changed.length > 0) {
+      const [open] = await tx
+        .select({ id: edcTransactions.id })
+        .from(edcTransactions)
+        .where(
+          and(
+            eq(edcTransactions.tenantId, ctx.tenant.tenantId),
+            inArray(edcTransactions.terminalId, changed),
+            or(
+              inArray(edcTransactions.status, ["pending", "unknown"]),
+              isNotNull(edcTransactions.saleWireOpenAt),
+            ),
+          ),
+        )
+        .limit(1);
+      if (open) throw new EdcError("EDC_TERMINAL_BUSY", TERMINAL_BUSY);
+    }
+    if (released.length > 0)
+      await tx
+        .update(paymentEdcTerminals)
+        .set({ bridgeDeviceId: null, updatedAt: new Date() })
+        .where(
+          and(
+            eq(paymentEdcTerminals.tenantId, ctx.tenant.tenantId),
+            inArray(
+              paymentEdcTerminals.id,
+              released.map((entry) => entry.id),
+            ),
+          ),
+        );
     for (const terminal of input.terminals)
       await tx
         .update(paymentEdcTerminals)
