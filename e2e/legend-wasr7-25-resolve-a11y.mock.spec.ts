@@ -1,4 +1,4 @@
-import { readdirSync } from "node:fs";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 
@@ -20,14 +20,6 @@ test.setTimeout(120_000);
 const CHARGE = "3f0c1a2b-4d5e-4f60-8a71-92b3c4d5e6f7";
 const WAIT = { timeout: 60_000 };
 const SHOT = process.env.LEGEND_WASR7_25_SHOT;
-
-// axe-core is only a transitive dependency (lighthouse): read it from the store.
-function axePath(): string {
-  const store = join(process.cwd(), "node_modules/.pnpm");
-  const hit = readdirSync(store).find((entry) => entry.startsWith("axe-core@"));
-  if (!hit) throw new Error("axe-core is not installed");
-  return join(store, hit, "node_modules/axe-core/axe.min.js");
-}
 
 test("supervisor dialog at 390: first focus, keyboard order, pad in reach, axe", async ({
   page,
@@ -96,7 +88,9 @@ test("supervisor dialog at 390: first focus, keyboard order, pad in reach, axe",
     });
   }
 
-  await page.addScriptTag({ path: axePath() });
+  await page.addScriptTag({
+    path: createRequire(import.meta.url).resolve("axe-core/axe.min.js"),
+  });
   const violations = await page.evaluate(async () => {
     const result = await (
       window as unknown as {
