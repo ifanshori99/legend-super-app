@@ -20,6 +20,8 @@ type Row = {
   settled_count: number;
   flagged_count: number;
   mismatch_count: number;
+  difference_idr: string;
+  file_seen: boolean;
 };
 
 export async function edcSettlementByTerminal(
@@ -38,7 +40,12 @@ export async function edcSettlementByTerminal(
            coalesce(sum(pt.amount_idr) FILTER (WHERE m.matched), 0)::text AS settled_idr,
            count(*) FILTER (WHERE m.matched)::int AS settled_count,
            count(*) FILTER (WHERE e.needs_reconciliation)::int AS flagged_count,
-           count(*) FILTER (WHERE m.mismatched)::int AS mismatch_count
+           count(*) FILTER (WHERE m.mismatched)::int AS mismatch_count,
+           (sum(pt.amount_idr)
+             - coalesce(sum(pt.amount_idr) FILTER (WHERE m.matched), 0))::text AS difference_idr,
+           -- A bank file naming this terminal was uploaded after every one of
+           -- its sales of the day (a file cannot report a sale not yet made).
+           bool_and(f.seen) AS file_seen
     FROM pos_order_tenders pt
     JOIN orders o
       ON o.tenant_id = pt.tenant_id AND o.id = pt.order_id
@@ -55,6 +62,20 @@ export async function edcSettlementByTerminal(
       FROM edc_settlement_rows r
       WHERE r.tenant_id = e.tenant_id AND r.matched_edc_transaction_id = e.id
     ) m ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT EXISTS (
+        SELECT 1
+        FROM edc_settlement_files sf
+        JOIN edc_settlement_rows sr
+          ON sr.tenant_id = sf.tenant_id AND sr.file_id = sf.id
+         AND sr.outlet_id = sf.outlet_id
+        WHERE sf.tenant_id = e.tenant_id
+          AND sf.outlet_id = ${outletId}::uuid
+          AND sf.bank = e.bank
+          AND sf.created_at > e.created_at
+          AND (sr.terminal_id = e.terminal_id OR sr.terminal_code = t.terminal_id)
+      ) AS seen
+    ) f ON TRUE
     WHERE pt.tenant_id = ${tenantId}::uuid
       AND pt.outlet_id = ${outletId}::uuid
       AND pt.status = 'captured'
@@ -65,8 +86,18 @@ export async function edcSettlementByTerminal(
     GROUP BY e.terminal_id, e.bank
     ORDER BY min(t.terminal_id) NULLS LAST, e.terminal_id
   `);
-  return result.rows.map((row) =>
-    endOfDayEdcTerminalRowSchema.parse({
+  return result.rows.map((row) => {
+    // mismatch wins; then a confirmed sale; otherwise the bank file decides
+    // between "not here yet" and "here, but it did not hit this terminal".
+    const bankStatus =
+      row.mismatch_count > 0
+        ? "mismatch"
+        : row.settled_count > 0
+          ? "matched"
+          : row.file_seen
+            ? "no_match"
+            : "awaiting";
+    return endOfDayEdcTerminalRowSchema.parse({
       terminalId: row.terminal_id,
       terminalCode: row.terminal_code ?? row.terminal_id.slice(0, 8),
       bank: row.bank,
@@ -76,6 +107,8 @@ export async function edcSettlementByTerminal(
       settledCount: row.settled_count,
       flaggedCount: row.flagged_count,
       mismatchCount: row.mismatch_count,
-    }),
-  );
+      differenceIdr: Number(row.difference_idr),
+      bankStatus,
+    });
+  });
 }

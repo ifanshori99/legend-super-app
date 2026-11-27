@@ -16,6 +16,8 @@ export type ApiErrorBody = {
     code: string;
     message: string;
     details?: { field: string; message: string }[];
+    /** EDC settlement CSV 422: the unreadable lines (number and reason code). */
+    rowErrors?: { row: number; reason: string }[];
     /** PAYSLIP_PIN_INVALID (403): attempts left before the PIN locks. */
     remainingAttempts?: number;
     /** PAYSLIP_PIN_LOCKED (423): ISO datetime the lock ends. */

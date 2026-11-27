@@ -56,7 +56,7 @@ import { paymentEdcTerminals } from "../db/schema/payment-admin.ts";
 import { outlets } from "../db/schema/platform-org.ts";
 import { posOrderTenders } from "../db/schema/pos-order.ts";
 import { withTenant } from "../db/tenant.ts";
-import { HttpError } from "../lib/http-error.ts";
+import { HttpError, RowErrorsHttpError } from "../lib/http-error.ts";
 import {
   alertEdcReconciliationMismatch,
   alertEdcSettlementUnknownTerminals,
@@ -133,8 +133,17 @@ export async function importEdcSettlementCsv(
   try {
     lines = parseEdcSettlementCsv(input.bank, input.csv);
   } catch (error) {
-    if (error instanceof EdcSettlementCsvError)
+    if (error instanceof EdcSettlementCsvError) {
+      // X2-UI: the unreadable file lines travel structured (number and reason
+      // code, never the content); the parser only knows which lines failed.
+      if (error.lines.length > 0)
+        throw new RowErrorsHttpError(
+          "VALIDATION_ERROR",
+          error.message,
+          error.lines.map((row) => ({ row, reason: "unreadable" })),
+        );
       throw new HttpError(422, "VALIDATION_ERROR", error.message);
+    }
     throw error;
   }
   const tenantId = context.tenant.tenantId;
