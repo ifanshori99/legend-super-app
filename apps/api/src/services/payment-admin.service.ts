@@ -31,7 +31,7 @@ import {
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { assertDepositReturnNotReversed } from "./payment-refund-deposit-return.ts";
-import { guestFeeBillCapSql } from "./payment-net-allocated-sql.ts";
+import { guestFeeBillSql } from "./payment-net-allocated-sql.ts";
 import { providerRefundedForeignIdrSql } from "./payment-provider-refunded-foreign-sql.ts";
 import { assertNotProviderRefunded } from "./payment-provider-refunded-guard.ts";
 import { recordAudit } from "./core-audit.ts";
@@ -110,8 +110,13 @@ export async function refundableBalance(
       ${providerRefundedForeignIdrSql(sql`${intent.tenantId}`, sql`${intent.id}::uuid`)}::text AS provider_refunded
   `);
   const row = result.rows[0]!;
+  // 1272 fee second opinion P2-1: the guest fee is never bill money; it comes
+  // off once (a code paid late parked the bill, so received - unallocated - fee
+  // is 0 there), then the bill caps it below.
   const allocated =
-    BigInt(String(row.received)) - BigInt(String(row.unallocated));
+    BigInt(String(row.received)) -
+    BigInt(String(row.unallocated)) -
+    BigInt(intent.guestFeeIdr);
   const gross =
     allocated < 0n
       ? 0n
@@ -294,12 +299,14 @@ async function qrSaleInUseOfIntent(
         ELSE least(
           o.total_idr - o.deposit_applied_idr,
           greatest(
-            least(
-              (SELECT coalesce(sum(e.amount_idr), 0) FROM payment_evidence e
-                WHERE e.tenant_id = o.tenant_id AND e.payment_intent_id = ${intentId}::uuid)
-              - (SELECT coalesce(sum(f.amount_idr), 0) FROM payment_unallocated_funds f
-                  WHERE f.tenant_id = o.tenant_id AND f.payment_intent_id = ${intentId}::uuid),
-              ${guestFeeBillCapSql(sql`o.tenant_id`, sql`${intentId}::uuid`)})
+            ${guestFeeBillSql(
+              sql`o.tenant_id`,
+              sql`${intentId}::uuid`,
+              sql`(SELECT coalesce(sum(e.amount_idr), 0) FROM payment_evidence e
+                    WHERE e.tenant_id = o.tenant_id AND e.payment_intent_id = ${intentId}::uuid)
+                  - (SELECT coalesce(sum(f.amount_idr), 0) FROM payment_unallocated_funds f
+                      WHERE f.tenant_id = o.tenant_id AND f.payment_intent_id = ${intentId}::uuid)`,
+            )}
             - ${providerRefundedForeignIdrSql(sql`o.tenant_id`, sql`${intentId}::uuid`)},
             0))
       END), 0)::text AS amount

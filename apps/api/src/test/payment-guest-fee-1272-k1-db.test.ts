@@ -647,6 +647,66 @@ describe("net allocated of a fee intent is the bill, never bill + fee (K1 review
   });
 });
 
+async function refundable(intentId: string) {
+  return withTenant(db, contextFor("session"), async (tx) => {
+    const [intent] = await tx
+      .select()
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, tenantA),
+          eq(paymentIntents.id, intentId),
+        ),
+      );
+    return refundableBalance(tx, intent!, { lockDeposit: false });
+  });
+}
+
+describe("the fee is taken off once, whatever else parked (fee second opinion P2-1)", () => {
+  it("a fee code paid late after the bill was covered counts nothing and refunds nothing", async () => {
+    const bill = await openFeeIntent();
+    // Another code (QRIS) already paid the whole bill.
+    await owner.query("UPDATE payment_links SET paid_idr = $2 WHERE id = $1", [
+      bill.linkId,
+      BILL_TOTAL,
+    ]);
+    await settleAtCharged(bill);
+    // Parked is the bill (the fee is not parked), so nothing is left.
+    expect(await funds(bill.intentId)).toEqual([
+      { amountIdr: BILL_TOTAL, reason: "double_payment" },
+    ]);
+    expect(await netAllocated(bill.intentId)).toBe(0n);
+    const balance = await refundable(bill.intentId);
+    expect(balance.paid).toBe(0n);
+    expect(balance.cap).toBe(0n);
+  });
+
+  it("a code held for a wrong amount (parked whole, never paid) counts nothing", async () => {
+    const bill = await openFeeIntent();
+    statusAnswers.set(bill.intentId, {
+      statusCode: "00",
+      reference: bill.reference,
+      amount: String(BILL_TOTAL),
+    });
+    await callback(bill.intentId, bill.reference, BILL_TOTAL);
+    expect(await netAllocated(bill.intentId)).toBe(0n);
+    expect((await refundable(bill.intentId)).paid).toBe(0n);
+  });
+
+  it("a second payment at the charged amount keeps the refund limit at the bill", async () => {
+    const bill = await openFeeIntent();
+    await settleAtCharged(bill);
+    await confirmPayment(contextFor("webhook"), bill.intentId, {
+      source: "verified_webhook",
+      method: "ewallet",
+      amountIdr: CHARGED,
+      providerRef: `${bill.reference}-2`,
+      at: new Date().toISOString(),
+    });
+    expect((await refundable(bill.intentId)).paid).toBe(BigInt(BILL_TOTAL));
+  });
+});
+
 describe("payment.paid journal (§3)", () => {
   const roles: PostingAccountRole[] = [
     "gateway_clearing",
