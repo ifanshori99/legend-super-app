@@ -274,6 +274,41 @@ describe("queue sheet", () => {
     expect(buttonsOf(html).some((b) => /hapus/i.test(b.label))).toBe(false);
   });
 
+  test("1273 P2-1: a sale the cloud refuses for good offers Laporkan ke kantor, only online", () => {
+    const stuck = new Map([[waiting[0]!.eventId, "kit_unknown" as const]]);
+    const props = {
+      rows: { waiting, parked: [], stuck },
+      failed: false,
+      kit: kit(),
+      syncing: false,
+      syncFailed: false,
+      onSync: () => {},
+    };
+    const html = render((t) =>
+      createElement(OfflineQueueBody, {
+        ...props,
+        online: true,
+        onReport: () => {},
+        t,
+      }),
+    );
+    const text = visibleText(html);
+    expect(text).toContain("Ditolak cloud");
+    expect(text).toContain("Bekal offline penjualan ini tidak dikenal cloud");
+    expect(html.match(/data-stuck="kit_unknown"/g)).toHaveLength(1);
+    expect(
+      buttonsOf(html).filter((b) => b.label === "Laporkan ke kantor"),
+    ).toHaveLength(1);
+    // Offline the report cannot reach the cloud: no button, the sale stays.
+    const offline = render((t) =>
+      createElement(OfflineQueueBody, { ...props, online: false, t }),
+    );
+    expect(
+      buttonsOf(offline).some((b) => b.label === "Laporkan ke kantor"),
+    ).toBe(false);
+    expect(visibleText(offline)).toContain("Ditolak cloud");
+  });
+
   test("offline, sending now is not offered as a working action", () => {
     const html = render((t) =>
       createElement(OfflineQueueBody, {

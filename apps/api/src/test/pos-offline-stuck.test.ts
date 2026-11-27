@@ -122,7 +122,7 @@ async function newTill(): Promise<Till> {
   return { cashier, deviceId, shiftId: shift.id };
 }
 
-/** A takeaway item priced today, tax free (the most specific tax rule). */
+/** A dine-in item priced today, tax free (the most specific tax rule). */
 async function seedMenu(): Promise<void> {
   await asOwner(async (client) => {
     const { rows } = await client.query<{ brand_id: string; today: string }>(
@@ -143,12 +143,19 @@ async function seedMenu(): Promise<void> {
        VALUES ($1, $2, $3, $4, 'Kopi Offline Tertahan', 'drink', true, $5)`,
       [itemId, seededTenantId, brandId, categoryId, randomUUID()],
     );
-    const priceListId = randomUUID();
-    await client.query(
-      `INSERT INTO price_lists (id, tenant_id, outlet_id, channel, effective_from)
-       VALUES ($1, $2, $3, 'takeaway', $4)`,
-      [priceListId, seededTenantId, seededOutletA, rows[0]!.today],
+    // Dine-in: the batch file owns today's takeaway list of outlet A.
+    const existing = await client.query<{ id: string }>(
+      `SELECT id FROM price_lists
+        WHERE tenant_id = $1 AND outlet_id = $2 AND channel = 'dine_in' AND effective_from = $3`,
+      [seededTenantId, seededOutletA, rows[0]!.today],
     );
+    const priceListId = existing.rows[0]?.id ?? randomUUID();
+    if (!existing.rows[0])
+      await client.query(
+        `INSERT INTO price_lists (id, tenant_id, outlet_id, channel, effective_from)
+         VALUES ($1, $2, $3, 'dine_in', $4)`,
+        [priceListId, seededTenantId, seededOutletA, rows[0]!.today],
+      );
     await client.query(
       `INSERT INTO price_list_items (id, tenant_id, price_list_id, item_id, price_idr)
        VALUES ($1, $2, $3, $4, 20000)`,
@@ -183,7 +190,7 @@ const kitFor = (till: Till) =>
 
 /** One offline cash sale of the seeded item at the kit's price. */
 function sale(kit: PosOfflineKit, sequenceNumber: number): OfflineSaleEvent {
-  const item = kit.catalogs.takeaway.items.find((row) => row.id === itemId);
+  const item = kit.catalogs.dine_in.items.find((row) => row.id === itemId);
   if (!item || item.plainPriceIdr === null)
     throw new Error("The kit prices no seeded item");
   const total = Number(item.plainPriceIdr);
@@ -192,7 +199,7 @@ function sale(kit: PosOfflineKit, sequenceNumber: number): OfflineSaleEvent {
     kitId: kit.kitId,
     sequenceId: kit.receiptRun.sequenceId,
     sequenceNumber,
-    serviceType: "takeaway",
+    serviceType: "dine_in",
     paidAt: new Date().toISOString(),
     lines: [
       {

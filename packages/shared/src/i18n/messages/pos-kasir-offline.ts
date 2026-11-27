@@ -148,6 +148,22 @@ export const posKasirOfflineMessages = {
     pending: "{count} penjualan offline menunggu dikirim lebih dulu.",
     back: "Kembali ke kasir",
   },
+  // 1273 second opinion P2-1: a sale the cloud refuses for good.
+  stuck: {
+    status: "Ditolak cloud",
+    reason: {
+      kit_unknown: "Bekal offline penjualan ini tidak dikenal cloud",
+      sequence_gap: "Nomor struk sebelumnya belum sampai di cloud",
+      device_refused: "Perangkat ini ditolak cloud",
+    },
+    body: "Penjualan ini tidak akan terkirim sendiri. Laporkan ke kantor dengan PIN supervisor: cloud menyimpannya untuk dicek Finance, lalu tablet menghapusnya dari antrean.",
+    report: "Laporkan ke kantor",
+    dialogTitle: "Laporkan penjualan ke kantor",
+    dialogSummary:
+      "Struk {receipt} ({amount}) disimpan di cloud tanpa pesanan dan dicek Finance. Tablet baru menghapusnya setelah cloud menerima.",
+    networkError:
+      "Laporan belum terkirim. Penjualan tetap di tablet; coba lagi saat tersambung.",
+  },
   dayClose: {
     openShiftsLabel: "Shift yang masih buka",
     openShift: "Shift {shiftNo} · buka {time}",

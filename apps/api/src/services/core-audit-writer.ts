@@ -61,6 +61,18 @@ const SAFE_FIELDS_BY_ACTION: Readonly<Record<string, readonly string[]>> = {
   // A model answer masked for personal data: kinds only, never the text.
   "ai_output.pii_redacted": ["feature", "channel", "kinds"],
 
+  // 1273 P2-1: a stuck offline sale reported with a supervisor PIN (ids,
+  // receipt and amount; no PIN).
+  "pos_offline_sale.stuck_reported": [
+    "state",
+    "reason",
+    "approvedBy",
+    "kitDeviceId",
+    "kitId",
+    "shiftId",
+    "receiptNumber",
+    "totalIdr",
+  ],
   "pos_override.recorded": [
     "action",
     "method",
