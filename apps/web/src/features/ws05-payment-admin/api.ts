@@ -16,8 +16,10 @@ import {
   getEdcCashierDefaults as getEdcCashierDefaultsEndpoint,
   getPaymentRouting as getPaymentRoutingEndpoint,
   getReconciliationSummary as getReconciliationSummaryEndpoint,
+  importGatewaySettlementCsv as importGatewaySettlementCsvEndpoint,
   listEdcTerminals as listEdcTerminalsEndpoint,
   listReconciliationCases as listReconciliationCasesEndpoint,
+  listSettlements as listSettlementsEndpoint,
   listRefundablePayments as listRefundablePaymentsEndpoint,
   listRefundReconHolds as listRefundReconHoldsEndpoint,
   listRefunds as listRefundsEndpoint,
@@ -182,6 +184,23 @@ export const resolveReconciliationCase = (
   callEndpoint(
     resolveReconciliationCaseEndpoint,
     { params, body },
+    { headers: { "Idempotency-Key": idempotencyKey } },
+  );
+
+// ---- Settlement import (C4b) ---------------------------------------------
+
+export const fetchSettlements = (
+  query: Query<typeof listSettlementsEndpoint>,
+) => callEndpoint(listSettlementsEndpoint, { query });
+
+/** The file goes as text; the server reads and sums every amount. */
+export const submitGatewaySettlementCsv = (
+  body: Body<typeof importGatewaySettlementCsvEndpoint>,
+  idempotencyKey: string,
+) =>
+  callEndpoint(
+    importGatewaySettlementCsvEndpoint,
+    { body },
     { headers: { "Idempotency-Key": idempotencyKey } },
   );
 

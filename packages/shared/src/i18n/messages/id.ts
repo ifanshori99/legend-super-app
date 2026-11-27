@@ -19,6 +19,7 @@ import { accountingMessages } from "./accounting.ts";
 import { accountingApMessages } from "./accounting-ap.ts";
 import { accountingCashMessages } from "./accounting-cash.ts";
 import { edcSettlementCsvMessages } from "./edc-settlement-csv.ts";
+import { gatewaySettlementMessages } from "./ws05-settlement-import.ts";
 import { edcReconQueueMessages } from "./edc-recon-queue.ts";
 import { edcReconResolveMessages } from "./edc-recon-resolve.ts";
 import { accountingReportMessages } from "./accounting-report.ts";
@@ -201,6 +202,7 @@ export const id = {
     resolve: edcReconResolveMessages,
   },
   edcSettlementCsv: edcSettlementCsvMessages,
+  gatewaySettlement: gatewaySettlementMessages,
   posKasirCode: posKasirCodeMessages,
   posOffline: posOfflineMessages,
   posKasirOffline: posKasirOfflineMessages,
@@ -2105,9 +2107,6 @@ export const id = {
       openCases: "Kasus terbuka",
       variance: "Total selisih",
       summaryLabel: "Ringkasan rekonsiliasi",
-      summaryUnavailableTitle: "Ringkasan belum tersedia",
-      summaryUnavailableHint:
-        "Data impor settlement belum tersambung. Kasus selisih di bawah tetap bisa diselesaikan.",
       source: "Sumber",
       sourceGateway: "Gateway",
       sourceEdc: "EDC",

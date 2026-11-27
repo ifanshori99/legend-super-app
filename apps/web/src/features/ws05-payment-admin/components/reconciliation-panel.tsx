@@ -5,7 +5,8 @@
 import * as React from "react";
 import { useRetainedAttempt } from "../../../lib/use-retained-attempt.ts";
 import { useT } from "@/components/i18n";
-import { ApiError } from "@/lib/api/errors";
+import { Link } from "@tanstack/react-router";
+import { Upload } from "lucide-react";
 import { Badge, StatusPill } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DataTableShell } from "@/components/ui/data-table-shell";
@@ -19,7 +20,7 @@ import {
   PendingDialog,
   PendingDialogContent,
 } from "@/components/ui/pending-dialog";
-import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
+import { ErrorState } from "@/components/ui/feedback-state";
 import { FormField } from "@/components/ui/form-field";
 import { Money } from "@/components/ui/money";
 import {
@@ -49,6 +50,7 @@ import {
   useReconciliationSummary,
   useResolveReconciliationCase,
 } from "../hooks";
+import { SettlementList, useAccountOutlets } from "./settlement-list";
 
 const ALL = "all";
 
@@ -69,8 +71,13 @@ function sourceLabel(
 
 export function ReconciliationPanel() {
   const t = useT();
-  const summary = useReconciliationSummary();
-  const cases = useReconciliationCases();
+  // C4b: one outlet at a time, the first of the account's outlets by default
+  // (the API checks payment.reconcile at that outlet on every request).
+  const outlets = useAccountOutlets();
+  const [outletId, setOutletId] = React.useState<string | null>(null);
+  const selectedOutletId = outletId ?? outlets[0]?.id ?? null;
+  const summary = useReconciliationSummary(selectedOutletId ?? undefined);
+  const cases = useReconciliationCases(selectedOutletId ?? undefined);
   const [status, setStatus] = React.useState<
     ReconciliationCaseView["status"] | "all"
   >(ALL);
@@ -92,13 +99,49 @@ export function ReconciliationPanel() {
       aria-labelledby="reconciliation-title"
       className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-4"
     >
-      <div className="grid gap-1">
-        <h2 id="reconciliation-title" className="type-title">
-          {t("paymentAdmin.reconciliation.title")}
-        </h2>
-        <p className="max-w-3xl text-sm leading-5 text-muted-foreground">
-          {t("paymentAdmin.reconciliation.hint")}
-        </p>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div className="grid min-w-0 gap-1">
+          <h2 id="reconciliation-title" className="type-title">
+            {t("paymentAdmin.reconciliation.title")}
+          </h2>
+          <p className="max-w-3xl text-sm leading-5 text-muted-foreground">
+            {t("paymentAdmin.reconciliation.hint")}
+          </p>
+        </div>
+        <div className="grid w-full gap-3 sm:flex sm:w-auto sm:items-end">
+          <Button asChild variant="outline">
+            <Link to="/kelola/pembayaran/settlement-duitku">
+              <Upload aria-hidden="true" />
+              {t("gatewaySettlement.entryLink")}
+            </Link>
+          </Button>
+          {outlets.length > 0 && (
+            <FormField
+              label={t("paymentAdmin.routing.outlet")}
+              required
+              className="sm:w-64"
+            >
+              <Select
+                value={selectedOutletId ?? undefined}
+                onValueChange={setOutletId}
+              >
+                <SelectTrigger
+                  className="w-full"
+                  aria-label={t("paymentAdmin.routing.outlet")}
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {outlets.map((outlet) => (
+                    <SelectItem key={outlet.id} value={outlet.id}>
+                      {outlet.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </FormField>
+          )}
+        </div>
       </div>
 
       {summary.isPending ? (
@@ -107,17 +150,6 @@ export function ReconciliationPanel() {
             <Skeleton key={index} className="h-24" />
           ))}
           <Skeleton className="h-24 sm:col-span-2 lg:col-span-4" />
-        </div>
-      ) : summary.error instanceof ApiError && summary.error.status === 503 ? (
-        // The API fails closed until settlement import exists (legend-jlqi):
-        // say so plainly instead of offering a retry that cannot succeed.
-        <div className="rounded-xl border-(length:--border-w) bg-card">
-          <EmptyState
-            title={t("paymentAdmin.reconciliation.summaryUnavailableTitle")}
-            description={t(
-              "paymentAdmin.reconciliation.summaryUnavailableHint",
-            )}
-          />
         </div>
       ) : summary.isError ? (
         <div className="rounded-container border-(length:--border-w) bg-card">
@@ -163,6 +195,10 @@ export function ReconciliationPanel() {
             }
           />
         </StatStrip>
+      )}
+
+      {selectedOutletId !== null && (
+        <SettlementList outletId={selectedOutletId} />
       )}
 
       <div id="reconciliation-cases" className="min-w-0">
