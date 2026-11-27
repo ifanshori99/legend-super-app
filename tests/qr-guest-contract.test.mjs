@@ -146,6 +146,8 @@ test("ORD-02 a guest payment is paid only with paidAt and never carries a client
     target: { kind: "bill" },
     method: "qris",
     amountIdr: 52_800,
+    guestFeeIdr: 0,
+    chargedIdr: 52_800,
     status: "pending",
     qrisPayload: "00020101021226690014ID.CO.QRIS",
     redirectUrl: null,
