@@ -39,6 +39,9 @@ export function BillTotals({
   );
   const method = singleTenderMethod(state.tenders);
   const showBalance = balance.remainingIdr !== null;
+  // A code with a guest fee shows a second figure ("Yang harus dibayar"), so
+  // this one is the bill (K4 P2-1).
+  const billLabelled = showBalance || Boolean(state.onlineCode?.guestFeeIdr);
   return (
     <Card>
       <h2 className="type-title">{t("posDisplay.totals.label")}</h2>
@@ -67,7 +70,7 @@ export function BillTotals({
         <div className="mt-1 flex items-baseline justify-between gap-3 border-t-(length:--border-w) pt-3">
           <dt className="type-title">
             {t(
-              showBalance
+              billLabelled
                 ? "posDisplay.totals.billTotal"
                 : "posDisplay.totals.total",
             )}

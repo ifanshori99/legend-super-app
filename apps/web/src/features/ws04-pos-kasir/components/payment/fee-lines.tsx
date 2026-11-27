@@ -1,4 +1,4 @@
-// Guest service fee ("Biaya layanan", 1272 K4) on the cashier's VA and
+// Guest service fee ("Biaya layanan pembayaran", 1272 K4) on the cashier's VA and
 // e-wallet screens: under each priced bank or wallet before the cashier
 // starts, and with the live code. Not part of the bill: the tender stays the
 // bill, the guest pays the gateway bill + fee. Renders nothing at fee 0.
@@ -26,11 +26,11 @@ export function FeeQuote({
   const t = useT();
   if (!hasGuestFee(feeIdr) || typeof totalIdr !== "number") return null;
   return (
-    <span className="grid text-sm leading-5 font-normal text-muted-foreground tabular">
-      <span>
+    <span className="grid font-normal tabular">
+      <span className="text-sm leading-5 text-muted-foreground">
         {t("posKasirGateway.fee.line", { fee: formatRupiah(feeIdr) })}
       </span>
-      <span>
+      <span className="text-(length:--density-text) leading-6 font-semibold text-foreground">
         {t("posKasirGateway.fee.total", { total: formatRupiah(totalIdr) })}
       </span>
     </span>
@@ -60,18 +60,41 @@ export function FeeNoRefund({
   );
 }
 
-/** The live code's fee and what the guest pays, with the no-refund note. */
+/**
+ * The amount the big number of a live code shows: what the guest transfers.
+ * The bill is a small "Tagihan" line in the box below (K4 P2-2).
+ */
+export function codeHeadlineIdr(attempt: {
+  amountIdr: number;
+  guestFeeIdr?: number;
+  chargedIdr?: number;
+}): number {
+  return hasGuestFee(attempt.guestFeeIdr) &&
+    typeof attempt.chargedIdr === "number"
+    ? attempt.chargedIdr
+    : attempt.amountIdr;
+}
+
+/** The live code's bill, fee and what the guest pays, with the no-refund note. */
 export function CodeFee({
+  billIdr,
   feeIdr,
   chargedIdr,
 }: {
+  billIdr: number;
   feeIdr: number | undefined;
   chargedIdr: number | undefined;
 }) {
   const t = useT();
   if (!hasGuestFee(feeIdr) || typeof chargedIdr !== "number") return null;
   return (
-    <div className="grid w-full max-w-3xl gap-2 rounded-container border-(length:--border-w) border-border p-4">
+    // scroll-mb: the sticky footer never covers the box when it is scrolled
+    // into view (K4 P3-1).
+    <div className="grid w-full max-w-3xl scroll-mb-24 gap-2 rounded-container border-(length:--border-w) border-border p-4">
+      <div className="flex items-baseline justify-between gap-3 text-sm text-muted-foreground">
+        <span>{t("posKasirGateway.fee.billLabel")}</span>
+        <Money amount={billIdr} className="font-semibold" />
+      </div>
       <div className="flex items-baseline justify-between gap-3 text-(length:--density-text)">
         <span>{t("posKasirGateway.fee.label")}</span>
         <Money amount={feeIdr} className="font-semibold" />

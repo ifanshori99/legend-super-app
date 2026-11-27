@@ -96,7 +96,7 @@ export const posDisplayMessages = {
     walletAlt: "Kode halaman pembayaran {wallet}",
     bill: "Tagihan",
     fee: "Biaya layanan pembayaran",
-    total: "Total dibayar",
+    total: "Yang harus dibayar",
     noRefund:
       "Biaya layanan pembayaran tidak dikembalikan bila pesanan dibatalkan.",
   },

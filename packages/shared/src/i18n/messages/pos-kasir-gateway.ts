@@ -26,13 +26,15 @@ export const posKasirGatewayMessages = {
       "Tagihan belum lunas. Status berubah otomatis setelah pembayaran terkonfirmasi.",
     unpaidTitle: "Tagihan belum lunas",
   },
-  /** 1272 K4: guest service fee of a VA / e-wallet channel ("Biaya layanan"). */
+  /** 1272 K4: guest service fee of a VA / e-wallet channel ("Biaya layanan pembayaran"). */
   fee: {
-    line: "Biaya layanan {fee}",
-    total: "Total dibayar tamu {total}",
-    label: "Biaya layanan",
-    totalLabel: "Total dibayar tamu",
-    noRefund: "Biaya layanan tidak dikembalikan bila pesanan dibatalkan.",
+    line: "Biaya layanan pembayaran {fee}",
+    total: "Yang harus dibayar {total}",
+    billLabel: "Tagihan",
+    label: "Biaya layanan pembayaran",
+    totalLabel: "Yang harus dibayar",
+    noRefund:
+      "Biaya layanan pembayaran tidak dikembalikan bila pesanan dibatalkan.",
   },
   grid: {
     loadError: "Metode pembayaran tidak bisa dimuat",

@@ -1,7 +1,7 @@
 // Cashier VA or e-wallet code on the customer display (1269 C3a, 1272 K4):
 // the VA number, or the Duitku payment page as a QR for the customer's
 // phone, with the countdown. A code with a guest service fee ("Biaya
-// layanan") lists the bill, the fee and what the customer pays, and says the
+// layanan pembayaran") lists the bill, the fee and what the customer pays, and says the
 // fee is not refunded. An expired code is removed, never left on screen.
 import { Clock, Info } from "lucide-react";
 import type { CustomerDisplayOnlineCode } from "@starter/shared/pos";
@@ -44,8 +44,8 @@ function FeeRows({ code }: { code: CustomerDisplayOnlineCode }) {
         </span>
         <Money amount={code.chargedIdr} size="lg" className="font-bold" />
       </div>
-      <p className="flex items-start gap-2 text-sm leading-5 text-muted-foreground">
-        <Info className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+      <p className="flex items-start gap-2 text-base leading-6 text-muted-foreground">
+        <Info className="mt-1 size-4 shrink-0" aria-hidden="true" />
         {t("posDisplay.onlineCode.noRefund")}
       </p>
     </div>

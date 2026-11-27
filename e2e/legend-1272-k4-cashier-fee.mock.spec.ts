@@ -78,7 +78,7 @@ test("K4 VA: each bank shows its service fee and guest total; the live code show
     /Biaya layanan pembayaran Rp\s*4\.000/,
   );
   await expect(page.locator("label", { has: bca })).toContainText(
-    /Total dibayar tamu Rp\s*152\.000/,
+    /Yang harus dibayar Rp\s*152\.000/,
   );
   await expect(main).not.toContainText(NO_REFUND);
   await page.locator("label", { has: bca }).click();
@@ -87,9 +87,15 @@ test("K4 VA: each bank shows its service fee and guest total; the live code show
 
   await page.getByRole("button", { name: "Buat nomor VA" }).click();
   await expect(main).toContainText("Nomor Virtual Account");
-  await expect(main).toContainText("Total dibayar tamu");
-  await expect(main).toContainText(rp("152.000"));
+  // The big number is what the guest transfers; the bill is a small line.
+  await expect(
+    main.locator('[data-slot="state-block"]').getByText(rp("152.000")).first(),
+  ).toBeVisible();
+  await expect(main).toContainText("Yang harus dibayar");
+  await expect(main).toContainText(/Tagihan\s*Rp\s*148\.000/);
   await expect(main).toContainText(NO_REFUND);
+  // The sticky footer never hides the fee box (scroll-mb).
+  await main.getByText(NO_REFUND).scrollIntoViewIfNeeded();
   await shot(page, "kasir-va-kode");
 });
 
@@ -135,7 +141,8 @@ test("K4 customer display: a VA with a fee lists the bill, the fee and the total
   const main = page.locator("main");
   await expect(main).toContainText("8808123456789012");
   await expect(main).toContainText("Biaya layanan pembayaran");
-  await expect(main).toContainText("Total dibayar");
+  await expect(main).toContainText("Yang harus dibayar");
+  await expect(main).toContainText("Total tagihan");
   await expect(main).toContainText(NO_REFUND);
   await shot(page, "layar-pelanggan-va-biaya", [1366, 1280, 390]);
 });

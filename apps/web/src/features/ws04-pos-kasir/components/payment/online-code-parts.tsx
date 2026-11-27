@@ -138,6 +138,7 @@ export function OnlineCodeHold({
         {shown && children}
         {shown && (
           <CodeFee
+            billIdr={attempt.amountIdr}
             feeIdr={attempt.guestFeeIdr}
             chargedIdr={attempt.chargedIdr}
           />

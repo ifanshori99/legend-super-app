@@ -16,6 +16,7 @@ import type {
   PaymentSession,
 } from "../../types";
 import { Notice, PosPanel, StateBlock, StatusPill } from "../shared";
+import { codeHeadlineIdr } from "./fee-lines";
 
 // Pieces shared by the gateway panels (QRIS, VA, e-wallet, online card, failed;
 // bead legend-mjmm, P2). Each panel owns its own states; this file only holds
@@ -403,7 +404,7 @@ export function WaitingPanel({
       <StateBlock
         title={heading}
         description={description}
-        amountIdr={attempt.amountIdr}
+        amountIdr={codeHeadlineIdr(attempt)}
         className="py-4"
       >
         {remainingMs !== undefined && (
