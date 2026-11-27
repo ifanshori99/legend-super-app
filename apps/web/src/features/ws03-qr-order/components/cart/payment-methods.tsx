@@ -24,6 +24,7 @@ import type {
   GuestPaymentOptionsQuery,
 } from "@starter/shared/qr-order";
 import { useT } from "@/components/i18n";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   FeeNoRefund,
@@ -121,6 +122,27 @@ export function useWalletName(
       (item) => item.code === wallet,
     )?.name ?? null
   );
+}
+
+/**
+ * 1272 K3: whether the options of a named bill can be trusted for its fees.
+ * Until the list of this very target has loaded (`waiting`: first load, or
+ * the older list kept on screen meanwhile) or after it failed, a method with a
+ * fee must not be paid or picked: the guest would not see the fee first.
+ */
+export function usePricedState(target?: GuestPaymentOptionsQuery): {
+  waiting: boolean;
+  failed: boolean;
+  reload: () => void;
+} {
+  const { sessionId } = useTableJourney();
+  const options = useGuestPaymentOptions(sessionId, target);
+  const named = target !== undefined && Object.keys(target).length > 0;
+  return {
+    waiting: named && (options.isPlaceholderData || options.isPending),
+    failed: named && options.isError,
+    reload: () => void options.refetch(),
+  };
 }
 
 /** What the chosen method adds on top of the bill, priced for the target. */
@@ -291,12 +313,15 @@ export function PaymentMethods({
   const t = useT();
   const { sessionId } = useTableJourney();
   const options = useGuestPaymentOptions(sessionId, target);
+  const priced = usePricedState(target);
   const { hidden, wallets } = availableMethods(options.data?.data);
   const cardOption = options.data?.data.methods.find(
     (item) => item.method === "card",
   );
   const method = value.method;
-  const chosenOff = hidden.has(method);
+  // A list that failed to load says nothing about the method: it stays chosen
+  // (and unpayable) while the error row offers a reload.
+  const chosenOff = hidden.has(method) && !options.isError;
   // A chosen method turned off: fall back to QRIS and say which one.
   const [reset, setReset] = useState<PayMethod | null>(null);
   if (chosenOff && reset !== method) setReset(method);
@@ -400,7 +425,7 @@ export function PaymentMethods({
                     setReset(null);
                     onChange({ method, wallet });
                   }}
-                  disabled={disabled}
+                  disabled={disabled || priced.waiting || priced.failed}
                 />
               )}
               {selected && option === "card" && (
@@ -410,6 +435,19 @@ export function PaymentMethods({
           );
         })}
       </RadioGroup.Root>
+      {priced.failed && (
+        <div
+          role="alert"
+          className="flex flex-wrap items-center justify-between gap-2 text-sm leading-5 text-danger"
+        >
+          <span className="min-w-0">
+            {t("payment.redirect.fee.loadFailed")}
+          </span>
+          <Button type="button" variant="outline" onClick={priced.reload}>
+            {t("payment.redirect.fee.reload")}
+          </Button>
+        </div>
+      )}
       <p className="text-sm leading-5 text-muted-foreground">
         {t("qrGlass.checkout.method.kitchenNote")}
       </p>

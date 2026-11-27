@@ -7,6 +7,7 @@
 // charge, so the breakdown shows both (owner rule, ORD-03).
 import { useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { cn } from "cn";
 import { Link, useNavigate, useRouteContext } from "@tanstack/react-router";
 import { ChevronLeft, ChevronRight, Clock, ShoppingBasket } from "lucide-react";
 import { formatRupiah } from "@starter/shared/i18n";
@@ -56,6 +57,7 @@ import {
   PaymentMethods,
   useChosenFee,
   useCtaLabel,
+  usePricedState,
   useWalletName,
   type PayChoice,
 } from "./payment-methods";
@@ -170,6 +172,15 @@ export function CheckoutPage() {
   const feeTarget = waitingId ? { orderId: waitingId } : undefined;
   const walletName = useWalletName(choice.wallet, feeTarget);
   const chosenFee = useChosenFee(choice, feeTarget);
+  // 1272 K3: an e-wallet or card on a placed order is paid only once the
+  // options of that order have loaded: until then (or after an error) the fee
+  // is not known, and the guest must not reach Duitku with a fee unseen.
+  const priced = usePricedState(feeTarget);
+  const feeUnknown =
+    (method === "ewallet" || method === "card") &&
+    (priced.waiting || priced.failed);
+  // The guest waits while the fee of a just-placed order is read.
+  const [checking, setChecking] = useState(false);
   // An e-wallet needs an app picked by the guest (nothing is preselected).
   const needsWallet = method === "ewallet" && !choice.wallet;
   // C2b: Duitku's page for e-wallet or card could not be opened for this order.
@@ -347,24 +358,44 @@ export function CheckoutPage() {
       payOrder(orderId, amountIdr);
       return;
     }
+    setChecking(true);
     try {
       const options = await queryClient.fetchQuery({
         ...paymentOptionsQuery(sessionId, { orderId }),
         staleTime: 0,
+        retry: false,
       });
       const entry = options.data.methods.find((item) => item.method === method);
-      const priced =
+      const pricedEntry =
         method === "ewallet"
           ? entry?.banks.find((bank) => bank.code === choice.wallet)
           : entry;
-      // The method vanished: the placed order's list shows it as off.
-      if (!entry?.enabled || !priced) return;
-      if (hasGuestFee(priced.guestFeeIdr) && priced.chargedIdr !== null) {
+      // The method vanished: say so and land on the placed order's list.
+      if (!entry?.enabled || !pricedEntry) {
+        toast({
+          title: t("payment.redirect.fee.gone", {
+            method:
+              method === "card"
+                ? t("payment.redirect.cardName")
+                : (walletName ?? t("payment.redirect.method.ewallet")),
+          }),
+          tone: "danger",
+        });
+        window.setTimeout(
+          () => document.getElementById("method-title")?.focus(),
+          400,
+        );
+        return;
+      }
+      if (
+        hasGuestFee(pricedEntry.guestFeeIdr) &&
+        pricedEntry.chargedIdr !== null
+      ) {
         setConfirm({
           orderId,
           amountIdr,
-          feeIdr: priced.guestFeeIdr,
-          chargedIdr: priced.chargedIdr,
+          feeIdr: pricedEntry.guestFeeIdr,
+          chargedIdr: pricedEntry.chargedIdr,
         });
         return;
       }
@@ -374,6 +405,8 @@ export function CheckoutPage() {
         title: t("payment.redirect.fee.checkFailed"),
         tone: "danger",
       });
+    } finally {
+      setChecking(false);
     }
   };
 
@@ -427,10 +460,16 @@ export function CheckoutPage() {
   const payFailure = start.isError && (
     <Notice tone="danger" title={t("qrOrders.bill.payFailed")} />
   );
-  const total = (amount: number) => (
+  // `compact`: with a fee line above, the phone footer keeps its height down.
+  const total = (amount: number, compact = false) => (
     <div className="flex items-baseline justify-between gap-3 px-1">
       <span>{t("qrGlass.checkout.total")}</span>
-      <span className="text-[1.75rem] leading-8 font-bold tracking-tight tabular">
+      <span
+        className={cn(
+          "font-bold tracking-tight tabular",
+          compact ? "text-xl leading-7" : "text-[1.75rem] leading-8",
+        )}
+      >
         {formatRupiah(amount)}
       </span>
     </div>
@@ -461,14 +500,14 @@ export function CheckoutPage() {
             </span>
           </div>
         )}
-        {total(payTotal)}
+        {total(payTotal, chosenFee !== null)}
         <FeeNoRefund feeIdr={chosenFee?.feeIdr} className="px-1" />
         <Button
           type="button"
           size="lg"
           className={payCta}
-          loading={start.isPending}
-          disabled={needsWallet}
+          loading={start.isPending || (feeUnknown && priced.waiting)}
+          disabled={needsWallet || feeUnknown}
           aria-describedby={needsWallet ? PICK_WALLET_ID : undefined}
           onClick={() => payOrder(awaitingOrder.id, payTotal)}
         >
@@ -561,7 +600,7 @@ export function CheckoutPage() {
   const plainQuote = codeApplied ? (base.data?.data ?? null) : quote;
   const payable = plainQuote?.totalIdr ?? null;
   const shortfall = quote.minimumSpend.shortfallIdr;
-  const busy = place.isPending || start.isPending;
+  const busy = place.isPending || start.isPending || checking;
   // WS-02: the outlet's edge link is down (the view says so, or the order was
   // just refused with EDGE_LINK_DOWN): the guest asks a waiter instead.
   const orderingAvailable =

@@ -90,10 +90,18 @@ const MOCK_EWALLETS = [
  * `down` = the payment lookup answers 503; `fee` = like `normal`, with the
  * guest service fee on (1272 K3): options named for an order or split part
  * carry a fee per VA bank and e-wallet, and a payment charges it on top.
+ * `fee-slow` = `fee`, the named options answer after 2,5 s; `fee-error` =
+ * `fee`, the named options answer 503; `fee-gone` = `fee`, the named options
+ * no longer list DANA; `fee-failed` = `fee`, an e-wallet or card payment ends
+ * `failed` (the return page's "Coba lagi" then asks for the fee again).
  */
 export type MockDuitkuMode =
   | "normal"
   | "fee"
+  | "fee-slow"
+  | "fee-error"
+  | "fee-gone"
+  | "fee-failed"
   | "partial"
   | "open-fail"
   | "pending"
@@ -115,6 +123,17 @@ export function mockGuestFee(
   if (method === "va") return 4000;
   if (method === "ewallet") return Math.ceil((billIdr * 15) / 1000);
   return 0;
+}
+
+/** True for the modes that turn the guest service fee on. */
+export function isFeeMode(mode: MockDuitkuMode | undefined): boolean {
+  return (
+    mode === "fee" ||
+    mode === "fee-slow" ||
+    mode === "fee-error" ||
+    mode === "fee-gone" ||
+    mode === "fee-failed"
+  );
 }
 
 /** `late-paid`: how long the mock gateway reports "failed" before "paid". */
@@ -1113,7 +1132,7 @@ export function createEngine(
     ]);
     // 1272 K3: with the fee on and a bill named, every VA bank and e-wallet
     // carries its fee and the charged total; QRIS and card stay at no fee.
-    const bill = flags.duitku === "fee" ? billOf(sessionId, query) : null;
+    const bill = isFeeMode(flags.duitku) ? billOf(sessionId, query) : null;
     if (bill === null) return unpricedOptions;
     const priced = (method: GuestPaymentMethod, code: string | null) => {
       const guestFeeIdr = mockGuestFee(method, bill);
@@ -1128,14 +1147,23 @@ export function createEngine(
         const method = priced(option.method, null);
         return {
           ...option,
-          banks: option.banks.map((bank) => {
-            const price = priced(option.method, bank.code);
-            return {
-              ...bank,
-              guestFeeIdr: price.guestFeeIdr,
-              chargedIdr: price.chargedIdr,
-            };
-          }),
+          banks: option.banks
+            .filter(
+              (bank) =>
+                !(
+                  flags.duitku === "fee-gone" &&
+                  option.method === "ewallet" &&
+                  bank.code === "DA"
+                ),
+            )
+            .map((bank) => {
+              const price = priced(option.method, bank.code);
+              return {
+                ...bank,
+                guestFeeIdr: price.guestFeeIdr,
+                chargedIdr: price.chargedIdr,
+              };
+            }),
           guestFeeIdr:
             option.enabled && option.banks.length === 0
               ? method.guestFeeIdr
@@ -1220,8 +1248,9 @@ export function createEngine(
         "Halaman pembayaran belum bisa dibuka.",
       );
     const amount = amountFor(session, body.target);
-    const guestFee =
-      flags.duitku === "fee" ? mockGuestFee(body.method, amount) : 0;
+    const guestFee = isFeeMode(flags.duitku)
+      ? mockGuestFee(body.method, amount)
+      : 0;
     // Like the API: the same VA bank returns the live VA; another choice
     // supersedes it (QRIS after QRIS keeps the older mock behaviour).
     const targetKey = JSON.stringify(body.target);
@@ -1365,7 +1394,8 @@ export function createEngine(
     const now = clock();
     const redirect =
       entry.payment.method === "ewallet" || entry.payment.method === "card";
-    const outcome = flags.duitku;
+    const outcome =
+      flags.duitku === "fee-failed" ? ("failed" as const) : flags.duitku;
     if (redirect && outcome === "no-login")
       throw new ApiError(401, "UNAUTHORIZED", "Sesi meja tidak ditemukan.");
     if (redirect && outcome === "down")

@@ -22,7 +22,15 @@ const BEAD = "legend-osqou-58";
 const freeTable = `v1.${"C".repeat(40)}.${"D".repeat(43)}`; // A01, pay-first
 const NO_REFUND = "Biaya layanan tidak dikembalikan bila pesanan dibatalkan.";
 
+/** Closes leftover toasts ("Espresso masuk keranjang") so evidence shows the screen only. */
+async function clearToasts(page: Page) {
+  const close = page.getByRole("button", { name: "Tutup notifikasi" });
+  while ((await close.count()) > 0) await close.first().click();
+  await expect(close).toHaveCount(0);
+}
+
 async function shot(page: Page, name: string) {
+  await clearToasts(page);
   for (const width of [390, 1280, 320]) {
     await page.setViewportSize({ width, height: width === 1280 ? 800 : 844 });
     await captureScreenshot(page, `${BEAD}/${name}-${width}.png`, {
@@ -222,4 +230,118 @@ test("K3 fresh cart, e-wallet while the fee is off: straight to Duitku, no confi
   await radio(page, /^DANA/).click();
   await button(page, /^Bayar Rp.* dengan DANA$/).click();
   await page.waitForURL(/\/bayar\/kembali\?merchantOrderId=.*resultCode=00/);
+});
+
+/** Fresh cart with DANA chosen, up to and including the tap on "Bayar". */
+async function payDanaFromFreshCart(page: Page) {
+  await openCheckout(page);
+  await radio(page, /^E-wallet/).click();
+  await radio(page, /^DANA/).click();
+  await button(page, /^Bayar Rp.* dengan DANA$/).click();
+}
+
+test("K3 loading window: while the fee of the placed order loads, nothing opens and pay stays off", async ({
+  page,
+}) => {
+  await setDuitku(page, "fee-slow");
+  await payDanaFromFreshCart(page);
+  // The order is placed and its options are still on the way (2,5 s).
+  const pay = button(page, /^Bayar Rp.* dengan DANA$/);
+  await expect(pay).toBeDisabled();
+  await expect(page).not.toHaveURL(/bayar\/kembali/);
+  // The fee shows up first, then (and only then) the guest can pay.
+  await expect(
+    page.getByRole("heading", { name: "Ada biaya layanan" }),
+  ).toBeVisible({ timeout: 10_000 });
+  await expect(page).not.toHaveURL(/bayar\/kembali/);
+});
+
+test("K3 loading window: the VA bank list waits for the priced list, then shows each fee", async ({
+  page,
+}) => {
+  await setDuitku(page, "fee-slow");
+  await openCheckout(page);
+  await radio(page, /^Virtual Account/).click();
+  await button(page, /^Buat nomor Virtual Account$/).click();
+  await expect(page).toHaveURL(/\/bayar\/.*metode=va/);
+  await expect(page.getByRole("radio", { name: /^Mandiri/ })).toHaveCount(0);
+  await expect(page.getByRole("radio", { name: /^Mandiri/ })).toBeVisible({
+    timeout: 10_000,
+  });
+  await expect(page.getByText(/^Biaya layanan Rp\s?4\.000$/)).toHaveCount(4);
+});
+
+test("K3 options error: the toast says so, pay stays off for the fee-bearing method, QRIS still pays, reload brings it back", async ({
+  page,
+}) => {
+  await setDuitku(page, "fee-error");
+  await payDanaFromFreshCart(page);
+  await expect(
+    page
+      .getByRole("region", { name: "Notifikasi" })
+      .getByText(/Biaya layanan belum bisa diperiksa/),
+  ).toBeVisible();
+  await expect(page).not.toHaveURL(/bayar\/kembali/);
+  // The placed order's list could not load either: message and reload.
+  await expect(page.getByText(/Biaya layanan belum bisa dimuat/)).toBeVisible({
+    timeout: 20_000,
+  });
+  // No list, so no app name either: the button reads "E-wallet" and is off.
+  await expect(button(page, /^Bayar Rp.* dengan E-wallet$/)).toBeDisabled();
+  await clearToasts(page);
+  await axe(page);
+  await shot(page, "opsi-gagal");
+  await radio(page, /^QRIS/).click();
+  await expect(button(page, /^Bayar Rp.* dengan QRIS$/)).toBeEnabled();
+  await setDuitku(page, "fee");
+  await page.getByRole("button", { name: "Muat ulang" }).click();
+  await expect(page.getByText(/Biaya layanan belum bisa dimuat/)).toHaveCount(
+    0,
+  );
+  await radio(page, /^E-wallet/).click();
+  await radio(page, /^DANA/).click();
+  await expect(button(page, /^Bayar Rp.* dengan DANA$/)).toBeEnabled();
+});
+
+test("K3 vanished method: the guest is told and lands on the method list, nothing opens", async ({
+  page,
+}) => {
+  await setDuitku(page, "fee-gone");
+  await payDanaFromFreshCart(page);
+  await expect(
+    page
+      .getByRole("region", { name: "Notifikasi" })
+      .getByText(
+        "DANA sedang tidak tersedia untuk pesanan ini. Pilih metode lain.",
+      ),
+  ).toBeVisible();
+  await expect(page).not.toHaveURL(/bayar\/kembali/);
+  await expect(
+    page.getByRole("heading", { name: "Metode bayar" }),
+  ).toBeVisible();
+  await radio(page, /^E-wallet/).click();
+  await expect(radio(page, /^DANA/)).toHaveCount(0);
+  await expect(radio(page, /^OVO/)).toBeVisible();
+});
+
+test("K3 return page: 'Coba lagi' asks for the fresh fee and confirms it before a new payment", async ({
+  page,
+}) => {
+  await setDuitku(page, "fee-failed");
+  await payDanaFromFreshCart(page);
+  await page.getByRole("button", { name: /^Bayar Rp[\s\d.]+$/ }).click();
+  await page.waitForURL(/\/bayar\/kembali\?merchantOrderId=.*resultCode=00/);
+  await expect(
+    page.getByRole("heading", { name: "Pembayaran belum selesai" }),
+  ).toBeVisible({ timeout: 20_000 });
+  await page.getByRole("button", { name: /^Coba lagi dengan DANA$/ }).click();
+  await expect(
+    page.getByRole("heading", { name: "Ada biaya layanan" }),
+  ).toBeVisible();
+  await expect(page.getByText(NO_REFUND)).toBeVisible();
+  await axe(page);
+  await shot(page, "coba-lagi");
+  const before = page.url();
+  await page.getByRole("button", { name: /^Bayar Rp[\s\d.]+$/ }).click();
+  await page.waitForURL((url) => url.toString() !== before);
 });

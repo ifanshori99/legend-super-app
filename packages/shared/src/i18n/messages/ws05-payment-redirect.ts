@@ -17,6 +17,10 @@ export const paymentRedirectMessages = {
     confirmLead:
       "Pembayaran dengan {method} dikenai biaya layanan. Pesanan Anda tersimpan dan belum dibayar.",
     confirmPay: "Bayar {total}",
+    gone: "{method} sedang tidak tersedia untuk pesanan ini. Pilih metode lain.",
+    loadFailed:
+      "Biaya layanan belum bisa dimuat, jadi metode ini belum bisa dibayar.",
+    reload: "Muat ulang",
     checkFailed:
       "Biaya layanan belum bisa diperiksa, jadi pembayaran belum dibuka. Pesanan Anda tersimpan, coba bayar lagi dari sini.",
   },

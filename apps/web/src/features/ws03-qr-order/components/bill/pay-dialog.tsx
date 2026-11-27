@@ -149,7 +149,9 @@ export function PayDialog({
     if (open) resetStart();
   }, [open, resetStart]);
 
-  const methods = options.data?.data.methods ?? [];
+  // The older list kept while this target's priced one loads has no fees: wait.
+  const pricing = options.isPlaceholderData;
+  const methods = pricing ? [] : (options.data?.data.methods ?? []);
   // The pick stands only while that method is still offered and enabled;
   // otherwise the first enabled one is chosen.
   const current =
@@ -180,7 +182,8 @@ export function PayDialog({
   // Nothing to choose (options failed or the list is empty): the only honest
   // action is to close, so no disabled pay button is shown.
   const nothingToPay =
-    options.isError || (options.data !== undefined && methods.length === 0);
+    options.isError ||
+    (options.data !== undefined && !pricing && methods.length === 0);
   const canSubmit =
     target !== null && current !== undefined && (!needsBank || bank !== null);
 
@@ -246,7 +249,7 @@ export function PayDialog({
             error={options.error}
             className="py-4"
           />
-        ) : !options.data ? (
+        ) : !options.data || pricing ? (
           <div aria-busy="true" className="grid gap-2">
             <span className="sr-only">{t("common.loading")}</span>
             <Skeleton className="h-14 w-full rounded-qr-media" />

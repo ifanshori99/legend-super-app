@@ -23,6 +23,7 @@ import {
   CircleX,
   Clock,
   Hourglass,
+  Info,
   Link2Off,
   RefreshCw,
   TriangleAlert,
@@ -48,6 +49,8 @@ import { TenantThemeStyle } from "@/lib/theme";
 import "@/features/ws03-qr-order/session-store";
 import { startPayment as startGuestPayment } from "@/features/ws03-qr-order/api";
 import { fetchPaymentIntent, startPaymentIntent } from "../api";
+import { FeeNoRefund } from "./fee-parts";
+import { priceForRetry, type RetryPrice } from "../retry-price";
 import {
   openPaymentUrl,
   readReturnRecordSnapshot,
@@ -292,14 +295,29 @@ export function PaymentReturnPage() {
   // "Coba lagi dengan DANA": a new payment for the same order or link, then
   // straight back to the gateway page. A refusal shows a plain message.
   const queryClient = useQueryClient();
+  // 1272 K3: a retry whose method carries a service fee waits for the guest's
+  // confirmation of the fresh fee and total before the new payment is made.
+  const [retryConfirm, setRetryConfirm] = useState<RetryPrice | null>(null);
   const retry = useMutation({
-    mutationFn: async (current: ReturnRecord) => {
+    mutationFn: async ({
+      record: current,
+      confirmedChargedIdr,
+    }: {
+      record: ReturnRecord;
+      confirmedChargedIdr?: number;
+    }): Promise<{ confirm: RetryPrice } | undefined> => {
       // Ask the server first (round-trip, never the page's older answer): a
       // payment that settled late must not be paid a second time. Anything
       // but a fresh failed or expired answer, including no answer, stops here.
       const fresh = await askServer(current, new AbortController().signal);
       queryClient.setQueryData(answerKey(current), fresh);
       if (!canStartNewPayment(fresh.status)) return;
+      // Fresh price first: a method that left the list stops here (the guest
+      // picks another), and a fee the guest has not confirmed asks first.
+      const price = await priceForRetry(current);
+      if (!price) throw new Error("Method is no longer offered");
+      if (price.feeIdr > 0 && price.chargedIdr !== confirmedChargedIdr)
+        return { confirm: price };
       let next: {
         id: string;
         amountIdr: number;
@@ -348,6 +366,7 @@ export function PaymentReturnPage() {
       });
       if (!openPaymentUrl(next.url)) throw new Error("Payment page refused");
     },
+    onSuccess: (result) => setRetryConfirm(result?.confirm ?? null),
   });
 
   const methodName = !record
@@ -708,7 +727,7 @@ export function PaymentReturnPage() {
               className={textLink}
               disabled={retry.isPending || retry.isSuccess}
               aria-busy={retry.isPending}
-              onClick={() => retry.mutate(record)}
+              onClick={() => retry.mutate({ record })}
             >
               {retry.isPending || retry.isSuccess
                 ? t("payment.redirect.back.retrying")
@@ -765,6 +784,70 @@ export function PaymentReturnPage() {
           {t("payment.redirect.back.reopen")}
         </Button>
       );
+  }
+
+  // 1272 K3: the fresh fee of a retry, shown before the new payment is made.
+  if (retryConfirm && record) {
+    pill = (
+      <StatusPill tone="neutral" icon={<Info aria-hidden="true" />}>
+        {t("payment.redirect.fee.confirmPill")}
+      </StatusPill>
+    );
+    title = t("payment.redirect.fee.confirmTitle");
+    lead = t("payment.redirect.fee.confirmLead", { method: methodName });
+    paper = (
+      <AmountPaper
+        label={t("payment.redirect.fee.totalLabel")}
+        amountIdr={retryConfirm.chargedIdr}
+        rows={[
+          ...rows,
+          {
+            label: t("payment.redirect.fee.billRow"),
+            value: formatRupiah(retryConfirm.amountIdr),
+          },
+          {
+            label: t("payment.redirect.fee.label"),
+            value: formatRupiah(retryConfirm.feeIdr),
+          },
+        ]}
+      />
+    );
+    extras = null;
+    footer = (
+      <>
+        {retry.isError && (
+          <p role="alert" className="text-sm leading-5 text-danger">
+            {t("payment.redirect.back.retryFailed")}
+          </p>
+        )}
+        <FeeNoRefund feeIdr={retryConfirm.feeIdr} />
+        <Button
+          type="button"
+          loading={retry.isPending}
+          onClick={() =>
+            retry.mutate({
+              record,
+              confirmedChargedIdr: retryConfirm.chargedIdr,
+            })
+          }
+        >
+          {t("payment.redirect.fee.confirmPay", {
+            total: formatRupiah(retryConfirm.chargedIdr),
+          })}
+        </Button>
+        <button
+          type="button"
+          className={textLink}
+          disabled={retry.isPending}
+          onClick={() => {
+            setRetryConfirm(null);
+            retry.reset();
+          }}
+        >
+          {t("payment.redirect.opening.otherMethod")}
+        </button>
+      </>
+    );
   }
 
   const invalid = phase === "invalid";

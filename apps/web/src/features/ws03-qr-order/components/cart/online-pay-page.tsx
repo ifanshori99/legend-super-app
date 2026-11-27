@@ -283,7 +283,8 @@ function BankPicker({
         onRetry={() => void options.refetch()}
       />
     );
-  if (!options.data)
+  // The older list kept while this order's priced one loads has no fees: wait.
+  if (!options.data || options.isPlaceholderData)
     return (
       <div aria-busy="true" className="grid gap-4">
         <span className="sr-only">{t("qrGlass.pay.va.loading")}</span>
