@@ -47,7 +47,7 @@ export const posKasirDaycloseMessages = {
     settlementTitle: "Settlement EDC",
     settlementTerminal: "{terminal} · {bank}",
     settlementReceipt: "Struk",
-    settlementBankLabel: "Bank",
+    settlementBankLabel: "Dikonfirmasi bank",
     settlementDifference: "Selisih",
     settlementWaiting: "Menunggu file bank",
     settlementWaitingHint:

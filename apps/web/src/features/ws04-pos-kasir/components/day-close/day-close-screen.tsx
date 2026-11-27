@@ -26,7 +26,8 @@ import {
   StatusPill,
   type StatusPillTone,
 } from "../shared";
-import { EdcSettlementLines } from "./edc-settlement-lines";
+import { edcNoticeTone } from "../../edc-settlement-view";
+import { EdcSettlementLines, EdcUnmatchedNote } from "./edc-settlement-lines";
 import { OpenShiftLinks } from "./open-shift-links";
 
 // /pos/tutup-hari (mockups supervisor-day-close, supervisor-day-closed): the
@@ -337,7 +338,6 @@ function CheckPanel({ recap }: { recap: DayCloseRecap }) {
   const [deduct, setDeduct] = useState(false);
   const stock = recap.stockDeduction;
   const allClosed = recap.shifts.closed >= recap.shifts.total;
-  const unmatched = recap.standaloneUnmatched ?? 0;
   const unsynced = recap.unsyncedReceiptCount ?? 0;
 
   const failure =
@@ -385,16 +385,12 @@ function CheckPanel({ recap }: { recap: DayCloseRecap }) {
           </Notice>
         )}
         <Notice
-          tone="warning"
+          tone={edcNoticeTone(recap.settlement, recap.standaloneUnmatched)}
           title={t("posKasirDayclose.check.settlementTitle")}
         >
           <div className="grid gap-2">
             <EdcSettlementLines settlement={recap.settlement} />
-            <p>
-              {unmatched > 0
-                ? t("posKasirDayclose.check.unmatched", { count: unmatched })
-                : t("posKasirDayclose.check.noUnmatched")}
-            </p>
+            <EdcUnmatchedNote count={recap.standaloneUnmatched} />
           </div>
         </Notice>
         <div className="grid gap-2">

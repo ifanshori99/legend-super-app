@@ -871,7 +871,9 @@ test("legend-mjmm DAY-01 day close shows the 04.00 cutoff, recap and per-bank se
   // bank file is in; Mandiri's has not arrived (no Rp 0 for the bank).
   await expect(area).toContainText(/EDC-SNP-01\s*·\s*BCA/);
   await expect(area).toContainText(new RegExp(`Struk\\s*${rp("1.600.000")}`));
-  await expect(area).toContainText(new RegExp(`Bank\\s*${rp("1.200.000")}`));
+  await expect(area).toContainText(
+    new RegExp(`Dikonfirmasi bank\\s*${rp("1.200.000")}`),
+  );
   await expect(area).toContainText(new RegExp(`Selisih\\s*${rp("400.000")}`));
   await expect(area).toContainText(/EDC-SNP-02\s*·\s*MANDIRI/);
   await expect(area).toContainText("Menunggu file bank");

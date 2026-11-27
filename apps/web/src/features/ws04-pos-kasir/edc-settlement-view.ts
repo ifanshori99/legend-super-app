@@ -82,15 +82,34 @@ export function edcTerminalView(row: EdcTerminalSettlement): EdcTerminalView {
 /**
  * Sales still "perlu dicek" after the bank file reached their terminal. A
  * terminal still waiting says so on its own line, so its flags are not counted
- * here (review P3 7: the plain sum was too wide). null: no EDC figures.
+ * here (review P3 7: the plain sum was too wide). null means unknown, never
+ * "nothing flagged": no EDC figures, no terminal, or every terminal still
+ * waiting for its file (review K P2: do not reassure before the file).
  */
 export function flaggedAfterBankFile(
   rows: readonly EdcTerminalSettlement[] | null,
 ): number | null {
   if (rows === null) return null;
-  return rows.reduce(
-    (sum, row) =>
-      row.bankStatus === "awaiting" ? sum : sum + row.flaggedCount,
-    0,
-  );
+  const reached = rows.filter((row) => row.bankStatus !== "awaiting");
+  if (reached.length === 0) return null;
+  return reached.reduce((sum, row) => sum + row.flaggedCount, 0);
+}
+
+/**
+ * Tone of the EDC notice on the day check: calm only when every terminal is
+ * settled and nothing is flagged; red when a bank line mismatched or hit
+ * nothing; otherwise a warning (waiting, partial, flagged, or no figures).
+ */
+export function edcNoticeTone(
+  rows: readonly EdcTerminalSettlement[] | null,
+  flagged: number | null,
+): "info" | "warning" | "danger" {
+  if (rows === null) return "warning";
+  const states = rows.map((row) => edcTerminalView(row).state);
+  if (states.some((state) => state === "mismatch" || state === "noMatch"))
+    return "danger";
+  if (rows.length === 0) return "info";
+  return flagged === 0 && states.every((state) => state === "settled")
+    ? "info"
+    : "warning";
 }

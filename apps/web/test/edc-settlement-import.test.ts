@@ -18,6 +18,7 @@ import { createTranslator } from "@starter/shared/i18n";
 import { ApiError } from "@/lib/api/errors";
 import {
   checkCsvUpload,
+  fileHintKind,
   importErrorView,
 } from "@/features/edc-settlement-import/lib.ts";
 import { ImportResult } from "@/features/edc-settlement-import/components/import-result.tsx";
@@ -113,6 +114,28 @@ describe("importErrorView", () => {
   });
 });
 
+describe("fileHintKind (audit P2 1)", () => {
+  const rows = importErrorView(
+    new ApiError(422, "VALIDATION_ERROR", "x", undefined, {
+      rowErrors: [{ row: 3, reason: "unreadable" }],
+    }),
+  );
+  it("shows the data-row count for a chosen file", () => {
+    expect(fileHintKind(true, null)).toBe("count");
+  });
+  it("hides the count while the server lists unreadable lines", () => {
+    expect(fileHintKind(true, rows)).toBe("hint");
+  });
+  it("shows the general hint without a file", () => {
+    expect(fileHintKind(false, null)).toBe("hint");
+  });
+  it("the count wording is data rows, not rows read", () => {
+    expect(
+      t("edcSettlementCsv.form.fileChosen", { name: "a", count: 4 }),
+    ).toContain("4 baris data");
+  });
+});
+
 describe("ImportResult", () => {
   const view = {
     id: "00000000-0000-4000-8000-000000000001",
@@ -141,15 +164,16 @@ describe("ImportResult", () => {
   it("shows the server counts and the file name", () => {
     const html = render();
     expect(html).toContain("settle-bca.csv");
-    for (const label of [
-      "matched",
-      "cleared",
-      "mismatch",
-      "unmatched",
-      "duplicate",
-    ])
+    for (const label of ["matched", "mismatch", "unmatched", "duplicate"])
       expect(html).toContain(t(`edcSettlementCsv.result.${label}`));
     expect(html).not.toContain(t("edcSettlementCsv.result.replayed"));
+  });
+  it("shows cleared as a subset note of matched, not a tile of its own", () => {
+    const html = render();
+    expect(html).toContain(
+      t("edcSettlementCsv.result.clearedOf", { count: 3 }),
+    );
+    expect(html).not.toContain(t("edcSettlementCsv.result.cleared"));
   });
   it("says a replayed file applied nothing new", () => {
     expect(render({ replayed: true })).toContain(

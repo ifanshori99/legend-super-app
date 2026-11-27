@@ -14,11 +14,15 @@ import { createElement } from "react";
 import { renderToString } from "react-dom/server";
 import { createTranslator, formatRupiah } from "@starter/shared/i18n";
 import {
+  edcNoticeTone,
   edcTerminalView,
   flaggedAfterBankFile,
   type EdcTerminalSettlement,
 } from "@/features/ws04-pos-kasir/edc-settlement-view.ts";
-import { EdcSettlementLines } from "@/features/ws04-pos-kasir/components/day-close/edc-settlement-lines.tsx";
+import {
+  EdcSettlementLines,
+  EdcUnmatchedNote,
+} from "@/features/ws04-pos-kasir/components/day-close/edc-settlement-lines.tsx";
 
 const t = createTranslator();
 
@@ -136,6 +140,84 @@ describe("flaggedAfterBankFile", () => {
   it("null stays null (server has no EDC figures)", () => {
     expect(flaggedAfterBankFile(null)).toBeNull();
   });
+
+  // Review K P2: "nothing flagged" must not reassure before any bank file.
+  it("is null (unknown) when every terminal still waits for the file", () => {
+    expect(
+      flaggedAfterBankFile([
+        row({ flaggedCount: 3 }),
+        row({
+          terminalId: "00000000-0000-4000-8000-000000000002",
+          flaggedCount: 0,
+        }),
+      ]),
+    ).toBeNull();
+  });
+
+  it("is null without any terminal (no EDC sale to check)", () => {
+    expect(flaggedAfterBankFile([])).toBeNull();
+  });
+
+  it("is 0 once a file reached a terminal and nothing is flagged", () => {
+    expect(
+      flaggedAfterBankFile([
+        row({
+          settledIdr: 1_600_000,
+          settledCount: 4,
+          differenceIdr: 0,
+          bankStatus: "matched",
+        }),
+      ]),
+    ).toBe(0);
+  });
+});
+
+const settledRow = (over: Partial<EdcTerminalSettlement> = {}) =>
+  row({
+    settledIdr: 1_600_000,
+    settledCount: 4,
+    differenceIdr: 0,
+    bankStatus: "matched",
+    ...over,
+  });
+
+describe("edcNoticeTone (audit P2 3)", () => {
+  it("info when every terminal is settled and nothing is flagged", () => {
+    expect(edcNoticeTone([settledRow()], 0)).toBe("info");
+  });
+  it("danger for a mismatch or a no_match terminal", () => {
+    expect(
+      edcNoticeTone([row({ bankStatus: "mismatch", mismatchCount: 1 })], 1),
+    ).toBe("danger");
+    expect(edcNoticeTone([row({ bankStatus: "no_match" })], 0)).toBe("danger");
+  });
+  it("warning while waiting, partial, flagged or without figures", () => {
+    expect(edcNoticeTone([row({})], null)).toBe("warning");
+    expect(
+      edcNoticeTone(
+        [settledRow({ differenceIdr: 400_000, settledIdr: 1_200_000 })],
+        0,
+      ),
+    ).toBe("warning");
+    expect(edcNoticeTone([settledRow()], 2)).toBe("warning");
+    expect(edcNoticeTone(null, null)).toBe("warning");
+  });
+});
+
+describe("EdcUnmatchedNote (review K P2)", () => {
+  const render = (count: number | null) =>
+    renderToString(createElement(EdcUnmatchedNote, { count }));
+  it("says nothing before any bank file (unknown is not zero)", () => {
+    expect(render(null)).toBe("");
+  });
+  it("says nothing is flagged only when the count is a real 0", () => {
+    expect(render(0)).toContain(t("posKasirDayclose.check.noUnmatched"));
+  });
+  it("names the count when some are flagged", () => {
+    expect(render(2)).toContain(
+      t("posKasirDayclose.check.unmatched", { count: 2 }),
+    );
+  });
 });
 
 describe("EdcSettlementLines", () => {
@@ -163,6 +245,9 @@ describe("EdcSettlementLines", () => {
     expect(html).not.toContain("Menunggu file bank");
     expect(html).toContain(t("posKasirDayclose.check.settlementReceipt"));
     expect(html).toContain(t("posKasirDayclose.check.settlementBankLabel"));
+    expect(t("posKasirDayclose.check.settlementBankLabel")).toBe(
+      "Dikonfirmasi bank",
+    );
     expect(html).toContain(t("posKasirDayclose.check.settlementDifference"));
     for (const amount of [1_600_000, 1_000_000, 600_000])
       expect(html).toContain(formatRupiah(amount));

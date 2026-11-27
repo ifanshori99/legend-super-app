@@ -20,7 +20,7 @@ export const edcSettlementCsvMessages = {
     file: "Berkas CSV",
     fileHint:
       "Ekspor laporan settlement dari portal bank, format .csv, hingga 90.000 karakter.",
-    fileChosen: "{name} · {count} baris terbaca",
+    fileChosen: "{name} · {count} baris data",
     submit: "Unggah dan cocokkan",
     submitting: "Mencocokkan…",
     another: "Unggah berkas lain",
@@ -73,7 +73,7 @@ export const edcSettlementCsvMessages = {
     file: "{name} · {bank} · {count} baris",
     summaryLabel: "Ringkasan hasil pencocokan",
     matched: "Cocok dengan penjualan",
-    cleared: "Tanda perlu dicek dihapus",
+    clearedOf: "{count} di antaranya: tanda perlu dicek dihapus",
     mismatch: "Beda nominal atau terminal",
     unmatched: "Tidak ada penjualan",
     duplicate: "Sudah pernah masuk",

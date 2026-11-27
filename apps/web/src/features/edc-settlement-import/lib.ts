@@ -72,3 +72,15 @@ export function importErrorView(error: unknown): ImportErrorView {
   }
   return { kind: "generic", rows: [], reasons: {} };
 }
+
+/**
+ * What goes under the file field: the data-row count of a chosen file, or the
+ * general hint. The count is hidden while the server lists unreadable lines
+ * (it would say "read" next to "could not read", audit P2 1).
+ */
+export function fileHintKind(
+  hasFile: boolean,
+  error: ImportErrorView | null,
+): "count" | "hint" {
+  return hasFile && error?.kind !== "rows" ? "count" : "hint";
+}

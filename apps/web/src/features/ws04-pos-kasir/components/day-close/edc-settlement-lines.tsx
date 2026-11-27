@@ -46,12 +46,39 @@ const STATE_PILL: Record<
   },
 };
 
-function Figure({ label, children }: { label: string; children: ReactNode }) {
+function Figure({
+  label,
+  strong = false,
+  children,
+}: {
+  label: string;
+  /** The figure the reader has to act on. */
+  strong?: boolean;
+  children: ReactNode;
+}) {
   return (
     <div className="grid gap-0.5">
       <dt className="text-sm text-muted-foreground">{label}</dt>
-      <dd className="tabular">{children}</dd>
+      <dd className={strong ? "tabular font-semibold" : "tabular"}>
+        {children}
+      </dd>
     </div>
+  );
+}
+
+/**
+ * The flagged count after the bank file. null (no file reached any terminal)
+ * says nothing: unknown is not "nothing to check" (review K P2).
+ */
+export function EdcUnmatchedNote({ count }: { count: number | null }) {
+  const t = useT();
+  if (count === null) return null;
+  return (
+    <p>
+      {count > 0
+        ? t("posKasirDayclose.check.unmatched", { count })
+        : t("posKasirDayclose.check.noUnmatched")}
+    </p>
   );
 }
 
@@ -99,6 +126,7 @@ export function EdcSettlementLines({
                   </Figure>
                   <Figure
                     label={t("posKasirDayclose.check.settlementDifference")}
+                    strong={view.differenceIdr !== 0}
                   >
                     <Money amount={view.differenceIdr} />
                   </Figure>

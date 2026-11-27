@@ -1,5 +1,6 @@
 // What the server recorded for one uploaded file (X2-UI). Counts only; the
 // screen adds up nothing and shows no money.
+import * as React from "react";
 import { Link } from "@tanstack/react-router";
 import { Info, TriangleAlert } from "lucide-react";
 import type { EdcSettlementCsvImportView } from "@starter/shared/payment/admin";
@@ -13,13 +14,24 @@ export function ImportResult({
   result: EdcSettlementCsvImportView;
 }) {
   const t = useT();
+  // The result replaces the form: move focus to it so a screen reader reads it
+  // (audit P2 2).
+  const titleRef = React.useRef<HTMLHeadingElement>(null);
+  React.useEffect(() => {
+    titleRef.current?.focus();
+  }, []);
   return (
     <section
       aria-labelledby="edc-csv-result-title"
       className="grid gap-3 rounded-container border-(length:--border-w) bg-card p-card shadow-hairline"
     >
       <div className="grid gap-1">
-        <h3 id="edc-csv-result-title" className="type-title">
+        <h3
+          id="edc-csv-result-title"
+          ref={titleRef}
+          tabIndex={-1}
+          className="type-title outline-none"
+        >
           {t("edcSettlementCsv.result.title")}
         </h3>
         <p className="text-sm leading-5 break-words text-muted-foreground">
@@ -43,10 +55,9 @@ export function ImportResult({
         <StatTile
           label={t("edcSettlementCsv.result.matched")}
           value={result.matched}
-        />
-        <StatTile
-          label={t("edcSettlementCsv.result.cleared")}
-          value={result.cleared}
+          context={t("edcSettlementCsv.result.clearedOf", {
+            count: result.cleared,
+          })}
         />
         <StatTile
           label={t("edcSettlementCsv.result.mismatch")}
@@ -57,7 +68,6 @@ export function ImportResult({
           value={result.unmatched}
         />
         <StatTile
-          className="lg:col-span-4"
           label={t("edcSettlementCsv.result.duplicate")}
           value={result.duplicate}
         />

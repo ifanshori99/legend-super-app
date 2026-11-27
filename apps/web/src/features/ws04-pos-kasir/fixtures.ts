@@ -16,6 +16,7 @@ import type {
   SupervisorOption,
   VaBank,
 } from "./types.ts";
+import type { EdcTerminalSettlement } from "./edc-settlement-view.ts";
 import {
   DEMO_CODE_ORDER_ID,
   DEMO_ORDER_ID,
@@ -224,6 +225,69 @@ export const demoBlindCount = {
   ],
   otherAmountIdr: 0,
 };
+
+type EdcDemoTerminal = EdcTerminalSettlement;
+
+/** The day close EDC terminals for a `?demo=edc-<state>` seed (default: mixed). */
+export function demoEdcTerminals(
+  seed: "edc-cocok" | "edc-tidak-cocok" | "edc-menunggu" | null,
+): EdcDemoTerminal[] {
+  const [bca, mandiri] = dayFixture.edcTerminals.map(
+    (row): EdcDemoTerminal => ({ ...row }),
+  ) as [EdcDemoTerminal, EdcDemoTerminal];
+  if (seed === "edc-cocok")
+    return [
+      {
+        ...bca,
+        settledIdr: bca.receiptIdr,
+        settledCount: bca.receiptCount,
+        flaggedCount: 0,
+        differenceIdr: 0,
+        bankStatus: "matched",
+      },
+      {
+        ...mandiri,
+        settledIdr: mandiri.receiptIdr,
+        settledCount: mandiri.receiptCount,
+        flaggedCount: 0,
+        differenceIdr: 0,
+        bankStatus: "matched",
+      },
+    ];
+  if (seed === "edc-tidak-cocok")
+    return [
+      {
+        ...bca,
+        settledIdr: 0,
+        settledCount: 0,
+        flaggedCount: 4,
+        mismatchCount: 1,
+        differenceIdr: bca.receiptIdr,
+        bankStatus: "mismatch",
+      },
+      {
+        ...mandiri,
+        settledIdr: 0,
+        settledCount: 0,
+        flaggedCount: 2,
+        differenceIdr: mandiri.receiptIdr,
+        bankStatus: "no_match",
+      },
+    ];
+  if (seed === "edc-menunggu")
+    return [
+      {
+        ...bca,
+        settledIdr: 0,
+        settledCount: 0,
+        flaggedCount: 0,
+        differenceIdr: bca.receiptIdr,
+        bankStatus: "awaiting",
+      },
+      mandiri,
+    ];
+  return [bca, mandiri];
+}
 
 export function demoMovements(): (CashMovement & { shiftId: string })[] {
   return [

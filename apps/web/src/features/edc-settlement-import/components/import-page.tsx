@@ -6,6 +6,7 @@
 // is sent again.
 import * as React from "react";
 import { CircleAlert, Upload } from "lucide-react";
+import { Link } from "@tanstack/react-router";
 import type { OutletId } from "@starter/shared/core";
 import type { EdcSettlementCsvImportView } from "@starter/shared/payment/admin";
 import { useT } from "@/components/i18n";
@@ -32,6 +33,7 @@ import { useImportEdcSettlementCsv } from "../hooks";
 import {
   checkCsvUpload,
   EDC_BANKS,
+  fileHintKind,
   importErrorView,
   type CsvCheck,
   type EdcBank,
@@ -296,9 +298,24 @@ export function EdcSettlementImportPage() {
         className="text-sm text-muted-foreground"
       >
         <ol className="flex flex-wrap items-center gap-x-1.5">
-          <li>{t("edcSettlementCsv.breadcrumbPayments")}</li>
+          <li>
+            <Link
+              to="/kelola/pembayaran"
+              className="underline-offset-2 hover:underline"
+            >
+              {t("edcSettlementCsv.breadcrumbPayments")}
+            </Link>
+          </li>
           <li aria-hidden="true">/</li>
-          <li>{t("edcSettlementCsv.breadcrumbEdc")}</li>
+          <li>
+            <Link
+              to="/kelola/pembayaran"
+              search={{ tab: "edc" }}
+              className="underline-offset-2 hover:underline"
+            >
+              {t("edcSettlementCsv.breadcrumbEdc")}
+            </Link>
+          </li>
           <li aria-hidden="true">/</li>
           <li aria-current="page">{t("edcSettlementCsv.breadcrumbCurrent")}</li>
         </ol>
