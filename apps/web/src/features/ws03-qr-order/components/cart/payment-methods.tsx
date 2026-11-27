@@ -361,6 +361,19 @@ export function PaymentMethods({
       <h2 id="method-title" tabIndex={-1} className="type-heading outline-none">
         {t("qrGlass.checkout.method.title")}
       </h2>
+      {priced.failed && (
+        <div
+          role="alert"
+          className="flex flex-wrap items-center justify-between gap-2 text-sm leading-5 text-danger"
+        >
+          <span className="min-w-0">
+            {t("payment.redirect.fee.loadFailed")}
+          </span>
+          <Button type="button" variant="outline" onClick={priced.reload}>
+            {t("payment.redirect.fee.reload")}
+          </Button>
+        </div>
+      )}
       <RadioGroup.Root
         value={method}
         disabled={disabled}
@@ -435,19 +448,6 @@ export function PaymentMethods({
           );
         })}
       </RadioGroup.Root>
-      {priced.failed && (
-        <div
-          role="alert"
-          className="flex flex-wrap items-center justify-between gap-2 text-sm leading-5 text-danger"
-        >
-          <span className="min-w-0">
-            {t("payment.redirect.fee.loadFailed")}
-          </span>
-          <Button type="button" variant="outline" onClick={priced.reload}>
-            {t("payment.redirect.fee.reload")}
-          </Button>
-        </div>
-      )}
       <p className="text-sm leading-5 text-muted-foreground">
         {t("qrGlass.checkout.method.kitchenNote")}
       </p>

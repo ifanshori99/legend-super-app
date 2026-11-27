@@ -339,6 +339,9 @@ test("K3 return page: 'Coba lagi' asks for the fresh fee and confirms it before 
     page.getByRole("heading", { name: "Ada biaya layanan" }),
   ).toBeVisible();
   await expect(page.getByText(NO_REFUND)).toBeVisible();
+  // One bill row and one fee row: no second pair from the failed payment.
+  await expect(page.getByText("Tagihan", { exact: true })).toHaveCount(1);
+  await expect(page.getByText("Biaya layanan", { exact: true })).toHaveCount(1);
   await axe(page);
   await shot(page, "coba-lagi");
   const before = page.url();

@@ -389,8 +389,18 @@ export function PaymentReturnPage() {
         (table ? t("payment.redirect.back.tableOnly", { table }) : null));
   const amountIdr = answer.data?.amountIdr ?? record?.amountIdr ?? 0;
   const guestFeeIdr = answer.data?.guestFeeIdr ?? record?.guestFeeIdr ?? 0;
-  const rows = [
+  const baseRows = [
     { label: t("payment.redirect.back.rowMethod"), value: methodRow },
+    ...(orderNumber
+      ? [{ label: t("payment.redirect.back.rowOrder"), value: orderNumber }]
+      : []),
+    ...(placeValue
+      ? [{ label: t("payment.redirect.back.rowPlace"), value: placeValue }]
+      : []),
+  ];
+  // The fee rows of the payment on record sit right under the method.
+  const rows = [
+    baseRows[0]!,
     ...(guestFeeIdr > 0 && guestFeeIdr < amountIdr
       ? [
           {
@@ -403,12 +413,7 @@ export function PaymentReturnPage() {
           },
         ]
       : []),
-    ...(orderNumber
-      ? [{ label: t("payment.redirect.back.rowOrder"), value: orderNumber }]
-      : []),
-    ...(placeValue
-      ? [{ label: t("payment.redirect.back.rowPlace"), value: placeValue }]
-      : []),
+    ...baseRows.slice(1),
   ];
   const isTable = record?.kind === "table";
 
@@ -800,7 +805,7 @@ export function PaymentReturnPage() {
         label={t("payment.redirect.fee.totalLabel")}
         amountIdr={retryConfirm.chargedIdr}
         rows={[
-          ...rows,
+          ...baseRows,
           {
             label: t("payment.redirect.fee.billRow"),
             value: formatRupiah(retryConfirm.amountIdr),
