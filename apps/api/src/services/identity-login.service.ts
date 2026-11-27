@@ -92,7 +92,7 @@ const DEFAULT_LOGIN_KEYWORD = "MASUK LEGEND";
 const CHALLENGE_WINDOW_MINUTES = 15;
 
 function configText(
-  config: Record<string, string | number | boolean | null>,
+  config: Readonly<Record<string, unknown>>,
   key: string,
 ): string | null {
   const value = config[key];
