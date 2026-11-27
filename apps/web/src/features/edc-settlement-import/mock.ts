@@ -38,18 +38,20 @@ registerMock(importEdcSettlementCsv, ({ body }) => {
   const unmatched = rowCount >= 3 ? 1 : 0;
   const matched = rowCount - mismatch - unmatched;
   return {
-    id: "00000000-0000-4000-8000-0000000000c1",
-    outletId: body.outletId,
-    bank: body.bank,
-    fileName: body.fileName,
-    fileHash: "0".repeat(64),
-    rowCount,
-    matched,
-    cleared: Math.max(0, matched - 1),
-    mismatch,
-    unmatched,
-    duplicate: 0,
-    replayed: false,
-    createdAt: new Date().toISOString(),
+    data: {
+      id: "00000000-0000-4000-8000-0000000000c1",
+      outletId: body.outletId,
+      bank: body.bank,
+      fileName: body.fileName,
+      fileHash: "0".repeat(64),
+      rowCount,
+      matched,
+      cleared: Math.max(0, matched - 1),
+      mismatch,
+      unmatched,
+      duplicate: 0,
+      replayed: false,
+      createdAt: new Date().toISOString(),
+    },
   };
 });
