@@ -17,6 +17,8 @@ Brief: `legend/docs/briefs/1272-b3-brief.md`. Cabang `ws/1272-b3` (dari int/rc2 
 - Bukti: `heavy ./gradlew testDebugUnitTest assembleDebug` hijau, 37 test JVM (BridgeCore 17, Dispatcher 4, Clock/Pairing 4, FramedExchange 6, ContractFixtures 6: semua 90+ kasus downlink sama dengan zod). `LEGEND_TEST_FILES="src/test/edc-bridge-tablet.test.ts" heavy pnpm test` 13/13. eslint + prettier hijau.
 - Belum diverifikasi: Room DAO/service di perangkat (tanpa emulator Android), USB-serial (lihat pertanyaan 2), uji lapangan B7.
 
+- Review B3 LULUS 6 P3 (`legend/docs/qa/1272-b3-review.md`), semua dibetulkan: (1) `finishSale` hanya untuk catatan `in_flight`, balasan tidak menimpa hasil antre (test gagal-dulu: 5 gagal sebelum fix); (2) `TerminalRunner.shutdown` menutup link EDC dan menunggu sebelum DB ditutup (`TerminalRunnerTest`); (3) simpan setelan = `ACTION_RELOAD`, sesi WSS dibuka ulang; (4) baris jurnal rusak dilewati + dihitung; (5) tanpa Gradle Plugin Portal, `distributionSha256Sum` resmi; (6) emulator Node umur = min dua jam + penyelesaian terlambat dibuang (2 test gagal-dulu). Catatan void/cancel tanpa jurnal di dokumen. Bukti: 44 test JVM + `assembleDebug` hijau, emulator Node 15/15.
+
 ## Pertanyaan untuk CTO
 
 1. Umur catatan sale (P3): brief menulis `max(monotonik+boot, dinding)`, tetapi alasan di review ("jam dinding bisa dimajukan") hanya tertutup bila diambil yang LEBIH PENDEK. Dengan max, jam dinding dimajukan 30 hari = semua catatan dedupe langsung terhapus. Diterapkan: `min` (hapus hanya bila kedua jam setuju; catatan disimpan lebih lama, aturan "jangan sampai rugi"). Satu fungsi `SaleRecordRetention.ageMs`, mudah dibalik bila CTO memutuskan lain.

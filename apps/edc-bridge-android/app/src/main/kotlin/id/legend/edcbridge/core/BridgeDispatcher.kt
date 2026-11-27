@@ -59,7 +59,7 @@ class BridgeDispatcher(
             is Downlink.Command -> when (val admission = core.admit(message)) {
                 is Admission.Reply -> send(BridgeJson.encodeResult(admission.result))
                 is Admission.Run -> runner.run(admission.command, admission.grant) { answer ->
-                    send(BridgeJson.encodeResult(core.complete(admission.command, answer)))
+                    core.complete(admission.command, answer)?.let { send(BridgeJson.encodeResult(it)) }
                 }
             }
             is Downlink.Ack -> core.onAck(message)

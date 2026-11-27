@@ -15,12 +15,19 @@ class InMemoryJournalStore : JournalStore {
         records[record.key] = record
     }
 
-    override fun finishSale(key: String, answer: Answer, result: BridgeResult) {
-        records[key] = records.getValue(key).copy(state = SaleState.DONE, answer = answer)
-        enqueue(result)
+    override fun finishSale(key: String, answer: Answer, result: BridgeResult): Boolean {
+        val record = records[key] ?: return false
+        if (record.state != SaleState.IN_FLIGHT) return false
+        records[key] = record.copy(state = SaleState.DONE, answer = answer)
+        enqueueRan(result)
+        return true
     }
 
     override fun enqueue(result: BridgeResult) {
+        if (result.commandId !in queue) queue[result.commandId] = result
+    }
+
+    override fun enqueueRan(result: BridgeResult) {
         queue.remove(result.commandId)
         queue[result.commandId] = result
     }

@@ -14,12 +14,32 @@ class RoomJournalStore(private val dao: JournalDao) : JournalStore {
 
     override fun startSale(record: SaleRecord) = dao.insertSaleRecord(record.toEntity())
 
-    override fun finishSale(key: String, answer: Answer, result: BridgeResult) =
+    /** Queued rows that no longer decode (skipped on resend, still counted
+     * in `hello.unackedResults`). One bad row must not stop every resend. */
+    @Volatile
+    var undecodableResults = 0
+        private set
+
+    override fun finishSale(key: String, answer: Answer, result: BridgeResult): Boolean =
         dao.finishSale(key, BridgeJson.encodeAnswer(answer), result.toEntity())
 
-    override fun enqueue(result: BridgeResult) = dao.insertUnacked(result.toEntity())
+    override fun enqueue(result: BridgeResult) = dao.insertUnackedIfAbsent(result.toEntity())
 
-    override fun unacked(): List<BridgeResult> = dao.unacked().map { BridgeJson.decodeResult(it.resultJson) }
+    override fun enqueueRan(result: BridgeResult) = dao.replaceUnacked(result.toEntity())
+
+    override fun unacked(): List<BridgeResult> {
+        var bad = 0
+        val results = dao.unacked().mapNotNull {
+            try {
+                BridgeJson.decodeResult(it.resultJson)
+            } catch (e: Exception) {
+                bad++
+                null
+            }
+        }
+        undecodableResults = bad
+        return results
+    }
 
     override fun unackedCount(): Int = dao.unackedCount()
 

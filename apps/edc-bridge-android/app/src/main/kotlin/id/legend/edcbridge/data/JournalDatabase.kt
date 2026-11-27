@@ -47,16 +47,23 @@ interface JournalDao {
     @Insert(onConflict = OnConflictStrategy.ABORT)
     fun insertSaleRecord(record: SaleRecordEntity)
 
-    @Query("UPDATE sale_records SET state = 'done', answer_json = :answerJson WHERE `key` = :key")
-    fun markSaleDone(key: String, answerJson: String)
+    /** Only an in-flight record: a done record keeps its first answer. */
+    @Query("UPDATE sale_records SET state = 'done', answer_json = :answerJson WHERE `key` = :key AND state = 'in_flight'")
+    fun markSaleDone(key: String, answerJson: String): Int
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    fun insertUnacked(result: UnackedResultEntity)
+    fun replaceUnacked(result: UnackedResultEntity)
 
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    fun insertUnackedIfAbsent(result: UnackedResultEntity)
+
+    /** No-op (false) unless the record is in flight. */
     @Transaction
-    fun finishSale(key: String, answerJson: String, result: UnackedResultEntity) {
-        markSaleDone(key, answerJson)
-        insertUnacked(result)
+    fun finishSale(key: String, answerJson: String, result: UnackedResultEntity): Boolean {
+        val row = saleRecord(key) ?: return false
+        if (row.state != "in_flight" || markSaleDone(key, answerJson) == 0) return false
+        replaceUnacked(result)
+        return true
     }
 
     @Query("SELECT * FROM unacked_results ORDER BY seq")

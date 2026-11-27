@@ -13,7 +13,10 @@ import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketTimeoutException
 import java.util.Base64
-import java.util.concurrent.Executor
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.TimeUnit
 
 /** Opens the byte pipe a lease points at. Throws [IOException] when it cannot. */
 fun interface TerminalConnector {
@@ -77,29 +80,68 @@ class LinkConnectors(
 /**
  * Runs admitted commands on [executor]. Could not open the link: nothing was
  * sent, `refused link_down`. Otherwise [FramedExchange] decides.
+ * [shutdown] closes every open terminal link and waits for the runs to
+ * finish (their results are journaled), so a later service instance never
+ * holds a second connection to the same EDC.
  */
 class TerminalRunner(
     private val connector: TerminalConnector,
-    private val executor: Executor,
+    private val executor: ExecutorService,
 ) : CommandRunner {
+    private val open: MutableSet<ByteLink> = ConcurrentHashMap.newKeySet()
+
+    @Volatile
+    private var stopped = false
+
     override fun run(command: Downlink.Command, grant: LeaseGrant, done: (Answer) -> Unit) {
-        executor.execute {
-            val answer = try {
-                runOnce(command, grant)
-            } catch (e: RuntimeException) {
-                Answer.TransportError(TransportErrorKind.PROTOCOL)
+        try {
+            executor.execute {
+                val answer = try {
+                    runOnce(command, grant)
+                } catch (e: RuntimeException) {
+                    Answer.TransportError(TransportErrorKind.PROTOCOL)
+                }
+                done(answer)
             }
-            done(answer)
+        } catch (e: RejectedExecutionException) {
+            // Shutting down: the sale record stays in flight and BridgeCore.recover
+            // reports it on the next start.
         }
+    }
+
+    /** Stops new runs, closes open links, waits up to [timeoutMs].
+     * True when every run finished. */
+    fun shutdown(timeoutMs: Long): Boolean {
+        stopped = true
+        executor.shutdown()
+        for (link in open) closeQuietly(link)
+        return executor.awaitTermination(timeoutMs, TimeUnit.MILLISECONDS)
     }
 
     private fun runOnce(command: Downlink.Command, grant: LeaseGrant): Answer {
         val body = Base64.getDecoder().decode(command.frame)
+        if (stopped) return Answer.Refused(RefusalReason.LINK_DOWN)
         val link = try {
             connector.open(grant.link)
         } catch (e: IOException) {
             return Answer.Refused(RefusalReason.LINK_DOWN)
         }
-        return link.use { FramedExchange(it).exchange(body, command.timeoutMs) }
+        open.add(link)
+        try {
+            // shutdown() may have run between open() and add().
+            if (stopped) return Answer.TransportError(TransportErrorKind.DISCONNECTED)
+            return FramedExchange(link).exchange(body, command.timeoutMs)
+        } finally {
+            open.remove(link)
+            closeQuietly(link)
+        }
+    }
+
+    private fun closeQuietly(link: ByteLink) {
+        try {
+            link.close()
+        } catch (e: IOException) {
+            // already closed
+        }
     }
 }

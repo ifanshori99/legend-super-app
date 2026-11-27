@@ -42,6 +42,14 @@ class BridgeService : Service() {
     private lateinit var commands: ExecutorService
     private var connection: WssConnection? = null
     private var database: JournalDatabase? = null
+    private var dispatcher: BridgeDispatcher? = null
+    private var runner: TerminalRunner? = null
+    private val client: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .pingInterval(20, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(true)
+            .build()
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -62,18 +70,22 @@ class BridgeService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
-            stopSelf()
-            return START_NOT_STICKY
+        when {
+            intent?.action == ACTION_STOP -> {
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            // New server address or token saved: reconnect with it, keep the
+            // journal, leases and running commands.
+            intent?.action == ACTION_RELOAD && dispatcher != null -> connect()
+            dispatcher == null -> start()
         }
-        if (connection == null) start()
         return START_STICKY
     }
 
     private fun start() {
         val settings = DeviceSettings(this)
-        val url = settings.serverUrl?.let { Pairing.socketUrl(it) }
-        if (url == null || !settings.hasToken) {
+        if (settings.serverUrl?.let { Pairing.socketUrl(it) } == null || !settings.hasToken) {
             status(WssConnection.Status.NOT_PAIRED)
             stopSelf()
             return
@@ -86,23 +98,35 @@ class BridgeService : Service() {
             wall = System::currentTimeMillis,
         )
         val core = BridgeCore(RoomJournalStore(db.journal()), clock, BuildConfig.VERSION_NAME, ::ownIpv4Addresses)
-        val client = OkHttpClient.Builder()
-            .pingInterval(20, TimeUnit.SECONDS)
-            .retryOnConnectionFailure(true)
-            .build()
-        val wss = WssConnection(client, url, settings::token, scheduler, ::status)
-        wss.dispatcher = BridgeDispatcher(core, TerminalRunner(LinkConnectors(), commands), wss::onGoodbye)
-        connection = wss
+        val terminals = TerminalRunner(LinkConnectors(), commands).also { runner = it }
+        dispatcher = BridgeDispatcher(core, terminals) { reason -> connection?.onGoodbye(reason) }
         scheduler.execute {
             // Before the first hello: sales that were in flight become
             // transport_error results, old records go.
             core.recover()
             core.purge()
             clock.checkpoint()
-            wss.connect()
         }
         scheduler.scheduleWithFixedDelay({ clock.checkpoint() }, 1, 1, TimeUnit.MINUTES)
         scheduler.scheduleWithFixedDelay({ core.purge() }, 1, 1, TimeUnit.HOURS)
+        connect()
+    }
+
+    /** (Re)opens the WSS session with the saved address and token. Runs after
+     * [start]'s recovery: the scheduler is one thread, first in first out. */
+    private fun connect() {
+        connection?.stop()
+        connection = null
+        val settings = DeviceSettings(this)
+        val url = settings.serverUrl?.let { Pairing.socketUrl(it) }
+        if (url == null || !settings.hasToken) {
+            status(WssConnection.Status.NOT_PAIRED)
+            return
+        }
+        val wss = WssConnection(client, url, settings::token, scheduler, ::status)
+        wss.dispatcher = dispatcher!!
+        connection = wss
+        scheduler.execute { wss.connect() }
     }
 
     private fun status(status: WssConnection.Status) {
@@ -141,8 +165,14 @@ class BridgeService : Service() {
         connection?.stop()
         connection = null
         scheduler.shutdownNow()
-        commands.shutdown()
-        database?.close()
+        // Close the EDC links and wait for the runs to journal their results
+        // before the database goes; a new instance must never find a second
+        // TCP connection to the same terminal still open.
+        val finished = runner?.shutdown(SHUTDOWN_WAIT_MS) ?: commands.let {
+            it.shutdown()
+            true
+        }
+        if (finished) database?.close()
         super.onDestroy()
     }
 
@@ -150,11 +180,18 @@ class BridgeService : Service() {
         private const val CHANNEL = "bridge"
         private const val NOTIFICATION_ID = 1
         const val ACTION_STOP = "id.legend.edcbridge.STOP"
+        const val ACTION_RELOAD = "id.legend.edcbridge.RELOAD"
+        private const val SHUTDOWN_WAIT_MS = 5_000L
         const val STATUS_PREFS = "edc_bridge_status"
         const val STATUS_KEY = "status"
 
         fun start(context: Context) {
             context.startForegroundService(Intent(context, BridgeService::class.java))
+        }
+
+        /** After saving a new address or token (also after a revoked token). */
+        fun reload(context: Context) {
+            context.startForegroundService(Intent(context, BridgeService::class.java).setAction(ACTION_RELOAD))
         }
 
         fun stop(context: Context) {

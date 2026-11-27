@@ -378,9 +378,15 @@ describe("EDC bridge tablet emulator (B3)", () => {
 
   it("sale records go after 48 h and release, or after 30 days", async () => {
     let wall = new Date("2026-11-01T00:00:00Z").getTime();
+    let mono = 1_000;
+    const advance = (ms: number) => {
+      wall += ms;
+      mono += ms;
+    };
     const cloud = await startFakeCloud();
     const tablet = await connected(cloud, approve, {
       now: () => new Date(wall),
+      monoMs: () => mono,
     });
     cloud.lease();
     cloud.command(1);
@@ -395,15 +401,71 @@ describe("EDC bridge tablet emulator (B3)", () => {
     await tablet.waitFor(() =>
       tablet.received.some((m) => m.type === "sale_record_release"),
     );
-    wall += 48 * 3_600_000 - 1;
+    advance(48 * 3_600_000 - 1);
     expect(tablet.purge()).toBe(0);
-    wall += 1;
+    advance(1);
     expect(tablet.hello().heldSaleRecords).toBe(1);
     expect(tablet.purge()).toBe(1);
-    wall += 28 * 86_400_000 - 1;
+    advance(28 * 86_400_000 - 1);
     expect(tablet.purge()).toBe(0);
-    wall += 1;
+    advance(1);
     expect(tablet.purge()).toBe(1);
+  });
+
+  it("record age is the shorter of wall and monotonic clocks, like the app", async () => {
+    let wall = new Date("2026-11-01T00:00:00Z").getTime();
+    let mono = 1_000;
+    const cloud = await startFakeCloud();
+    const tablet = await connected(cloud, approve, {
+      now: () => new Date(wall),
+      monoMs: () => mono,
+    });
+    cloud.lease();
+    cloud.command(1);
+    await tablet.resultFor(cmd(1));
+    cloud.send({
+      type: "sale_record_release",
+      terminalId: T1,
+      traces: ["000123"],
+    });
+    await tablet.waitFor(() =>
+      tablet.received.some((m) => m.type === "sale_record_release"),
+    );
+    // Wall clock moved forward a year, only an hour really passed.
+    wall += 365 * 86_400_000;
+    mono += 3_600_000;
+    expect(tablet.hello().heldSaleRecords).toBe(0);
+    expect(tablet.purge()).toBe(0);
+    // Monotonic past 30 days but the wall clock was set back: still kept.
+    wall -= 400 * 86_400_000;
+    mono += 31 * 86_400_000;
+    expect(tablet.purge()).toBe(0);
+  });
+
+  it("a late completion after a restart keeps the first answer", async () => {
+    let finish: (answer: {
+      outcome: "response";
+      frame: string;
+    }) => void = () => {};
+    const cloud = await startFakeCloud();
+    const tablet = await connected(
+      cloud,
+      () => new Promise((done) => (finish = done)),
+    );
+    cloud.lease();
+    cloud.command(1);
+    await tablet.waitFor(() => tablet.ran.length === 1);
+    tablet.restart();
+    finish({ outcome: "response", frame: "AAAA" });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(tablet.unacked.get(cmd(1))?.answer).toEqual({
+      outcome: "transport_error",
+      kind: "disconnected",
+    });
+    expect([...tablet.saleRecords.values()][0]?.answer).toEqual({
+      outcome: "transport_error",
+      kind: "disconnected",
+    });
   });
 
   it("a message outside the contract closes the socket", async () => {

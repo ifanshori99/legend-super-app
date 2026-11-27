@@ -45,7 +45,10 @@ class WssConnection(
     @Synchronized
     fun stop() {
         stopped = true
-        socket?.close(1000, "stopped")
+        socket?.let {
+            it.close(1000, "stopped")
+            dispatcher.onClosed()
+        }
         socket = null
         onStatus(Status.STOPPED)
     }

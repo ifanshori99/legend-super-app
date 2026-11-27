@@ -183,6 +183,27 @@ class BridgeCoreTest {
     }
 
     @Test
+    fun `a late completion after a restart keeps the first answer`() {
+        assertTrue(core.admit(command(1)) is Admission.Run)
+        val restarted = BridgeCore(store, clock, "0.1.0") { own }
+        restarted.recover()
+        // The old instance's terminal call returns after the restart: dropped.
+        assertNull(core.complete(command(1), APPROVED))
+        val disconnected = Answer.TransportError(TransportErrorKind.DISCONNECTED)
+        assertEquals(disconnected, store.records.values.single().answer)
+        assertEquals(listOf(disconnected), store.unacked().map { it.answer })
+    }
+
+    @Test
+    fun `a refusal does not replace the queued result of the same command id`() {
+        run(command(1, Op.VOID))
+        assertTrue(core.admit(command(2, Op.VOID)) is Admission.Run)
+        // The cloud resends command 1 while the terminal is busy with 2.
+        reply(command(1, Op.VOID))
+        assertEquals(APPROVED, store.queue.getValue(cmdId(1)).answer)
+    }
+
+    @Test
     fun `release marks only known traces of that terminal`() {
         run(command(1, trace = "A1"))
         run(command(2, trace = "A2"))

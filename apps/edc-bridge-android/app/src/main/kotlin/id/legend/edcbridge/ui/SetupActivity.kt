@@ -90,7 +90,7 @@ class SetupActivity : Activity() {
         settings.serverUrl = serverUrl.trim()
         if (token.isNotEmpty()) settings.saveToken(token)
         tokenField.hint = getString(R.string.hint_token_saved)
-        BridgeService.start(this)
+        BridgeService.reload(this)
         status.text = getString(R.string.status_connecting)
     }
 }

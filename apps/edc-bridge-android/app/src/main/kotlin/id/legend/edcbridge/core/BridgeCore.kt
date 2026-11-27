@@ -117,14 +117,19 @@ class BridgeCore(
     }
 
     /** The terminal (or the link) answered a command from [Admission.Run].
-     * The result is journaled before the caller sends it. */
+     * The result is journaled before the caller sends it. null: the sale
+     * record was no longer in flight (finished by [recover] after a restart);
+     * its first answer stays and nothing new is sent. */
     @Synchronized
-    fun complete(command: Downlink.Command, answer: Answer): BridgeResult {
+    fun complete(command: Downlink.Command, answer: Answer): BridgeResult? {
         busy.remove(command.terminalId)
         val result = resultOf(command, answer, null)
         val key = SaleDedupe.key(command)
-        if (key != null) store.finishSale(key, answer, result) else store.enqueue(result)
-        return result
+        if (key == null) {
+            store.enqueueRan(result)
+            return result
+        }
+        return if (store.finishSale(key, answer, result)) result else null
     }
 
     @Synchronized

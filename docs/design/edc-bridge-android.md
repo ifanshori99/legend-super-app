@@ -20,6 +20,12 @@ Catatan menyimpan jam dinding dan jam monotonik tahan-reboot (`PersistentMonoton
 
 Sesudah restart, sale yang masih `in_flight` menjadi `transport_error disconnected` dan masuk antrean: cloud mencatat `unknown` lalu inquiry; sale ulang dengan trace dan frame sama memutar ulang jawaban itu, tidak pernah dijalankan lagi.
 
+Jawaban pertama dijaga di database: `JournalDao.finishSale` hanya mengubah catatan yang masih `in_flight` (`... AND state = 'in_flight'`); penyelesaian terlambat sesudah restart dibuang. Antrean unacked: balasan (penolakan, replay) tidak pernah menimpa hasil yang sudah antre untuk `commandId` sama (`INSERT OR IGNORE`); hasil dari terminal menimpa balasan (`REPLACE`). Baris jurnal yang tidak terbaca dilewati saat kirim ulang dan dihitung (`RoomJournalStore.undecodableResults`), sisanya tetap terkirim.
+
+Void, cancel, dan inquiry tidak dijurnal sebelum jalan (hanya sale yang punya catatan). Aplikasi mati di tengah perintah itu = tidak ada result; cloud B2 menunggu tenggat lalu mencatat `unknown` dan inquiry (keputusan CTO 27 Nov, review B3).
+
+Berhenti/ganti setelan: `onDestroy` menghentikan WSS, menutup semua koneksi TCP ke EDC (`TerminalRunner.shutdown`), menunggu maks 5 s sampai perintah berjalan menjurnal hasilnya, baru menutup database; jadi instance baru tidak pernah membuka koneksi kedua ke EDC yang sama (test JVM `TerminalRunnerTest`). "Simpan dan jalankan" mengirim `ACTION_RELOAD`: sesi WSS dibuka ulang dengan alamat/token baru (juga sesudah token dicabut), jurnal dan perintah berjalan tetap.
+
 ## Build
 
 Butuh JDK 17 dan Android SDK (platform 35, build-tools 35.0.0). Di Mac tim:
@@ -32,6 +38,8 @@ echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties   # tidak di-commit
 heavy ./gradlew testDebugUnitTest   # unit test JVM
 heavy ./gradlew assembleDebug       # app/build/outputs/apk/debug/app-debug.apk
 ```
+
+Repositori hanya `google()` dan `mavenCentral()` (juga untuk plugin: AGP, KSP, Room ada di sana; tanpa Gradle Plugin Portal). Wrapper memeriksa `distributionSha256Sum` dari checksum resmi Gradle.
 
 Versi: Gradle wrapper 9.9.2, AGP 9.5.3 (Kotlin bawaan, compiler dipin 2.4.21), Room 2.8.5 + KSP 2.3.14, OkHttp 4.12.0 (5.x butuh compileSdk 37), kotlinx-serialization-json 1.13.0 (hanya runtime, tanpa plugin). minSdk 26, targetSdk 35. Hanya repositori `google()` dan `mavenCentral()`.
 
@@ -71,7 +79,9 @@ APK rilis: belum ada kunci tanda tangan. Kunci rilis disimpan di luar repo (kepu
 5. Cabut kabel LAN EDC: perintah berikut `link_down`, kasir mendapat jalan keluar manual (X1).
 6. Dua tablet dengan terminal sama: hanya satu yang mendapat lease (`held_by_other_device`).
 7. Void dan settlement: void sampai ke EDC; sesudah impor settlement, `heldSaleRecords` di `hello` turun.
-8. Catat merek/model EDC, versi Android tablet, waktu respons, dan semua kejadian NAK/timeout.
+8. Hentikan jembatan dari layar setelan saat EDC menunggu kartu, lalu jalankan lagi: EDC tidak menerima sale kedua, kasir mendapat `unknown`/"cek di mesin", hasil terkirim sesudah tersambung lagi (lifecycle service hanya diuji JVM, bukan di perangkat).
+9. Ganti token di layar setelan saat terhubung: sesi tersambung ulang dengan token baru tanpa menghentikan aplikasi.
+10. Catat merek/model EDC, versi Android tablet, waktu respons, dan semua kejadian NAK/timeout.
 
 ## Belum
 

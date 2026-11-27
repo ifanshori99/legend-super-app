@@ -13,6 +13,7 @@ import net from "node:net";
 import WebSocket from "ws";
 import {
   EDC_BRIDGE_PROTOCOL_VERSION,
+  EDC_BRIDGE_SALE_RECORD_MIN_RETENTION_MS,
   edcBridgeDedupeDecision,
   edcBridgeDedupeKey,
   edcBridgeFrameSha256,
@@ -282,6 +283,8 @@ type StoredSaleRecord = EdcBridgeSaleRecord & {
   readonly terminalId: string;
   readonly trace: string;
   readonly storedAt: Date;
+  /** Monotonic reading at write time (the app's reboot-safe clock). */
+  readonly storedAtMono: number;
   readonly released: boolean;
 };
 
@@ -290,7 +293,7 @@ export type EdcBridgeTabletOptions = {
   appVersion?: string;
   /** Monotonic clock for leases (ms). Default `performance.now()`. */
   monoMs?: () => number;
-  /** Wall clock for `completedAt` and record age. */
+  /** Wall clock for `completedAt` and, with `monoMs`, record age. */
   now?: () => Date;
   ownAddresses?: readonly string[];
 };
@@ -325,11 +328,13 @@ export class EdcBridgeTablet {
   }
 
   hello(): EdcBridgeHello {
-    const now = this.now();
     let held = 0;
     for (const record of this.saleRecords.values()) {
-      const age = now.getTime() - record.storedAt.getTime();
-      if (!record.released && age >= 48 * 3_600_000) held++;
+      if (
+        !record.released &&
+        this.recordAgeMs(record) >= EDC_BRIDGE_SALE_RECORD_MIN_RETENTION_MS
+      )
+        held++;
     }
     return {
       type: "hello",
@@ -388,7 +393,7 @@ export class EdcBridgeTablet {
         kind: "disconnected",
       };
       this.saleRecords.set(key, { ...record, state: "done", answer });
-      this.enqueue({
+      this.enqueueRan({
         type: "result",
         commandId: record.commandId,
         terminalId: record.terminalId,
@@ -405,12 +410,27 @@ export class EdcBridgeTablet {
     return this.ws !== null;
   }
 
-  /** Deletes sale records the contract allows (48 h AND released, or 30 days). */
+  /** Like SaleRecordRetention.ageMs in the app: the SHORTER of the wall and
+   * monotonic ages, so a wall clock moved forward never deletes early. */
+  recordAgeMs(record: StoredSaleRecord): number {
+    return Math.min(
+      this.now().getTime() - record.storedAt.getTime(),
+      this.monoMs() - record.storedAtMono,
+    );
+  }
+
+  /** Deletes sale records the contract allows (48 h AND released, or 30
+   * days), with the age of `recordAgeMs`. */
   purge(): number {
-    const now = this.now();
     let gone = 0;
     for (const [key, record] of this.saleRecords) {
-      if (edcBridgeSaleRecordDeletable(record, now)) {
+      const age = this.recordAgeMs(record);
+      if (
+        edcBridgeSaleRecordDeletable(
+          { storedAt: new Date(0), released: record.released },
+          new Date(age),
+        )
+      ) {
         this.saleRecords.delete(key);
         gone++;
       }
@@ -455,7 +475,15 @@ export class EdcBridgeTablet {
     this.wake();
   }
 
+  /** A reply (refusal, replay): a result already queued for that command
+   * id is kept, like the app's INSERT OR IGNORE. */
   private enqueue(result: EdcBridgeResult) {
+    if (!this.unacked.has(result.commandId))
+      this.unacked.set(result.commandId, result);
+  }
+
+  /** The result of a run on the terminal replaces a queued reply. */
+  private enqueueRan(result: EdcBridgeResult) {
     this.unacked.delete(result.commandId);
     this.unacked.set(result.commandId, result);
   }
@@ -556,6 +584,7 @@ export class EdcBridgeTablet {
         terminalId: command.terminalId,
         trace: command.trace,
         storedAt: this.now(),
+        storedAtMono: this.monoMs(),
         released: false,
       });
     this.busy.add(command.terminalId);
@@ -569,11 +598,13 @@ export class EdcBridgeTablet {
     this.busy.delete(command.terminalId);
     const result = this.resultOf(command, answer, null);
     if (key) {
+      // Only an in-flight record: after restart() it already holds its first
+      // answer, and a late completion is dropped (JournalDao.finishSale).
       const record = this.saleRecords.get(key);
-      if (record)
-        this.saleRecords.set(key, { ...record, state: "done", answer });
+      if (record?.state !== "in_flight") return;
+      this.saleRecords.set(key, { ...record, state: "done", answer });
     }
-    this.enqueue(result);
+    this.enqueueRan(result);
     this.send(result);
   }
 
