@@ -2933,7 +2933,10 @@ async function parkWhenQrisHoldRefusesInTx(
       ),
     );
   if (!hold || hold.state === "paid") return null;
-  const mismatch = paid.amountIdr !== Number(hold.amountIdr);
+  // 1272 K4: the hold freezes the bill (the tender); the guest pays the
+  // gateway the bill plus the guest service fee of the code.
+  const mismatch =
+    paid.amountIdr !== Number(hold.amountIdr) + Number(intent.guestFeeIdr);
   // legend-w0ows (founder Q7): a hold ended because a card sale booked the
   // bill is not parked; the payment settles like any payment on a voided
   // tender, so the late-payment path refunds the customer in full.
