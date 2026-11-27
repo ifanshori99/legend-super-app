@@ -1,38 +1,60 @@
 // The data door of the charge screen: components import these hooks and never
-// touch the endpoints. The collect hook holds one idempotency key per request
-// until the answer is known (in localStorage, so a refresh or a second tab
-// replays it too), and reads the charge again right before sending, so a code
-// or an EDC sale started elsewhere is never collected on top of.
+// touch the endpoints. Each attempt (cash, QRIS, recording a card sale,
+// starting a card sale) holds one idempotency key until the answer is known
+// (in localStorage, so a refresh or a second tab replays it too), and reads the
+// charge again right before sending, within a deadline, so a code or an EDC
+// sale started elsewhere is never collected on top of (legend-f1mmf (e)).
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useRef, useSyncExternalStore } from "react";
+import { useRef, useState, useSyncExternalStore } from "react";
 import type { CollectChargeAtPosInput } from "@starter/shared/qr-order";
 import { ApiError } from "@/lib/api/errors";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { useTenantContext } from "@/lib/tenant-context";
-import { CONTRACT_PENDING, collectCharge } from "./charge-api";
+import {
+  collectCharge,
+  fetchIssueCharge,
+  resolveChargeAttempt,
+  startChargeEdc,
+  type ResolveChargeAttemptInput,
+} from "./charge-api";
 import type { IssueChargeDetail } from "./charge-endpoints";
 import {
   beginAttempt,
   endAttempt,
   hasUnresolved,
+  lockedAttempt,
   markChecked,
   markRefused,
+  rememberSaleKey,
+  saleStartKey,
   type ChargeKeyScope,
 } from "./charge-key-store";
-import { chargeFailureKind, collectKeyAfter } from "./charge-logic";
+import {
+  chargeFailureKind,
+  collectKeyAfter,
+  edcStartKeyAfter,
+} from "./charge-logic";
 import {
   answerSettles,
   canCollect,
+  chargePhase,
+  codeFacts,
+  CHARGE_POLL_MS,
   COLLECT_DEADLINE_MS,
+  EDC_START_DEADLINE_MS,
+  PRECHECK_DEADLINE_MS,
+  RESOLVE_DEADLINE_MS,
+  readWithin,
   requestSignature,
   withDeadline,
+  type EdcStartFacts,
 } from "./charge-method-logic";
-import { issueChargeKeys, issueChargeQuery } from "./charge-queries";
-
-/** True when the server has no contract for the call yet. */
-export function isChargeContractPending(error: unknown): boolean {
-  return error instanceof ApiError && error.code === CONTRACT_PENDING;
-}
+import {
+  chargeApproversQuery,
+  chargeTerminalsQuery,
+  issueChargeKeys,
+  issueChargeQuery,
+} from "./charge-queries";
 
 /** What the cashier chose to collect with; the hook adds the idempotency key. */
 export type ChargeCollectRequest = CollectChargeAtPosInput extends infer Input
@@ -40,6 +62,9 @@ export type ChargeCollectRequest = CollectChargeAtPosInput extends infer Input
     ? Omit<Input, "idempotencyKey">
     : never
   : never;
+
+/** One attempt of the screen: a collect, or the start of a card sale. */
+export type ChargeAttemptRequest = ChargeCollectRequest | EdcStartFacts;
 
 function useOutletId(): string {
   return useTenantContext().outlet?.id ?? "";
@@ -63,8 +88,17 @@ function withStorage<T>(
   }
 }
 
-/** Nothing was sent: the charge changed, or another request is unresolved. */
-class NotSentError extends Error {}
+/**
+ * Nothing was sent. `not_read`: the charge could not be read before sending
+ * (the deadline passed or the server refused). `changed`: the charge read
+ * differently than the screen showed. `held`: another attempt of this browser
+ * is still without an answer.
+ */
+class NotSentError extends Error {
+  constructor(readonly reason: "not_read" | "changed" | "held") {
+    super("");
+  }
+}
 
 export function useIssueCharge(chargeId: string) {
   const outletId = useOutletId();
@@ -74,124 +108,301 @@ export function useIssueCharge(chargeId: string) {
   });
 }
 
+/**
+ * Who may approve the settle at this outlet, without the caller (the server
+ * refuses the caller as approver).
+ */
+export function useChargeApprovers(
+  action: "void" | "edc_standalone",
+  callerId: string,
+  enabled: boolean,
+) {
+  const outletId = useOutletId();
+  return useQuery({
+    ...chargeApproversQuery(outletId, action),
+    enabled: enabled && (API_MOCK || outletId !== ""),
+    select: (options) =>
+      options.filter(
+        (option) => option.userId.toLowerCase() !== callerId.toLowerCase(),
+      ),
+  });
+}
+
+/** The card terminals the charge may be sent to. */
+export function useChargeTerminals(enabled: boolean) {
+  const outletId = useOutletId();
+  return useQuery({
+    ...chargeTerminalsQuery(outletId),
+    enabled: enabled && (API_MOCK || outletId !== ""),
+  });
+}
+
 // An attempt left unresolved by this browser (refresh, another tab): the store
-// event tells other tabs; the snapshot is a boolean, so it is stable.
+// event tells other tabs; the snapshots are strings, so they are stable.
 function subscribeStorage(onChange: () => void) {
   window.addEventListener("storage", onChange);
   return () => window.removeEventListener("storage", onChange);
 }
 
-export function useCollectIssueCharge(chargeId: string) {
+/** The screen's view of an attempt this browser holds for the charge. */
+export type ChargeLock = { signature: string; key: string };
+
+export function useChargeAttempts(
+  chargeId: string,
+  charge: IssueChargeDetail | undefined,
+) {
   const outletId = useOutletId();
   const queryClient = useQueryClient();
   const sending = useRef(false);
   // The key of the request in flight, so a late answer never clears the key of
-  // another tab's attempt.
-  const attemptKey = useRef<string | null>(null);
+  // another tab's attempt, and whether it was that key's first send.
+  const attempt = useRef<{ key: string; firstSend: boolean } | null>(null);
+  // The last refusal ended its key: nothing can be recorded for it, so it
+  // reads as a refusal (401/403/429 on a first send).
+  const [lastEnded, setLastEnded] = useState(false);
   const scope: ChargeKeyScope = { outletId, chargeId };
   const queryKey = issueChargeKeys.charge(outletId, chargeId);
+  const facts = codeFacts(charge);
 
   const unresolved = useSyncExternalStore(
     subscribeStorage,
     () => withStorage((storage) => hasUnresolved(storage, scope)),
     () => false,
   );
+  const lockSnapshot = useSyncExternalStore(
+    subscribeStorage,
+    () =>
+      withStorage((storage) => {
+        const lock = lockedAttempt(storage, scope, facts);
+        return lock ? `${lock.key} ${lock.signature}` : "";
+      }),
+    () => "",
+  );
+  const lock: ChargeLock | null = lockSnapshot
+    ? {
+        key: lockSnapshot.slice(0, lockSnapshot.indexOf(" ")),
+        signature: lockSnapshot.slice(lockSnapshot.indexOf(" ") + 1),
+      }
+    : null;
+
+  // The storage event only reaches other tabs: this tab tells itself.
+  const notify = () => window.dispatchEvent(new StorageEvent("storage"));
+  function store<T>(
+    run: (storage: Pick<Storage, "getItem" | "setItem" | "removeItem">) => T,
+  ): T {
+    const result = withStorage(run);
+    notify();
+    return result;
+  }
 
   const mutation = useMutation({
     // The tap waits for the server even after the cashier leaves the screen;
     // no automatic retry: the cashier checks the status first.
     retry: false,
-    mutationFn: async (request: ChargeCollectRequest) => {
-      const charge = await queryClient
-        .fetchQuery({ ...issueChargeQuery(outletId, chargeId), staleTime: 0 })
-        .catch((error: unknown) => {
-          throw new NotSentError(error instanceof Error ? error.message : "");
-        });
-      if (!canCollect(charge, request)) throw new NotSentError("");
+    mutationFn: async (request: ChargeAttemptRequest) => {
+      // (e) The read before sending has a deadline; a failed read sends
+      // nothing and frees nothing.
+      const read = await readWithin(
+        (signal) => fetchIssueCharge(chargeId, signal),
+        PRECHECK_DEADLINE_MS,
+      ).catch(() => {
+        throw new NotSentError("not_read");
+      });
+      queryClient.setQueryData(queryKey, read);
+      const allowed =
+        request.method === "edc_start"
+          ? chargePhase(read) === "choose"
+          : canCollect(read, request);
+      if (!allowed) throw new NotSentError("changed");
       // The charge was just read open: together with the server's 409/422 for
       // the key, this is what lets the cashier change method.
-      withStorage((storage) => markChecked(storage, scope));
-      const attempt = withStorage((storage) =>
-        beginAttempt(storage, scope, requestSignature(charge, request), () =>
-          globalThis.crypto.randomUUID(),
+      store((storage) => markChecked(storage, scope));
+      const begun = store((storage) =>
+        beginAttempt(
+          storage,
+          scope,
+          requestSignature(read, request),
+          () => globalThis.crypto.randomUUID(),
+          codeFacts(read),
         ),
       );
-      if (attempt.conflict) throw new NotSentError("");
-      attemptKey.current = attempt.key;
+      if (begun.conflict) throw new NotSentError("held");
+      attempt.current = { key: begun.key, firstSend: begun.firstSend };
       // A request that never answers must not lock the screen: after the
       // deadline the result is unknown (the status check follows).
-      return withDeadline(
+      if (request.method === "edc_start") {
+        // The agent answers when the terminal is done (up to 120 s): the
+        // screen keeps reading the server meanwhile, so the sale shows.
+        const poll = setInterval(() => {
+          void queryClient.refetchQueries({ queryKey }).catch(() => undefined);
+        }, CHARGE_POLL_MS);
+        try {
+          const sale = await withDeadline(
+            startChargeEdc(chargeId, {
+              terminalId: request.terminalId,
+              idempotencyKey: begun.key,
+            }),
+            EDC_START_DEADLINE_MS,
+          );
+          return { kind: "edc" as const, saleId: sale.id };
+        } finally {
+          clearInterval(poll);
+        }
+      }
+      const answer = await withDeadline(
         collectCharge(chargeId, {
           ...request,
-          idempotencyKey: attempt.key,
+          idempotencyKey: begun.key,
         } as CollectChargeAtPosInput),
         COLLECT_DEADLINE_MS,
       );
+      return { kind: "collect" as const, answer };
     },
-    onSuccess: (answer) => {
-      withStorage((storage) =>
-        endAttempt(storage, scope, attemptKey.current ?? undefined),
-      );
-      // Show what the answer says at once (a fresh code locks the methods);
-      // the refetch confirms it. A QRIS answer is a code, not money.
-      queryClient.setQueryData<IssueChargeDetail>(queryKey, (current) =>
-        current
-          ? {
-              ...current,
-              ...answer.charge,
-              payment: answer.payment ?? current.payment,
-            }
-          : current,
-      );
-      void queryClient.invalidateQueries({ queryKey });
+    onSuccess: async (result) => {
+      const key = attempt.current?.key;
+      if (result.kind === "edc" && key)
+        // The sale is the server's now; its start key settles it later.
+        store((storage) => rememberSaleKey(storage, scope, result.saleId, key));
+      store((storage) => endAttempt(storage, scope, key));
+      if (result.kind === "collect") {
+        const { answer } = result;
+        // Show what the answer says at once (a fresh code locks the methods);
+        // the refetch confirms it. A QRIS answer is a code, not money.
+        queryClient.setQueryData<IssueChargeDetail>(queryKey, (current) =>
+          current
+            ? {
+                ...current,
+                ...answer.charge,
+                payment: answer.payment ?? current.payment,
+              }
+            : current,
+        );
+      }
+      // The screen shows the sale or the code from the server before the
+      // attempt ends, so the methods never look free in between.
+      await queryClient.refetchQueries({ queryKey }).catch(() => undefined);
     },
-    onError: (error) => {
+    onError: (error, request) => {
       // 409/422 keep the key and free other methods once the charge reads
-      // open; auth and rate limits and unknown results keep it too. Any other
-      // refusal recorded nothing: the next try is a new intent.
-      if (!(error instanceof ApiError) || attemptKey.current === null) return;
-      const key = attemptKey.current;
-      const action = collectKeyAfter(error.status);
+      // open; unknown results keep it. Auth and rate limits on the key's first
+      // send, and any other refusal, recorded nothing: the next try is new.
+      setLastEnded(false);
+      if (!(error instanceof ApiError) || attempt.current === null) return;
+      const { key, firstSend } = attempt.current;
+      const action =
+        request.method === "edc_start"
+          ? edcStartKeyAfter(error.status, firstSend)
+          : collectKeyAfter(error.status, firstSend);
       if (action === "refused")
-        withStorage((storage) => markRefused(storage, scope, key));
-      else if (action === "end")
-        withStorage((storage) => endAttempt(storage, scope, key));
+        store((storage) => markRefused(storage, scope, key));
+      else if (action === "end") {
+        setLastEnded(true);
+        store((storage) => endAttempt(storage, scope, key));
+      }
     },
     onSettled: () => {
       sending.current = false;
-      attemptKey.current = null;
+      attempt.current = null;
     },
   });
 
   // Anything that is not a clear refusal is unknown: a dropped answer, an
-  // unreadable answer, or an attempt this browser left unresolved.
+  // unreadable answer, or an attempt this browser left unresolved. A read
+  // before sending that failed sent nothing: it says so, and the lock stays.
   const { error } = mutation;
-  let failure: { kind: "unknown" | "failed"; message: string } | null = null;
-  if (error instanceof ApiError)
-    failure = { kind: chargeFailureKind(error.status), message: error.message };
-  else if (error) failure = { kind: "unknown", message: "" };
+  let failure: {
+    kind: "unknown" | "failed" | "not_read" | "changed" | "held";
+    code: string | null;
+  } | null = null;
+  if (error instanceof NotSentError)
+    failure = { kind: error.reason, code: null };
+  else if (error instanceof ApiError)
+    failure = {
+      kind: lastEnded ? "failed" : chargeFailureKind(error.status),
+      code: error.code,
+    };
+  else if (error) failure = { kind: "unknown", code: null };
   else if (unresolved && !mutation.isPending)
-    failure = { kind: "unknown", message: "" };
+    failure = { kind: "unknown", code: null };
+
+  const data = mutation.data?.kind === "collect" ? mutation.data.answer : null;
+  const settled = answerSettles(data ?? undefined);
+  const variables = mutation.variables;
 
   return {
-    collect: (request: ChargeCollectRequest) => {
+    send: (request: ChargeAttemptRequest) => {
       // Two taps in one frame: the button is not disabled yet, the ref is.
       if (sending.current) return;
       sending.current = true;
       mutation.mutate(request);
     },
     pending: mutation.isPending,
+    /** What is being sent, for the waiting text. */
+    sendingMethod: mutation.isPending ? (variables?.method ?? null) : null,
     /** The server marked the charge paid in this answer. */
-    settled: answerSettles(mutation.data),
+    settled,
     /** The method of the answer above, for the receipt line. */
-    settledMethod: answerSettles(mutation.data)
-      ? (mutation.variables?.method ?? null)
-      : null,
+    settledMethod: settled ? (variables?.method ?? null) : null,
     failure,
+    /** The attempt that holds the picker to its own method (a). */
+    lock,
+    /** The key this browser started the sale with, if it did. */
+    saleKey: (saleId: string) =>
+      withStorage((storage) => saleStartKey(storage, scope, saleId)),
     /** The server was read and the charge is not paid: back to the form. */
     resolve: () => {
-      withStorage((storage) => markChecked(storage, scope));
+      store((storage) => markChecked(storage, scope));
+      mutation.reset();
+    },
+    /** Nothing was sent (the read before sending failed): back to the form. */
+    clear: () => mutation.reset(),
+    /**
+     * Reads the charge now within a deadline (the status check): the result,
+     * or null when the server did not answer in time.
+     */
+    checkNow: async (): Promise<IssueChargeDetail | null> => {
+      try {
+        const read = await readWithin(
+          (signal) => fetchIssueCharge(chargeId, signal),
+          PRECHECK_DEADLINE_MS,
+        );
+        queryClient.setQueryData(queryKey, read);
+        return read;
+      } catch {
+        return null;
+      }
+    },
+    /** A supervisor settled the attempt with this key: it is answered. */
+    settledAttempt: (key: string) => {
+      store((storage) => endAttempt(storage, scope, key));
       mutation.reset();
     },
   };
+}
+
+/**
+ * A supervisor settles a cash or card attempt that never answered (legend-
+ * f1mmf (d)). The answer carries the server's charge, shown at once.
+ */
+export function useResolveChargeAttempt(chargeId: string) {
+  const outletId = useOutletId();
+  const queryClient = useQueryClient();
+  const queryKey = issueChargeKeys.charge(outletId, chargeId);
+  return useMutation<
+    Awaited<ReturnType<typeof resolveChargeAttempt>>,
+    Error,
+    ResolveChargeAttemptInput
+  >({
+    retry: false,
+    // The settle is replayed safely with the same key: after the deadline the
+    // dialog may be opened and sent again.
+    mutationFn: (input) =>
+      withDeadline(resolveChargeAttempt(chargeId, input), RESOLVE_DEADLINE_MS),
+    onSuccess: (answer) => {
+      queryClient.setQueryData(queryKey, answer.charge);
+      void queryClient.invalidateQueries({ queryKey });
+    },
+    // Whatever happened, the screen reads the server again.
+    onError: () => void queryClient.invalidateQueries({ queryKey }),
+  });
 }

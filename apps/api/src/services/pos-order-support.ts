@@ -37,6 +37,7 @@ import {
   toIsoDateTime,
   ulidSchema,
   ulidToUuid,
+  uuidSchema,
   type OutletId,
   type ScopedTenantContext,
   type UserId,
@@ -86,11 +87,15 @@ import {
 } from "../db/schema/pos-order.ts";
 import { edcTransactions } from "../db/schema/edc.ts"; // legend-ig2sl
 import { paymentEdcTerminals } from "../db/schema/payment-admin.ts";
-import { orderIssues } from "../db/schema/kds-issues.ts"; // legend-kxoyf
+import { paymentIntents } from "../db/schema/payment.ts";
+import { orderIssueCharges, orderIssues } from "../db/schema/kds-issues.ts"; // legend-kxoyf
 import { paymentVaReleases } from "../db/schema/payment-va-release.ts";
 import { posQrisHolds } from "../db/schema/pos-qris-hold.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { recordAudit } from "./core-audit.ts";
+import { isOrderVoidedByCorrection } from "./order-recovery-charge-void-guard.ts";
+import { assertAttemptNotClosed } from "./order-recovery-charge-attempt-key.ts";
+import { liveCodeWhere } from "./payment-live-code.ts";
 import { posOverrideUsableFromDevice } from "./device-pin-support.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import type { Tx } from "./menu-internals.ts";
@@ -473,6 +478,95 @@ export async function hasOpenEdcRequest(
 }
 
 /**
+ * legend-f1mmf: a card sale for a dearer-swap charge (reference = the charge
+ * id, `order-recovery-charge-pos-edc.ts`). False when no charge of this outlet
+ * has that id. Otherwise it may start only when the charge still takes money
+ * (`open`, `routed_pos`), its order is not voided (status or correction), no
+ * code of its link may still take money or was paid (`liveCodeWhere`), and
+ * the amount is the charge's exactly; else ORDER_NOT_PAYABLE /
+ * EDC_AMOUNT_MISMATCH. The QRIS issue of the charge takes the same (tenant,
+ * outlet:reference) advisory lock, so a code and a sale never both pass.
+ */
+async function edcSaleChargePayable(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    readonly outletId: OutletId;
+    readonly reference: string;
+    readonly amountIdr: number;
+    readonly idempotencyKey?: string;
+  },
+): Promise<boolean> {
+  const tenantId = context.tenant.tenantId;
+  if (!uuidSchema.safeParse(input.reference).success) return false;
+  const [charge] = await tx
+    .select({
+      status: orderIssueCharges.status,
+      amountIdr: orderIssueCharges.amountIdr,
+      paymentLinkId: orderIssueCharges.paymentLinkId,
+      orderStatus: orders.status,
+      orderId: orders.id,
+    })
+    .from(orderIssueCharges)
+    .innerJoin(
+      orders,
+      and(
+        eq(orders.tenantId, orderIssueCharges.tenantId),
+        eq(orders.id, orderIssueCharges.orderId),
+      ),
+    )
+    .where(
+      and(
+        eq(orderIssueCharges.tenantId, tenantId),
+        eq(orderIssueCharges.outletId, input.outletId),
+        eq(orderIssueCharges.id, input.reference),
+      ),
+    )
+    .limit(1);
+  if (!charge) return false;
+  // legend-f1mmf (d): an attempt a supervisor closed never starts late.
+  if (input.idempotencyKey !== undefined)
+    await assertAttemptNotClosed(
+      tx,
+      tenantId,
+      input.outletId,
+      input.reference,
+      "edc",
+      input.idempotencyKey,
+    );
+  if (
+    (charge.status !== "open" && charge.status !== "routed_pos") ||
+    charge.orderStatus === "voided" ||
+    (await isOrderVoidedByCorrection(tx, tenantId, charge.orderId))
+  )
+    throw new PosError("ORDER_NOT_PAYABLE");
+  if (charge.paymentLinkId !== null) {
+    const [money] = await tx
+      .select({ id: paymentIntents.id })
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, tenantId),
+          eq(paymentIntents.paymentLinkId, charge.paymentLinkId),
+          or(
+            inArray(paymentIntents.status, [
+              "paid",
+              "partially_refunded",
+              "refunded",
+            ]),
+            liveCodeWhere(),
+          ),
+        ),
+      )
+      .limit(1);
+    if (money) throw new PosError("ORDER_NOT_PAYABLE");
+  }
+  if (input.amountIdr !== charge.amountIdr)
+    throw new EdcError("EDC_AMOUNT_MISMATCH");
+  return true;
+}
+
+/**
  * An EDC sale may only ask the terminal for what the bill can book as a card
  * tender right now (legend-xcbs7). The bill is the POS order whose number is
  * the request reference. Refused with ORDER_NOT_PAYABLE when it is missing, not
@@ -489,6 +583,8 @@ export async function assertEdcSaleBillPayable(
     readonly outletId: OutletId;
     readonly reference: string;
     readonly amountIdr: number;
+    /** The new sale's key (agent write-ahead): a closed charge attempt refuses. */
+    readonly idempotencyKey?: string;
   },
 ): Promise<void> {
   const tenantId = context.tenant.tenantId;
@@ -510,6 +606,8 @@ export async function assertEdcSaleBillPayable(
       ),
     )
     .limit(1);
+  // legend-f1mmf: no bill of that number; the reference may be a swap charge.
+  if (!found && (await edcSaleChargePayable(tx, context, input))) return;
   if (
     !found ||
     found.posOrderId === null ||

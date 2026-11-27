@@ -254,6 +254,20 @@ function guestPay(guest: Guest, chargeId: string) {
     .send({ method: "qris", idempotencyKey: randomUUID() });
 }
 
+/**
+ * The code lapsed past the 60 s margin and the provider answered final, as the
+ * poll records it (`provider_final_at`): it can no longer take money.
+ */
+async function endCode(intentId: string) {
+  await owner.query(
+    `UPDATE payment_intents
+     SET status = 'expired', expires_at = now() - interval '5 minutes',
+         provider_final_at = now()
+     WHERE tenant_id = $1 AND id = $2`,
+    [w.tenant.tenantId, intentId],
+  );
+}
+
 async function intentStatus(intentId: string) {
   const { rows } = await owner.query<{ status: string }>(
     "SELECT status FROM payment_intents WHERE tenant_id = $1 AND id = $2",
@@ -273,7 +287,7 @@ async function linkStatus(linkId: string) {
 }
 
 describe("legend-800h1 collect a swap charge in cash at the till", () => {
-  it("cash: the charge is paid by a cash_in on the shift, the link is cancelled, the event says pos_cash", async () => {
+  it("cash: refused while the guest's code may still be paid; once it ended, the charge is paid by a cash_in on the shift, the link is cancelled, the event says pos_cash", async () => {
     const opened = await openCharge();
     await openShift(await businessDateOf(opened.order.id));
     const code = await guestPay(opened.guest, opened.charge.id);
@@ -281,6 +295,13 @@ describe("legend-800h1 collect a swap charge in cash at the till", () => {
     const intentId = code.body.data.id as string;
     const linkId = (await chargeOf(opened.issueId)).payment_link_id!;
     const before = await expectedCash();
+
+    // legend-f1mmf: while the guest's code may still be paid, no cash.
+    const early = await collect(opened.charge.id, cashBody(AMOUNT + 1_915));
+    expect(early.status, JSON.stringify(early.body)).toBe(409);
+    expect((await chargeOf(opened.issueId)).status).toBe("open");
+    expect(await expectedCash()).toBe(before);
+    await endCode(intentId);
 
     const res = await collect(opened.charge.id, cashBody(AMOUNT + 1_915));
     expect(res.status, JSON.stringify(res.body)).toBe(200);
@@ -412,11 +433,14 @@ describe("legend-800h1 collect a swap charge in cash at the till", () => {
     expect((await chargeOf(opened.issueId)).status).toBe("open");
   });
 
-  it("a guest who pays the cancelled code later is refunded; no second charge_paid", async () => {
+  it("a guest who pays the ended, cancelled code later is refunded; no second charge_paid", async () => {
     const opened = await openCharge();
     await openShift(await businessDateOf(opened.order.id));
     const code = await guestPay(opened.guest, opened.charge.id);
     const intentId = code.body.data.id as string;
+    // legend-f1mmf: the code ended (provider final) before the cash is taken;
+    // the guest's app still shows it and the money arrives late.
+    await endCode(intentId);
     expect((await collect(opened.charge.id, cashBody())).status).toBe(200);
     cashIns += 1;
 

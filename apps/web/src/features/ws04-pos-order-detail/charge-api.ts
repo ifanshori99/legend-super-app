@@ -1,10 +1,16 @@
 // One function per charge call; components never call these (they use
-// ./charge-hooks.ts). The charge read has no API route yet: outside mock mode
-// it fails with CONTRACT_PENDING so the screen says so instead of showing made
-// up data.
+// ./charge-hooks.ts). Every amount is the server's: the card start and the
+// supervisor's settle send none (the slip's printed amount is evidence the
+// server compares, never a figure it books).
+import type { z } from "@starter/shared/core";
 import { callEndpoint } from "@/lib/api/endpoint";
-import { ApiError } from "@/lib/api/errors";
 import { API_MOCK } from "@/lib/api/mock-flag";
+import {
+  fetchEdcTerminals,
+  fetchResolveApprovers,
+} from "@/features/ws04-pos-kasir/api";
+import type { EdcTransaction } from "@starter/shared/edc";
+import { PRECHECK_DEADLINE_MS, readWithin } from "./charge-method-logic";
 import type {
   CollectChargeAtPosInput,
   GuestPayment,
@@ -12,22 +18,16 @@ import type {
 import {
   collectIssueChargeAtPos,
   getIssueCharge,
+  resolveIssueChargeAttempt,
+  startIssueChargeEdc,
   type IssueChargeDetail,
   type IssueChargeView,
 } from "./charge-endpoints";
-
-export const CONTRACT_PENDING = "CONTRACT_PENDING";
 
 export async function fetchIssueCharge(
   chargeId: string,
   signal?: AbortSignal,
 ): Promise<IssueChargeDetail> {
-  if (!API_MOCK)
-    throw new ApiError(
-      501,
-      CONTRACT_PENDING,
-      "Rincian tagihan selisih belum tersedia di server.",
-    );
   const { data } = await callEndpoint(
     getIssueCharge,
     { params: { chargeId } },
@@ -56,4 +56,86 @@ export async function collectCharge(
     body: input,
   });
   return data;
+}
+
+/**
+ * Starts the card sale on the outlet's terminal. The server takes the charge's
+ * amount and reference; the same key replays the same sale.
+ */
+export async function startChargeEdc(
+  chargeId: string,
+  input: z.input<typeof startIssueChargeEdc.body>,
+): Promise<EdcTransaction> {
+  const { data } = await callEndpoint(startIssueChargeEdc, {
+    params: { chargeId },
+    body: input,
+  });
+  return data;
+}
+
+export type ResolveChargeAttemptInput = z.input<
+  typeof resolveIssueChargeAttempt.body
+>;
+
+/** A supervisor settles a cash or card attempt that never answered (d). */
+export async function resolveChargeAttempt(
+  chargeId: string,
+  input: ResolveChargeAttemptInput,
+): Promise<z.output<typeof resolveIssueChargeAttempt.response>["data"]> {
+  const { data } = await callEndpoint(resolveIssueChargeAttempt, {
+    params: { chargeId },
+    body: input,
+  });
+  return data;
+}
+
+/** A card terminal the charge can be sent to (the outlet's payment options). */
+export type ChargeTerminal = { id: string; label: string; detail: string };
+
+// Mock mode: the demo terminal the charge mock answers for (an id the start
+// contract accepts).
+const MOCK_TERMINALS: ChargeTerminal[] = [
+  {
+    id: "7e9a4b12-6c38-4d5f-8b20-1f3c5d7e9a02",
+    label: "BCA · EDC 01",
+    detail: "•••• 4021",
+  },
+];
+
+/** The outlet's terminals that take cards; a QRIS-only one is left out. */
+export async function fetchChargeTerminals(
+  outletId: string,
+): Promise<ChargeTerminal[]> {
+  if (API_MOCK) return MOCK_TERMINALS;
+  const terminals = await readWithin(
+    () => fetchEdcTerminals(outletId),
+    PRECHECK_DEADLINE_MS,
+  );
+  return terminals
+    .filter((item) => !item.modes || item.modes.includes("card"))
+    .map((item) => ({
+      id: item.id,
+      label: item.label,
+      detail: item.assignedTo,
+    }));
+}
+
+export type ChargeApprover = { userId: string; name: string };
+
+// Mock mode: a supervisor other than the mock cashier, so the settle can be
+// shown end to end.
+const MOCK_APPROVERS: ChargeApprover[] = [
+  { userId: "00000000-0000-4000-8000-000000000611", name: "Supervisor 02" },
+];
+
+/** Who may approve a settle at this outlet (cash: void; card: EDC). */
+export async function fetchChargeApprovers(
+  outletId: string,
+  action: "void" | "edc_standalone",
+): Promise<ChargeApprover[]> {
+  if (API_MOCK) return MOCK_APPROVERS;
+  return readWithin(
+    () => fetchResolveApprovers(outletId, action),
+    PRECHECK_DEADLINE_MS,
+  );
 }

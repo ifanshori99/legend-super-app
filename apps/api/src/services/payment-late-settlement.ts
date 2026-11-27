@@ -197,7 +197,11 @@ export async function depositPaidPastCap(
       and(
         eq(reservations.tenantId, context.tenant.tenantId),
         eq(reservations.depositPaymentLinkId, link.id),
-        inArray(reservations.status, ["pending_deposit", "cancelled", "no_show"]),
+        inArray(reservations.status, [
+          "pending_deposit",
+          "cancelled",
+          "no_show",
+        ]),
       ),
     )
     .limit(1);

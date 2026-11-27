@@ -18,7 +18,8 @@
 //   key is IDEMPOTENCY_KEY_REUSED; any other paid / closed charge is a 409.
 // - The guest's payment link is cancelled in the same transaction. A guest who
 //   still pays the old code is a `late_payment_on_closed_charge` of the
-//   charge consumer and gets the money back. A QRIS the guest already paid
+//   charge consumer and gets the money back. A code that may still take money
+//   (`liveCodeWhere`) refuses the cash (legend-f1mmf). A QRIS the guest already paid
 //   (a verified `paid` intent) refuses the cash: the
 //   cashier waits for the confirmation. A voided order is refused too, as its
 //   sale journal never posts and the cash journal would stay parked.
@@ -54,6 +55,12 @@ import {
   confirmChargeLinksUnpaid,
   lockChargeChain,
 } from "./order-recovery-charge.ts";
+import { assertAttemptNotClosed } from "./order-recovery-charge-attempt-key.ts";
+import {
+  assertNoEdcSaleOutstanding,
+  assertNoLiveChargeCode,
+  closeLapsedChargeCodes,
+} from "./order-recovery-charge-money-path.ts";
 import {
   collectChargeAtPosEdc,
   collectChargeAtPosQris,
@@ -108,6 +115,9 @@ async function collectChargeAtPosCash(
   const tenantId = context.tenant.tenantId;
   // legend-ukbq3: ask the provider first (outside the transaction). Money the
   // provider already holds is applied to the charge, so the cash is refused.
+  // legend-f1mmf: a lapsed code is closed first when the provider answers
+  // final; a code still live refuses the cash below (`assertNoLiveChargeCode`).
+  await closeLapsedChargeCodes(context, chargeId, now);
   const settled = await confirmChargeLinksUnpaid(context, { chargeId }, now);
   return withTenant(db, context, async (tx) => {
     const snapshot = await accessSnapshotInTransaction(
@@ -154,6 +164,15 @@ async function collectChargeAtPosCash(
         return { charge: toView(charge), changeIdr };
       }
     }
+    // legend-f1mmf (d): a supervisor closed this attempt; it never pays late.
+    await assertAttemptNotClosed(
+      tx,
+      tenantId,
+      charge.outletId,
+      charge.id,
+      "cash",
+      input.idempotencyKey,
+    );
     if (charge.status !== "open" && charge.status !== "routed_pos")
       throw new HttpError(
         409,
@@ -166,6 +185,7 @@ async function collectChargeAtPosCash(
         "CONFLICT",
         "QRIS sudah dibayar; tunggu konfirmasi.",
       );
+    await assertNoEdcSaleOutstanding(tx, tenantId, charge);
     if (input.receivedIdr < charge.amountIdr)
       throw new CoreError(
         "VALIDATION_ERROR",
@@ -209,6 +229,9 @@ async function collectChargeAtPosCash(
           "CONFLICT",
           "QRIS sudah dibayar; tunggu konfirmasi.",
         );
+      // legend-f1mmf (review K): a code the guest may still pay refuses the
+      // cash too, the same rule as the card sale and the cashier's screen.
+      await assertNoLiveChargeCode(tx, tenantId, charge.paymentLinkId);
     }
 
     // Shift next (after the issue, order, charge chain, link): SHIFT_NOT_OPEN

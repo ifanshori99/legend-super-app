@@ -44,6 +44,7 @@ import { paymentLinks } from "../db/schema/payment.ts";
 import { withTenant } from "../db/tenant.ts";
 import { openSecret, sealSecret } from "../lib/secrets.ts";
 import type { Tx } from "./menu-internals.ts";
+import { assertNoEdcSaleOutstanding } from "./order-recovery-charge-money-path.ts";
 import {
   handleIssueChargeClosed,
   handleIssueChargePaid,
@@ -348,6 +349,9 @@ export async function createIssueChargePayment(
           )
             return guestPaymentDto(current, target);
         }
+        // legend-f1mmf (review K): a card sale of the charge that is
+        // unresolved or approved may hold the money already; no new code.
+        await assertNoEdcSaleOutstanding(tx, context.tenant.tenantId, charge);
         // legend-ek1wt: a charge code is a code issuer too; while a QR of the
         // order's bill can still be paid, no new code (409 QRIS_HOLD_ACTIVE).
         await assertNoActiveQrisHold(tx, context, charge.orderId);

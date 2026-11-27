@@ -1626,6 +1626,7 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
           outletId: input.outletId,
           reference: input.reference,
           amountIdr: input.amountIdr,
+          idempotencyKey: input.idempotencyKey,
         });
         // legend-w0ows: a bill with a collectible QR cannot start a card sale
         // (the tender would be refused while the hold is active). Same advisory

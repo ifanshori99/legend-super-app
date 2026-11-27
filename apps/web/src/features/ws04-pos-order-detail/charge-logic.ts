@@ -43,10 +43,58 @@ export function chargeFailureKind(status: number): "unknown" | "failed" {
  * What a failed collect does to the idempotency key. 409/422: the server
  * answered for this key and recorded nothing (the key is kept; it only frees
  * another method after the charge is read open). Auth and rate limits (401,
- * 403, 429) and any unknown result keep the key too. Any other refusal ends it.
+ * 403, 429) are refused before the server works on the request: on the key's
+ * first send nothing can be recorded and the key ends (legend-f1mmf (b)); on a
+ * later send an earlier one may have recorded, so it is kept. Any unknown
+ * result keeps the key too. Any other refusal ends it.
  */
-export function collectKeyAfter(status: number): "refused" | "keep" | "end" {
+export function collectKeyAfter(
+  status: number,
+  firstSend = false,
+): "refused" | "keep" | "end" {
   if (status === 409 || status === 422) return "refused";
-  if (status === 401 || status === 403 || status === 429) return "keep";
+  if (status === 401 || status === 403 || status === 429)
+    return firstSend ? "end" : "keep";
   return chargeFailureKind(status) === "failed" ? "end" : "keep";
+}
+
+/**
+ * The same for a card start. 503 EDC_AGENT_NOT_READY is not "nothing
+ * written": the agent also answers it after the sale was written ahead. It
+ * stays unknown like any 5xx; the screen reads the server first.
+ */
+export function edcStartKeyAfter(
+  status: number,
+  firstSend = false,
+): "refused" | "keep" | "end" {
+  return collectKeyAfter(status, firstSend);
+}
+
+/** Catalog keys of the server answers the charge screen and dialog explain. */
+const ERROR_KEYS = {
+  EDC_AGENT_NOT_READY: "posIssueCharge.edc.notReady",
+  ISSUE_CHARGE_EDC_STATEMENT_REQUIRED:
+    "posIssueCharge.resolve.statementRequired",
+  ISSUE_CHARGE_SLIP_REQUIRED: "posIssueCharge.resolve.slipRequired",
+  PIN_INVALID: "posIssueCharge.error.pinInvalid",
+  PIN_LOCKED: "posIssueCharge.error.pinLocked",
+  PIN_DEVICE_THROTTLED: "posIssueCharge.error.throttled",
+  RATE_LIMITED: "posIssueCharge.error.throttled",
+  CONFLICT: "posIssueCharge.error.conflict",
+} as const;
+
+export type ChargeErrorKey =
+  (typeof ERROR_KEYS)[keyof typeof ERROR_KEYS] | "posIssueCharge.error.generic";
+
+/**
+ * The catalog text of a server error code. The server's own message is never
+ * shown to the cashier: an unknown code reads as one plain Indonesian sentence
+ * (UI audit P3-17).
+ */
+export function chargeErrorKey(
+  code: string | null | undefined,
+): ChargeErrorKey {
+  if (code && Object.hasOwn(ERROR_KEYS, code))
+    return ERROR_KEYS[code as keyof typeof ERROR_KEYS];
+  return "posIssueCharge.error.generic";
 }

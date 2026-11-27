@@ -34,6 +34,7 @@ type PaymentFacts = {
 
 export type EdcSaleFacts = {
   id: string;
+  terminalId?: string;
   status: string;
   amountIdr: number;
   method: string | null;
@@ -52,6 +53,9 @@ export type ChargeRequestFacts =
   | { method: "cash"; receivedIdr: number }
   | { method: "qris" }
   | { method: "edc_card"; edcTransactionId: string };
+
+/** Starting a card sale of the charge on one terminal. */
+export type EdcStartFacts = { method: "edc_start"; terminalId: string };
 
 /** Poll gap while the charge waits for the gateway or the terminal. */
 export const CHARGE_POLL_MS = 3000;
@@ -148,8 +152,9 @@ export function answerSettles(
  */
 export function requestSignature(
   charge: ChargeFacts,
-  request: ChargeRequestFacts,
+  request: ChargeRequestFacts | EdcStartFacts,
 ): string {
+  if (request.method === "edc_start") return `edc:${request.terminalId}`;
   if (request.method === "cash") return `cash:${request.receivedIdr}`;
   if (request.method === "edc_card")
     return `edc_card:${request.edcTransactionId}`;
@@ -159,6 +164,15 @@ export function requestSignature(
 /** How long a collect may hang on this screen before the result is unknown. */
 export const COLLECT_DEADLINE_MS = 30_000;
 
+/**
+ * A card start answers only when the terminal is done (the agent waits up to
+ * 120 s, EDC_SALE_TIMEOUT_MS): the screen waits longer than that.
+ */
+export const EDC_START_DEADLINE_MS = 150_000;
+
+/** How long the supervisor's settle may hang before it is read again. */
+export const RESOLVE_DEADLINE_MS = 30_000;
+
 /** The request did not answer in time: the result is unknown, not a failure. */
 export class CollectDeadlineError extends Error {}
 
@@ -167,6 +181,86 @@ export function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new CollectDeadlineError()), ms);
     work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+/**
+ * The method a stored attempt holds the picker to (legend-f1mmf (a)): a card
+ * start and recording its sale are both the card method. Unknown: null, the
+ * picker offers nothing.
+ */
+export function methodOfSignature(signature: string): ChargeMethod | null {
+  if (signature.startsWith("cash:")) return "cash";
+  if (signature.startsWith("qris:")) return "qris";
+  if (signature.startsWith("edc:") || signature.startsWith("edc_card:"))
+    return "edc_card";
+  return null;
+}
+
+/** The terminal a stored card start named, so a retry uses the same one. */
+export function terminalOfSignature(signature: string): string | null {
+  return signature.startsWith("edc:") ? signature.slice(4) : null;
+}
+
+/**
+ * The server facts the key store frees an attempt by: the gateway code
+ * (legend-f1mmf (c)) and the card sales approved for exactly this charge.
+ */
+export function codeFacts(charge: ChargeFacts | undefined): {
+  paymentId: string | null;
+  codeEnded: boolean;
+  approvedSales: { id: string; terminalId: string }[];
+} {
+  const payment = charge?.payment ?? null;
+  const amountIdr = charge?.amountIdr ?? 0;
+  return {
+    paymentId: payment?.id ?? null,
+    codeEnded: payment !== null && CODE_ENDED.includes(payment.status),
+    approvedSales: (charge?.edcSales ?? []).flatMap((sale) =>
+      sale.terminalId !== undefined && edcSaleMatches(sale, amountIdr)
+        ? [{ id: sale.id, terminalId: sale.terminalId }]
+        : [],
+    ),
+  };
+}
+
+/** How long the read right before sending may take (legend-f1mmf (e)). */
+export const PRECHECK_DEADLINE_MS = 8_000;
+
+/** The read before sending did not answer in time: nothing was sent. */
+export class PrecheckDeadlineError extends Error {}
+
+/**
+ * Runs `read` with a signal that aborts after `ms`; the read then rejects with
+ * `PrecheckDeadlineError`, so a hanging read never holds the screen. An
+ * `outer` signal (the query's own cancel) aborts the read too.
+ */
+export function readWithin<T>(
+  read: (signal: AbortSignal) => Promise<T>,
+  ms: number,
+  outer?: AbortSignal,
+): Promise<T> {
+  const controller = new AbortController();
+  if (outer?.aborted) controller.abort(outer.reason);
+  else
+    outer?.addEventListener("abort", () => controller.abort(outer.reason), {
+      once: true,
+    });
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      controller.abort();
+      reject(new PrecheckDeadlineError());
+    }, ms);
+    read(controller.signal).then(
       (value) => {
         clearTimeout(timer);
         resolve(value);

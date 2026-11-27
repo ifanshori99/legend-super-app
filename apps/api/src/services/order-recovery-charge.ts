@@ -78,6 +78,10 @@ const AUDIT_SAFE_FIELDS = [
   "blockedReason",
   "waivedBy",
   "approvedBy",
+  // legend-f1mmf (d): a settled cash / card attempt of the charge.
+  "attemptMethod",
+  "statement",
+  "edcTransactionId",
 ];
 
 const EVENT_DESTINATION = "cloud-sync";

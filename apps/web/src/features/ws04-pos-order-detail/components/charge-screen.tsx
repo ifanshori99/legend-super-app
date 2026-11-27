@@ -1,6 +1,13 @@
 import { useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { ArrowLeft, ArrowRight, CircleCheck, RotateCw } from "lucide-react";
+import {
+  ArrowLeft,
+  ArrowRight,
+  CircleCheck,
+  RotateCw,
+  ShieldCheck,
+} from "lucide-react";
+import type { PosIssueChargeAttemptOutcome } from "@starter/shared/pos";
 import { idr } from "@starter/shared/core";
 import { formatRupiah } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
@@ -17,19 +24,33 @@ import {
   StatusPill,
 } from "@/features/ws04-pos-kasir/components/shared";
 import {
-  isChargeContractPending,
-  useCollectIssueCharge,
+  useChargeAttempts,
+  useChargeTerminals,
   useIssueCharge,
 } from "../charge-hooks";
 import type { IssueChargeDetail } from "../charge-endpoints";
-import { chargeDiffIdr, chargeSurchargeIdr } from "../charge-logic";
-import { chargePhase, type ChargeMethod } from "../charge-method-logic";
+import { chargeErrorKey, chargeSurchargeIdr } from "../charge-logic";
+import {
+  chargePhase,
+  edcSaleMatches,
+  methodOfSignature,
+  terminalOfSignature,
+  type ChargeMethod,
+} from "../charge-method-logic";
 import {
   EdcSales,
   EndedCodeNotice,
   GatewayWaiting,
   MethodPicker,
+  TerminalPicker,
 } from "./charge-method-panels";
+import {
+  ChargeResolveDialog,
+  type ResolvableAttempt,
+} from "./charge-resolve-dialog";
+
+// Long labels wrap instead of widening the panel (390 px, six-digit amounts).
+const WRAP = "h-auto min-h-control-lg whitespace-normal py-3 text-balance";
 
 function BackLink({ orderId }: { orderId: string | null }) {
   const t = useT();
@@ -43,7 +64,7 @@ function BackLink({ orderId }: { orderId: string | null }) {
       ) : (
         <Link to="/pos/meja">
           <ArrowLeft aria-hidden="true" />
-          {t("posIssueCharge.screen.back")}
+          {t("posIssueCharge.screen.backTables")}
         </Link>
       )}
     </Button>
@@ -75,6 +96,7 @@ function SuccessNotice({
     <div
       data-slot="notice"
       data-tone="success"
+      role="status"
       className="rounded-control border-(length:--border-w) border-success bg-success-subtle px-4 py-3 text-success"
     >
       <p className="flex items-center gap-2 text-(length:--density-text) leading-6 font-semibold">
@@ -98,15 +120,13 @@ function AmountBox({ label, amountIdr }: { label: string; amountIdr: number }) {
 function DetailPanel({
   charge,
   paid,
-  diffIdr,
-  surchargeIdr,
 }: {
   charge: IssueChargeDetail;
   paid: boolean;
-  diffIdr: number;
-  surchargeIdr: number;
 }) {
   const t = useT();
+  // Both figures are the server's; the gap only explains them.
+  const surchargeIdr = chargeSurchargeIdr(charge);
   const order = charge.tableLabel
     ? t("posIssueCharge.detail.orderTable", {
         number: charge.orderNumber,
@@ -157,7 +177,7 @@ function DetailPanel({
           )}
           <div className="flex items-center justify-between gap-4 font-semibold">
             <span>{t("posIssueCharge.detail.due")}</span>
-            <Money amount={diffIdr + surchargeIdr} />
+            <Money amount={charge.amountIdr} />
           </div>
         </div>
         <p className="text-base text-muted-foreground">
@@ -181,21 +201,40 @@ export function ChargeScreen({ chargeId }: { chargeId: string }) {
   );
 }
 
+/** A refusal the server named: its catalog text, else the server's own. */
+function useFailureText() {
+  const t = useT();
+  return (code: string | null) => t(chargeErrorKey(code));
+}
+
 function ChargeBody({ chargeId }: { chargeId: string }) {
   const t = useT();
+  const failureText = useFailureText();
   const query = useIssueCharge(chargeId);
-  const collector = useCollectIssueCharge(chargeId);
+  const charge = query.data;
+  const attempts = useChargeAttempts(chargeId, charge);
   const [checking, setChecking] = useState(false);
   const [notRecorded, setNotRecorded] = useState(false);
-  const [method, setMethod] = useState<ChargeMethod>("cash");
+  const [picked, setPicked] = useState<ChargeMethod>("cash");
   const [saleId, setSaleId] = useState<string | null>(null);
+  const [pickedTerminal, setPickedTerminal] = useState<string | null>(null);
+  const [resolving, setResolving] = useState(false);
+  const [resolved, setResolved] = useState<PosIssueChargeAttemptOutcome | null>(
+    null,
+  );
+  // The last status check: when it read the charge still waiting, or failed.
+  const [checked, setChecked] = useState<
+    { at: number } | { failed: true } | null
+  >(null);
+  const terminalsQuery = useChargeTerminals(
+    picked === "edc_card" || attempts.lock !== null,
+  );
 
   if (query.isLoading) return <LoadingShape />;
 
   // A failed re-read keeps the last charge on screen (the code stays visible),
   // but nothing can be collected until the server answers again.
-  if (query.error && !query.data) {
-    const pending = isChargeContractPending(query.error);
+  if (query.error && !charge) {
     const missing =
       query.error instanceof ApiError && query.error.status === 404;
     if (missing)
@@ -209,27 +248,17 @@ function ChargeBody({ chargeId }: { chargeId: string }) {
     return (
       <ErrorState
         error={query.error}
-        title={t(
-          pending
-            ? "posIssueCharge.screen.pendingTitle"
-            : "posIssueCharge.screen.errorTitle",
-        )}
-        description={t(
-          pending
-            ? "posIssueCharge.screen.pendingHint"
-            : "posIssueCharge.screen.errorHint",
-        )}
+        title={t("posIssueCharge.screen.errorTitle")}
+        description={t("posIssueCharge.screen.errorHint")}
         action={
           <div className="flex flex-wrap gap-3">
-            {!pending && (
-              <Button
-                loading={query.isFetching}
-                onClick={() => void query.refetch()}
-              >
-                <RotateCw aria-hidden="true" />
-                {t("common.retry")}
-              </Button>
-            )}
+            <Button
+              loading={query.isFetching}
+              onClick={() => void query.refetch()}
+            >
+              <RotateCw aria-hidden="true" />
+              {t("common.retry")}
+            </Button>
             <BackLink orderId={null} />
           </div>
         }
@@ -237,7 +266,6 @@ function ChargeBody({ chargeId }: { chargeId: string }) {
     );
   }
 
-  const charge = query.data;
   if (!charge)
     return (
       <EmptyState
@@ -249,36 +277,57 @@ function ChargeBody({ chargeId }: { chargeId: string }) {
 
   // A known success counts at once; the refetch only confirms it. A QRIS code
   // is not a success: the swap stays unpaid until the server says paid.
-  const phase = collector.settled ? "paid" : chargePhase(charge);
+  const phase = attempts.settled ? "paid" : chargePhase(charge);
   const paid = phase === "paid";
-  const diffIdr = chargeDiffIdr({
-    originalIdr: charge.original.lineTotalIdr,
-    replacementIdr: charge.replacement.lineTotalIdr,
-  });
-  const surchargeIdr = chargeSurchargeIdr({
-    differenceIdr: diffIdr,
-    amountIdr: charge.amountIdr,
-  });
   const amount = formatRupiah(charge.amountIdr);
-  const { failure, pending } = collector;
+  const { failure, pending, lock } = attempts;
+  // (a) An attempt without an answer holds the picker to its own method.
+  const only = lock ? methodOfSignature(lock.signature) : null;
+  const method: ChargeMethod = only ?? picked;
+  const lockedTerminal = lock ? terminalOfSignature(lock.signature) : null;
+  const terminals = terminalsQuery.data ?? [];
+  const terminalId =
+    lockedTerminal ??
+    terminals.find((item) => item.id === pickedTerminal)?.id ??
+    (terminals.length === 1 ? terminals[0]!.id : null);
+
+  // What a supervisor may settle: this browser's cash or card start without
+  // an answer, or a card sale it started whose answer is unknown (d).
+  const unknownSale = charge.edcSales.find((sale) => sale.status === "unknown");
+  const unknownSaleKey = unknownSale ? attempts.saleKey(unknownSale.id) : null;
+  let resolvable: ResolvableAttempt | null = null;
+  if (lock?.signature.startsWith("cash:"))
+    resolvable = { method: "cash", key: lock.key, needsStatement: false };
+  else if (lock?.signature.startsWith("edc:"))
+    resolvable = {
+      method: "edc",
+      key: lock.key,
+      needsStatement: unknownSale !== undefined,
+    };
+  else if (unknownSaleKey)
+    resolvable = { method: "edc", key: unknownSaleKey, needsStatement: true };
 
   const checkStatus = async () => {
     setChecking(true);
-    // refetch() never throws: a failed read is not "not recorded". The result
-    // stays unknown and the check button stays.
-    const result = await query.refetch();
+    setChecked(null);
+    // A read within a deadline: a failed or late read is not "not recorded";
+    // the result stays unknown and the check button stays.
+    const read = await attempts.checkNow();
     setChecking(false);
-    if (result.isError || !result.data) return;
-    const read = chargePhase(result.data);
-    // Still out or under review: the lock below stays.
-    if (read !== "choose" && read !== "edc_approved") return;
-    collector.resolve();
-    setNotRecorded(read === "choose");
+    if (!read) return setChecked({ failed: true });
+    const readPhase = chargePhase(read);
+    // Still out or under review: the lock below stays; say it was checked.
+    if (readPhase !== "choose" && readPhase !== "edc_approved")
+      return setChecked({ at: Date.now() });
+    attempts.resolve();
+    setNotRecorded(readPhase === "choose");
   };
 
-  const collect = (request: Parameters<typeof collector.collect>[0]) => {
+  const send = (request: Parameters<typeof attempts.send>[0]) => {
     setNotRecorded(false);
-    collector.collect(request);
+    setChecked(null);
+    setResolved(null);
+    attempts.send(request);
   };
 
   const due = (
@@ -288,16 +337,40 @@ function ChargeBody({ chargeId }: { chargeId: string }) {
     />
   );
   const checkButton = (
+    <>
+      {checked && (
+        <p role="status" className="text-base text-muted-foreground">
+          {"failed" in checked
+            ? t("posIssueCharge.unknown.checkFailed")
+            : t("posIssueCharge.unknown.checkedAt", {
+                time: new Intl.DateTimeFormat("id-ID", {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                }).format(checked.at),
+              })}
+        </p>
+      )}
+      <Button
+        size="lg"
+        className={`w-full ${WRAP}`}
+        loading={checking}
+        onClick={() => void checkStatus()}
+      >
+        {checking
+          ? t("posIssueCharge.unknown.checking")
+          : t("posIssueCharge.unknown.check")}
+      </Button>
+    </>
+  );
+  const resolveButton = resolvable && (
     <Button
       size="lg"
       variant="outline"
-      className="w-full"
-      loading={checking}
-      onClick={() => void checkStatus()}
+      className={`w-full ${WRAP}`}
+      onClick={() => setResolving(true)}
     >
-      {checking
-        ? t("posIssueCharge.unknown.checking")
-        : t("posIssueCharge.unknown.check")}
+      <ShieldCheck aria-hidden="true" />
+      {t("posIssueCharge.resolve.action")}
     </Button>
   );
   const stale = query.isError && (
@@ -307,6 +380,19 @@ function ChargeBody({ chargeId }: { chargeId: string }) {
   );
   const waitingPill = (
     <StatusPill tone="warning">{t("posIssueCharge.waiting.pill")}</StatusPill>
+  );
+  const unsurePill = (
+    <StatusPill tone="warning">{t("posIssueCharge.status.unsure")}</StatusPill>
+  );
+  const checkMachine = (
+    <Notice tone="info" title={t("posIssueCharge.edc.checkMachineTitle")}>
+      <p>
+        {t("posIssueCharge.edc.checkMachine")}
+        {unknownSale &&
+          !resolvable &&
+          ` ${t("posIssueCharge.edc.otherDevice")}`}
+      </p>
+    </Notice>
   );
 
   let pill = (
@@ -326,9 +412,15 @@ function ChargeBody({ chargeId }: { chargeId: string }) {
           label={t("posIssueCharge.success.paidAmount")}
           amountIdr={charge.amountIdr}
         />
-        <SuccessNotice title={t("posIssueCharge.success.title")}>
+        <SuccessNotice
+          title={t(
+            resolved === "recorded"
+              ? "posIssueCharge.resolve.recordedTitle"
+              : "posIssueCharge.success.title",
+          )}
+        >
           {t(
-            collector.settledMethod === "cash"
+            attempts.settledMethod === "cash"
               ? "posIssueCharge.success.hint"
               : "posIssueCharge.success.settledHint",
             { amount },
@@ -354,16 +446,31 @@ function ChargeBody({ chargeId }: { chargeId: string }) {
         <p>{t("posIssueCharge.closed.hint")}</p>
       </Notice>
     );
-  } else if (pending) {
+  } else if (
+    pending &&
+    // A card start waits for the terminal: the sale the server lists shows.
+    !(attempts.sendingMethod === "edc_start" && phase === "edc_waiting")
+  ) {
+    const edc = attempts.sendingMethod === "edc_start";
     body = (
       <>
         {due}
         <Notice
           tone="info"
           role="status"
-          title={t("posIssueCharge.collect.recording")}
+          title={t(
+            edc
+              ? "posIssueCharge.edc.sendingTitle"
+              : "posIssueCharge.collect.recording",
+          )}
         >
-          <p>{t("posIssueCharge.collect.recordingHint")}</p>
+          <p>
+            {t(
+              edc
+                ? "posIssueCharge.edc.sendingHint"
+                : "posIssueCharge.collect.recordingHint",
+            )}
+          </p>
         </Notice>
         <Button size="lg" className="w-full" loading disabled>
           {t("posIssueCharge.collect.pending")}
@@ -377,12 +484,15 @@ function ChargeBody({ chargeId }: { chargeId: string }) {
     body = (
       <>
         {due}
-        <EdcSales charge={charge} selectedId={null} onSelect={setSaleId} />
+        <EdcSales charge={charge} />
         <Notice tone="danger" title={t("posIssueCharge.review.title")}>
-          <p>{t("posIssueCharge.review.hint")}</p>
+          <p>
+            {t("posIssueCharge.review.hint")} {t("posIssueCharge.review.steps")}
+          </p>
         </Notice>
         {stale}
         {checkButton}
+        {resolveButton}
       </>
     );
   } else if (phase === "gateway_waiting" && charge.payment) {
@@ -412,54 +522,104 @@ function ChargeBody({ chargeId }: { chargeId: string }) {
       </>
     );
   } else if (phase === "edc_waiting") {
-    pill = waitingPill;
+    pill = unknownSale ? (
+      unsurePill
+    ) : (
+      <StatusPill tone="warning">
+        {t("posIssueCharge.edc.pendingPill")}
+      </StatusPill>
+    );
     body = (
       <>
         {due}
-        <EdcSales charge={charge} selectedId={null} onSelect={setSaleId} />
+        <EdcSales charge={charge} />
         <Notice
           tone="warning"
           role="status"
-          title={t("posIssueCharge.edc.waitingTitle")}
+          title={t(
+            unknownSale
+              ? "posIssueCharge.edc.waitingTitle"
+              : "posIssueCharge.edc.pendingTitle",
+          )}
         >
           <p>
-            {t("posIssueCharge.edc.waiting")}{" "}
-            {t("posIssueCharge.waiting.locked")}
+            {t(
+              unknownSale
+                ? "posIssueCharge.edc.waiting"
+                : "posIssueCharge.edc.pending",
+            )}
           </p>
         </Notice>
+        {unknownSale && checkMachine}
         {stale}
         {checkButton}
+        {unknownSale && resolveButton}
       </>
     );
   } else if (failure || query.isError) {
-    const unknown = failure?.kind !== "failed";
-    pill = (
-      <StatusPill tone="danger">{t("posIssueCharge.status.failed")}</StatusPill>
-    );
+    const kind = failure?.kind ?? "unknown";
+    // Nothing was sent: the form comes back (with its lock, if any).
+    const notSent =
+      kind === "not_read" || kind === "changed" || kind === "held";
+    const unknown = kind === "unknown";
+    pill =
+      kind === "failed" ? (
+        <StatusPill tone="danger">
+          {t("posIssueCharge.status.failed")}
+        </StatusPill>
+      ) : (
+        unsurePill
+      );
+    const notice =
+      failure &&
+      {
+        not_read: {
+          title: t("posIssueCharge.precheck.title"),
+          text: t("posIssueCharge.precheck.hint"),
+        },
+        changed: {
+          title: t("posIssueCharge.unknown.changedTitle"),
+          text: t("posIssueCharge.unknown.changed"),
+        },
+        held: {
+          title: t("posIssueCharge.unknown.heldTitle"),
+          text: t("posIssueCharge.unknown.held"),
+        },
+        unknown: {
+          title: t("posIssueCharge.unknown.title"),
+          text:
+            failure.code === "EDC_AGENT_NOT_READY"
+              ? t("posIssueCharge.edc.notReady")
+              : t("posIssueCharge.unknown.hint"),
+        },
+        failed: {
+          title: t("posIssueCharge.failed.title"),
+          text: `${t("posIssueCharge.failed.hint")} ${failureText(failure.code)}`,
+        },
+      }[kind];
     body = (
       <>
         {due}
-        {failure && (
+        {notice && (
           <Notice
-            tone="danger"
-            title={t(
-              unknown
-                ? "posIssueCharge.unknown.title"
-                : "posIssueCharge.failed.title",
-            )}
+            tone={unknown || kind === "failed" ? "danger" : "warning"}
+            title={notice.title}
           >
-            <p>
-              {unknown
-                ? t("posIssueCharge.unknown.hint")
-                : `${t("posIssueCharge.failed.hint")} ${failure.message}`}
-            </p>
+            <p>{notice.text}</p>
           </Notice>
         )}
         {stale}
         {unknown ? (
-          checkButton
+          <>
+            {checkButton}
+            {resolveButton}
+          </>
         ) : (
-          <Button size="lg" className="w-full" onClick={collector.resolve}>
+          <Button
+            size="lg"
+            className={`w-full ${WRAP}`}
+            onClick={notSent ? attempts.clear : attempts.resolve}
+          >
             <RotateCw aria-hidden="true" />
             {t("common.retry")}
           </Button>
@@ -467,7 +627,13 @@ function ChargeBody({ chargeId }: { chargeId: string }) {
       </>
     );
   } else if (phase === "edc_approved") {
-    const sale = charge.edcSales.find((item) => item.id === saleId);
+    // The one sale that pays the charge exactly is picked for the cashier.
+    const usableSales = charge.edcSales.filter((item) =>
+      edcSaleMatches(item, charge.amountIdr),
+    );
+    const sale =
+      usableSales.find((item) => item.id === saleId) ??
+      (usableSales.length === 1 ? usableSales[0] : undefined);
     pill = (
       <StatusPill tone="info">
         {t("posIssueCharge.edc.approvedPill")}
@@ -477,18 +643,26 @@ function ChargeBody({ chargeId }: { chargeId: string }) {
       <>
         {due}
         <p className="text-base text-muted-foreground">
-          {t("posIssueCharge.edc.pick")}
+          {t(
+            usableSales.length === 1
+              ? "posIssueCharge.edc.pick"
+              : "posIssueCharge.edc.pickMany",
+          )}
         </p>
-        <EdcSales charge={charge} selectedId={saleId} onSelect={setSaleId} />
+        <EdcSales
+          charge={charge}
+          selectedId={sale?.id ?? null}
+          onSelect={setSaleId}
+        />
       </>
     );
     footer = (
       <Button
         size="lg"
-        className="w-full"
+        className={`w-full ${WRAP}`}
         disabled={!sale}
         onClick={() =>
-          sale && collect({ method: "edc_card", edcTransactionId: sale.id })
+          sale && send({ method: "edc_card", edcTransactionId: sale.id })
         }
       >
         {t("posIssueCharge.edc.record", { amount })}
@@ -496,12 +670,22 @@ function ChargeBody({ chargeId }: { chargeId: string }) {
       </Button>
     );
   } else {
+    const methodName = only ? t(`posIssueCharge.method.${only}`) : "";
     body = (
       <>
         <p className="text-base text-muted-foreground">
           {t("posIssueCharge.collect.hint")}
         </p>
         {due}
+        {resolved === "closed" && (
+          <Notice
+            tone="info"
+            role="status"
+            title={t("posIssueCharge.resolve.closedTitle")}
+          >
+            <p>{t("posIssueCharge.resolve.closed")}</p>
+          </Notice>
+        )}
         {notRecorded && (
           <Notice
             tone="info"
@@ -511,8 +695,22 @@ function ChargeBody({ chargeId }: { chargeId: string }) {
             <p>{t("posIssueCharge.unknown.notRecorded")}</p>
           </Notice>
         )}
+        {only && (
+          <Notice
+            tone="warning"
+            title={t("posIssueCharge.method.lockedTitle", {
+              method: methodName,
+            })}
+          >
+            <p>
+              {t("posIssueCharge.method.lockedHint", { method: methodName })}{" "}
+              {t("posIssueCharge.method.lockedOthers")}
+              {resolvable && ` ${t("posIssueCharge.method.lockedResolveHint")}`}
+            </p>
+          </Notice>
+        )}
         <EndedCodeNotice payment={charge.payment} />
-        <MethodPicker value={method} onChange={setMethod} />
+        <MethodPicker value={method} onChange={setPicked} only={only} />
         {method === "cash" && (
           <Notice
             tone="warning"
@@ -528,21 +726,30 @@ function ChargeBody({ chargeId }: { chargeId: string }) {
         )}
         {method === "edc_card" && (
           <>
-            <EdcSales charge={charge} selectedId={null} onSelect={setSaleId} />
-            <Notice tone="info" title={t("posIssueCharge.edc.emptyTitle")}>
-              <p>{t("posIssueCharge.edc.empty")}</p>
-            </Notice>
+            <EdcSales charge={charge} />
+            <TerminalPicker
+              terminals={terminals}
+              value={terminalId}
+              onChange={setPickedTerminal}
+              lockedId={lockedTerminal}
+              loading={terminalsQuery.isLoading}
+              failed={terminalsQuery.isError}
+            />
+            <p className="text-base text-muted-foreground">
+              {t("posIssueCharge.edc.startHint")}
+            </p>
           </>
         )}
+        {resolveButton}
       </>
     );
     if (method === "cash")
       footer = (
         <Button
           size="lg"
-          className="w-full"
+          className={`w-full ${WRAP}`}
           onClick={() =>
-            collect({ method: "cash", receivedIdr: idr(charge.amountIdr) })
+            send({ method: "cash", receivedIdr: idr(charge.amountIdr) })
           }
         >
           {t("posIssueCharge.collect.action", { amount })}
@@ -553,8 +760,8 @@ function ChargeBody({ chargeId }: { chargeId: string }) {
       footer = (
         <Button
           size="lg"
-          className="w-full"
-          onClick={() => collect({ method: "qris" })}
+          className={`w-full ${WRAP}`}
+          onClick={() => send({ method: "qris" })}
         >
           {t(
             charge.payment?.method === "qris"
@@ -569,13 +776,14 @@ function ChargeBody({ chargeId }: { chargeId: string }) {
       footer = (
         <Button
           size="lg"
-          variant="outline"
-          className="w-full"
-          loading={query.isFetching}
-          onClick={() => void query.refetch()}
+          className={`w-full ${WRAP}`}
+          disabled={terminalId === null}
+          onClick={() =>
+            terminalId && send({ method: "edc_start", terminalId })
+          }
         >
-          <RotateCw aria-hidden="true" />
-          {t("posIssueCharge.edc.reload")}
+          {t("posIssueCharge.edc.start", { amount })}
+          <ArrowRight aria-hidden="true" />
         </Button>
       );
   }
@@ -589,23 +797,35 @@ function ChargeBody({ chargeId }: { chargeId: string }) {
       />
       <PosTwoPane
         sidePosition="end"
+        // Below md the collect panel comes first: its method and its action
+        // are in reach without scrolling past the swap summary.
+        className="max-md:[&>*:last-child]:order-first"
         side={
           <PosPanel
             title={t("posIssueCharge.collect.title")}
             aside={pill}
             footer={footer}
           >
-            <div className="grid gap-4">{body}</div>
+            <div className="grid grid-cols-[minmax(0,1fr)] gap-4">{body}</div>
           </PosPanel>
         }
       >
-        <DetailPanel
-          charge={charge}
-          paid={paid}
-          diffIdr={diffIdr}
-          surchargeIdr={surchargeIdr}
-        />
+        <DetailPanel charge={charge} paid={paid} />
       </PosTwoPane>
+      {resolvable && (
+        <ChargeResolveDialog
+          chargeId={chargeId}
+          amountIdr={charge.amountIdr}
+          attempt={resolvable}
+          open={resolving}
+          onOpenChange={setResolving}
+          onSettled={(outcome, key) => {
+            attempts.settledAttempt(key);
+            setResolved(outcome);
+            setNotRecorded(false);
+          }}
+        />
+      )}
     </div>
   );
 }

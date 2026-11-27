@@ -50,6 +50,7 @@ import {
   confirmChargeLinksUnpaid,
   lockChargeChain,
 } from "./order-recovery-charge.ts";
+import { assertNoEdcSaleOutstanding } from "./order-recovery-charge-money-path.ts";
 import { openChargeLinkInTx } from "./order-recovery-charge-payment.ts";
 import type {
   CollectChargeAtPosCaller,
@@ -75,7 +76,7 @@ type EdcInput = Extract<CollectChargeAtPosInput, { method: "edc_card" }>;
 type Locked = NonNullable<Awaited<ReturnType<typeof lockChargeChain>>>;
 
 /** Access, the charge chain locked, the outlet in scope. 404 / 403 otherwise. */
-async function lockChargeForCashier(
+export async function lockChargeForCashier(
   tx: Tx,
   context: ScopedTenantContext,
   caller: CollectChargeAtPosCaller,
@@ -102,7 +103,7 @@ async function lockChargeForCashier(
   return locked;
 }
 
-async function assertCollectable(
+export async function assertCollectable(
   tx: Tx,
   tenantId: TenantId,
   locked: Locked,
@@ -132,7 +133,7 @@ async function assertCollectable(
  * and would wait on this transaction for ever; `createIntent` itself refuses
  * a link with nothing left to pay.
  */
-async function assertNoPaidIntentOnLink(
+export async function assertNoPaidIntentOnLink(
   tx: Tx,
   context: ScopedTenantContext,
   paymentLinkId: string | null,
@@ -211,6 +212,7 @@ export async function collectChargeAtPosQris(
       mode: "in",
       at: now,
     });
+    await assertNoEdcSaleOutstanding(tx, tenantId, locked.charge);
     return locked.charge;
   };
   // Step 1 (like the guest's `ensureChargeLink`): the bill is opened and
@@ -307,7 +309,7 @@ export async function collectChargeAtPosEdc(
       chargeId,
       now,
     );
-    const { charge, issue } = locked;
+    const { charge } = locked;
     // One approval, one use, even when two requests race on it.
     await tx.execute(
       sql`SELECT pg_advisory_xact_lock(hashtextextended(${`pos-edc-tender:${tenantId}:${input.edcTransactionId}`}, 0))`,
@@ -388,53 +390,80 @@ export async function collectChargeAtPosEdc(
         "Metode atau nominal transaksi EDC tidak sama dengan tagihan selisih.",
       );
 
-    const [updated] = await tx
-      .update(orderIssueCharges)
-      .set({
-        status: "paid",
-        paidAt: now,
-        paidBy: caller.userId,
-        paymentIntentId: null,
-        cashMovementId: null,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(orderIssueCharges.tenantId, tenantId),
-          eq(orderIssueCharges.id, charge.id),
-        ),
-      )
-      .returning();
-    if (!updated) throw new Error("Charge update returned no row");
-    // The guest's code can no longer be paid (the bank holds the money).
-    if (charge.paymentLinkId !== null)
-      await cancelPaymentLinkInTx(tx, context, {
-        linkId: charge.paymentLinkId,
-        now,
-        reason: "issue_charge_paid_at_pos",
-      });
-    await appendChargePaidEvent(tx, context, {
-      charge,
-      intentId: null,
-      edc: true,
-      paidAt: now,
-      at: now,
-    });
-    await auditCharge(tx, context, {
-      outletId: charge.outletId,
-      issueId: issue.id,
-      action: AUDIT_PAID,
-      actorUserId: caller.userId,
-      reason: "Selisih swap dibayar EDC di kasir",
-      after: { ...chargeAudit(charge), status: "paid" },
-      at: now,
-    });
-    if (charge.tableSessionId !== null)
-      await notifyQrOrderChange(tx, context, {
-        sessionId: charge.tableSessionId,
-        orderId: charge.orderId,
-        status: "sent",
-      });
+    const updated = await recordEdcSaleOnCharge(
+      tx,
+      context,
+      locked,
+      caller.userId,
+      "Selisih swap dibayar EDC di kasir",
+      now,
+    );
     return { charge: toView(updated), changeIdr: 0 };
   });
+}
+
+/**
+ * Marks the charge paid by its approved card sale (the caller checked the
+ * sale: approved, ecr, card, this charge, its amount, not flagged) and that
+ * the charge still takes money. No cash_in; the guest's code is cancelled
+ * (the bank holds the money); `order_issue.charge_paid` says `pos_edc`.
+ */
+export async function recordEdcSaleOnCharge(
+  tx: Tx,
+  context: ScopedTenantContext,
+  locked: Locked,
+  actorUserId: string,
+  reason: string,
+  now: Date,
+): Promise<typeof orderIssueCharges.$inferSelect> {
+  const tenantId = context.tenant.tenantId;
+  const { charge, issue } = locked;
+  const [updated] = await tx
+    .update(orderIssueCharges)
+    .set({
+      status: "paid",
+      paidAt: now,
+      paidBy: actorUserId,
+      paymentIntentId: null,
+      cashMovementId: null,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(orderIssueCharges.tenantId, tenantId),
+        eq(orderIssueCharges.id, charge.id),
+      ),
+    )
+    .returning();
+  if (!updated) throw new Error("Charge update returned no row");
+  // The guest's code can no longer be paid (the bank holds the money).
+  if (charge.paymentLinkId !== null)
+    await cancelPaymentLinkInTx(tx, context, {
+      linkId: charge.paymentLinkId,
+      now,
+      reason: "issue_charge_paid_at_pos",
+    });
+  await appendChargePaidEvent(tx, context, {
+    charge,
+    intentId: null,
+    edc: true,
+    paidAt: now,
+    at: now,
+  });
+  await auditCharge(tx, context, {
+    outletId: charge.outletId,
+    issueId: issue.id,
+    action: AUDIT_PAID,
+    actorUserId,
+    reason,
+    after: { ...chargeAudit(charge), status: "paid" },
+    at: now,
+  });
+  if (charge.tableSessionId !== null)
+    await notifyQrOrderChange(tx, context, {
+      sessionId: charge.tableSessionId,
+      orderId: charge.orderId,
+      status: "sent",
+    });
+  return updated;
 }
