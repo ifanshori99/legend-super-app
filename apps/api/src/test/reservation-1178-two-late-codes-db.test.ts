@@ -207,16 +207,25 @@ async function openIntent(created: Booked): Promise<string> {
 
 /** Code B on the same link: A's row copied (new id and idempotency key, pending). */
 async function seedSecondIntent(firstIntentId: string): Promise<string> {
-  const { rows } = await asOwner((client) =>
-    client.query<{ id: string }>(
-      `INSERT INTO payment_intents
-         SELECT (jsonb_populate_record(null::payment_intents,
-                 to_jsonb(p) || jsonb_build_object('id', gen_random_uuid(), 'idempotency_key', $2::text, 'status', 'pending', 'paid_at', NULL))).*
-           FROM payment_intents p WHERE p.id = $1
+  const { rows } = await asOwner(async (client) => {
+    // charged_idr is generated (0544): copy only the writable columns.
+    const writable = await client.query<{ column_name: string }>(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = 'payment_intents'
+          AND is_generated = 'NEVER' ORDER BY ordinal_position`,
+    );
+    const columns = writable.rows.map((row) => `"${row.column_name}"`);
+    return client.query<{ id: string }>(
+      `INSERT INTO payment_intents (${columns.join(", ")})
+         SELECT ${columns.map((column) => `r.${column}`).join(", ")}
+           FROM payment_intents p,
+                jsonb_populate_record(null::payment_intents,
+                  to_jsonb(p) || jsonb_build_object('id', gen_random_uuid(), 'idempotency_key', $2::text, 'status', 'pending', 'paid_at', NULL)) r
+          WHERE p.id = $1
        RETURNING id`,
       [firstIntentId, `rsv-1178-two-pay-b-${randomUUID()}`],
-    ),
-  );
+    );
+  });
   return rows[0]!.id;
 }
 
