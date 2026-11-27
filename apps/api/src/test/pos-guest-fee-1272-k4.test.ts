@@ -220,12 +220,23 @@ function payCode(
   });
 }
 
-async function payParked(...args: Parameters<typeof payCode>) {
+/** Pays a code that must be parked; the rejection must be `decision`, no other 409. */
+async function payParked(
+  decision: "AMOUNT_MISMATCH" | "BILL_CLOSED",
+  ...args: Parameters<typeof payCode>
+) {
   try {
     return await payCode(...args);
   } catch (error) {
-    const e = error as { code?: unknown; status?: unknown };
-    if (e?.code === "CONFLICT" && e?.status === 409) return null;
+    const e = error as {
+      code?: unknown;
+      status?: unknown;
+      decisionCode?: unknown;
+    };
+    if (e?.code === "CONFLICT" && e?.status === 409) {
+      expect(e.decisionCode).toBe(decision);
+      return null;
+    }
     throw error;
   }
 }
@@ -535,7 +546,13 @@ describe("1272 K4 cashier guest service fee", () => {
     // Cash change is of the bill only; the fee never touches the drawer.
     expect(cash.body.data.tender.changeIdr).toBe(50_000 - BILL_IDR);
 
-    await payParked(va.intentId, BILL_IDR + VA_FEE, "va", va.providerRef);
+    await payParked(
+      "BILL_CLOSED",
+      va.intentId,
+      BILL_IDR + VA_FEE,
+      "va",
+      va.providerRef,
+    );
     expect(await capturedIdr(fx, order.id)).toBe(BILL_IDR);
     const parked = await unallocatedFunds(fx, va.intentId);
     expect(parked.map((row) => row.amountIdr)).toEqual([BILL_IDR]);
@@ -577,7 +594,13 @@ describe("1272 K4 cashier guest service fee", () => {
       const order = await newSubmittedOrder(fx, 0);
       const va = await issue(order.id, "va");
       expect(
-        await payParked(va.intentId, paid, "va", va.providerRef),
+        await payParked(
+          "AMOUNT_MISMATCH",
+          va.intentId,
+          paid,
+          "va",
+          va.providerRef,
+        ),
       ).toBeNull();
       expect(await capturedIdr(fx, order.id)).toBe(0);
       expect((await tenderStatuses(fx, order.id)).map((t) => t.status)).toEqual(
@@ -665,7 +688,13 @@ describe("1272 K4 cashier guest service fee", () => {
     expect(booked.status, JSON.stringify(booked.body)).toBe(201);
     expect(await capturedIdr(fx, order.id)).toBe(BILL_IDR);
 
-    await payParked(va.intentId, BILL_IDR + VA_FEE, "va", va.providerRef);
+    await payParked(
+      "BILL_CLOSED",
+      va.intentId,
+      BILL_IDR + VA_FEE,
+      "va",
+      va.providerRef,
+    );
     // The bill stays paid once, by the card.
     expect(await capturedIdr(fx, order.id)).toBe(BILL_IDR);
     const refunded = (await refundsOfIntent(fx, va.intentId)).reduce(

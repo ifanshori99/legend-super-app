@@ -79,7 +79,7 @@ export function BillPanel({
 }: BillPanelProps) {
   const t = useT();
   const confirmed = allocations.filter((a) => a.status === "confirmed");
-  // Settled by the DP alone: the balance is a plain "Sisa yang harus dibayar" Rp 0.
+  // Settled by the DP alone: the balance is a plain "Sisa tagihan" Rp 0.
   const settledByDeposit =
     paid && confirmed.length === 0 && deposit?.paid === true;
   return (

@@ -168,7 +168,7 @@ test("legend-mjmm PAY-01 payment screen shows the bill, DP and the six methods",
     new RegExp(`DP lunas\\s*·\\s*RSV${DASH}?0018`),
   );
   await expect(area).toContainText(
-    new RegExp(`Sisa yang harus dibayar\\s*${rp("148.000")}`),
+    new RegExp(`Sisa tagihan\\s*${rp("148.000")}`),
   );
 
   await expect(heading(page, "Pilih metode pembayaran")).toBeVisible();
@@ -231,7 +231,7 @@ test("legend-mjmm PAY-01 split: QRIS confirmed, cash 48.000 with 50.000 received
     new RegExp(`QRIS terkonfirmasi\\s*${MINUS}\\s*${rp("100.000")}`),
   );
   await expect(area).toContainText(
-    new RegExp(`Sisa yang harus dibayar\\s*${rp("48.000")}`),
+    new RegExp(`Sisa tagihan\\s*${rp("48.000")}`),
   );
 
   await methodOption(page, "Tunai").click();
@@ -352,7 +352,7 @@ test("legend-mjmm PAY-02 expired QRIS never shows the old code and offers anothe
   await page.getByRole("button", { name: "Pilih metode lain" }).click();
   await expect(heading(page, "Pilih metode pembayaran")).toBeVisible();
   await expect(area).toContainText(
-    new RegExp(`Sisa yang harus dibayar\\s*${rp("148.000")}`),
+    new RegExp(`Sisa tagihan\\s*${rp("148.000")}`),
   );
 });
 
@@ -381,7 +381,7 @@ test("legend-mjmm PAY-02 failed QRIS keeps the bill unpaid and recovers through 
   await page.getByRole("button", { name: /Pilih metode lain/ }).click();
   await expect(heading(page, "Pilih metode pembayaran")).toBeVisible();
   await expect(area).toContainText(
-    new RegExp(`Sisa yang harus dibayar\\s*${rp("148.000")}`),
+    new RegExp(`Sisa tagihan\\s*${rp("148.000")}`),
   );
 });
 
@@ -581,7 +581,7 @@ test("legend-mjmm CODE-01 a valid customer code is matched and leads to payment"
   await expect(heading(page, /^Pembayaran/).first()).toBeVisible();
   await expect(main(page)).toContainText("Meja A01");
   await expect(main(page)).toContainText(
-    new RegExp(`Sisa yang harus dibayar\\s*${rp("26.600")}`),
+    new RegExp(`Sisa tagihan\\s*${rp("26.600")}`),
   );
 });
 
@@ -962,7 +962,7 @@ for (const [name, url] of ERROR_ROUTES) {
 // ------------------------------------------------------------- 390 px width
 
 const NARROW_ROUTES: Array<[string, string, string | RegExp]> = [
-  ["bayar", payUrl(), "Sisa yang harus dibayar"],
+  ["bayar", payUrl(), "Sisa tagihan"],
   ["kode", "/pos/kode", "Jumlah"],
   ["shift", "/pos/shift", "Modal awal tunai"],
   [
