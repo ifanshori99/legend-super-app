@@ -276,3 +276,28 @@ test("C2b a payment link card takes no channel, an e-wallet needs one", async ()
   assert.equal(canSubmit("ewallet", null), false);
   assert.equal(canSubmit("ewallet", "DA"), true);
 });
+
+test("C2b only a network or gateway failure shows 'page could not be opened' (fail-first)", async () => {
+  const { gatewayUnreachable } =
+    await import("../apps/web/src/features/ws03-qr-order/lib/pay-failure.ts");
+  const { ApiError } = await import("../apps/web/src/lib/api/errors.ts");
+  // No answer at all, or the gateway is down: nothing was paid, try again.
+  assert.equal(gatewayUnreachable(new TypeError("Failed to fetch")), true);
+  assert.equal(
+    gatewayUnreachable(new ApiError(0, "NETWORK_ERROR", "offline")),
+    true,
+  );
+  for (const status of [500, 502, 503, 504])
+    assert.equal(
+      gatewayUnreachable(new ApiError(status, "GATEWAY_UNAVAILABLE", "x")),
+      true,
+      String(status),
+    );
+  // A refusal (order changed, method off) gets the ordinary failure notice.
+  for (const status of [400, 401, 403, 404, 409, 422, 429])
+    assert.equal(
+      gatewayUnreachable(new ApiError(status, "CONFLICT", "x")),
+      false,
+      String(status),
+    );
+});
