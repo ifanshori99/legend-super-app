@@ -59,11 +59,22 @@ export const apiErrorDetailSchema = z.object({
   message: z.string(),
 });
 
+/**
+ * One unreadable line of an uploaded file (422 of the EDC settlement CSV): its
+ * line number and a reason code. Never the line's content or any card number.
+ */
+export const apiErrorRowSchema = z.object({
+  row: z.number().int().positive(),
+  reason: z.string().min(1).max(40),
+});
+
 export const apiErrorBodySchema = z.object({
   error: z.object({
     code: errorCodeSchema,
     message: z.string().min(1),
     details: z.array(apiErrorDetailSchema).optional(),
+    /** Unreadable lines of an uploaded file, at most 20 (EDC settlement CSV). */
+    rowErrors: z.array(apiErrorRowSchema).max(20).optional(),
     /** PAYSLIP_PIN_INVALID (403): attempts left before the PIN locks. */
     remainingAttempts: z.number().int().nonnegative().optional(),
     /** PAYSLIP_PIN_LOCKED (423): ISO datetime the lock ends. */
@@ -77,6 +88,7 @@ export const apiErrorBodySchema = z.object({
 });
 
 export type ApiErrorDetail = z.infer<typeof apiErrorDetailSchema>;
+export type ApiErrorRow = z.infer<typeof apiErrorRowSchema>;
 export type ApiErrorEnvelope = z.infer<typeof apiErrorBodySchema>;
 
 export function apiErrorBody(
@@ -84,6 +96,7 @@ export function apiErrorBody(
   message: string,
   options: {
     details?: ApiErrorDetail[];
+    rowErrors?: ApiErrorRow[];
     remainingAttempts?: number;
     lockedUntil?: string;
     acknowledgedBy?: { displayName: string };

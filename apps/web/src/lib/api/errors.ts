@@ -7,6 +7,8 @@ export class ApiError extends Error {
   status: number;
   code: string;
   details?: ApiErrorBody["error"]["details"];
+  /** EDC settlement CSV 422: the unreadable lines (number and reason code). */
+  rowErrors?: { row: number; reason: string }[];
   /** PAYSLIP_PIN_INVALID (403): attempts left before the lock. */
   remainingAttempts?: number;
   /** PAYSLIP_PIN_LOCKED (423): ISO datetime the lock ends. */
@@ -24,6 +26,7 @@ export class ApiError extends Error {
     message: string,
     details?: ApiErrorBody["error"]["details"],
     extra?: {
+      rowErrors?: { row: number; reason: string }[];
       remainingAttempts?: number;
       lockedUntil?: string;
       acknowledgedBy?: { displayName: string };
@@ -36,6 +39,7 @@ export class ApiError extends Error {
     this.status = status;
     this.code = code;
     this.details = details;
+    if (extra?.rowErrors !== undefined) this.rowErrors = extra.rowErrors;
     if (extra?.remainingAttempts !== undefined)
       this.remainingAttempts = extra.remainingAttempts;
     if (extra?.lockedUntil !== undefined) this.lockedUntil = extra.lockedUntil;

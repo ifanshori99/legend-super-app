@@ -26,6 +26,8 @@ import {
   StatusPill,
   type StatusPillTone,
 } from "../shared";
+import { edcNoticeTone } from "../../edc-settlement-view";
+import { EdcSettlementLines, EdcUnmatchedNote } from "./edc-settlement-lines";
 import { OpenShiftLinks } from "./open-shift-links";
 
 // /pos/tutup-hari (mockups supervisor-day-close, supervisor-day-closed): the
@@ -329,30 +331,6 @@ function NetPaymentPanel({ recap }: { recap: DayCloseRecap }) {
   );
 }
 
-function SettlementLines({
-  settlement,
-}: {
-  settlement: DayCloseRecap["settlement"];
-}) {
-  const t = useT();
-  if (settlement === null)
-    return <p>{t("posKasirDayclose.check.settlementPending")}</p>;
-  if (settlement.length === 0)
-    return <p>{t("posKasirDayclose.check.settlementNone")}</p>;
-  return (
-    <ul className="grid gap-0.5">
-      {settlement.map((row) => (
-        <li key={row.bank} className="tabular">
-          {t("posKasirDayclose.check.settlementBank", {
-            bank: row.bank,
-            amount: formatRupiah(row.amountIdr),
-          })}
-        </li>
-      ))}
-    </ul>
-  );
-}
-
 function CheckPanel({ recap }: { recap: DayCloseRecap }) {
   const t = useT();
   const stockId = useId();
@@ -360,7 +338,6 @@ function CheckPanel({ recap }: { recap: DayCloseRecap }) {
   const [deduct, setDeduct] = useState(false);
   const stock = recap.stockDeduction;
   const allClosed = recap.shifts.closed >= recap.shifts.total;
-  const unmatched = recap.standaloneUnmatched ?? 0;
   const unsynced = recap.unsyncedReceiptCount ?? 0;
 
   const failure =
@@ -408,16 +385,12 @@ function CheckPanel({ recap }: { recap: DayCloseRecap }) {
           </Notice>
         )}
         <Notice
-          tone="warning"
+          tone={edcNoticeTone(recap.settlement, recap.standaloneUnmatched)}
           title={t("posKasirDayclose.check.settlementTitle")}
         >
           <div className="grid gap-2">
-            <SettlementLines settlement={recap.settlement} />
-            <p>
-              {unmatched > 0
-                ? t("posKasirDayclose.check.unmatched", { count: unmatched })
-                : t("posKasirDayclose.check.noUnmatched")}
-            </p>
+            <EdcSettlementLines settlement={recap.settlement} />
+            <EdcUnmatchedNote count={recap.standaloneUnmatched} />
           </div>
         </Notice>
         <div className="grid gap-2">

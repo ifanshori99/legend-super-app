@@ -43,6 +43,7 @@ import {
   edcSettlementCsvImportViewSchema,
   importEdcSettlementCsvInputSchema,
   type EdcSettlementCsvImportView,
+  type ImportEdcSettlementCsvInput,
 } from "@starter/shared/payment/admin";
 import { guardDataImport } from "../config/data-import.ts";
 import { db } from "../db/index.ts";
@@ -57,7 +58,7 @@ import { paymentEdcTerminals } from "../db/schema/payment-admin.ts";
 import { outlets } from "../db/schema/platform-org.ts";
 import { posOrderTenders } from "../db/schema/pos-order.ts";
 import { withTenant } from "../db/tenant.ts";
-import { HttpError } from "../lib/http-error.ts";
+import { HttpError, RowErrorsHttpError } from "../lib/http-error.ts";
 import {
   alertEdcReconciliationMismatch,
   alertEdcSettlementUnknownTerminals,
@@ -120,6 +121,29 @@ type Decision = {
   reason: string | null;
 };
 
+/**
+ * Reads the file. Called only after the outlet, permission and second-factor
+ * checks (X2-UI review P3), so a caller who may not import learns nothing about
+ * the file. The unreadable file lines travel structured (number and reason
+ * code, never the content); the parser only knows which lines failed.
+ */
+function readLines(input: ImportEdcSettlementCsvInput): EdcSettlementCsvLine[] {
+  try {
+    return parseEdcSettlementCsv(input.bank, input.csv);
+  } catch (error) {
+    if (error instanceof EdcSettlementCsvError) {
+      if (error.lines.length > 0)
+        throw new RowErrorsHttpError(
+          "VALIDATION_ERROR",
+          error.message,
+          error.lines.map((row) => ({ row, reason: "unreadable" })),
+        );
+      throw new HttpError(422, "VALIDATION_ERROR", error.message);
+    }
+    throw error;
+  }
+}
+
 export async function importEdcSettlementCsv(
   context: ScopedTenantContext,
   actorUserId: string,
@@ -131,16 +155,10 @@ export async function importEdcSettlementCsv(
   // Data import guard: classify the upload before any write.
   guardDataImport("edc-settlement.csv-import");
   const input = importEdcSettlementCsvInputSchema.parse(body);
+  // B2 review P3-6: banks without a verified sample file are refused before
+  // anything else; this names no data, so it may answer before the checks.
   if (EDC_SETTLEMENT_UNVERIFIED_BANKS.has(input.bank))
     throw new EdcError("EDC_SETTLEMENT_FORMAT_UNVERIFIED");
-  let lines: EdcSettlementCsvLine[];
-  try {
-    lines = parseEdcSettlementCsv(input.bank, input.csv);
-  } catch (error) {
-    if (error instanceof EdcSettlementCsvError)
-      throw new HttpError(422, "VALIDATION_ERROR", error.message);
-    throw error;
-  }
   const tenantId = context.tenant.tenantId;
   const outletId = input.outletId;
   // X2 review P2 3: the bank is part of the file's identity.
@@ -172,6 +190,7 @@ export async function importEdcSettlementCsv(
     );
     // It clears flags like the person's resolve: a second factor always.
     if (!options.mfaVerified) throw new AccessError("MFA_REQUIRED");
+    const lines = readLines(input);
 
     await tx.execute(
       sql`SELECT pg_advisory_xact_lock(hashtextextended(${`edc-settlement-csv:${tenantId}:${outletId}`}, 0))`,

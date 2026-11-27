@@ -32,6 +32,10 @@ import { closeOfflineKit, countPendingOfflineSales } from "./offline/queue";
 import { defaultOfflineBackend } from "./offline/store";
 import { runPosKasirMock } from "./mock-engine";
 import {
+  flaggedAfterBankFile,
+  type EdcTerminalSettlement,
+} from "./edc-settlement-view";
+import {
   clearStoredCount,
   readStoredCount,
   writeStoredCount,
@@ -137,6 +141,22 @@ function dayRecapFrom(recap: EndOfDayRecapView, cutoff: string): DayCloseRecap {
   // them null so the screen shows a dash, never a made-up 0.
   const hidden = "drawerFiguresHidden" in recap;
   const closedDevices = recap.devices.filter((d) => d.closed);
+  const edcRows: EdcTerminalSettlement[] | null =
+    "edcSettlement" in recap && recap.edcSettlement
+      ? recap.edcSettlement.map((row) => ({
+          terminalId: row.terminalId,
+          terminalCode: row.terminalCode,
+          bank: row.bank,
+          receiptIdr: Number(row.receiptIdr),
+          receiptCount: row.receiptCount,
+          settledIdr: Number(row.settledIdr),
+          settledCount: row.settledCount,
+          flaggedCount: row.flaggedCount,
+          mismatchCount: row.mismatchCount,
+          differenceIdr: Number(row.differenceIdr),
+          bankStatus: row.bankStatus,
+        }))
+      : null;
   return {
     businessDate: recap.businessDate,
     cutoffTime: cutoff,
@@ -169,19 +189,11 @@ function dayRecapFrom(recap: EndOfDayRecapView, cutoff: string): DayCloseRecap {
       0,
     ),
     ...(hidden ? { drawerFiguresHidden: true } : {}),
-    // X2: EDC settled by the bank CSV per terminal, and sales still "perlu
-    // dicek". Absent (blind view, older server): null, the screen says pending.
-    settlement:
-      "edcSettlement" in recap && recap.edcSettlement
-        ? recap.edcSettlement.map((row) => ({
-            bank: `${row.terminalCode} · ${row.bank.toUpperCase()}`,
-            amountIdr: Number(row.settledIdr),
-          }))
-        : null,
-    standaloneUnmatched:
-      "edcSettlement" in recap && recap.edcSettlement
-        ? recap.edcSettlement.reduce((sum, row) => sum + row.flaggedCount, 0)
-        : null,
+    // X2: EDC per terminal against the bank CSV. Absent (blind view, older
+    // server): null, the screen says pending. Before the bank file reaches a
+    // terminal the screen waits instead of showing Rp 0 (edc-settlement-view).
+    settlement: edcRows,
+    standaloneUnmatched: flaggedAfterBankFile(edcRows),
     unsyncedReceiptCount: recap.unsyncedReceiptCount,
     stockDeduction: {
       available: true,

@@ -1489,6 +1489,14 @@ export type EndOfDayChannelRow = z.infer<typeof endOfDayChannelRowSchema>;
  * Computed on every read (the bank file comes H+1, after the day closed), so
  * it is never part of the frozen recap; the blind view never carries it.
  */
+export const endOfDayEdcBankStatusSchema = z.enum([
+  "awaiting",
+  "matched",
+  "mismatch",
+  "no_match",
+]);
+export type EndOfDayEdcBankStatus = z.infer<typeof endOfDayEdcBankStatusSchema>;
+
 export const endOfDayEdcTerminalRowSchema = z
   .strictObject({
     terminalId: uuidSchema,
@@ -1504,6 +1512,19 @@ export const endOfDayEdcTerminalRowSchema = z
     flaggedCount: z.number().int().nonnegative(),
     /** Bank lines naming one of these sales with another amount or terminal. */
     mismatchCount: z.number().int().nonnegative(),
+    /**
+     * Receipts minus the bank-confirmed part, computed by the service: the
+     * screens show it and never subtract money themselves.
+     */
+    differenceIdr: nonnegativeIdr,
+    /**
+     * Where the bank file stands for this terminal. `awaiting`: no file that
+     * names the terminal was uploaded after its sales. `matched`: the bank
+     * confirmed at least one sale (the difference is the rest). `mismatch`:
+     * a bank line names a sale with another amount or terminal. `no_match`:
+     * a file naming the terminal was uploaded but confirmed none of its sales.
+     */
+    bankStatus: endOfDayEdcBankStatusSchema,
   })
   .refine(
     (row) =>
@@ -1511,6 +1532,21 @@ export const endOfDayEdcTerminalRowSchema = z
       row.settledCount <= row.receiptCount &&
       row.flaggedCount <= row.receiptCount,
     { message: "settled and flagged are part of the receipts" },
+  )
+  .refine(
+    (row) =>
+      Number(row.differenceIdr) ===
+      Number(row.receiptIdr) - Number(row.settledIdr),
+    { message: "the difference is the receipts minus the settled part" },
+  )
+  .refine(
+    (row) =>
+      row.bankStatus === "mismatch"
+        ? row.mismatchCount > 0
+        : row.bankStatus === "matched"
+          ? row.mismatchCount === 0 && row.settledCount > 0
+          : row.mismatchCount === 0 && row.settledCount === 0,
+    { message: "the bank status follows the settled and mismatch counts" },
   );
 export type EndOfDayEdcTerminalRow = z.infer<
   typeof endOfDayEdcTerminalRowSchema

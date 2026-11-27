@@ -45,12 +45,27 @@ export const posKasirDaycloseMessages = {
   check: {
     title: "Periksa sebelum tutup",
     settlementTitle: "Settlement EDC",
-    settlementBank: "{bank} · {amount}",
+    settlementTerminal: "{terminal} · {bank}",
+    settlementReceipt: "Struk",
+    settlementBankLabel: "Dikonfirmasi bank",
+    settlementDifference: "Selisih",
+    settlementWaiting: "Menunggu file bank",
+    settlementWaitingHint:
+      "File settlement bank belum masuk untuk terminal ini. Angka bank dan selisih muncul setelah file diunggah.",
+    settlementStateSettled: "Cocok dengan bank",
+    settlementStatePartial: "Sebagian belum cocok",
+    settlementStateMismatch: "Ada selisih dengan bank",
+    settlementStateNoMatch: "Tidak ada yang cocok",
+    settlementNoMatchHint:
+      "File bank sudah masuk, tetapi tidak ada transaksi terminal ini yang cocok. Periksa terminal dan nominal di file, lalu unggah ulang bila perlu.",
+    settlementMismatchLines:
+      "{count} baris bank menyebut transaksi ini dengan nominal atau terminal berbeda.",
     settlementNone: "Tidak ada transaksi EDC untuk disettle.",
     settlementPending: "Settlement per bank belum tersedia dari server.",
     unmatched:
-      "{count} transaksi standalone perlu dicocokkan saat rekonsiliasi.",
-    noUnmatched: "Tidak ada transaksi standalone yang perlu dicocokkan.",
+      "{count} transaksi EDC masih perlu dicek setelah file bank masuk. Periksa di rekonsiliasi EDC.",
+    noUnmatched:
+      "Tidak ada transaksi EDC yang masih perlu dicek setelah file bank.",
     unsyncedTitle: "Struk belum sinkron",
     unsyncedReceipts:
       "{count} nomor struk sudah terbit tetapi belum diterima server. Pastikan kasir yang bersangkutan online agar struknya terkirim sebelum hari ditutup.",

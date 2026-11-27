@@ -14,3 +14,18 @@ export class HttpError extends Error {
     this.name = "HttpError";
   }
 }
+
+/**
+ * A 422 for an uploaded file with unreadable lines: the handler adds them to
+ * the envelope as `rowErrors` (line number and reason code, never the content).
+ */
+export class RowErrorsHttpError extends HttpError {
+  constructor(
+    code: string,
+    message: string,
+    public rowErrors: readonly { row: number; reason: string }[],
+  ) {
+    super(422, code, message);
+    this.name = "RowErrorsHttpError";
+  }
+}

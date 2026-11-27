@@ -54,6 +54,21 @@ const target = createIsomorphicFn()
     onFailure: (() => {}) as FailureLogger,
   }));
 
+/** The unreadable-line list of a 422, only when it has the expected shape. */
+function rowErrorsOf(
+  value: unknown,
+): { row: number; reason: string }[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const rows = value.filter(
+    (entry): entry is { row: number; reason: string } =>
+      typeof entry === "object" &&
+      entry !== null &&
+      Number.isInteger((entry as { row?: unknown }).row) &&
+      typeof (entry as { reason?: unknown }).reason === "string",
+  );
+  return rows.length > 0 ? rows : undefined;
+}
+
 export async function apiFetch<T>(
   path: string,
   {
@@ -135,6 +150,7 @@ export async function apiFetch<T>(
     onFailure(path, { status: response.status });
     const error = payload?.error as
       | (ApiErrorBody["error"] & {
+          rowErrors?: unknown;
           remainingAttempts?: number;
           lockedUntil?: string;
           acknowledgedBy?: { displayName?: unknown };
@@ -152,6 +168,7 @@ export async function apiFetch<T>(
       error?.message ?? `Request failed with status ${response.status}.`,
       error?.details,
       {
+        rowErrors: rowErrorsOf(error?.rowErrors),
         remainingAttempts:
           typeof error?.remainingAttempts === "number"
             ? error.remainingAttempts

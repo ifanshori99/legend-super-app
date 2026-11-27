@@ -27,6 +27,7 @@ import {
   canonicalOrderId,
   BLIND_DRAWER_SEED,
   dayDemoSeed,
+  edcDemoSeed,
   payDemoSeed,
   readDemoSeed,
   shiftDemoSeed,
@@ -45,6 +46,7 @@ import {
   codeOrder,
   dayFixture,
   demoBlindCount,
+  demoEdcTerminals,
   demoMovements,
   demoOrder,
   demoShift,
@@ -56,6 +58,7 @@ import {
   supervisorOptions,
   vaBanks,
 } from "./fixtures.ts";
+import { flaggedAfterBankFile } from "./edc-settlement-view.ts";
 import {
   bookVarianceIdr,
   countLimitReached,
@@ -1229,6 +1232,9 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
     const empty = scenario() === "empty";
     const liveShift = state.shift && state.shift.status !== "closed" ? 1 : 0;
     const result = day.result;
+    // `?demo=edc-<state>` swaps the EDC terminals (bank file states).
+    const edcSeed = edcDemoSeed(readSeed());
+    const edcRows = demoEdcTerminals(edcSeed);
     return {
       businessDate: dayFixture.businessDate,
       cutoffTime: dayFixture.cutoffTime,
@@ -1247,8 +1253,10 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
           },
       netPayments: empty ? [] : clone([...dayFixture.netPayments]),
       totalNetIdr: empty ? 0 : dayFixture.totalNetIdr,
-      settlement: empty ? [] : clone([...dayFixture.settlement]),
-      standaloneUnmatched: day.standaloneUnmatched,
+      settlement: empty ? [] : edcRows,
+      standaloneUnmatched: edcSeed
+        ? flaggedAfterBankFile(edcRows)
+        : day.standaloneUnmatched,
       stockDeduction: {
         available: dayFixture.stockDeductionAvailable,
         applied: result?.stockDeductionApplied ?? false,

@@ -56,6 +56,18 @@ export const SHIFT_DEMO_SEEDS = ["shift-aktif", BLIND_DRAWER_SEED] as const;
 export type ShiftDemoSeed = (typeof SHIFT_DEMO_SEEDS)[number];
 
 export const DAY_DEMO_SEEDS = ["hari-ditutup"] as const;
+
+/**
+ * `?demo=edc-<state>` on the day close: the EDC terminals against the bank
+ * file. cocok: every sale confirmed; tidak-cocok: a mismatch and a file that
+ * hit nothing; menunggu: no bank file yet for any terminal.
+ */
+export const EDC_DEMO_SEEDS = [
+  "edc-cocok",
+  "edc-tidak-cocok",
+  "edc-menunggu",
+] as const;
+export type EdcDemoSeed = (typeof EDC_DEMO_SEEDS)[number];
 export type DayDemoSeed = (typeof DAY_DEMO_SEEDS)[number];
 
 /** The raw `?demo=` value of the current page; null on the server or without one. */
@@ -83,6 +95,7 @@ export const shiftDemoSeed = (raw: string | null) =>
 export const ticketDemoSeed = (raw: string | null) =>
   pick(raw, TICKET_DEMO_SEEDS);
 export const dayDemoSeed = (raw: string | null) => pick(raw, DAY_DEMO_SEEDS);
+export const edcDemoSeed = (raw: string | null) => pick(raw, EDC_DEMO_SEEDS);
 
 /** Orders the demo knows, by canonical id (a ULID alias maps to its uuid). */
 export function canonicalOrderId(id: string): string {

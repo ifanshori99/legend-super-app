@@ -4,6 +4,7 @@ import {
   apiErrorBody,
   CoreError,
   type ApiErrorDetail,
+  type ApiErrorRow,
 } from "@starter/shared/core";
 import { AccessError } from "@starter/shared/access";
 import { AccountingError } from "@starter/shared/accounting";
@@ -24,7 +25,7 @@ import {
   reservationErrorHttpStatus,
 } from "@starter/shared/reservation";
 import { TaxError } from "@starter/shared/tax";
-import { HttpError } from "../lib/http-error";
+import { HttpError, RowErrorsHttpError } from "../lib/http-error";
 import { AuditUnavailableError } from "../services/audit-writer";
 import { toLoggableError } from "../lib/safe-error";
 import { captureServerError } from "../lib/sentry";
@@ -63,6 +64,7 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
     message: string,
     details?: ApiErrorDetail[],
     extra: {
+      rowErrors?: ApiErrorRow[];
       remainingAttempts?: number;
       lockedUntil?: string;
       acknowledgedBy?: { displayName: string };
@@ -114,6 +116,11 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
           : {}),
       },
     );
+
+  if (error instanceof RowErrorsHttpError)
+    return send(error.status, error.code, error.message, undefined, {
+      rowErrors: [...error.rowErrors],
+    });
 
   if (error instanceof HttpError && error.context)
     return send(

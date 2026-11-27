@@ -5,7 +5,7 @@
 import * as React from "react";
 import { Link, useRouteContext } from "@tanstack/react-router";
 import { useAttemptKey } from "../use-attempt-key";
-import { Pencil, Plus, Scale } from "lucide-react";
+import { Pencil, Plus, Scale, Upload } from "lucide-react";
 import { useT } from "@/components/i18n";
 import type { AreaAccess } from "@/lib/areas/access";
 import { holdsAny } from "@/lib/areas/guard";
@@ -131,6 +131,14 @@ export function EdcPanel() {
               <Link to="/kelola/pembayaran/edc-rekonsiliasi">
                 <Scale aria-hidden="true" />
                 {t("edcRecon.queue.entryLink")}
+              </Link>
+            </Button>
+          )}
+          {canReconcile && (
+            <Button asChild variant="outline">
+              <Link to="/kelola/pembayaran/edc-settlement">
+                <Upload aria-hidden="true" />
+                {t("edcSettlementCsv.entryLink")}
               </Link>
             </Button>
           )}

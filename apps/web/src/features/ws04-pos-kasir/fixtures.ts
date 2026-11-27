@@ -16,6 +16,7 @@ import type {
   SupervisorOption,
   VaBank,
 } from "./types.ts";
+import type { EdcTerminalSettlement } from "./edc-settlement-view.ts";
 import {
   DEMO_CODE_ORDER_ID,
   DEMO_ORDER_ID,
@@ -225,6 +226,69 @@ export const demoBlindCount = {
   otherAmountIdr: 0,
 };
 
+type EdcDemoTerminal = EdcTerminalSettlement;
+
+/** The day close EDC terminals for a `?demo=edc-<state>` seed (default: mixed). */
+export function demoEdcTerminals(
+  seed: "edc-cocok" | "edc-tidak-cocok" | "edc-menunggu" | null,
+): EdcDemoTerminal[] {
+  const [bca, mandiri] = dayFixture.edcTerminals.map(
+    (row): EdcDemoTerminal => ({ ...row }),
+  ) as [EdcDemoTerminal, EdcDemoTerminal];
+  if (seed === "edc-cocok")
+    return [
+      {
+        ...bca,
+        settledIdr: bca.receiptIdr,
+        settledCount: bca.receiptCount,
+        flaggedCount: 0,
+        differenceIdr: 0,
+        bankStatus: "matched",
+      },
+      {
+        ...mandiri,
+        settledIdr: mandiri.receiptIdr,
+        settledCount: mandiri.receiptCount,
+        flaggedCount: 0,
+        differenceIdr: 0,
+        bankStatus: "matched",
+      },
+    ];
+  if (seed === "edc-tidak-cocok")
+    return [
+      {
+        ...bca,
+        settledIdr: 0,
+        settledCount: 0,
+        flaggedCount: 4,
+        mismatchCount: 1,
+        differenceIdr: bca.receiptIdr,
+        bankStatus: "mismatch",
+      },
+      {
+        ...mandiri,
+        settledIdr: 0,
+        settledCount: 0,
+        flaggedCount: 2,
+        differenceIdr: mandiri.receiptIdr,
+        bankStatus: "no_match",
+      },
+    ];
+  if (seed === "edc-menunggu")
+    return [
+      {
+        ...bca,
+        settledIdr: 0,
+        settledCount: 0,
+        flaggedCount: 0,
+        differenceIdr: bca.receiptIdr,
+        bankStatus: "awaiting",
+      },
+      mandiri,
+    ];
+  return [bca, mandiri];
+}
+
 export function demoMovements(): (CashMovement & { shiftId: string })[] {
   return [
     {
@@ -280,7 +344,37 @@ export const dayFixture = {
     { bank: "BCA", amountIdr: 1_600_000 },
     { bank: "Mandiri", amountIdr: 800_000 },
   ],
-  standaloneUnmatched: 2,
+  // X2-UI: per terminal against the bank file. BCA's file is in (one sale not
+  // confirmed yet); Mandiri's has not arrived.
+  edcTerminals: [
+    {
+      terminalId: "00000000-0000-4000-8000-0000000000b1",
+      terminalCode: "EDC-SNP-01",
+      bank: "bca",
+      receiptIdr: 1_600_000,
+      receiptCount: 4,
+      settledIdr: 1_200_000,
+      settledCount: 3,
+      flaggedCount: 1,
+      mismatchCount: 0,
+      differenceIdr: 400_000,
+      bankStatus: "matched",
+    },
+    {
+      terminalId: "00000000-0000-4000-8000-0000000000b2",
+      terminalCode: "EDC-SNP-02",
+      bank: "mandiri",
+      receiptIdr: 800_000,
+      receiptCount: 2,
+      settledIdr: 0,
+      settledCount: 0,
+      flaggedCount: 0,
+      mismatchCount: 0,
+      differenceIdr: 800_000,
+      bankStatus: "awaiting",
+    },
+  ],
+  standaloneUnmatched: 1,
   stockDeductionAvailable: true,
   managerName: "Manajer outlet",
 } as const;
