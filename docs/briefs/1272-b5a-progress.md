@@ -13,9 +13,16 @@ Brief: `docs/briefs/1272-b5a-brief.md`. Cabang `ws/1272-b5a` dari `origin/int/rc
 
 ## Status
 
-- [ ] 1 notes bead
-- [ ] 2-3 klien + provider
-- [ ] 4 env
-- [ ] 5 stub + test
-- [ ] 6 doc
-- [ ] pra-gate, test terarah, typecheck, push
+- [x] 1 notes bead (commit 3e458c822)
+- [x] 2-4 klien SNAP, provider, env (commit b00e69941)
+- [x] 5 stub + test `src/test/edc-bca-cloud.test.ts` 17 test; gagal-dulu: tanpa fix bead notes 6 test gagal (b5a-3,4,5,6,13,14)
+- [x] 6 doc "Provider bca_cloud" di `docs/design/edc-bridge-protocol.md`
+- [x] pra-gate: prettier, eslint, typecheck api lulus; test terarah `edc-bca-cloud` + `edc-bridge-cloud` 36/36 lulus via `heavy`
+
+## Keputusan penting
+
+- 4xx sebelum diproses = `declined` (bukan `failed` "tidak pernah dikirim"): request sampai ke BCA, kode BCA disimpan sebagai bukti. Tidak membayar siapa pun.
+- `ready` = token tersimpan; sale tanpa token = tidak dikirim. Token diambil di `prepareSale` dan di latar belakang saat `ready` false (maks sekali per 5 s sesudah gagal).
+- Tanpa provider, terminal `bca_cloud` = `EDC_AGENT_NOT_READY` (bukan `EDC_PROVIDER_UNKNOWN`).
+- `outlets()` lewat `app.active_tenant_registry`, tanpa migrasi.
+- Sisa: semua titik `BCA-DOC` menunggu dokumen ECR BCA (B0); inquiry memakai `transType` kartu karena transType asli tidak ada di `EcrTraceRequest`.
