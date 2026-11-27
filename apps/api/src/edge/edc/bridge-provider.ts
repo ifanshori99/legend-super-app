@@ -16,6 +16,8 @@
 //   the open row.
 import {
   EcrTransportError,
+  ecrInquiryResultSchema,
+  ecrResultSchema,
   type EcrInquiryResult,
   type EcrResult,
   type EcrSaleRequest,
@@ -93,8 +95,10 @@ export class EdcBridgeProvider implements EdcProvider {
   }
 
   /** The decoded answer for `edc_bridge_commands.result_evidence`: no PAN
-   * and no free text. Null when it is not a readable response. Never
-   * throws. */
+   * and no free text. The codec's output is parsed again with the shared
+   * result schemas first (B2 review P3: a loose codec must not slip a card
+   * number into a reference field). Null when it is not a readable
+   * response. Never throws. */
   evidence(
     op: "sale" | "cancel" | "inquiry" | "void",
     answer: EdcBridgeAnswer,
@@ -103,8 +107,10 @@ export class EdcBridgeProvider implements EdcProvider {
     try {
       const read =
         op === "inquiry"
-          ? this.#codec.decodeInquiry(answer.frame)
-          : this.#codec.decodeResult(answer.frame);
+          ? ecrInquiryResultSchema.parse(
+              this.#codec.decodeInquiry(answer.frame),
+            )
+          : ecrResultSchema.parse(this.#codec.decodeResult(answer.frame));
       return {
         outcome: read.outcome,
         amountIdr: "amountIdr" in read ? (read.amountIdr ?? null) : null,

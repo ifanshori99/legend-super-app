@@ -172,7 +172,7 @@ export async function getPosPaymentOptions(
     edc_card: edc("card"),
     edc_qris: edc("qris"),
   };
-  await prepareEdcAgent(context.tenant.tenantId, outletId);
+  await prepareEdcAgent(context.tenant.tenantId, outletId, terminals);
   const resolved = resolveEdcAgent(context.tenant.tenantId, outletId);
   const ecrEnabled =
     resolved !== null && terminals.some((row) => resolved.terminalReady(row));

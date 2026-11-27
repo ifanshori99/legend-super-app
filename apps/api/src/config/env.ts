@@ -1,4 +1,5 @@
-import { createECDH } from "node:crypto";
+import { createECDH, createPrivateKey } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { z } from "zod";
 import {
   DEPLOYMENT_POLICY_MESSAGE,
@@ -486,6 +487,28 @@ const schema = z
       .enum(["true", "false", "1", "0"])
       .optional()
       .transform((value) => value === "true" || value === "1"),
+    // BCA ECR cloud API for `bca_cloud` terminals (B5a legend-wasr7.23),
+    // used by the cloud EDC agent above. All six or none; none = those
+    // terminals are not ready (EDC manual X1). The private key file holds
+    // the RSA key of the SNAP token signature; secrets are never logged.
+    EDC_BCA_CLOUD_BASE_URL: blankToUndefined(
+      z.string().trim().url().optional(),
+    ),
+    EDC_BCA_CLOUD_CLIENT_ID: blankToUndefined(
+      z.string().trim().min(1).max(255).optional(),
+    ),
+    EDC_BCA_CLOUD_CLIENT_SECRET: blankToUndefined(
+      z.string().min(1).max(1024).optional(),
+    ),
+    EDC_BCA_CLOUD_PRIVATE_KEY_PATH: blankToUndefined(
+      z.string().trim().min(1).optional(),
+    ),
+    EDC_BCA_CLOUD_PARTNER_ID: blankToUndefined(
+      z.string().trim().min(1).max(64).optional(),
+    ),
+    EDC_BCA_CLOUD_CHANNEL_ID: blankToUndefined(
+      z.string().trim().min(1).max(16).optional(),
+    ),
     // Edge selfie store: sealed LSS1 files wait here until the cloud takes
     // them. EDGE_SELFIE_MAX_BYTES caps the bytes of files not yet uploaded.
     EDGE_SELFIE_DIR: z.string().min(1).default("/var/lib/legend/edge-selfies"),
@@ -945,6 +968,10 @@ const schema = z
         });
   })
   .superRefine((values, ctx) => {
+    for (const problem of bcaCloudConfigProblems(values))
+      ctx.addIssue({ code: "custom", ...problem });
+  })
+  .superRefine((values, ctx) => {
     // Version 1 is the old tenant-wide pepper; only dev data may stay on it.
     if (
       values.NODE_ENV === "production" &&
@@ -1074,6 +1101,53 @@ const schema = z
     path: ["DATA_CLASSIFICATION"],
     message: DEPLOYMENT_POLICY_MESSAGE,
   });
+
+const BCA_CLOUD_KEYS = [
+  "EDC_BCA_CLOUD_BASE_URL",
+  "EDC_BCA_CLOUD_CLIENT_ID",
+  "EDC_BCA_CLOUD_CLIENT_SECRET",
+  "EDC_BCA_CLOUD_PRIVATE_KEY_PATH",
+  "EDC_BCA_CLOUD_PARTNER_ID",
+  "EDC_BCA_CLOUD_CHANNEL_ID",
+] as const;
+
+/** B5a: the BCA ECR cloud settings are all set or none; https outside
+ * development and test; the private key file is a readable RSA private key.
+ * Messages name keys only, never values or key contents. */
+export function bcaCloudConfigProblems(
+  values: Partial<Record<(typeof BCA_CLOUD_KEYS)[number], string>> & {
+    NODE_ENV?: string;
+  },
+): Array<{ path: string[]; message: string }> {
+  const missing = BCA_CLOUD_KEYS.filter((key) => values[key] === undefined);
+  if (missing.length === BCA_CLOUD_KEYS.length) return [];
+  if (missing.length > 0)
+    return missing.map((key) => ({
+      path: [key],
+      message: `${key} is required: set all EDC_BCA_CLOUD_* settings together, or none.`,
+    }));
+  const problems: Array<{ path: string[]; message: string }> = [];
+  const url = new URL(values.EDC_BCA_CLOUD_BASE_URL!);
+  const local = values.NODE_ENV === "development" || values.NODE_ENV === "test";
+  if (url.protocol !== "https:" && !local)
+    problems.push({
+      path: ["EDC_BCA_CLOUD_BASE_URL"],
+      message: "EDC_BCA_CLOUD_BASE_URL must be an https:// URL.",
+    });
+  try {
+    const key = createPrivateKey(
+      readFileSync(values.EDC_BCA_CLOUD_PRIVATE_KEY_PATH!),
+    );
+    if (key.asymmetricKeyType !== "rsa") throw new Error("not RSA");
+  } catch {
+    problems.push({
+      path: ["EDC_BCA_CLOUD_PRIVATE_KEY_PATH"],
+      message:
+        "EDC_BCA_CLOUD_PRIVATE_KEY_PATH must name a readable RSA private key (PEM).",
+    });
+  }
+  return problems;
+}
 
 const parsed = schema.safeParse(process.env);
 if (!parsed.success) {
