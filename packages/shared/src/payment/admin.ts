@@ -835,6 +835,77 @@ export const settlementListItemSchema = z.strictObject({
 });
 export type SettlementListItem = z.infer<typeof settlementListItemSchema>;
 
+// ---- Gateway settlement CSV (C4b legend-osqou.8) ------------------------
+
+/**
+ * CSV layouts the server can read. `legend_template_v1` is Legend's own
+ * template (docs/design/settlement-csv-template.md): exactly the columns
+ * below, in any order. The gateway's native export is added as another format
+ * once a real sample file is verified (no guessing).
+ */
+export const GATEWAY_SETTLEMENT_CSV_FORMATS = ["legend_template_v1"] as const;
+export const gatewaySettlementCsvFormatSchema = z.enum(
+  GATEWAY_SETTLEMENT_CSV_FORMATS,
+);
+export type GatewaySettlementCsvFormat = z.infer<
+  typeof gatewaySettlementCsvFormatSchema
+>;
+/** Header of `legend_template_v1`: payment reference, amount and fee in whole rupiah. */
+export const SETTLEMENT_TEMPLATE_V1_COLUMNS = [
+  "reference",
+  "amount_idr",
+  "fee_idr",
+] as const;
+/** Lines one gateway settlement CSV may carry (the import's own limit). */
+export const GATEWAY_SETTLEMENT_CSV_MAX_LINES = 1000;
+
+/**
+ * A gateway settlement report as CSV text. The browser sends only the file and
+ * what identifies the report; the server reads every amount from the file and
+ * computes the totals itself.
+ */
+export const importGatewaySettlementCsvInputSchema = clientInputSchema({
+  outletId: outletIdSchema,
+  provider: z.enum(["duitku"]),
+  format: gatewaySettlementCsvFormatSchema,
+  /** The report id printed by the gateway; with the provider it identifies the report. */
+  reference: ref,
+  periodStart: businessDateSchema,
+  periodEnd: businessDateSchema,
+  fileName: z
+    .string()
+    .trim()
+    .min(1)
+    .max(200)
+    .refine(
+      (name) =>
+        !/[/\\]/.test(name) && [...name].every((ch) => ch.charCodeAt(0) >= 32),
+      "Nama berkas tidak valid",
+    ),
+  csv: z.string().min(1).max(90_000),
+}).superRefine((s, ctx) => {
+  if (s.periodEnd < s.periodStart)
+    ctx.addIssue({
+      code: "custom",
+      path: ["periodEnd"],
+      message: "period end must not be before period start",
+    });
+  else if (
+    (Date.parse(`${s.periodEnd}T00:00:00Z`) -
+      Date.parse(`${s.periodStart}T00:00:00Z`)) /
+      86_400_000 >
+    30
+  )
+    ctx.addIssue({
+      code: "custom",
+      path: ["periodEnd"],
+      message: "a settlement period is at most 31 days",
+    });
+});
+export type ImportGatewaySettlementCsvInput = z.infer<
+  typeof importGatewaySettlementCsvInputSchema
+>;
+
 // ---- EDC settlement CSV per bank (X2 legend-wasr7.11) ---------------------
 
 /** Largest CSV text one upload carries (the API caps bodies at 100 kB). */
@@ -1180,11 +1251,25 @@ export const getReconciliationSummary = defineEndpoint({
   query: z.strictObject({ outletId: outletIdSchema.optional() }),
   response: dataResponseSchema(reconciliationSummarySchema),
 });
-/** EDC-06: a settlement report is matched to POS; each difference is a case. */
+/**
+ * EDC-06: a settlement report is matched to POS; each difference is a case.
+ * Needs payment.reconcile at the outlet and a fresh second factor (C4b).
+ */
 export const importSettlement = defineEndpoint({
   method: "POST",
   path: `${ADMIN}/reconciliation/settlements`,
   body: importSettlementInputSchema,
+  response: dataResponseSchema(settlementImportViewSchema),
+});
+/**
+ * C4b: a gateway settlement CSV (Duitku). Needs payment.reconcile at the outlet
+ * and a fresh second factor, both checked before the file is read; then it is
+ * imported exactly like importSettlement (same matching, cases and replay).
+ */
+export const importGatewaySettlementCsv = defineEndpoint({
+  method: "POST",
+  path: `${ADMIN}/reconciliation/settlements/csv`,
+  body: importGatewaySettlementCsvInputSchema,
   response: dataResponseSchema(settlementImportViewSchema),
 });
 /**
