@@ -130,6 +130,20 @@ async function paidLink(orderId: string, amountIdr: number) {
         randomUUID(),
       ],
     );
+    // 1273: settlement counts a link's money net of provider refunds from the
+    // intent's verified evidence, so a paid intent carries its evidence row.
+    await client.query(
+      `INSERT INTO payment_evidence
+         (tenant_id, outlet_id, payment_intent_id, provider, provider_ref, method, source, amount_idr, received_at)
+       VALUES ($1, $2, $3, 'doit', $4, 'qris', 'verified_webhook', $5, now())`,
+      [
+        fixture.tenant.tenantId,
+        fixture.tenant.outletId,
+        intentId,
+        `cap-ref-${intentId}`,
+        amountIdr,
+      ],
+    );
     return { linkId, intentId };
   });
 }
