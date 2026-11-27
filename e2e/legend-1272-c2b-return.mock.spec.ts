@@ -92,14 +92,20 @@ async function openCheckout(page: Page) {
   ).toBeVisible();
 }
 
+/** Visible radios only: the picker sits in the phone layout and the desktop aside. */
+const radio = (page: Page, options: { name: string | RegExp }) =>
+  page
+    .getByRole("radio", { ...options, exact: typeof options.name === "string" })
+    .filter({ visible: true });
+
 const payWith = (page: Page, what: RegExp) =>
   page.getByRole("button", { name: what }).filter({ visible: true });
 
 /** Checkout with DANA, through the opening screen, back to /bayar/kembali. */
 async function payWithDana(page: Page) {
   await openCheckout(page);
-  await page.getByRole("radio", { name: /^E-wallet/ }).click();
-  await page.getByRole("radio", { name: "DANA" }).click();
+  await radio(page, { name: /^E-wallet/ }).click();
+  await radio(page, { name: "DANA" }).click();
   await payWith(page, /^Bayar Rp.* dengan DANA$/).click();
   await page.waitForURL(/\/bayar\/kembali\?merchantOrderId=.*resultCode=00/);
 }
@@ -116,10 +122,10 @@ test("C2b checkout lists e-wallet apps and card from the server; off methods are
     /^Bayar di kasir/,
   ])
     await expect(page.getByRole("radio", { name })).toBeVisible();
-  await page.getByRole("radio", { name: /^E-wallet/ }).click();
+  await radio(page, { name: /^E-wallet/ }).click();
   for (const wallet of ["OVO", "DANA", "ShopeePay", "LinkAja"])
-    await expect(page.getByRole("radio", { name: wallet })).toBeVisible();
-  await page.getByRole("radio", { name: "DANA" }).click();
+    await expect(radio(page, { name: wallet })).toBeVisible();
+  await radio(page, { name: "DANA" }).click();
   await expect(
     page.getByText(/dibawa ke halaman DANA untuk menyetujui/),
   ).toBeVisible();
@@ -127,7 +133,7 @@ test("C2b checkout lists e-wallet apps and card from the server; off methods are
   await axe(page);
   await shot(page, "metode", true);
 
-  await page.getByRole("radio", { name: /^Kartu kredit atau debit/ }).click();
+  await radio(page, { name: /^Kartu kredit atau debit/ }).click();
   await expect(
     page.getByText(/Nomor kartu diisi di halaman pembayaran Duitku/),
   ).toBeVisible();
@@ -140,16 +146,12 @@ test("C2b an outlet with only some methods on shows only those", async ({
 }) => {
   await setDuitku(page, "partial");
   await openCheckout(page);
-  await expect(
-    page.getByRole("radio", { name: /^Virtual Account/ }),
-  ).toHaveCount(0);
-  await expect(page.getByRole("radio", { name: /^Kartu kredit/ })).toHaveCount(
-    0,
-  );
-  await page.getByRole("radio", { name: /^E-wallet/ }).click();
-  await expect(page.getByRole("radio", { name: "OVO" })).toHaveCount(0);
-  await expect(page.getByRole("radio", { name: "DANA" })).toBeVisible();
-  await expect(page.getByRole("radio", { name: "ShopeePay" })).toBeVisible();
+  await expect(radio(page, { name: /^Virtual Account/ })).toHaveCount(0);
+  await expect(radio(page, { name: /^Kartu kredit/ })).toHaveCount(0);
+  await radio(page, { name: /^E-wallet/ }).click();
+  await expect(radio(page, { name: "OVO" })).toHaveCount(0);
+  await expect(radio(page, { name: "DANA" })).toBeVisible();
+  await expect(radio(page, { name: "ShopeePay" })).toBeVisible();
   await shot(page, "metode-sebagian");
 });
 
@@ -159,7 +161,7 @@ test("C2b the opening screen names Duitku once and keeps a manual button", async
   // Hold the gateway page so the opening screen stays on.
   await page.route("**/bayar/kembali**", () => new Promise(() => {}));
   await openCheckout(page);
-  await page.getByRole("radio", { name: /^E-wallet/ }).click();
+  await radio(page, { name: /^E-wallet/ }).click();
   await payWith(page, /^Bayar Rp.* dengan OVO$/).click();
   await expect(
     page.getByRole("heading", { name: "Bayar dengan OVO" }),
@@ -176,8 +178,8 @@ test("C2b opening fails: nothing paid, retry or another method", async ({
 }) => {
   await setDuitku(page, "open-fail");
   await openCheckout(page);
-  await page.getByRole("radio", { name: /^E-wallet/ }).click();
-  await page.getByRole("radio", { name: "DANA" }).click();
+  await radio(page, { name: /^E-wallet/ }).click();
+  await radio(page, { name: "DANA" }).click();
   await payWith(page, /^Bayar Rp.* dengan DANA$/).click();
   await expect(
     page.getByRole("heading", { name: "Halaman DANA belum bisa dibuka" }),
