@@ -176,7 +176,9 @@ test("TEN-09 · the term dictionary renames a term and shows it as customized", 
   const field = page.locator('[id="term-id-terms.table"]');
   await field.fill("Meja Tamu");
   await page.getByRole("button", { name: "Simpan 1 perubahan" }).click();
-  await expect(page.getByText("1 perubahan istilah disimpan.")).toBeVisible();
+  await expect(
+    page.getByText("1 perubahan istilah disimpan.", { exact: true }),
+  ).toBeVisible();
   await expect(field).toHaveValue("Meja Tamu");
   // An empty box restores the platform default.
   await field.fill("");
