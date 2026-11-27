@@ -129,11 +129,13 @@ export function ChargeResolveDialog({
     <SupervisorPinDialog
       open={open}
       onOpenChange={(next) => {
-        // Closing while the server decides keeps the request going; the
-        // screen reads the server again (the settle replays with its key).
-        if (!busy) reset();
+        // The dialog stays open while the server decides (Cancel and X are
+        // off); the settle answer closes it.
+        if (busy) return;
+        reset();
         onOpenChange(next);
       }}
+      locked={busy}
       title={t("posIssueCharge.resolve.title")}
       summary={t(
         attempt.method === "cash"
