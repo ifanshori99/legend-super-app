@@ -1965,7 +1965,8 @@ describe("X2 EDC settlement CSV import matches terminal + RRN + amount and never
       (
         await owner.query<{ payload: Record<string, unknown> }>(
           `SELECT payload FROM notification_outbox
-           WHERE tenant_id = $1 AND event_type = $2`,
+           WHERE tenant_id = $1 AND event_type = $2
+           ORDER BY created_at, id`,
           [tenant.tenantId, event],
         )
       ).rows;
@@ -2065,7 +2066,16 @@ describe("X2 EDC settlement CSV import matches terminal + RRN + amount and never
       expect(await row(id)).toMatchObject({ needs_reconciliation: true });
       const unknown = await alertsOf("edc_settlement.unknown_terminal");
       expect(unknown).toHaveLength(before + 1);
-      expect(unknown.at(-1)?.payload).toMatchObject({ count: "2" });
+      // Other tests of this tenant also raise unknown_terminal alerts: pick
+      // this import's own by the terminal codes only this test uses.
+      const own = unknown.filter((a) =>
+        String(a.payload.terminalCodes).includes("TID-NOPE1"),
+      );
+      expect(own).toHaveLength(1);
+      expect(own[0]?.payload).toMatchObject({
+        count: "2",
+        terminalCodes: "TID-NOPE1, TID-NOPE2",
+      });
     });
   });
 });
