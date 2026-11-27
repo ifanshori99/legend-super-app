@@ -18,6 +18,7 @@ import { orgDomainMessages } from "./org-domain.ts";
 import { accountingMessages } from "./accounting.ts";
 import { accountingApMessages } from "./accounting-ap.ts";
 import { accountingCashMessages } from "./accounting-cash.ts";
+import { edcSettlementCsvMessages } from "./edc-settlement-csv.ts";
 import { edcReconQueueMessages } from "./edc-recon-queue.ts";
 import { edcReconResolveMessages } from "./edc-recon-resolve.ts";
 import { accountingReportMessages } from "./accounting-report.ts";
@@ -199,6 +200,7 @@ export const id = {
     queue: edcReconQueueMessages,
     resolve: edcReconResolveMessages,
   },
+  edcSettlementCsv: edcSettlementCsvMessages,
   posKasirCode: posKasirCodeMessages,
   posOffline: posOfflineMessages,
   posKasirOffline: posKasirOfflineMessages,

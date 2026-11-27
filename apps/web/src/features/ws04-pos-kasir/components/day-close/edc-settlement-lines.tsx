@@ -41,13 +41,7 @@ const STATE_PILL: Record<
   },
 };
 
-function Figure({
-  label,
-  children,
-}: {
-  label: string;
-  children: ReactNode;
-}) {
+function Figure({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="grid gap-0.5">
       <dt className="text-sm text-muted-foreground">{label}</dt>

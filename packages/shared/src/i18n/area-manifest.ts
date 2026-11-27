@@ -110,6 +110,7 @@ export const AREA_MANIFEST: Readonly<
   aiSettingsChatgpt: "kelola",
   aiSettingsCustom: "kelola",
   edcRecon: "kelola",
+  edcSettlementCsv: "kelola",
   financeExceptions: "kelola",
   floorEditor: "kelola",
   crm360: "kelola",

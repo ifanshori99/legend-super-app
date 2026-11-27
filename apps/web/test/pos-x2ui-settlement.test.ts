@@ -74,9 +74,9 @@ describe("edcTerminalView", () => {
   });
 
   it("a terminal without receipts has nothing to wait for", () => {
-    expect(
-      edcTerminalView(row({ receiptIdr: 0, receiptCount: 0 })).state,
-    ).toBe("none");
+    expect(edcTerminalView(row({ receiptIdr: 0, receiptCount: 0 })).state).toBe(
+      "none",
+    );
   });
 });
 
