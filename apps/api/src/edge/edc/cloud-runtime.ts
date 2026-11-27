@@ -13,6 +13,17 @@
 //   the registry answers `EDC_AGENT_NOT_READY` before any ledger row exists,
 //   and the cashier uses EDC manual (X1, pos-edc-standalone.ts refuses it
 //   while a sale is pending or unknown).
+// - Outlet lock lost (CTO decision, B2): never the process. Only that outlet
+//   stops: its bridge sockets are closed (`goodbye server_shutdown`, the
+//   tablet reconnects), their leases leave memory, its commands still on the
+//   wire stop listening on the session (their result is late: stored and
+//   acked, never settling the ledger) and run to their deadline, so a
+//   dispatched sale ends `unknown` and the next owner's inquiry settles it.
+//   New requests of the outlet get `EDC_AGENT_NOT_READY` until the lock is
+//   taken again (retried with backoff, 1 s doubling to 30 s). Other outlets
+//   keep running. The lease rows stay: no other tablet takes the terminal
+//   before the handover time; the same tablet gets it back. The edge agent
+//   still exits (agent.ts fail-stop).
 // - Leases live in `edc_bridge_terminal_leases` on the cloud clock. A terminal
 //   goes to another tablet only after `issuedAt + ttlMs + 300 s + 30 s`
 //   (`edcBridgeLeaseReusableAt`), checked in the same INSERT .. ON CONFLICT.
@@ -128,6 +139,8 @@ type Pending = {
   stored: Promise<boolean>;
   readonly settle: (answer: EdcBridgeAnswer) => void;
   readonly timer: ReturnType<typeof setTimeout>;
+  /** The outlet lock was lost after it went out: a result is late. */
+  orphaned: boolean;
 };
 
 /** Picks the provider per terminal (`connection_kind`). */
@@ -195,13 +208,14 @@ export type CloudEdcRuntimeOptions = {
   leaseTtlMs?: number;
   renewMs?: number;
   now?: () => Date;
-  /** Tests only (agent default: exit the process). */
-  onFatal?: (info: {
-    tenantId: string;
-    outletId: string;
-    liveCalls: number;
-  }) => void;
+  /** Delay before retaking a lost outlet lock. Default 1 s doubling, capped
+   * at 30 s (as the edge agent). */
+  retryDelayMs?: (attempt: number) => number;
 };
+
+/** 1 s, doubling, capped at 30 s. */
+const defaultRetryDelayMs = (attempt: number) =>
+  Math.min(30_000, 1_000 * 2 ** Math.min(attempt, 5));
 
 const keyOf = (tenantId: string, id: string) =>
   `${tenantId.toLowerCase()}:${id.toLowerCase()}`;
@@ -260,6 +274,10 @@ export class CloudEdcRuntime {
   /** Outlets whose advisory lock the agent holds, by tenant + outlet. */
   readonly #owned = new Set<string>();
   readonly #starting = new Map<string, Promise<boolean>>();
+  /** Lock losses per outlet: a start begun before a loss does not count. */
+  readonly #losses = new Map<string, number>();
+  readonly #retries = new Map<string, ReturnType<typeof setTimeout>>();
+  readonly #retryDelayMs: (attempt: number) => number;
   readonly #renewTimer: ReturnType<typeof setInterval>;
   #stopped = false;
 
@@ -268,6 +286,7 @@ export class CloudEdcRuntime {
     this.#now = options.now ?? (() => new Date());
     this.#ttlMs = options.leaseTtlMs ?? EDC_BRIDGE_LEASE_TTL_MS;
     this.#graceMs = options.resultGraceMs ?? EDC_BRIDGE_RESULT_GRACE_MS;
+    this.#retryDelayMs = options.retryDelayMs ?? defaultRetryDelayMs;
     const saleTimeoutMs = options.saleTimeoutMs ?? EDC_SALE_TIMEOUT_MS;
     const traceTimeoutMs = options.traceTimeoutMs ?? EDC_TRACE_TIMEOUT_MS;
     const transport: EdcBridgeTransport = {
@@ -292,14 +311,11 @@ export class CloudEdcRuntime {
       inquiryTimeoutMs: traceTimeoutMs,
       cancelTimeoutMs: traceTimeoutMs,
       ...(options.now ? { now: options.now } : {}),
-      ...(options.onFatal ? { onFatal: options.onFatal } : {}),
-      onOutletLost: ({ tenantId, outletId }) => {
-        this.#owned.delete(keyOf(tenantId, outletId));
-        logger.warn(
-          { outletId },
-          "The cloud EDC agent lost an outlet lock; its bridges get no lease until it is taken again.",
-        );
-      },
+      // Never `process.exit` in the cloud: one outlet stops, not the API.
+      onFatal: ({ tenantId, outletId, liveCalls }) =>
+        this.#outletLost(tenantId, outletId, liveCalls),
+      onOutletLost: ({ tenantId, outletId }) =>
+        this.#outletLost(tenantId, outletId, 0),
     });
     this.#renewTimer = setInterval(
       () => void this.renewAll(),
@@ -448,21 +464,26 @@ export class CloudEdcRuntime {
 
   // ----------------------------------------------------------- leases
 
-  async #ensureOutlet(device: EdcBridgeDevice): Promise<boolean> {
-    const key = keyOf(device.tenantId, device.outletId);
+  async #ensureOutlet(tenantId: string, outletId: string): Promise<boolean> {
+    const key = keyOf(tenantId, outletId);
     if (this.#owned.has(key)) return true;
+    if (this.#stopped) return false;
     const running = this.#starting.get(key);
     if (running) return running;
+    const losses = this.#losses.get(key) ?? 0;
     const start = this.agent
-      .start(edcBridgeDeviceContext(device.tenantId, device.outletId))
+      .start(edcBridgeDeviceContext(tenantId, outletId))
       .then(
         () => {
+          // Lost again while starting, or stopped meanwhile: not ours.
+          if (this.#stopped || (this.#losses.get(key) ?? 0) !== losses)
+            return false;
           this.#owned.add(key);
           return true;
         },
         (error: unknown) => {
           logger.warn(
-            { ...errClass(error), outletId: device.outletId },
+            { ...errClass(error), outletId },
             "The cloud EDC agent could not take the outlet; its bridges get no lease.",
           );
           return false;
@@ -473,10 +494,49 @@ export class CloudEdcRuntime {
     return start;
   }
 
+  /** The agent lost the outlet's lock (`liveCalls` > 0: with commands on the
+   * wire). Only this outlet stops; see the header. Never throws. */
+  #outletLost(tenantId: string, outletId: string, liveCalls: number): void {
+    const key = keyOf(tenantId, outletId);
+    this.#owned.delete(key);
+    this.#losses.set(key, (this.#losses.get(key) ?? 0) + 1);
+    for (const pending of this.#pending.values())
+      if (
+        pending.device.tenantId.toLowerCase() === tenantId.toLowerCase() &&
+        pending.device.outletId.toLowerCase() === outletId.toLowerCase()
+      )
+        pending.orphaned = true;
+    for (const session of [...this.#sessions.values()])
+      if (
+        session.device.tenantId.toLowerCase() === tenantId.toLowerCase() &&
+        session.device.outletId.toLowerCase() === outletId.toLowerCase()
+      )
+        this.#end(session, "server_shutdown");
+    // Ops alert: the outlet's ECR is down until the lock is back.
+    logger.error(
+      { alert: "edc_cloud_outlet_lock_lost", outletId, liveCalls },
+      "The cloud EDC agent lost an outlet lock: that outlet's ECR stops until it is taken again; the API keeps running.",
+    );
+    this.#retryOutlet(tenantId, outletId, 0);
+  }
+
+  #retryOutlet(tenantId: string, outletId: string, attempt: number): void {
+    const key = keyOf(tenantId, outletId);
+    if (this.#stopped || this.#retries.has(key)) return;
+    const timer = setTimeout(() => {
+      this.#retries.delete(key);
+      void this.#ensureOutlet(tenantId, outletId).then((owned) => {
+        if (!owned) this.#retryOutlet(tenantId, outletId, attempt + 1);
+      });
+    }, this.#retryDelayMs(attempt));
+    timer.unref();
+    this.#retries.set(key, timer);
+  }
+
   /** Grants (or renews) the device's leases and sends the full `lease`. */
   async #renew(session: Session): Promise<void> {
     const { device } = session;
-    const owned = await this.#ensureOutlet(device);
+    const owned = await this.#ensureOutlet(device.tenantId, device.outletId);
     const at = this.#now();
     const ctx = edcBridgeDeviceContext(device.tenantId, device.outletId);
     const outcome = await withTenant(this.#db, ctx, async (tx) => {
@@ -698,6 +758,7 @@ export class CloudEdcRuntime {
         stored: Promise.resolve(false),
         settle,
         timer,
+        orphaned: false,
       };
       this.#pending.set(message.commandId, pending);
       // Written now, in this tick: from here on the command is dispatched.
@@ -811,7 +872,7 @@ export class CloudEdcRuntime {
     const pending = this.#pending.get(result.commandId);
     const log = { commandId: result.commandId, deviceId: device.id };
     try {
-      if (pending) {
+      if (pending && !pending.orphaned) {
         const same =
           pending.device.id === device.id &&
           pending.device.tenantId === device.tenantId &&
@@ -836,9 +897,10 @@ export class CloudEdcRuntime {
         }
         return;
       }
-      // Late (deadline passed) or after a restart: only a command of this
-      // device in its own tenant + outlet + terminal. Stored and acked; the
-      // ledger row is settled by inquiry.
+      // Late (deadline passed, outlet lock lost since) or after a restart:
+      // only a command of this device in its own tenant + outlet + terminal.
+      // Stored and acked; the ledger row is settled by inquiry.
+      if (pending) await pending.stored;
       const stored = await this.#storedCommand(session, result);
       if (!stored || !(await this.#replayOk(session, result))) {
         logger.warn(
@@ -958,6 +1020,8 @@ export class CloudEdcRuntime {
   async stop(): Promise<void> {
     this.#stopped = true;
     clearInterval(this.#renewTimer);
+    for (const timer of this.#retries.values()) clearTimeout(timer);
+    this.#retries.clear();
     for (const session of [...this.#sessions.values()])
       this.#end(session, "server_shutdown");
     for (const pending of [...this.#pending.values()]) {

@@ -13,6 +13,9 @@
 // - no bridge = EDC_AGENT_NOT_READY and nothing written; manual EDC (X1)
 //   still refused while the sale is pending/unknown;
 // - revoked token: socket closed, reconnect refused, no new command;
+// - outlet lock lost with a sale on the wire (CTO decision): the API process
+//   lives, other outlets go on, the sale ends `unknown`, new requests of that
+//   outlet are refused until the lock is taken again;
 // - `sale_record_release` after the settlement line matched (X2);
 // - money: only a terminal `approved` with the server's amount pays.
 import { randomBytes, randomUUID } from "node:crypto";
@@ -65,7 +68,7 @@ let realtime: { close(): Promise<void> };
 let url: string;
 let runtime: CloudEdcRuntime;
 let offsetMs = 0;
-const fatal = vi.fn();
+let exit: ReturnType<typeof vi.spyOn>;
 const open: BridgeEmulator[] = [];
 
 const terminalA1 = randomUUID();
@@ -194,7 +197,35 @@ async function ecrEnabled() {
 
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** Backends holding the agent's advisory lock of one outlet. */
+const OUTLET_LOCK = `FROM pg_locks l, LATERAL (SELECT hashtextextended($1, 0) AS h) k
+  WHERE l.locktype = 'advisory' AND l.granted AND l.objsubid = 1
+    AND l.classid::bigint = ((k.h >> 32) & 4294967295)
+    AND l.objid::bigint = (k.h & 4294967295)`;
+const lockName = (outletId: string) =>
+  `edc-agent:${fx.tenant.tenantId.toLowerCase()}:${outletId.toLowerCase()}`;
+
+async function outletLocks(outletId: string) {
+  const { rows } = await owner.query<{ n: number }>(
+    `SELECT count(*)::int AS n ${OUTLET_LOCK}`,
+    [lockName(outletId)],
+  );
+  return rows[0]!.n;
+}
+
+/** Kills the database session of the outlet's lock (a lost lock). */
+async function killOutletLock(outletId: string) {
+  const { rowCount } = await owner.query(
+    `SELECT pg_terminate_backend(l.pid) ${OUTLET_LOCK}`,
+    [lockName(outletId)],
+  );
+  return rowCount;
+}
+
 beforeAll(async () => {
+  exit = vi.spyOn(process, "exit").mockImplementation((() => {
+    throw new Error("process.exit called");
+  }) as never);
   fx = await holdFixture("edc-bridge-b2");
   const { rows } = await owner.query<{
     brand_id: string;
@@ -236,7 +267,7 @@ beforeAll(async () => {
     resultGraceMs: GRACE_MS,
     renewMs: 3_600_000,
     now: () => new Date(Date.now() + offsetMs),
-    onFatal: fatal,
+    retryDelayMs: () => 200,
   });
   server = createServer(createApp());
   realtime = attachEdcBridgeRealtime(server, { runtime: getCloudEdcRuntime });
@@ -254,7 +285,8 @@ afterAll(async () => {
   await stopCloudEdcRuntime();
   await new Promise<void>((resolve) => server?.close(() => resolve()));
   resetHoldPorts();
-  expect(fatal).not.toHaveBeenCalled();
+  expect(exit).not.toHaveBeenCalled();
+  exit.mockRestore();
   await owner.end();
 });
 
@@ -481,6 +513,103 @@ describe("B2 lease on the cloud clock", () => {
       offsetMs += 500_000;
       await runtime.renewAll();
     }
+  });
+});
+
+describe("B2 outlet lock lost", () => {
+  it("b2-12 lock lost with a sale on the wire: the API lives, the other outlet goes on, the sale ends unknown, new requests refused until the lock is back", async () => {
+    const a2 = await bridge(deviceA2, approve);
+    await a2.hello();
+    const a1 = await bridge(deviceA1, () => null);
+    await a1.hello();
+    expect(await outletLocks(fx.tenant.outletId)).toBe(1);
+    expect(await outletLocks(outletA2)).toBe(1);
+    const from = a1.received.length;
+    const order = await newSubmittedOrder(fx, 0);
+    const sale = startSale(order.id);
+    const saleCommand = () =>
+      a1.received
+        .slice(from)
+        .find((m) => m.type === "command" && m.op === "sale");
+    await Promise.race([
+      vi.waitFor(
+        () =>
+          expect(
+            saleCommand(),
+            JSON.stringify(a1.received.slice(from).map((m) => m.type)),
+          ).toBeDefined(),
+        { timeout: 10_000 },
+      ),
+      sale.then((res) => {
+        throw new Error(`sale ended first: ${JSON.stringify(res.body)}`);
+      }),
+    ]);
+    const command = saleCommand() as Extract<
+      (typeof a1.received)[number],
+      { type: "command" }
+    >;
+
+    expect(await killOutletLock(fx.tenant.outletId)).toBe(1);
+    // Only that outlet's bridge is told and closed.
+    expect(await a1.waitFor("goodbye", from)).toEqual({
+      type: "goodbye",
+      reason: "server_shutdown",
+    });
+    expect(await a1.closed()).not.toBeNull();
+    expect(runtime.agentFor(fx.tenant.tenantId, fx.tenant.outletId)).toBeNull();
+    // A new request of the outlet: refused, nothing written.
+    const second = await newSubmittedOrder(fx, 0);
+    const refused = await startSale(second.id);
+    expect(refused.status, JSON.stringify(refused.body)).toBe(503);
+    expect(refused.body.error.code).toBe("SERVICE_UNAVAILABLE");
+    expect(await ledgerOf(await numberOf(second.id))).toEqual([]);
+
+    // The tablet comes back and reports an approval for the old command:
+    // stored and acked, but the ledger is not settled by it.
+    const back = await bridge(deviceA1, () => null);
+    await back.hello();
+    const acked = back.received.length;
+    back.send(
+      resultFor(
+        command,
+        responseOf({
+          outcome: "approved",
+          amountIdr: BILL,
+          trace: command.trace,
+          approvalCode: "A1B2C3",
+          rrn: `RRN${command.trace}`.slice(0, 24),
+        }),
+      ),
+    );
+    expect(await back.waitFor("ack", acked)).toEqual({
+      type: "ack",
+      commandId: command.commandId,
+    });
+    expect((await sale).body.data.status).toBe("unknown");
+    await pause(SALE_TIMEOUT_MS + GRACE_MS);
+    const [row] = await ledgerOf(await numberOf(order.id));
+    expect(row).toMatchObject({ status: "unknown", dispatched: true });
+
+    // The other outlet kept its lock, agent and bridge; the process lives.
+    expect(a2.closeCode).toBeNull();
+    expect(await outletLocks(outletA2)).toBe(1);
+    expect(runtime.agentFor(fx.tenant.tenantId, outletA2)).not.toBeNull();
+    expect(exit).not.toHaveBeenCalled();
+
+    // Retried with backoff: the lock is taken again and the lease comes back.
+    await vi.waitFor(
+      () =>
+        expect(
+          runtime.agentFor(fx.tenant.tenantId, fx.tenant.outletId),
+        ).not.toBeNull(),
+      { timeout: 10_000 },
+    );
+    expect(await outletLocks(fx.tenant.outletId)).toBe(1);
+    const renewed = back.received.length;
+    await runtime.renewAll();
+    expect(
+      (await back.waitFor("lease", renewed)).grants.map((g) => g.terminalId),
+    ).toEqual([terminalA1]);
   });
 });
 

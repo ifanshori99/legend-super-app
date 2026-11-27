@@ -53,7 +53,8 @@ Dasar: `docs/design/edc-auto-cloud.md`. Kontrak kode: `packages/shared/src/edc/b
 - Perintah disimpan di memori sampai hasil atau tenggat (`timeoutMs` + 30 s) dan di `edc_bridge_commands` (tanpa frame). Hasil di luar memori (terlambat atau sesudah restart) dicocokkan di tenant + outlet + perangkat + terminal, disimpan, di-ack; baris ledger diselesaikan lewat inquiry.
 - Tidak terkirim sama sekali (sesi/lease hilang sebelum ditulis): `sale` -> `failed` "tidak pernah dikirim" (`edcNotSentError`); sesudah ditulis: selalu `unknown`.
 - `sale_record_release`: sesudah impor settlement X2 dan pada tiap `hello`, untuk sale perangkat itu yang barisnya `matched`; `release_sent_at` dicatat.
-- Manajemen perangkat: `/api/edc-bridge/devices` (daftar, terbitkan token sekali tampil, cabut, tugaskan terminal), izin `payment.edc.manage`. Kode pasang 8 karakter belum dibangun.
+- Manajemen perangkat: `/api/edc-bridge/devices` (daftar, terbitkan token sekali tampil, cabut, tugaskan terminal), izin `payment.edc.manage`. Kode pasang 8 karakter: sisa B4.
+- Kunci outlet hilang (keputusan CTO): proses API tidak pernah dimatikan, hanya outlet itu yang berhenti. Socket jembatan outlet itu mendapat `goodbye server_shutdown` dan ditutup (tablet menyambung ulang), lease-nya lepas dari memori, perintah yang sudah terkirim tetap menunggu tenggat lalu `unknown` (hasil yang datang sesudahnya disimpan dan di-ack sebagai hasil terlambat, tidak menyelesaikan ledger; inquiry agent berikut yang menyelesaikan). Permintaan baru outlet itu `EDC_AGENT_NOT_READY` sampai kunci diambil lagi (coba ulang 1 s berlipat sampai 30 s). Outlet lain tetap jalan. Baris lease di DB tetap, jadi tablet lain tidak mengambil terminal sebelum waktu serah. Log `alert: edc_cloud_outlet_lock_lost` untuk ops. Jalur edge tetap keluar proses (fail-stop).
 
 ## Provider cloud
 
