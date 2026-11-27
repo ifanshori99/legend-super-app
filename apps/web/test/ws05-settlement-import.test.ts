@@ -35,10 +35,13 @@ describe("C4b Duitku settlement import rules", () => {
       ),
     ).toBe("tooLarge");
     expect(checkSettlementCsv("laporan.CSV", "reference\n")).toBeNull();
-    expect(dataRowCount("reference,amount_idr,fee_idr\r\nA,1,0\r\n\r\nB,2,0")).toBe(2);
+    expect(
+      dataRowCount("reference,amount_idr,fee_idr\r\nA,1,0\r\n\r\nB,2,0"),
+    ).toBe(2);
     expect(checkPeriod("", "2026-11-01")).toBe("periodRequired");
     expect(checkPeriod("2026-11-02", "2026-11-01")).toBe("periodOrder");
-    expect(checkPeriod("2026-11-01", "2026-12-01")).toBe("periodTooLong");
+    expect(checkPeriod("2026-11-01", "2026-12-02")).toBe("periodTooLong");
+    expect(checkPeriod("2026-11-01", "2026-12-01")).toBeNull();
     expect(checkPeriod("2026-11-01", "2026-11-30")).toBeNull();
     expect(checkPeriod("2026-11-01", "2026-11-01")).toBeNull();
   });

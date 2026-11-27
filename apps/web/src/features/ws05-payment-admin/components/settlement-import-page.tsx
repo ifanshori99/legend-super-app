@@ -59,14 +59,13 @@ function ErrorNotice({ view }: { view: SettlementErrorView }) {
         <p>{t("gatewaySettlement.errors.rows")}</p>
         <ul className="grid gap-1">
           {view.rows.map((entry) => (
-            <li
-              key={entry.row}
-              className="flex flex-wrap items-center gap-2"
-            >
+            <li key={entry.row} className="flex flex-wrap items-center gap-2">
               <Badge tone="danger">
                 {t("gatewaySettlement.errors.row", { row: entry.row })}
               </Badge>
-              <span>{t(`gatewaySettlement.errors.reason.${entry.reason}`)}</span>
+              <span>
+                {t(`gatewaySettlement.errors.reason.${entry.reason}`)}
+              </span>
             </li>
           ))}
         </ul>
@@ -118,9 +117,7 @@ export function GatewaySettlementImportPage() {
   >(null);
   const [touched, setTouched] = React.useState(false);
   const [error, setError] = React.useState<SettlementErrorView | null>(null);
-  const [result, setResult] = React.useState<SettlementImportView | null>(
-    null,
-  );
+  const [result, setResult] = React.useState<SettlementImportView | null>(null);
   // Bumped to remount the file input: a browser keeps the chosen file in it.
   const [fileKey, setFileKey] = React.useState(0);
   const titleRef = React.useRef<HTMLHeadingElement>(null);

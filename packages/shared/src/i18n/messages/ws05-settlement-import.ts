@@ -99,7 +99,8 @@ export const gatewaySettlementMessages = {
     emptyHint:
       "Laporan settlement yang diimpor untuk outlet ini tampil di sini.",
     lines: "{count} baris",
-    counts: "{matched} cocok · {mismatch} tidak cocok · {unmatched} tanpa pembayaran",
+    counts:
+      "{matched} cocok · {mismatch} tidak cocok · {unmatched} tanpa pembayaran",
     net: "Bersih",
     gross: "Kotor",
     fee: "MDR",

@@ -2,11 +2,7 @@
 // (VITE_API_MOCK=true, C4b). Like the API the template is read strictly and
 // the totals are summed here, standing in for the server. Matching is made up
 // from the line count.
-import {
-  cafeLegendFixtures,
-  idr,
-  type OutletId,
-} from "@starter/shared/core";
+import { cafeLegendFixtures, idr, type OutletId } from "@starter/shared/core";
 import {
   importGatewaySettlementCsv,
   listSettlements,
@@ -22,7 +18,14 @@ const outlet = cafeLegendFixtures.outlets[0].id as OutletId;
 
 function sample(
   n: number,
-  o: Partial<SettlementListItem> & { gross: number; fee: number },
+  {
+    gross,
+    fee,
+    ...o
+  }: Partial<SettlementListItem> & {
+    gross: number;
+    fee: number;
+  },
 ): SettlementListItem {
   return {
     id: `00000000-0000-4000-8000-0000000c4b0${n}`,
@@ -34,9 +37,9 @@ function sample(
     batchNo: null,
     periodStart: `2026-11-0${n}`,
     periodEnd: `2026-11-0${n}`,
-    grossIdr: idr(o.gross),
-    feeIdr: idr(o.fee),
-    netIdr: idr(o.gross - o.fee),
+    grossIdr: idr(gross),
+    feeIdr: idr(fee),
+    netIdr: idr(gross - fee),
     lineCount: 12,
     matchedLines: 11,
     mismatchLines: 1,
@@ -94,7 +97,8 @@ registerMock(importGatewaySettlementCsv, ({ body }) => {
   for (const { cells, row } of rows.slice(1)) {
     const amount = (cells[at("amount_idr")] ?? "").trim();
     const fee = (cells[at("fee_idr")] ?? "").trim();
-    if (cells.length !== columns.length) errors.push({ row, reason: "columns" });
+    if (cells.length !== columns.length)
+      errors.push({ row, reason: "columns" });
     else if (!(cells[at("reference")] ?? "").trim())
       errors.push({ row, reason: "reference" });
     else if (!/^\d+$/.test(amount) || Number(amount) <= 0)

@@ -102,7 +102,9 @@ try {
         waitUntil: "networkidle",
         timeout: 60000,
       });
-      await page.getByRole("button", { name: SUBMIT }).waitFor({ timeout: 15000 });
+      await page
+        .getByRole("button", { name: SUBMIT })
+        .waitFor({ timeout: 15000 });
       await page
         .getByText("Belum ada settlement diimpor")
         .waitFor({ timeout: 15000 });
@@ -112,7 +114,9 @@ try {
         waitUntil: "networkidle",
         timeout: 60000,
       });
-      await page.getByRole("button", { name: SUBMIT }).waitFor({ timeout: 15000 });
+      await page
+        .getByRole("button", { name: SUBMIT })
+        .waitFor({ timeout: 15000 });
       await fillForm();
       const input = page.locator('input[type="file"]');
       // Row errors from the server: the whole file is refused.

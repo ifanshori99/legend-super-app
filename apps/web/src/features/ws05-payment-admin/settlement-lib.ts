@@ -53,8 +53,7 @@ export const SETTLEMENT_ROW_REASONS = [
   "duplicate",
 ] as const;
 export type SettlementRowReason =
-  | (typeof SETTLEMENT_ROW_REASONS)[number]
-  | "other";
+  (typeof SETTLEMENT_ROW_REASONS)[number] | "other";
 
 export type SettlementErrorView =
   | {
