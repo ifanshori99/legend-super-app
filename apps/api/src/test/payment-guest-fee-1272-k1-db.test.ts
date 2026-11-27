@@ -586,7 +586,7 @@ describe("payment.paid journal (§3)", () => {
     amounts: Record<string, number>,
   ) =>
     buildJournalLinesFromRule(
-      resolvePostingRule(defaultPostingRules, { event }),
+      resolvePostingRule(defaultPostingRules, { eventName: event }),
       amounts,
       accounts,
       { outletId: null },

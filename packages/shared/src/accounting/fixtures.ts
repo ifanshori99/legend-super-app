@@ -392,7 +392,7 @@ post({
   outletId: bandung,
   lines: fromRule(
     { eventName: "payment.paid" },
-    { receivedIdr: 275_000 },
+    { receivedIdr: 275_000, depositIdr: 275_000, guestFeeIdr: 0 },
     bandung,
   ),
 });

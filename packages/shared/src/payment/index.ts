@@ -287,6 +287,9 @@ export const paymentFundsUnallocatedEventPayloadSchema = z.strictObject({
   method: paymentMethodSchema,
   provider: ref,
   receivedIdr: positiveIdr,
+  /** 1272 K1: guest fee withheld from the parked fund (never refunded); the
+   * fund is `receivedIdr - guestFeeIdr`. Absent = none. */
+  guestFeeIdr: positiveIdr.optional(),
   receivedAt: isoDateTimeSchema,
   reason: z.enum(["overpayment", "double_payment"]),
 });
