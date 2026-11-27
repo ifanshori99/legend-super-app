@@ -54,12 +54,17 @@ function ErrorNotice({ view }: { view: ImportErrorView }) {
           {t("edcSettlementCsv.errors.rowsTitle")}
         </p>
         <p>{t("edcSettlementCsv.errors.rows")}</p>
-        <ul className="flex flex-wrap gap-2">
+        <ul className="grid gap-1">
           {view.rows.map((row) => (
-            <li key={row}>
+            <li key={row} className="flex flex-wrap items-center gap-2">
               <Badge tone="danger">
                 {t("edcSettlementCsv.errors.row", { row })}
               </Badge>
+              <span>
+                {view.reasons[row] === "unreadable"
+                  ? t("edcSettlementCsv.errors.reasonUnreadable")
+                  : t("edcSettlementCsv.errors.reasonOther")}
+              </span>
             </li>
           ))}
         </ul>

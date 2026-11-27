@@ -2,8 +2,10 @@
 // the brief and the X2 API contract, not from the implementation:
 //   1. A file is checked before it is sent: empty, over the API's character
 //      cap, and a name that is not .csv/.txt are refused with a plain reason.
-//   2. A 422 from the parser names the rows ("Baris 3, 5 tidak dapat
-//      dibaca ..."): the screen lists those rows as numbers, in finance words.
+//   2. A 422 from the parser carries `rowErrors` (line number and reason
+//      code): the screen lists those lines in finance words. An older server
+//      that only has the sentence ("Baris 3, 5 tidak dapat dibaca ...") still
+//      gets its lines listed.
 //   3. MFA_REQUIRED asks for the second factor; a missing outlet or permission
 //      says so; nothing shows a raw code.
 //   4. The result shows the server's counts (matched, cleared, mismatch,
@@ -50,7 +52,26 @@ describe("checkCsvUpload", () => {
 });
 
 describe("importErrorView", () => {
-  it("lists the rows the parser could not read", () => {
+  it("lists the structured rowErrors with their reason", () => {
+    const view = importErrorView(
+      new ApiError(
+        422,
+        "VALIDATION_ERROR",
+        "Baris 7 tidak dapat dibaca (TID, RRN atau nominal tidak valid). Tidak ada baris yang diimpor.",
+        undefined,
+        {
+          rowErrors: [
+            { row: 7, reason: "unreadable" },
+            { row: 9, reason: "unreadable" },
+          ],
+        },
+      ),
+    );
+    expect(view.kind).toBe("rows");
+    expect(view.rows).toEqual([7, 9]);
+    expect(view.reasons).toEqual({ 7: "unreadable", 9: "unreadable" });
+  });
+  it("falls back to the sentence when the server sends no rowErrors", () => {
     const view = importErrorView(
       new ApiError(
         422,

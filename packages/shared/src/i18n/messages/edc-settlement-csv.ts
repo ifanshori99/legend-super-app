@@ -50,6 +50,8 @@ export const edcSettlementCsvMessages = {
     rowsTitle: "Berkas belum diimpor",
     rows: "Baris berikut tidak dapat dibaca (TID, RRN atau nominal tidak valid). Tidak ada baris yang diimpor; perbaiki berkas lalu unggah ulang.",
     row: "Baris {row}",
+    reasonUnreadable: "TID, RRN atau nominal tidak terbaca",
+    reasonOther: "Baris tidak dapat dibaca",
     moreRows:
       "Baris lain mungkin ikut bermasalah; periksa setelah memperbaiki.",
     messageTitle: "Berkas belum bisa diimpor",

@@ -31,6 +31,8 @@ export type ImportErrorView = {
     | "generic";
   /** Row numbers of the file the parser could not read (kind "rows"). */
   rows: number[];
+  /** Reason code per row from the server's `rowErrors`; empty for the old sentence. */
+  reasons: Record<number, string>;
   /** The parser's own sentence (kind "message"). */
   detail?: string;
 };
@@ -46,16 +48,27 @@ function unreadableRows(message: string): number[] {
 }
 
 export function importErrorView(error: unknown): ImportErrorView {
-  if (!(error instanceof ApiError)) return { kind: "generic", rows: [] };
+  if (!(error instanceof ApiError))
+    return { kind: "generic", rows: [], reasons: {} };
   if (error.code === "MFA_REQUIRED" || error.code === "REAUTH_REQUIRED")
-    return { kind: "mfa", rows: [] };
-  if (error.code === "NETWORK_ERROR") return { kind: "offline", rows: [] };
-  if (error.status === 403) return { kind: "forbidden", rows: [] };
-  if (error.status === 404) return { kind: "notFound", rows: [] };
+    return { kind: "mfa", rows: [], reasons: {} };
+  if (error.code === "NETWORK_ERROR")
+    return { kind: "offline", rows: [], reasons: {} };
+  if (error.status === 403) return { kind: "forbidden", rows: [], reasons: {} };
+  if (error.status === 404) return { kind: "notFound", rows: [], reasons: {} };
   if (error.status === 422) {
+    // Structured list first; an older server only has the sentence.
+    if (error.rowErrors && error.rowErrors.length > 0)
+      return {
+        kind: "rows",
+        rows: error.rowErrors.map((entry) => entry.row),
+        reasons: Object.fromEntries(
+          error.rowErrors.map((entry) => [entry.row, entry.reason]),
+        ),
+      };
     const rows = unreadableRows(error.message);
-    if (rows.length > 0) return { kind: "rows", rows };
-    return { kind: "message", rows: [], detail: error.message };
+    if (rows.length > 0) return { kind: "rows", rows, reasons: {} };
+    return { kind: "message", rows: [], reasons: {}, detail: error.message };
   }
-  return { kind: "generic", rows: [] };
+  return { kind: "generic", rows: [], reasons: {} };
 }

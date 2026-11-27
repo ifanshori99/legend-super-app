@@ -293,6 +293,8 @@ export const dayFixture = {
       settledCount: 3,
       flaggedCount: 1,
       mismatchCount: 0,
+      differenceIdr: 400_000,
+      bankStatus: "matched",
     },
     {
       terminalId: "00000000-0000-4000-8000-0000000000b2",
@@ -304,6 +306,8 @@ export const dayFixture = {
       settledCount: 0,
       flaggedCount: 0,
       mismatchCount: 0,
+      differenceIdr: 800_000,
+      bankStatus: "awaiting",
     },
   ],
   standaloneUnmatched: 1,

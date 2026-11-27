@@ -152,6 +152,8 @@ function dayRecapFrom(recap: EndOfDayRecapView, cutoff: string): DayCloseRecap {
           settledCount: row.settledCount,
           flaggedCount: row.flaggedCount,
           mismatchCount: row.mismatchCount,
+          differenceIdr: Number(row.differenceIdr),
+          bankStatus: row.bankStatus,
         }))
       : null;
   return {

@@ -12,3 +12,8 @@
 - "Menunggu file bank" bila settledCount=0 dan mismatchCount=0 (server tidak menandai file sudah diunggah; file yang tak mengenai satu pun penjualan terminal tampil sama).
 - Galat per baris: pesan 422 parser server ("Baris 3, 5 tidak dapat dibaca"), API tidak memberi daftar terstruktur.
 - Alias kolom CSV per bank masih perlu contoh berkas asli (founder), bukan bagian UI.
+
+## Keputusan CTO (27 Nov): angka dari server
+- Server: `differenceIdr` dan `bankStatus` (awaiting | matched | mismatch | no_match) per terminal di `endOfDayEdcTerminalRowSchema`, dihitung di `pos-day-edc-settlement.ts`. `no_match` = ada file bank (outlet + bank) yang memuat baris terminal itu dan diunggah setelah semua penjualan terminal pada hari itu. File tidak punya tanggal, jadi "setelah penjualan" jadi pengganti "tanggal itu".
+- 422 parser: `rowErrors: [{ row, reason }]` lewat `RowErrorsHttpError` dan envelope; reason selalu `unreadable` karena parser (tidak disentuh, milik B2) hanya memberi nomor baris. Teks lama jadi fallback di UI.
+- UI tidak mengurangi uang; hanya membandingkan differenceIdr dengan 0 untuk memilih "Sebagian belum cocok". Test API: `edc-reconciliation.test.ts` (64 lulus), web 24 lulus, typecheck web dan api hijau.

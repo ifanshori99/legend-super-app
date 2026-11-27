@@ -20,7 +20,8 @@ const STATE_PILL: Record<
       | "posKasirDayclose.check.settlementWaiting"
       | "posKasirDayclose.check.settlementStateSettled"
       | "posKasirDayclose.check.settlementStatePartial"
-      | "posKasirDayclose.check.settlementStateMismatch";
+      | "posKasirDayclose.check.settlementStateMismatch"
+      | "posKasirDayclose.check.settlementStateNoMatch";
   }
 > = {
   waiting: {
@@ -38,6 +39,10 @@ const STATE_PILL: Record<
   mismatch: {
     tone: "danger",
     label: "posKasirDayclose.check.settlementStateMismatch",
+  },
+  noMatch: {
+    tone: "danger",
+    label: "posKasirDayclose.check.settlementStateNoMatch",
   },
 };
 
@@ -100,6 +105,11 @@ export function EdcSettlementLines({
                 </>
               ) : null}
             </dl>
+            {view.state === "noMatch" && (
+              <p className="text-base">
+                {t("posKasirDayclose.check.settlementNoMatchHint")}
+              </p>
+            )}
             {view.state === "waiting" && (
               <p className="text-base text-muted-foreground">
                 {t("posKasirDayclose.check.settlementWaitingHint")}

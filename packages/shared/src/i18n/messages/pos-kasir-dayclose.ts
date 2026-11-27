@@ -55,6 +55,9 @@ export const posKasirDaycloseMessages = {
     settlementStateSettled: "Cocok dengan bank",
     settlementStatePartial: "Sebagian belum cocok",
     settlementStateMismatch: "Ada selisih dengan bank",
+    settlementStateNoMatch: "Tidak ada yang cocok",
+    settlementNoMatchHint:
+      "File bank sudah masuk, tetapi tidak ada transaksi terminal ini yang cocok. Periksa terminal dan nominal di file, lalu unggah ulang bila perlu.",
     settlementMismatchLines:
       "{count} baris bank menyebut transaksi ini dengan nominal atau terminal berbeda.",
     settlementNone: "Tidak ada transaksi EDC untuk disettle.",

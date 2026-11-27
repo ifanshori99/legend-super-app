@@ -32,6 +32,12 @@ registerMock(importEdcSettlementCsv, ({ body }) => {
       422,
       "VALIDATION_ERROR",
       `Baris ${bad.slice(0, 20).join(", ")} tidak dapat dibaca (TID, RRN atau nominal tidak valid). Tidak ada baris yang diimpor.`,
+      undefined,
+      {
+        rowErrors: bad
+          .slice(0, 20)
+          .map((row) => ({ row, reason: "unreadable" })),
+      },
     );
   const rowCount = data.length;
   const mismatch = rowCount >= 4 ? 1 : 0;

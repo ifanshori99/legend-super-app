@@ -1,13 +1,13 @@
 // X2-UI (legend-wasr7.18): Tutup Hari shows, per EDC terminal, the receipts,
 // what the bank file confirmed and the difference. Pinned from the brief and
 // the X2 review (P3 7), not from the implementation:
-//   1. Before any bank file matched a sale of the terminal, the screen says
-//      "Menunggu file bank". It never shows Rp 0 as the bank figure, and it
-//      shows no difference (nothing to compare yet).
-//   2. After the file: receipt, bank and difference all come from the server
-//      figures; a fully confirmed terminal has no difference.
-//   3. A mismatch line (bank names the sale with another amount or terminal)
-//      is a state of its own, never "waiting" and never "settled".
+//   1. While the server says bankStatus "awaiting", the screen says "Menunggu
+//      file bank". It never shows Rp 0 as the bank figure and shows no
+//      difference (nothing to compare yet).
+//   2. After the file: receipt, bank and difference are the server's figures
+//      (differenceIdr from the server; the screen never subtracts money).
+//   3. Mismatch and no_match (file in, none of the terminal's sales hit) are
+//      states of their own, never "waiting" and never "settled".
 //   4. The "perlu dicek" count on the day check ignores terminals still waiting
 //      for the bank file (review P3 7: too wide); null stays null.
 import { createElement } from "react";
@@ -32,6 +32,8 @@ const row = (over: Partial<EdcTerminalSettlement>): EdcTerminalSettlement => ({
   settledCount: 0,
   flaggedCount: 0,
   mismatchCount: 0,
+  differenceIdr: 1_600_000,
+  bankStatus: "awaiting",
   ...over,
 });
 
@@ -44,9 +46,14 @@ describe("edcTerminalView", () => {
     expect(view.receiptIdr).toBe(1_600_000);
   });
 
-  it("settled: bank equals receipts, no difference", () => {
+  it("settled: the bank confirmed everything, server difference is 0", () => {
     const view = edcTerminalView(
-      row({ settledIdr: 1_600_000, settledCount: 4 }),
+      row({
+        settledIdr: 1_600_000,
+        settledCount: 4,
+        differenceIdr: 0,
+        bankStatus: "matched",
+      }),
     );
     expect(view).toMatchObject({
       state: "settled",
@@ -55,9 +62,15 @@ describe("edcTerminalView", () => {
     });
   });
 
-  it("partial: some sales confirmed, the rest is the difference", () => {
+  it("partial: some sales confirmed, the server difference is the rest", () => {
     const view = edcTerminalView(
-      row({ settledIdr: 1_000_000, settledCount: 2, flaggedCount: 2 }),
+      row({
+        settledIdr: 1_000_000,
+        settledCount: 2,
+        flaggedCount: 2,
+        differenceIdr: 600_000,
+        bankStatus: "matched",
+      }),
     );
     expect(view).toMatchObject({
       state: "partial",
@@ -66,11 +79,35 @@ describe("edcTerminalView", () => {
     });
   });
 
+  it("shows the server difference as given, not receipts minus bank", () => {
+    // A figure the screen could not derive: proves it is passed through.
+    const view = edcTerminalView(
+      row({
+        settledIdr: 1_000_000,
+        settledCount: 2,
+        differenceIdr: 123,
+        bankStatus: "matched",
+      }),
+    );
+    expect(view.differenceIdr).toBe(123);
+  });
+
   it("mismatch is its own state even with nothing confirmed", () => {
-    const view = edcTerminalView(row({ mismatchCount: 1, flaggedCount: 1 }));
+    const view = edcTerminalView(
+      row({ mismatchCount: 1, flaggedCount: 1, bankStatus: "mismatch" }),
+    );
     expect(view.state).toBe("mismatch");
     expect(view.settledIdr).toBe(0);
     expect(view.differenceIdr).toBe(1_600_000);
+  });
+
+  it("no_match: the file is in but hit none of the terminal's sales", () => {
+    const view = edcTerminalView(row({ bankStatus: "no_match" }));
+    expect(view).toMatchObject({
+      state: "noMatch",
+      settledIdr: 0,
+      differenceIdr: 1_600_000,
+    });
   });
 
   it("a terminal without receipts has nothing to wait for", () => {
@@ -83,12 +120,14 @@ describe("edcTerminalView", () => {
 describe("flaggedAfterBankFile", () => {
   it("counts only terminals the bank file has reached", () => {
     const rows = [
-      row({ flaggedCount: 3 }), // waiting
+      row({ flaggedCount: 3 }), // awaiting
       row({
         terminalId: "00000000-0000-4000-8000-000000000002",
         settledIdr: 800_000,
         settledCount: 2,
         flaggedCount: 1,
+        differenceIdr: 800_000,
+        bankStatus: "matched",
       }),
     ];
     expect(flaggedAfterBankFile(rows)).toBe(1);
@@ -113,7 +152,13 @@ describe("EdcSettlementLines", () => {
 
   it("shows receipt, bank and difference after the file", () => {
     const html = render([
-      row({ settledIdr: 1_000_000, settledCount: 2, flaggedCount: 2 }),
+      row({
+        settledIdr: 1_000_000,
+        settledCount: 2,
+        flaggedCount: 2,
+        differenceIdr: 600_000,
+        bankStatus: "matched",
+      }),
     ]);
     expect(html).not.toContain("Menunggu file bank");
     expect(html).toContain(t("posKasirDayclose.check.settlementReceipt"));
@@ -121,6 +166,13 @@ describe("EdcSettlementLines", () => {
     expect(html).toContain(t("posKasirDayclose.check.settlementDifference"));
     for (const amount of [1_600_000, 1_000_000, 600_000])
       expect(html).toContain(formatRupiah(amount));
+  });
+
+  it("says the file is in but matched nothing, with the server figures", () => {
+    const html = render([row({ bankStatus: "no_match" })]);
+    expect(html).toContain(t("posKasirDayclose.check.settlementStateNoMatch"));
+    expect(html).not.toContain("Menunggu file bank");
+    expect(html).toContain(formatRupiah(1_600_000));
   });
 
   it("keeps the pending and none texts", () => {

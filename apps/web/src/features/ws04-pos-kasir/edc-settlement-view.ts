@@ -1,7 +1,7 @@
 // Pure rules for the EDC lines of Tutup Hari (X2-UI, legend-wasr7.18). No React
 // and no `@/` alias, so tests can import this file with plain Node ESM. The
 // figures are the server's (recap.edcSettlement); this file only decides what
-// the screen says about them.
+// the screen says about them (differences and status are the server's).
 
 /** One terminal of the day, as the server counts it (EndOfDayEdcTerminalRow). */
 export type EdcTerminalSettlement = {
@@ -18,6 +18,10 @@ export type EdcTerminalSettlement = {
   flaggedCount: number;
   /** Bank lines naming one of these sales with another amount or terminal. */
   mismatchCount: number;
+  /** Receipts minus the bank-confirmed part, computed by the server. */
+  differenceIdr: number;
+  /** Where the bank file stands for this terminal (server's words). */
+  bankStatus: "awaiting" | "matched" | "mismatch" | "no_match";
 };
 
 export type EdcTerminalState =
@@ -30,48 +34,48 @@ export type EdcTerminalState =
   /** The bank confirmed some sales; the rest is still open. */
   | "partial"
   /** A bank line named a sale with another amount or terminal. */
-  | "mismatch";
+  | "mismatch"
+  /** The file is in but hit none of this terminal's sales. */
+  | "noMatch";
 
 export type EdcTerminalView = {
   state: EdcTerminalState;
   receiptIdr: number;
   /** null while waiting: "not here yet" is not "Rp 0". */
   settledIdr: number | null;
-  /**
-   * Receipts minus the bank-confirmed part, both server figures (the server
-   * has no difference field yet); null while waiting.
-   */
+  /** The server's difference, as given; null while waiting. */
   differenceIdr: number | null;
 };
 
+/**
+ * What the screen says about a terminal. The server decides the status and
+ * computes the difference (bankStatus, differenceIdr); nothing is subtracted
+ * here, the only comparison is "is the server's difference zero".
+ */
 export function edcTerminalView(row: EdcTerminalSettlement): EdcTerminalView {
+  const receiptIdr = row.receiptIdr;
   if (row.receiptCount === 0)
-    return {
-      state: "none",
-      receiptIdr: row.receiptIdr,
-      settledIdr: null,
-      differenceIdr: null,
-    };
-  // Neither a confirmed sale nor a mismatching line: the file has not reached
-  // this terminal (settledIdr 0 here means "no file", not "the bank paid 0").
-  if (row.settledCount === 0 && row.mismatchCount === 0)
+    return { state: "none", receiptIdr, settledIdr: null, differenceIdr: null };
+  if (row.bankStatus === "awaiting")
     return {
       state: "waiting",
-      receiptIdr: row.receiptIdr,
+      receiptIdr,
       settledIdr: null,
       differenceIdr: null,
     };
-  const differenceIdr = row.receiptIdr - row.settledIdr;
-  return {
-    state:
-      row.mismatchCount > 0
-        ? "mismatch"
-        : differenceIdr > 0
+  const state: EdcTerminalState =
+    row.bankStatus === "mismatch"
+      ? "mismatch"
+      : row.bankStatus === "no_match"
+        ? "noMatch"
+        : row.differenceIdr > 0
           ? "partial"
-          : "settled",
-    receiptIdr: row.receiptIdr,
+          : "settled";
+  return {
+    state,
+    receiptIdr,
     settledIdr: row.settledIdr,
-    differenceIdr,
+    differenceIdr: row.differenceIdr,
   };
 }
 
@@ -86,7 +90,7 @@ export function flaggedAfterBankFile(
   if (rows === null) return null;
   return rows.reduce(
     (sum, row) =>
-      edcTerminalView(row).state === "waiting" ? sum : sum + row.flaggedCount,
+      row.bankStatus === "awaiting" ? sum : sum + row.flaggedCount,
     0,
   );
 }
