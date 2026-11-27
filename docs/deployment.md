@@ -186,6 +186,17 @@ Rollback is a restore of the backup taken before the migration, not a down
 migration. After the start, the worker retries the webhook events that were
 held back while the services were stopped; check that the queue drains.
 
+### Offline kit snapshot migration 0542: migrate and deploy in one step (legend-wasr7.15)
+
+Migration 0542 moves the offline kit snapshot into
+`pos_offline_catalog_snapshots` and makes `pos_offline_kits.snapshot` nullable.
+Run `pnpm db:migrate` and deploy the new API in one step. Application code older
+than this commit must not run against a migrated database: it inserts kits
+without a snapshot row (the new foreign key on `catalog_version` fails), and it
+ingests offline sales with a NULL `snapshot` (no price check). So there is no
+application-only rollback below this commit; rollback is a restore of the
+backup taken before the migration, not a down migration.
+
 ### PTKP history backfill: after 0520, before the next payroll simulate (bead 1223)
 
 A release that contains 0519/0520 (`employee_ptkp_history`) needs a one-shot

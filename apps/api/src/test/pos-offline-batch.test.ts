@@ -691,6 +691,52 @@ describe("O2 ingest", () => {
     expect(rows[0]).toEqual({ total_idr: String(menu.priceIdr + 1000) });
   });
 
+  it("review 0542 P3 2: a kit issued before 0542 is priced from its inline snapshot, not the shared row", async () => {
+    const kit = await kitFor(a);
+    const menu = menuOf(kit);
+    const inlinePrice = menu.priceIdr + 5000;
+    // The pre-0542 shape: the snapshot inline on the kit, priced differently
+    // from the stored row of the same (outlet, catalogue version).
+    const { rows } = await owner.query<{
+      snapshot: {
+        catalogs: {
+          takeaway: { items: { id: string; plainPriceIdr: unknown }[] };
+        };
+      };
+    }>(
+      `SELECT snapshot FROM pos_offline_catalog_snapshots
+        WHERE tenant_id = $1 AND outlet_id = $2 AND catalog_version = $3`,
+      [seededTenantId, seededOutletA, kit.catalogVersion],
+    );
+    const inline = rows[0]!.snapshot;
+    const item = inline.catalogs.takeaway.items.find(
+      (row) => row.id === menu.itemId,
+    )!;
+    item.plainPriceIdr =
+      typeof item.plainPriceIdr === "number"
+        ? inlinePrice
+        : String(inlinePrice);
+    const legacyKitId = randomUUID();
+    await owner.query(
+      `INSERT INTO pos_offline_kits (id, tenant_id, outlet_id, device_id, shift_id, sequence_id, issued_by, catalog_version, snapshot, issued_at, expires_at)
+       SELECT $2, tenant_id, outlet_id, device_id, shift_id, sequence_id, issued_by, catalog_version, $3::jsonb, issued_at, expires_at
+         FROM pos_offline_kits WHERE tenant_id = $1 AND id = $4`,
+      [seededTenantId, legacyKitId, JSON.stringify(inline), kit.kitId],
+    );
+    const legacy = { ...kit, kitId: legacyKitId };
+    const n = kit.receiptRun.lastNumber + 1;
+    const atInline = sale(legacy, menu, n, { unitPriceIdr: inlinePrice });
+    const ok = await submit(a, [atInline]);
+    // Priced by the inline copy: no mismatch. The shared row would flag it.
+    expect(ok.results[0]).toMatchObject({ status: "ingested", flags: [] });
+    const atRow = sale(legacy, menu, n + 1, { unitPriceIdr: menu.priceIdr });
+    const flagged = await submit(a, [atRow]);
+    expect(flagged.results[0]).toMatchObject({
+      status: "ingested",
+      flags: ["price_mismatch"],
+    });
+  });
+
   it("holds a sale whose tenders do not settle the total: stored, no order, number used", async () => {
     const kit = await kitFor(a);
     const menu = menuOf(kit);
