@@ -23,10 +23,7 @@ import {
   type GuestFeeSchedule,
   type PaymentGatewayPort,
 } from "../services/payment-gateway.ts";
-import {
-  grossUpGuestFee,
-  guestFeeFor,
-} from "../services/payment-guest-fee.ts";
+import { grossUpGuestFee, guestFeeFor } from "../services/payment-guest-fee.ts";
 import { agent, originHeader } from "./helpers.ts";
 import {
   PRICES,
@@ -177,7 +174,10 @@ describe("1272 re-review P3-a: the VA of a swap difference is price-locked", () 
   it("a VA without the seen total is 409 FEE_CHANGED and nothing is issued; QRIS and the seen total work", async () => {
     const { guest, chargeId } = await openCharge();
     const before = gw.created.length;
-    const missing = await pay(guest, chargeId, { method: "va", bankCode: "BC" });
+    const missing = await pay(guest, chargeId, {
+      method: "va",
+      bankCode: "BC",
+    });
     expect(missing.status, JSON.stringify(missing.body)).toBe(409);
     expect(missing.body.error.code).toBe("FEE_CHANGED");
     const stale = await pay(guest, chargeId, {
