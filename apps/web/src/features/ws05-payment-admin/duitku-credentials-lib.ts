@@ -5,7 +5,13 @@
 // tests load it with Node type stripping.
 import type { MessageKey } from "@starter/shared/i18n";
 import {
+  DUITKU_GUEST_FEE_METHODS,
+  DUITKU_METHOD_CATEGORY_CODES,
   GATEWAY_CREDENTIAL_SPECS,
+  duitkuGuestFeeCap,
+  duitkuGuestFeeRateSchema,
+  duitkuGuestFeesSchema,
+  type DuitkuGuestFeeMethod,
   type IntegrationConnectionTest,
   type TenantIntegration,
   type UpsertIntegrationInput,
@@ -55,11 +61,61 @@ export function duitkuReadOnlyReason(
   return null;
 }
 
+/** One method's guest service fee as typed: basis points and rupiah. */
+export type DuitkuFeeDraft = { bps: string; flatIdr: string };
+
 export type DuitkuConfigDraft = {
   environment: DuitkuEnvironment | "";
   notificationEmail: string;
   vaName: string;
+  /** 1272 K5: guest fee rate per method; blank pair = no fee for the method. */
+  guestFees: Record<DuitkuGuestFeeMethod, DuitkuFeeDraft>;
 };
+
+export const DUITKU_FEE_METHODS = DUITKU_GUEST_FEE_METHODS;
+
+/** Config keys this form owns; every other stored key is carried over on save. */
+const OWNED_CONFIG_KEYS = new Set([
+  "environment",
+  "notificationEmail",
+  "vaName",
+  "guestFees",
+]);
+
+const EMPTY_FEE: DuitkuFeeDraft = { bps: "", flatIdr: "" };
+
+/** Rate of a method as stored: the first channel of the method that has one. */
+function storedFeeRate(
+  config: Readonly<Record<string, unknown>> | undefined,
+  method: DuitkuGuestFeeMethod,
+): { bps: number; flatIdr: number } | null {
+  const parsed = duitkuGuestFeesSchema.safeParse(config?.guestFees ?? {});
+  if (!parsed.success) return null;
+  for (const code of DUITKU_METHOD_CATEGORY_CODES[method]) {
+    const rate = parsed.data[code];
+    if (rate) return rate;
+  }
+  return null;
+}
+
+/** The C4a cap of a method on the stored row (the form never edits it). */
+export function duitkuFeeCapOf(
+  row: TenantIntegration | null,
+  method: DuitkuGuestFeeMethod,
+): { bps: number; flatIdr: number } | null {
+  return row ? duitkuGuestFeeCap(row.config, method) : null;
+}
+
+function feeDraftsOf(row: TenantIntegration | null) {
+  const out = {} as Record<DuitkuGuestFeeMethod, DuitkuFeeDraft>;
+  for (const method of DUITKU_FEE_METHODS) {
+    const rate = storedFeeRate(row?.config, method);
+    out[method] = rate
+      ? { bps: String(rate.bps), flatIdr: String(rate.flatIdr) }
+      : { ...EMPTY_FEE };
+  }
+  return out;
+}
 
 export type DuitkuErrors = Record<string, MessageKey>;
 
@@ -85,6 +141,7 @@ export function duitkuConfigDraft(
         : "",
     notificationEmail: typeof email === "string" ? email : "",
     vaName: typeof vaName === "string" ? vaName : "",
+    guestFees: feeDraftsOf(row),
   };
 }
 
@@ -97,6 +154,7 @@ export function validateDuitkuDraft(
   config: DuitkuConfigDraft,
   typed: Partial<Record<DuitkuCredentialField, string>>,
   hasStoredCredentials: boolean,
+  row: TenantIntegration | null = null,
 ): DuitkuErrors {
   const errors: DuitkuErrors = {};
   if (!config.environment)
@@ -107,6 +165,7 @@ export function validateDuitkuDraft(
     errors.notificationEmail = "paymentAdmin.duitku.errors.email";
   if (config.vaName.trim().length > VA_NAME_MAX)
     errors.vaName = "paymentAdmin.duitku.errors.vaNameLong";
+  Object.assign(errors, validateDuitkuFees(config, row));
   const filled = DUITKU_CREDENTIAL_FIELDS.filter(
     (name) => (typed[name] ?? "").trim() !== "",
   );
@@ -116,6 +175,55 @@ export function validateDuitkuDraft(
         errors[`credential:${name}`] = hasStoredCredentials
           ? "paymentAdmin.duitku.errors.credentialsIncomplete"
           : "paymentAdmin.duitku.errors.required";
+  return errors;
+}
+
+const WHOLE = /^\d{1,10}$/;
+
+/** Fee rate of one method, or null when it is blank (no fee) or not a number. */
+function parseFee(
+  draft: DuitkuFeeDraft,
+): { bps: number; flatIdr: number } | null | "invalid" {
+  const bps = draft.bps.trim();
+  const flat = draft.flatIdr.trim();
+  if (bps === "" && flat === "") return null;
+  if ((bps !== "" && !WHOLE.test(bps)) || (flat !== "" && !WHOLE.test(flat)))
+    return "invalid";
+  const parsed = duitkuGuestFeeRateSchema.safeParse({
+    bps: bps === "" ? 0 : Number(bps),
+    flatIdr: flat === "" ? 0 : Number(flat),
+  });
+  return parsed.success ? parsed.data : "invalid";
+}
+
+/**
+ * Guest fee fields, keyed `fee:<method>:bps|flatIdr`. A rate needs the
+ * method's C4a cap on the stored row and stays within it, same rule the API
+ * applies on save (duitkuGuestFeeWithinCap).
+ */
+function validateDuitkuFees(
+  config: DuitkuConfigDraft,
+  row: TenantIntegration | null,
+): DuitkuErrors {
+  const errors: DuitkuErrors = {};
+  for (const method of DUITKU_FEE_METHODS) {
+    const draft = config.guestFees[method];
+    const rate = parseFee(draft);
+    if (rate === null) continue;
+    if (rate === "invalid") {
+      errors[`fee:${method}:bps`] = "paymentAdmin.duitku.errors.feeInvalid";
+      continue;
+    }
+    const cap = duitkuFeeCapOf(row, method);
+    if (cap === null) {
+      errors[`fee:${method}:bps`] = "paymentAdmin.duitku.errors.feeNoCap";
+      continue;
+    }
+    if (rate.bps > cap.bps)
+      errors[`fee:${method}:bps`] = "paymentAdmin.duitku.errors.feeOverCap";
+    if (rate.flatIdr > cap.flatIdr)
+      errors[`fee:${method}:flatIdr`] = "paymentAdmin.duitku.errors.feeOverCap";
+  }
   return errors;
 }
 
@@ -131,19 +239,52 @@ export function duitkuTypedCredentials(
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-/** PUT body WITHOUT credentials; the one-shot buffer joins them at send time. */
+/**
+ * PUT body WITHOUT credentials; the one-shot buffer joins them at send time.
+ * The API replaces `config` whole, so keys this form does not own (the C4a fee
+ * caps) are carried over from the stored row. A method whose fee fields were
+ * not touched keeps its stored channel rates; an edited one sets every channel
+ * of the method, a blank one removes them.
+ */
 export function buildDuitkuUpsertInput(
   scope: DuitkuScope,
   config: DuitkuConfigDraft,
+  row: TenantIntegration | null = null,
 ): UpsertIntegrationInput {
   const vaName = config.vaName.trim();
+  const carried: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(row?.config ?? {}))
+    if (!OWNED_CONFIG_KEYS.has(key)) carried[key] = value;
+  const initial = feeDraftsOf(row);
+  const stored = duitkuGuestFeesSchema.safeParse(row?.config.guestFees ?? {});
+  const fees: Record<string, { bps: number; flatIdr: number }> = {};
+  for (const method of DUITKU_FEE_METHODS) {
+    const codes: readonly string[] = DUITKU_METHOD_CATEGORY_CODES[method];
+    const draft = config.guestFees[method];
+    const untouched =
+      draft.bps.trim() === initial[method].bps &&
+      draft.flatIdr.trim() === initial[method].flatIdr;
+    if (untouched) {
+      if (stored.success)
+        for (const code of codes) {
+          const rate = stored.data[code];
+          if (rate) fees[code] = rate;
+        }
+      continue;
+    }
+    const rate = parseFee(draft);
+    if (rate === null || rate === "invalid") continue;
+    for (const code of codes) fees[code] = rate;
+  }
   return {
     outletId: scope.outletId,
     provider: "duitku",
     config: {
+      ...carried,
       environment: config.environment,
       notificationEmail: config.notificationEmail.trim(),
       ...(vaName ? { vaName } : {}),
+      ...(Object.keys(fees).length > 0 ? { guestFees: fees } : {}),
     },
   } as UpsertIntegrationInput;
 }
@@ -172,6 +313,10 @@ export const DUITKU_FIELD_ORDER = [
   "environment",
   "notificationEmail",
   "vaName",
+  ...DUITKU_FEE_METHODS.flatMap((method) => [
+    `fee:${method}:bps`,
+    `fee:${method}:flatIdr`,
+  ]),
   "credential:merchantCode",
   "credential:apiKey",
 ] as const;
@@ -182,7 +327,7 @@ export function firstDuitkuErrorField(errors: DuitkuErrors): string | null {
 
 /** DOM id of a form control, so a handler can move focus to it. */
 export function duitkuFieldId(name: string): string {
-  return `duitku-field-${name.replace("credential:", "")}`;
+  return `duitku-field-${name.replace("credential:", "").replaceAll(":", "-")}`;
 }
 
 /** Error of ONE field, for validation on blur and live correction. */
@@ -191,8 +336,9 @@ export function validateDuitkuField(
   config: DuitkuConfigDraft,
   typed: Partial<Record<DuitkuCredentialField, string>>,
   hasStoredCredentials: boolean,
+  row: TenantIntegration | null = null,
 ): MessageKey | undefined {
-  return validateDuitkuDraft(config, typed, hasStoredCredentials)[name];
+  return validateDuitkuDraft(config, typed, hasStoredCredentials, row)[name];
 }
 
 /**

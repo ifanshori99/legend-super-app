@@ -44,10 +44,12 @@ import { createSecretBuffer } from "../../ws01-tenant-settings/secret-buffer";
 import {
   DUITKU_CREDENTIAL_FIELDS,
   DUITKU_ENVIRONMENTS,
+  DUITKU_FEE_METHODS,
   VA_NAME_MAX,
   buildDuitkuUpsertInput,
   duitkuActivation,
   duitkuConfigDraft,
+  duitkuFeeCapOf,
   duitkuFieldId,
   duitkuFormKey,
   duitkuMethodLabelKey,
@@ -64,6 +66,7 @@ import {
   type DuitkuConfigDraft,
   type DuitkuCredentialField,
   type DuitkuErrors,
+  type DuitkuFeeDraft,
   type DuitkuReadOnlyReason,
   type DuitkuScope,
 } from "../duitku-credentials-lib";
@@ -84,6 +87,8 @@ function duitkuErrorMessage(
       return t("paymentAdmin.duitku.errors.invalid");
     case "FORBIDDEN":
       return t("paymentAdmin.duitku.errors.forbidden");
+    case "DUITKU_FEE_CAP_PLATFORM_ONLY":
+      return t("paymentAdmin.duitku.errors.feeCapPlatformOnly");
     case "NOT_FOUND":
       return t("paymentAdmin.duitku.errors.notFound");
     case "NOT_SUPPORTED":
@@ -295,7 +300,7 @@ function DuitkuForm({
     nextConfig: DuitkuConfigDraft,
     nextTyped: Partial<Record<DuitkuCredentialField, string>>,
   ) => {
-    const found = validateDuitkuField(name, nextConfig, nextTyped, stored);
+    const found = validateDuitkuField(name, nextConfig, nextTyped, stored, row);
     setErrors((current) => {
       const next = { ...current };
       if (found) next[name] = found;
@@ -307,6 +312,22 @@ function DuitkuForm({
     const next = { ...config, ...patch };
     setConfig(next);
     if (errors[name]) checkField(name, next, typed);
+  };
+  const changeFee = (
+    method: (typeof DUITKU_FEE_METHODS)[number],
+    field: keyof DuitkuFeeDraft,
+    value: string,
+  ) => {
+    const next = {
+      ...config,
+      guestFees: {
+        ...config.guestFees,
+        [method]: { ...config.guestFees[method], [field]: value },
+      },
+    };
+    setConfig(next);
+    for (const key of [`fee:${method}:bps`, `fee:${method}:flatIdr`])
+      if (errors[key]) checkField(key, next, typed);
   };
   const changeTyped = (name: DuitkuCredentialField, value: string) => {
     const next = { ...typed, [name]: value };
@@ -328,7 +349,7 @@ function DuitkuForm({
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
     if (readOnly) return;
-    const found = validateDuitkuDraft(config, typed, stored);
+    const found = validateDuitkuDraft(config, typed, stored, row);
     setErrors(found);
     const firstError = firstDuitkuErrorField(found);
     if (firstError) {
@@ -343,7 +364,7 @@ function DuitkuForm({
     setTyped({});
     save.mutate(
       {
-        input: buildDuitkuUpsertInput(scope, config),
+        input: buildDuitkuUpsertInput(scope, config, row),
         secrets: buffer.current,
       },
       {
@@ -484,6 +505,78 @@ function DuitkuForm({
             onBlur={() => checkField("vaName", config, typed)}
           />
         </FormField>
+
+        <fieldset className="grid gap-3 rounded-container border-(length:--border-w) bg-surface-2 p-card">
+          <legend className="px-1 text-sm font-semibold">
+            {t("paymentAdmin.duitku.fees.title")}
+          </legend>
+          <p className="text-sm leading-5 text-muted-foreground">
+            {t("paymentAdmin.duitku.fees.hint")}
+          </p>
+          {DUITKU_FEE_METHODS.map((method) => {
+            const cap = duitkuFeeCapOf(row, method);
+            const label = t(
+              method === "va"
+                ? "paymentAdmin.duitku.fees.method.va"
+                : method === "ewallet"
+                  ? "paymentAdmin.duitku.fees.method.ewallet"
+                  : "paymentAdmin.duitku.fees.method.card",
+            );
+            return (
+              <div key={method} className="grid gap-2">
+                <p className="text-sm leading-5 font-medium">{label}</p>
+                <p className="text-xs leading-5 text-muted-foreground">
+                  {cap
+                    ? t("paymentAdmin.duitku.fees.cap", {
+                        bps: cap.bps,
+                        flat: cap.flatIdr,
+                      })
+                    : t("paymentAdmin.duitku.fees.noCap")}
+                </p>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <FormField
+                    id={duitkuFieldId(`fee:${method}:bps`)}
+                    label={t("paymentAdmin.duitku.fees.bps")}
+                    error={err(`fee:${method}:bps`)}
+                  >
+                    <Input
+                      inputMode="numeric"
+                      autoComplete="off"
+                      disabled={readOnly || cap === null}
+                      maxLength={10}
+                      value={config.guestFees[method].bps}
+                      onChange={(event) =>
+                        changeFee(method, "bps", event.target.value)
+                      }
+                      onBlur={() =>
+                        checkField(`fee:${method}:bps`, config, typed)
+                      }
+                    />
+                  </FormField>
+                  <FormField
+                    id={duitkuFieldId(`fee:${method}:flatIdr`)}
+                    label={t("paymentAdmin.duitku.fees.flat")}
+                    error={err(`fee:${method}:flatIdr`)}
+                  >
+                    <Input
+                      inputMode="numeric"
+                      autoComplete="off"
+                      disabled={readOnly || cap === null}
+                      maxLength={10}
+                      value={config.guestFees[method].flatIdr}
+                      onChange={(event) =>
+                        changeFee(method, "flatIdr", event.target.value)
+                      }
+                      onBlur={() =>
+                        checkField(`fee:${method}:flatIdr`, config, typed)
+                      }
+                    />
+                  </FormField>
+                </div>
+              </div>
+            );
+          })}
+        </fieldset>
 
         <fieldset className="grid gap-3 rounded-container border-(length:--border-w) bg-surface-2 p-card">
           <legend className="flex items-center gap-1.5 px-1 text-sm font-semibold">

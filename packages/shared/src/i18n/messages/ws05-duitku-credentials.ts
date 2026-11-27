@@ -60,6 +60,20 @@ export const paymentDuitkuMessages = {
     merchantCode: "Kode merchant",
     apiKey: "API key",
   },
+  fees: {
+    title: "Biaya layanan untuk tamu",
+    hint: "Biaya e-wallet, virtual account, dan kartu dibebankan ke tamu sebagai baris Biaya layanan. QRIS selalu tanpa biaya. Metode yang dikosongkan tidak menampilkan biaya dan tidak ditawarkan ke tamu.",
+    method: {
+      va: "Virtual account",
+      ewallet: "E-wallet",
+      card: "Kartu",
+    },
+    bps: "Persen (basis poin, 100 = 1%)",
+    flat: "Biaya tetap (Rp)",
+    cap: "Batas biaya: {bps} basis poin dan Rp {flat}.",
+    noCap:
+      "Batas biaya belum diatur untuk metode ini, jadi tarif belum bisa diisi.",
+  },
   credentials: {
     title: "Kredensial",
     newHint: "Isi kode merchant dan API key dari dashboard Duitku.",
@@ -111,11 +125,18 @@ export const paymentDuitkuMessages = {
     required: "Wajib diisi.",
     email: "Format email belum benar.",
     vaNameLong: "Maksimal 20 karakter.",
+    feeInvalid:
+      "Isi bilangan bulat tanpa titik atau koma. Basis poin kurang dari 10.000.",
+    feeOverCap: "Melebihi batas biaya metode ini. Turunkan tarifnya.",
+    feeNoCap:
+      "Batas biaya metode ini belum diatur, jadi tarif tidak bisa disimpan.",
     credentialsIncomplete:
       "Isi kode merchant dan API key sekaligus untuk menggantinya.",
     generic: "Permintaan belum bisa diproses. Coba lagi.",
     invalid: "Isian belum sesuai. Periksa kolom yang ditandai.",
     forbidden: "Akun ini tidak punya izin mengelola integrasi.",
+    feeCapPlatformOnly:
+      "Batas biaya gateway hanya bisa diubah oleh platform. Muat ulang halaman, lalu simpan tanpa mengubah batas.",
     notFound: "Kredensial tidak ditemukan. Muat ulang halaman.",
     notSupported: "Tes koneksi belum tersedia untuk gateway ini.",
     offline: "Tidak ada koneksi. Periksa jaringan, lalu coba lagi.",

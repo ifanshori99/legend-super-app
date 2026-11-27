@@ -9,7 +9,10 @@
 // answers null (hidden), never a silent 0.
 
 import { idr, type Idr } from "@starter/shared/core";
-import { duitkuGuestFeesSchema } from "@starter/shared/platform";
+import {
+  duitkuGuestFeeCap,
+  duitkuGuestFeesSchema,
+} from "@starter/shared/platform";
 import { duitkuMethodCategory } from "./payment-duitku-wire";
 
 export type GuestFeeRate = { readonly bps: number; readonly flatIdr: number };
@@ -69,15 +72,6 @@ export function grossUpGuestFee(baseIdr: number, rate: GuestFeeRate): number {
   return result;
 }
 
-function capNumber(value: unknown, max: number): number | null {
-  return typeof value === "number" &&
-    Number.isInteger(value) &&
-    value >= 0 &&
-    value <= max
-    ? value
-    : null;
-}
-
 /**
  * Usable guest fee rates of one Duitku integration config, by channel code.
  * A rate is kept only when it parses, its code is a known VA, e-wallet or card
@@ -98,14 +92,9 @@ export function guestFeeRatesOf(
     if (!rate) continue;
     const method = duitkuMethodCategory(code);
     if (method !== "va" && method !== "ewallet" && method !== "card") continue;
-    const bpsRaw = config[`maxFeeBps_${method}`];
-    const flatRaw = config[`maxFeeFlatIdr_${method}`];
-    if (bpsRaw === undefined && flatRaw === undefined) continue;
-    const capBps = bpsRaw === undefined ? 0 : capNumber(bpsRaw, 10_000);
-    const capFlat =
-      flatRaw === undefined ? 0 : capNumber(flatRaw, 1_000_000_000);
-    if (capBps === null || capFlat === null) continue;
-    if (rate.bps > capBps || rate.flatIdr > capFlat) continue;
+    const cap = duitkuGuestFeeCap(config, method);
+    if (cap === null) continue;
+    if (rate.bps > cap.bps || rate.flatIdr > cap.flatIdr) continue;
     rates.set(code, { bps: rate.bps, flatIdr: rate.flatIdr });
   }
   return rates;

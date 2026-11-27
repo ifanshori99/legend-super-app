@@ -68,6 +68,118 @@ const fieldName = z
   .string()
   .regex(/^[a-z][a-zA-Z0-9_]{0,63}$/, "Credential/config field name");
 
+/**
+ * 1272 K1 (design duitku-fee-passthrough §1): the guest service fee of one
+ * Duitku channel, `ceil(amount * bps / 10000) + flatIdr` on the charged amount.
+ * Kept in the integration config as `guestFees: { <channel code>: rate }`. The
+ * server reads a rate only when it is within the method's C4a cap
+ * (`maxFeeBps_<method>`, `maxFeeFlatIdr_<method>`); any other value hides the
+ * channel. bps stays under 10000 so the gross-up exists.
+ */
+export const duitkuGuestFeeRateSchema = z.strictObject({
+  bps: z.number().int().min(0).max(9_999),
+  flatIdr: z.number().int().min(0).max(1_000_000),
+});
+export type DuitkuGuestFeeRate = z.infer<typeof duitkuGuestFeeRateSchema>;
+export const duitkuGuestFeesSchema = z.record(
+  z.string().regex(/^[A-Z0-9]{1,40}$/),
+  duitkuGuestFeeRateSchema,
+);
+
+/**
+ * Duitku channel codes by method category (docs "Payment methods"). One list
+ * for the API's category lookup and for the guest fee rules below.
+ */
+export const DUITKU_METHOD_CATEGORY_CODES = {
+  card: ["VC"],
+  va: [
+    "BC",
+    "M2",
+    "VA",
+    "I1",
+    "B1",
+    "BT",
+    "A1",
+    "AG",
+    "NC",
+    "BR",
+    "S1",
+    "DM",
+    "BV",
+  ],
+  retail: ["FT", "IR"],
+  ewallet: ["OV", "SA", "LF", "LA", "DA", "SL", "OL"],
+  qris: ["SP", "NQ", "SQ"],
+  paylater: ["DN", "AT"],
+} as const satisfies Record<string, readonly string[]>;
+
+/** Methods a guest fee may apply to; QRIS never carries one. */
+export const DUITKU_GUEST_FEE_METHODS = ["va", "ewallet", "card"] as const;
+export type DuitkuGuestFeeMethod = (typeof DUITKU_GUEST_FEE_METHODS)[number];
+
+/** The fee method of a channel code, null for QRIS, retail, paylater, unknown. */
+export function duitkuGuestFeeMethodOf(
+  code: string,
+): DuitkuGuestFeeMethod | null {
+  for (const method of DUITKU_GUEST_FEE_METHODS)
+    if (
+      (DUITKU_METHOD_CATEGORY_CODES[method] as readonly string[]).includes(code)
+    )
+      return method;
+  return null;
+}
+
+function wholeUpTo(value: unknown, max: number): number | null {
+  return typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= 0 &&
+    value <= max
+    ? value
+    : null;
+}
+
+/**
+ * The C4a fee cap of a fee method in one Duitku config: `maxFeeBps_<method>`
+ * (basis points) and `maxFeeFlatIdr_<method>` (rupiah, default 0). Null when
+ * the method has neither number or a number is not a plausible whole value.
+ * The one reader of these keys for guest fee rates, on the API and in the form.
+ */
+export function duitkuGuestFeeCap(
+  config: Readonly<Record<string, unknown>>,
+  method: string,
+): { readonly bps: number; readonly flatIdr: number } | null {
+  const bpsRaw = config[`maxFeeBps_${method}`];
+  const flatRaw = config[`maxFeeFlatIdr_${method}`];
+  if (bpsRaw === undefined && flatRaw === undefined) return null;
+  const bps = bpsRaw === undefined ? 0 : wholeUpTo(bpsRaw, 10_000);
+  const flatIdr = flatRaw === undefined ? 0 : wholeUpTo(flatRaw, 1_000_000_000);
+  return bps === null || flatIdr === null ? null : { bps, flatIdr };
+}
+
+/** Is this rate allowed for the channel code under the config's caps? */
+export function duitkuGuestFeeWithinCap(
+  config: Readonly<Record<string, unknown>>,
+  code: string,
+  rate: DuitkuGuestFeeRate,
+): boolean {
+  const method = duitkuGuestFeeMethodOf(code);
+  if (method === null) return false;
+  const cap = duitkuGuestFeeCap(config, method);
+  return cap !== null && rate.bps <= cap.bps && rate.flatIdr <= cap.flatIdr;
+}
+
+/** Channel codes of `config.guestFees` that are not a fee method or beyond their cap. */
+export function duitkuGuestFeeIssueCodes(
+  config: Readonly<Record<string, unknown>>,
+): string[] {
+  const parsed = duitkuGuestFeesSchema.safeParse(config.guestFees ?? {});
+  if (!parsed.success) return ["guestFees"];
+  return Object.entries(parsed.data)
+    .filter(([code, rate]) => !duitkuGuestFeeWithinCap(config, code, rate))
+    .map(([code]) => code)
+    .sort();
+}
+
 const configValue = z.union([
   z.string().max(500),
   z.number().finite(),
@@ -81,10 +193,18 @@ const configValue = z.union([
  * a credential can never land in the plaintext `config` column by mistake.
  */
 export const integrationConfigSchema = z
-  .record(fieldName, configValue)
+  .record(fieldName, z.union([configValue, duitkuGuestFeesSchema]))
   .refine((config) => Object.keys(config).length <= 30, {
     message: "At most 30 config keys",
   })
+  .refine(
+    (config) =>
+      Object.entries(config).every(
+        ([key, value]) =>
+          key === "guestFees" || value === null || typeof value !== "object",
+      ),
+    { message: "Only guestFees may hold nested values" },
+  )
   .refine(
     (config) => Object.keys(config).every((key) => !isSecretLikeKey(key)),
     { message: "Secrets belong in credentials, not config" },
@@ -226,28 +346,11 @@ export function isGatewayPreviousKey(key: string): boolean {
   return key.startsWith("previous");
 }
 
-/**
- * 1272 K1 (design duitku-fee-passthrough §1): the guest service fee of one
- * Duitku channel, `ceil(amount * bps / 10000) + flatIdr` on the charged amount.
- * Kept in the integration config as `guestFees: { <channel code>: rate }`. The
- * server reads a rate only when it is within the method's C4a cap
- * (`maxFeeBps_<method>`, `maxFeeFlatIdr_<method>`); any other value hides the
- * channel. bps stays under 10000 so the gross-up exists.
- */
-export const duitkuGuestFeeRateSchema = z.strictObject({
-  bps: z.number().int().min(0).max(9_999),
-  flatIdr: z.number().int().min(0).max(1_000_000),
-});
-export type DuitkuGuestFeeRate = z.infer<typeof duitkuGuestFeeRateSchema>;
-export const duitkuGuestFeesSchema = z.record(
-  z.string().regex(/^[A-Z0-9]{1,40}$/),
-  duitkuGuestFeeRateSchema,
-);
-
 const duitkuConfigSchema = z.object({
   environment: z.enum(GATEWAY_CREDENTIAL_SPECS.duitku.config.environment),
   notificationEmail: z.email().max(254),
   vaName: z.union([z.string().max(20), z.null()]).optional(),
+  guestFees: duitkuGuestFeesSchema.optional(),
 });
 
 /**
@@ -256,6 +359,20 @@ const duitkuConfigSchema = z.object({
  * `credentials` undefined = "keep the stored secret".
  */
 export function gatewayCredentialIssues(
+  provider: IntegrationProvider,
+  config: IntegrationConfig,
+  credentials: Record<string, string> | undefined,
+): string[] {
+  // 1272 K5: the guest service fee is a Duitku setting, no other provider's.
+  if (provider !== "duitku" && "guestFees" in config) {
+    return isGatewayProvider(provider)
+      ? [...gatewayIssues(provider, config, credentials), "guestFees"].sort()
+      : ["guestFees"];
+  }
+  return gatewayIssues(provider, config, credentials);
+}
+
+function gatewayIssues(
   provider: IntegrationProvider,
   config: IntegrationConfig,
   credentials: Record<string, string> | undefined,
@@ -270,6 +387,9 @@ export function gatewayCredentialIssues(
     if (!parsed.success)
       for (const issue of parsed.error.issues)
         issues.add(String(issue.path[0] ?? "config"));
+    // 1272 K5: a guest fee above the C4a cap (or on QRIS) is never saved.
+    if (parsed.success && duitkuGuestFeeIssueCodes(config).length > 0)
+      issues.add("guestFees");
     if (credentials) {
       const allowed: readonly string[] =
         GATEWAY_CREDENTIAL_SPECS.duitku.credentials;

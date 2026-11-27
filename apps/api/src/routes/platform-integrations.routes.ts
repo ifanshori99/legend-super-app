@@ -30,6 +30,7 @@ import { requireSessionMfa } from "../middleware/identity.ts";
 import { requireBackOfficeSurface } from "../middleware/identity-surface.ts";
 import { noStore } from "../middleware/no-store.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
+import { supportSessionOf } from "../middleware/support-session.ts";
 import {
   getScopedTenantContext,
   requireTenantPermission,
@@ -42,6 +43,7 @@ import { requireTenantContext } from "../middleware/tenant.ts";
 import {
   listIntegrations,
   setIntegrationStatus,
+  isPlatformFeeCapWriter,
   upsertIntegration,
 } from "../services/platform-integration.service.ts";
 import { testGatewayConnection } from "../services/payment-gateway-connection.service.ts";
@@ -93,6 +95,8 @@ orgIntegrationsRouter.put(
         getScopedTenantContext(req),
         input,
         getAuth(req).user.id,
+        // Fee caps are the platform's: only a read_write support grant.
+        { platform: isPlatformFeeCapWriter(await supportSessionOf(req)) },
       ),
     });
   },

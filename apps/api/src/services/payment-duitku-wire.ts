@@ -19,6 +19,7 @@
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { CoreError } from "@starter/shared/core";
+import { DUITKU_METHOD_CATEGORY_CODES } from "@starter/shared/platform";
 import { z } from "zod";
 
 export type DuitkuEnvironment = "sandbox" | "production";
@@ -404,34 +405,8 @@ export function verifyDuitkuCallback(input: {
 export type DuitkuMethodCategory =
   "qris" | "va" | "ewallet" | "card" | "retail" | "paylater" | "other";
 
-const CATEGORY_CODES: Record<
-  Exclude<DuitkuMethodCategory, "other">,
-  string[]
-> = {
-  card: ["VC"],
-  va: [
-    "BC",
-    "M2",
-    "VA",
-    "I1",
-    "B1",
-    "BT",
-    "A1",
-    "AG",
-    "NC",
-    "BR",
-    "S1",
-    "DM",
-    "BV",
-  ],
-  retail: ["FT", "IR"],
-  ewallet: ["OV", "SA", "LF", "LA", "DA", "SL", "OL"],
-  qris: ["SP", "NQ", "SQ"],
-  paylater: ["DN", "AT"],
-};
-
 const CATEGORY_BY_CODE = new Map<string, DuitkuMethodCategory>(
-  Object.entries(CATEGORY_CODES).flatMap(([category, codes]) =>
+  Object.entries(DUITKU_METHOD_CATEGORY_CODES).flatMap(([category, codes]) =>
     codes.map((code) => [code, category as DuitkuMethodCategory] as const),
   ),
 );
