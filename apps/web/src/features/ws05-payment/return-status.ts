@@ -50,8 +50,8 @@ const LATE: readonly PaymentStatus[] = ["failed", "expired"];
 
 /**
  * Keep asking until the server answers with a terminal status. After failed
- * or expired, keep a slow watch for LATE_WATCH_MS (`watchedMs` since the page
- * started watching).
+ * or expired, keep a slow watch for LATE_WATCH_MS (`watchedMs` since the first
+ * failed or expired answer, see `lateWatchedMs`).
  */
 export function shouldPollReturn(
   status: PaymentStatus | undefined,
@@ -61,6 +61,24 @@ export function shouldPollReturn(
   if (TERMINAL.includes(status)) return false;
   if (LATE.includes(status)) return watchedMs < LATE_WATCH_MS;
   return true;
+}
+
+/**
+ * When the slow watch began: the moment of the first failed or expired answer
+ * (not when the page opened). Keeps an earlier moment; null until then.
+ */
+export function lateWatchStart(
+  first: number | null,
+  status: PaymentStatus | undefined,
+  now: number,
+): number | null {
+  if (first !== null) return first;
+  return status !== undefined && LATE.includes(status) ? now : null;
+}
+
+/** Time spent in the slow watch so far; 0 before the first late answer. */
+export function lateWatchedMs(first: number | null, now: number): number {
+  return first === null ? 0 : Math.max(0, now - first);
 }
 
 /**

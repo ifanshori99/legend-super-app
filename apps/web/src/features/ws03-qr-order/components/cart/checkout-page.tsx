@@ -45,6 +45,7 @@ import { CartLineRow } from "./cart-line-row";
 import { CodeField } from "./code-field";
 import { GatewayOpenFailed } from "./gateway-opening";
 import {
+  PICK_WALLET_ID,
   PaymentMethods,
   useCtaLabel,
   useWalletName,
@@ -120,6 +121,9 @@ function payKey(orderId: string, method: string) {
 function forgetPayKey(orderId: string, method: string) {
   payKeys.delete(`${orderId}:${method}`);
 }
+
+/** Full width; a long label ("Bayar Rp… dengan E-wallet") wraps at 320 px. */
+const payCta = "h-auto min-h-control-lg w-full py-2 whitespace-normal";
 
 export function CheckoutPage() {
   const t = useT();
@@ -358,9 +362,10 @@ export function CheckoutPage() {
         <Button
           type="button"
           size="lg"
-          className="w-full"
+          className={payCta}
           loading={start.isPending}
           disabled={needsWallet}
+          aria-describedby={needsWallet ? PICK_WALLET_ID : undefined}
           onClick={() => payOrder(awaitingOrder.id, awaitingOrder.totalIdr)}
         >
           {ctaLabel(choice, awaitingOrder.totalIdr, walletName)}
@@ -567,9 +572,10 @@ export function CheckoutPage() {
       <Button
         type="button"
         size="lg"
-        className="w-full"
+        className={payCta}
         loading={busy || (payFirst && payable === null && !base.isError)}
         disabled={blocked || needsWallet}
+        aria-describedby={needsWallet ? PICK_WALLET_ID : undefined}
         onClick={() => submit()}
       >
         {payFirst

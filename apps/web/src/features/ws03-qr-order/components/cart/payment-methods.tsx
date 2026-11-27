@@ -129,6 +129,9 @@ export function useCtaLabel() {
   };
 }
 
+/** Id of the "pick an app" note; the disabled pay button points to it. */
+export const PICK_WALLET_ID = "pay-pick-wallet";
+
 const choiceClass = cn(
   "group flex min-h-12 items-center justify-between gap-2 rounded-xl border border-border bg-background px-3 text-left font-semibold pressable",
   "hover:bg-qr-selection focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
@@ -171,7 +174,7 @@ function WalletChoices({
         disabled={disabled}
         onValueChange={onChange}
         aria-label={t("payment.redirect.method.ewalletLegend")}
-        className="grid grid-cols-2 gap-2"
+        className="grid grid-cols-1 gap-2 min-[360px]:grid-cols-2"
       >
         {wallets.map((wallet) => (
           <RadioGroup.Item
@@ -179,12 +182,15 @@ function WalletChoices({
             value={wallet.code}
             className={choiceClass}
           >
-            <span className="min-w-0 truncate">{wallet.name}</span>
+            <span className="min-w-0 break-words">{wallet.name}</span>
             <RadioMark small />
           </RadioGroup.Item>
         ))}
       </RadioGroup.Root>
-      <p className="flex items-start gap-2 text-sm leading-5 text-muted-foreground">
+      <p
+        id={name ? undefined : PICK_WALLET_ID}
+        className="flex items-start gap-2 text-sm leading-5 text-muted-foreground"
+      >
         <ExternalLink className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
         {name
           ? t("payment.redirect.method.ewalletNote", { wallet: name })

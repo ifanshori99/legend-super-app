@@ -17,6 +17,8 @@ import {
   pickReturnRecord,
   returnPhase,
   serializeReturnRecord,
+  lateWatchStart,
+  lateWatchedMs,
   shouldPollReturn,
 } from "../apps/web/src/features/ws05-payment/return-status.ts";
 
@@ -212,6 +214,32 @@ test("C2b polling backs off, and keeps a slow watch after failed or expired (fai
     assert.equal(shouldPollReturn(status, LATE_WATCH_MS), false, status);
     assert.equal(nextPollDelayMs(0, status), LATE_POLL_MS, status);
     assert.equal(nextPollDelayMs(30, status), LATE_POLL_MS, status);
+  }
+
+  // Re-audit P3-2: the ten minutes start at the first failed or expired
+  // answer, not when the page opened (a guest who waited long on "pending"
+  // still gets the full window).
+  const opened = 1_000_000;
+  const afterPending = opened + 9 * 60_000;
+  assert.equal(lateWatchStart(null, "pending", afterPending), null);
+  assert.equal(lateWatchStart(null, undefined, afterPending), null);
+  assert.equal(lateWatchedMs(null, afterPending), 0);
+  for (const status of ["failed", "expired"]) {
+    const first = lateWatchStart(null, status, afterPending);
+    assert.equal(first, afterPending, status);
+    // A later answer keeps the first moment.
+    assert.equal(
+      lateWatchStart(first, "expired", afterPending + 30_000),
+      first,
+    );
+    const watched = lateWatchedMs(first, afterPending + 5 * 60_000);
+    assert.equal(watched, 5 * 60_000);
+    assert.equal(shouldPollReturn(status, watched), true, status);
+    assert.equal(
+      shouldPollReturn(status, lateWatchedMs(first, first + LATE_WATCH_MS)),
+      false,
+      status,
+    );
   }
 });
 

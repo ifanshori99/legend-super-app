@@ -10,6 +10,7 @@
 import {
   useEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
   type ReactNode,
@@ -55,6 +56,8 @@ import {
   canStartNewPayment,
   nextPollDelayMs,
   returnPhase,
+  lateWatchStart,
+  lateWatchedMs,
   shouldPollReturn,
   type ReturnRecord,
 } from "../return-status";
@@ -136,10 +139,9 @@ const SETTLED_ERRORS = [400, 401, 403, 404, 422];
  * Polls the server with backoff until its status is terminal, then keeps a
  * slow watch after failed or expired (a late payment may still settle).
  */
-function useReturnAnswer(
-  record: ReturnRecord | null | undefined,
-  startedAt: number,
-) {
+function useReturnAnswer(record: ReturnRecord | null | undefined) {
+  // The 10-minute slow watch starts at the first failed or expired answer.
+  const lateSince = useRef<number | null>(null);
   return useQuery({
     queryKey: record
       ? answerKey(record)
@@ -152,7 +154,10 @@ function useReturnAnswer(
     refetchIntervalInBackground: false,
     refetchInterval: (query) => {
       const status = query.state.data?.status;
-      if (!shouldPollReturn(status, Date.now() - startedAt)) return false;
+      const now = Date.now();
+      lateSince.current = lateWatchStart(lateSince.current, status, now);
+      if (!shouldPollReturn(status, lateWatchedMs(lateSince.current, now)))
+        return false;
       // A "not found" or "no login" for this guest will not change.
       const error = query.state.error;
       if (
@@ -261,7 +266,7 @@ export function PaymentReturnPage() {
   // undefined: not read yet (server render and first browser render agree).
   const record = useReturnRecord();
   const [startedAt] = useState(() => Date.now());
-  const answer = useReturnAnswer(record, startedAt);
+  const answer = useReturnAnswer(record);
   const status = answer.data?.status;
   const terminal = status !== undefined && !shouldPollReturn(status, 0);
   const now = useNow(!terminal);

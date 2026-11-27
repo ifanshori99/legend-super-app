@@ -146,6 +146,52 @@ test("C2b checkout lists e-wallet apps and card from the server; off methods are
   await shot(page, "metode-kartu");
 });
 
+test("C2b e-wallet apps sit in one column at 320 px and no name is cut off (re-audit P3-1)", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 320, height: 640 });
+  await openCheckout(page);
+  await radio(page, { name: /^E-wallet/ }).click();
+  const boxes = [];
+  for (const wallet of ["OVO", "DANA", "ShopeePay", "LinkAja"]) {
+    const item = radio(page, { name: wallet });
+    await expect(item).toBeVisible();
+    // The name is not truncated by an ellipsis or a clipped box.
+    const clipped = await item.evaluate((node) =>
+      [node, ...node.querySelectorAll("span")].some(
+        (el) => el.scrollWidth > el.clientWidth + 1,
+      ),
+    );
+    expect(clipped, wallet).toBe(false);
+    boxes.push(await item.boundingBox());
+  }
+  // One column: every app has the same left edge and sits below the one before.
+  for (let index = 1; index < boxes.length; index += 1) {
+    expect(boxes[index]!.x).toBeCloseTo(boxes[0]!.x, 0);
+    expect(boxes[index]!.y).toBeGreaterThan(boxes[index - 1]!.y);
+  }
+  // No sideways scroll on the page.
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+  // Every app sits inside the screen.
+  for (const box of boxes) expect(box!.x + box!.width).toBeLessThanOrEqual(320);
+  // The disabled pay button points to the "pick an app" note.
+  const pay = payWith(page, /^Bayar Rp.* dengan E-wallet$/);
+  await expect(pay).toBeDisabled();
+  await expect(pay).toHaveAttribute("aria-describedby", "pay-pick-wallet");
+  await expect(page.locator("#pay-pick-wallet")).toHaveText(
+    "Pilih aplikasi e-wallet dulu.",
+  );
+  if (SHOT)
+    await page.screenshot({
+      path: join(SHOT, "c2b-metode-320.png"),
+      fullPage: true,
+    });
+});
+
 test("C2b an outlet with only some methods on shows only those", async ({
   page,
 }) => {

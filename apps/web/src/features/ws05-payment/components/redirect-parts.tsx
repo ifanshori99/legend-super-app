@@ -3,7 +3,7 @@
 // design/mockups/c2b-tamu-bayar). They render inside the QR theme scope
 // ([data-surface="qr"]) and need no table journey context, so the return page
 // can use them for a table order and a payment link alike.
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useId, useRef, type ReactNode } from "react";
 import { cn } from "cn";
 import { Money } from "@/components/ui/money";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -54,9 +54,15 @@ export function StateHeader({
   level?: 1 | 2;
   /** Announce the title and lead as an alert (not the pill or amount). */
   alert?: boolean;
-  /** Move focus to the title when it appears (a screen swapped in place). */
+  /**
+   * Move focus to the title when it appears (a screen swapped in place). The
+   * focus move is the announcement, with the lead as its description, so it
+   * wins over `alert` (one announcement, not two).
+   */
   focusTitle?: boolean;
 }) {
+  const leadId = useId();
+  const announce = alert && !focusTitle;
   const Heading = level === 1 ? "h1" : "h2";
   const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => {
@@ -67,11 +73,15 @@ export function StateHeader({
       <Heading
         ref={heading}
         tabIndex={focusTitle ? -1 : undefined}
+        aria-describedby={focusTitle ? leadId : undefined}
         className="type-display-xl max-w-[18ch] text-balance outline-none"
       >
         {title}
       </Heading>
-      <p className="max-w-[36em] text-lg leading-7 text-muted-foreground">
+      <p
+        id={focusTitle ? leadId : undefined}
+        className="max-w-[36em] text-lg leading-7 text-muted-foreground"
+      >
         {lead}
       </p>
     </>
@@ -79,7 +89,7 @@ export function StateHeader({
   return (
     <header className="grid justify-items-start gap-3">
       {pill}
-      {alert ? (
+      {announce ? (
         <div role="alert" className="grid justify-items-start gap-3">
           {text}
         </div>
