@@ -38,6 +38,7 @@
     "./edc": "./src/edc/index.ts",
     "./edc/events": "./src/edc/events.ts",
     "./edc/bridge": "./src/edc/bridge.ts",
+    "./edc/bridge-devices": "./src/edc/bridge-devices.ts",
     "./adapters": "./src/adapters/index.ts",
     "./storage": "./src/storage/index.ts",
     "./api": "./src/api/index.ts",

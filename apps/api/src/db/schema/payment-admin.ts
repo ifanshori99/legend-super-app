@@ -25,6 +25,8 @@ import { outlets, tenants } from "./platform-org";
 import { syncTxidColumn } from "./sync-txid";
 import { paymentIntents, paymentUnallocatedFunds } from "./payment";
 import { orderIssues } from "./kds-issues";
+import { edcBridgeDevices } from "./edc-bridge-devices";
+import { ulidInUuid } from "../columns";
 
 export const paymentEdcTerminals = pgTable(
   "payment_edc_terminals",
@@ -40,6 +42,16 @@ export const paymentEdcTerminals = pgTable(
     ipAddress: varchar("ip_address", { length: 45 }),
     supportedMethods: text("supported_methods").array().notNull(),
     assignedDeviceId: uuid("assigned_device_id"),
+    // B2 legend-wasr7.21: how the cloud EDC agent reaches the terminal.
+    // `bridge`: the outlet's paired tablet (bridge_device_id), over LAN
+    // (ip_address + link_port) or USB (link_baud_rate). `bca_cloud`: the BCA
+    // ECR cloud API (B5a legend-wasr7.23).
+    connectionKind: varchar("connection_kind", { length: 20 })
+      .notNull()
+      .default("bridge"),
+    bridgeDeviceId: ulidInUuid("bridge_device_id"),
+    linkPort: integer("link_port"),
+    linkBaudRate: integer("link_baud_rate"),
     status: varchar("status", { length: 20 }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
@@ -73,8 +85,29 @@ export const paymentEdcTerminals = pgTable(
     }),
     check(
       "payment_edc_terminals_bank_check",
-      sql`${t.bankCode} IN ('bca','mandiri','bni','bjb')`,
+      sql`${t.bankCode} IN ('bca','mandiri','bni','bjb','bri')`,
     ),
+    check(
+      "payment_edc_terminals_connection_kind_check",
+      sql`${t.connectionKind} IN ('bridge','bca_cloud')`,
+    ),
+    check(
+      "payment_edc_terminals_link_port_check",
+      sql`${t.linkPort} IS NULL OR ${t.linkPort} BETWEEN 1 AND 65535`,
+    ),
+    check(
+      "payment_edc_terminals_link_baud_check",
+      sql`${t.linkBaudRate} IS NULL OR ${t.linkBaudRate} IN (9600,19200,38400,57600,115200)`,
+    ),
+    foreignKey({
+      name: "payment_edc_terminals_bridge_device_fk",
+      columns: [t.tenantId, t.outletId, t.bridgeDeviceId],
+      foreignColumns: [
+        edcBridgeDevices.tenantId,
+        edcBridgeDevices.outletId,
+        edcBridgeDevices.id,
+      ],
+    }),
     check(
       "payment_edc_terminals_connection_check",
       sql`${t.connection} IN ('lan','usb','bluetooth')`,

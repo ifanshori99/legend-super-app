@@ -69,7 +69,7 @@ export const edcSettlementFiles = pgTable(
     }),
     check(
       "edc_settlement_files_bank_check",
-      sql`${t.bank} IN ('bca','mandiri','bni','bjb')`,
+      sql`${t.bank} IN ('bca','mandiri','bni','bjb','bri')`,
     ),
     check(
       "edc_settlement_files_count_check",

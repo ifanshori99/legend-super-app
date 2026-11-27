@@ -109,15 +109,15 @@ export type UpdatePaymentRouteInput = z.infer<
 /** EDC row plus the outlet name the table shows; the id stays the record id. */
 export const edcTerminalViewSchema = z.strictObject({
   ...edcTerminalSchema.shape,
-  /** The four banks the PRD integrates (BCA, Mandiri, BNI, BJB). */
-  bankCode: z.enum(["bca", "mandiri", "bni", "bjb"]),
+  /** The banks the PRD integrates (BCA, Mandiri, BNI, BJB) plus BRI (B2). */
+  bankCode: z.enum(["bca", "mandiri", "bni", "bjb", "bri"]),
   outletName: ref,
 });
 export type EdcTerminalView = z.infer<typeof edcTerminalViewSchema>;
 
 const edcTerminalFields = {
   outletId: outletIdSchema,
-  bankCode: z.enum(["bca", "mandiri", "bni", "bjb"]),
+  bankCode: z.enum(["bca", "mandiri", "bni", "bjb", "bri"]),
   terminalId: ref,
   merchantId: ref,
   model: ref,

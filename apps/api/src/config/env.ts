@@ -477,6 +477,15 @@ const schema = z
       .enum(["true", "false", "1", "0"])
       .optional()
       .transform((value) => value === "true" || value === "1"),
+    // Cloud EDC agent + /api/edc-bridge socket of the bridge tablets (B2
+    // legend-wasr7.21). API process only, ignored in EDGE_MODE; off by
+    // default. single-vm runs one API process: the outlet advisory lock makes
+    // any second process refuse leases. Without a bank codec (B5) every
+    // terminal is refused and ECR stays locked.
+    EDC_BRIDGE_ENABLED: z
+      .enum(["true", "false", "1", "0"])
+      .optional()
+      .transform((value) => value === "true" || value === "1"),
     // Edge selfie store: sealed LSS1 files wait here until the cloud takes
     // them. EDGE_SELFIE_MAX_BYTES caps the bytes of files not yet uploaded.
     EDGE_SELFIE_DIR: z.string().min(1).default("/var/lib/legend/edge-selfies"),

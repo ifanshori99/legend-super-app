@@ -152,6 +152,7 @@ import { orderRecoveryChargeRouter } from "./order-recovery-charge.routes.ts";
 import { customerDisplayRouter } from "./customer-display.routes.ts";
 import { posOrderRouter } from "./pos-order.routes.ts";
 import { posEdcRouter } from "./pos-edc.routes.ts";
+import { edcBridgeRouter } from "./edc-bridge.routes.ts";
 import { posParkedOrderRouter } from "./pos-parked-order.routes.ts";
 import { posReceiptRouter, publicReceiptRouter } from "./pos-receipt.routes.ts";
 import { posReceiptWriteoffRouter } from "./pos-receipt-writeoff.routes.ts";
@@ -290,6 +291,7 @@ apiRouter.use("/floor", floorRouter);
 apiRouter.use("/outlets/:outletId/pos", customerDisplayRouter);
 apiRouter.use("/outlets/:outletId/pos", posOrderRouter);
 apiRouter.use("/outlets/:outletId/pos", posEdcRouter); // 1269 E7 ECR
+apiRouter.use("/edc-bridge/devices", edcBridgeRouter); // B2 bridge tablets
 apiRouter.use("/outlets/:outletId/pos", posParkedOrderRouter);
 // WS-04 receipts, kuitansi and invoices (legend-93a): same prefix, own routes;
 // the order router passes unmatched paths through.

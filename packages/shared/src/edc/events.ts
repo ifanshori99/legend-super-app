@@ -38,7 +38,7 @@ const payload = z.strictObject({
   outletId: outletIdSchema,
   terminalId: uuidSchema,
   /** Bank / provider key of the terminal (`edcBankSchema`). */
-  bank: z.enum(["bca", "mandiri", "bni", "bjb"]),
+  bank: z.enum(["bca", "mandiri", "bni", "bjb", "bri"]),
   /** The POS reference the sale was made for. */
   reference: z.string().min(1).max(100),
   amountIdr: idrSchema,

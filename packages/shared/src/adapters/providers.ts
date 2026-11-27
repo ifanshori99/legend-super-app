@@ -86,7 +86,7 @@ export const edcRequestSchema = z.strictObject({
   ...scope,
   reference,
   amountIdr: amount,
-  bank: z.enum(["bca", "mandiri", "bni", "bjb"]),
+  bank: z.enum(["bca", "mandiri", "bni", "bjb", "bri"]),
   method: z.enum(["card", "qris"]),
 });
 export const edcResultSchema = paymentResultSchema;

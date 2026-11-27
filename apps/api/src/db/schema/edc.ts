@@ -135,7 +135,7 @@ export const edcTransactions = pgTable(
     }),
     check(
       "edc_transactions_bank_check",
-      sql`${t.bank} IN ('bca','mandiri','bni','bjb')`,
+      sql`${t.bank} IN ('bca','mandiri','bni','bjb','bri')`,
     ),
     check("edc_transactions_amount_check", sql`${t.amountIdr} > 0`),
     check("edc_transactions_method_check", sql`${t.method} IN ('card','qris')`),

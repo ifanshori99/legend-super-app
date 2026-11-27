@@ -555,7 +555,7 @@ const liveTable = z.object({
 export const edcTerminalSyncRecordSchema = z.object({
   ...documentScope,
   outletId: uuidSchema,
-  bankCode: z.enum(["bca", "mandiri", "bni", "bjb"]),
+  bankCode: z.enum(["bca", "mandiri", "bni", "bjb", "bri"]),
   terminalId: z.string().min(1).max(100),
   merchantId: z.string().min(1).max(100),
   model: z.string().max(100),

@@ -35,7 +35,7 @@ import type { CoreErrorCode, Idr } from "../core/index.ts";
 
 const scope = { tenantId: tenantIdSchema, outletId: outletIdSchema };
 
-export const edcBankSchema = z.enum(["bca", "mandiri", "bni", "bjb"]);
+export const edcBankSchema = z.enum(["bca", "mandiri", "bni", "bjb", "bri"]);
 export const edcMethodSchema = z.enum(["card", "qris"]);
 export const edcConnectionSchema = z.enum(["lan", "usb", "bluetooth"]);
 
@@ -564,6 +564,9 @@ export const edcErrorReasons = {
    * connection or IP cannot change (admin edit refused; the message starts
    * with this key for the UI). */
   EDC_TERMINAL_BUSY: "CONFLICT",
+  /** The bank's settlement file format is not verified against a real
+   * export yet (BRI): the import is refused until a sample is checked. */
+  EDC_SETTLEMENT_FORMAT_UNVERIFIED: "VALIDATION_ERROR",
 } as const satisfies Record<string, CoreErrorCode>;
 export type EdcErrorReason = keyof typeof edcErrorReasons;
 
@@ -583,6 +586,8 @@ const edcErrorMessages: Record<EdcErrorReason, string> = {
   EDC_AGENT_NOT_READY: "Layanan EDC di outlet ini belum siap.",
   EDC_TERMINAL_BUSY:
     "EDC_TERMINAL_BUSY: Terminal masih punya transaksi EDC yang belum selesai. Selesaikan atau rekonsiliasi dulu sebelum mengubah TID, MID, bank, koneksi, atau IP.",
+  EDC_SETTLEMENT_FORMAT_UNVERIFIED:
+    "EDC_SETTLEMENT_FORMAT_UNVERIFIED: Format file settlement bank ini belum dicek dengan contoh asli, jadi belum bisa diimpor.",
 };
 
 export class EdcError extends CoreError {

@@ -38,7 +38,7 @@ import {
   idr,
   type ScopedTenantContext,
 } from "@starter/shared/core";
-import type { EdcBank } from "@starter/shared/edc";
+import { EdcError, type EdcBank } from "@starter/shared/edc";
 import {
   edcSettlementCsvImportViewSchema,
   importEdcSettlementCsvInputSchema,
@@ -46,6 +46,7 @@ import {
 } from "@starter/shared/payment/admin";
 import { guardDataImport } from "../config/data-import.ts";
 import { db } from "../db/index.ts";
+import { getCloudEdcRuntime } from "../edge/edc/cloud-runtime.ts";
 import { edcTransactions } from "../db/schema/edc.ts";
 import {
   edcSettlementFiles,
@@ -65,6 +66,7 @@ import {
 import { resolveEdcReconciliation } from "./edc-reconciliation.service.ts";
 import {
   EdcSettlementCsvError,
+  EDC_SETTLEMENT_UNVERIFIED_BANKS,
   parseEdcSettlementCsv,
   type EdcSettlementCsvLine,
 } from "./edc-settlement-csv-parse.ts";
@@ -129,6 +131,8 @@ export async function importEdcSettlementCsv(
   // Data import guard: classify the upload before any write.
   guardDataImport("edc-settlement.csv-import");
   const input = importEdcSettlementCsvInputSchema.parse(body);
+  if (EDC_SETTLEMENT_UNVERIFIED_BANKS.has(input.bank))
+    throw new EdcError("EDC_SETTLEMENT_FORMAT_UNVERIFIED");
   let lines: EdcSettlementCsvLine[];
   try {
     lines = parseEdcSettlementCsv(input.bank, input.csv);
@@ -513,6 +517,11 @@ export async function importEdcSettlementCsv(
   });
   // After the import committed, in their own transactions; never throws.
   if (!result.replayed) {
+    // B2: bridge tablets may drop the sale records of matched traces.
+    await getCloudEdcRuntime()?.settlementMatched(
+      context.tenant.tenantId,
+      outletId,
+    );
     for (const alert of alerts)
       await alertEdcReconciliationMismatch(context, alert, now);
     if (unknownTerminals.count > 0)

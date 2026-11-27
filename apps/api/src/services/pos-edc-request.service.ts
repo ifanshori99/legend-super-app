@@ -1,10 +1,12 @@
-// POS ECR sale on the outlet's own terminal (1269 E7, replaces B-E3). The edge
-// node serves the POS (PRD F5), so the cashier's request reaches the EDC agent
-// in this process; there is no cloud command, so no command can arrive late.
+// POS ECR sale on the outlet's own terminal (1269 E7, replaces B-E3). The
+// request reaches the EDC agent of THIS process: the edge node's (frozen
+// path) or, B2 legend-wasr7.21, the cloud agent driving the outlet's bridge
+// tablet (edge/edc/resolver.ts). Never forwarded to another process.
 //
 // Money rules (the agent enforces them again under the bill lock; this file
 // only picks what to ask for):
-// - No agent here (cloud, standby, agent off or down) = ECR locked: 503
+// - No agent here (standby, agent off or down, no bridge connected to this
+//   process) = ECR locked: 503
 //   EDC_AGENT_NOT_READY before anything is written. The cashier keys the
 //   terminal by hand with a supervisor approval instead (EDC-04).
 // - The amount is what the bill still owes, never a client figure (ORD-03).
@@ -32,7 +34,7 @@ import { db } from "../db/index.ts";
 import { edcTransactions } from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import type { EdcAgent } from "../edge/edc/agent.ts";
-import { getEdgeEdcAgent } from "../edge/edc/runtime.ts";
+import { prepareEdcAgent, resolveEdcAgent } from "../edge/edc/resolver.ts";
 import {
   assertExpectedVersion,
   readPosOrder,
@@ -40,10 +42,13 @@ import {
   tendersOf,
 } from "./pos-order-support.ts";
 
-function agentOrLocked(): EdcAgent {
-  const agent = getEdgeEdcAgent();
-  if (!agent) throw new EdcError("EDC_AGENT_NOT_READY");
-  return agent;
+function agentOrLocked(
+  context: ScopedTenantContext,
+  outletId: OutletId,
+): EdcAgent {
+  const resolved = resolveEdcAgent(context.tenant.tenantId, outletId);
+  if (!resolved) throw new EdcError("EDC_AGENT_NOT_READY");
+  return resolved.agent;
 }
 
 export async function startPosEdcSale(
@@ -58,7 +63,8 @@ export async function startPosEdcSale(
     expectedVersion?: number;
   },
 ): Promise<EdcTransaction> {
-  const agent = agentOrLocked();
+  await prepareEdcAgent(context.tenant.tenantId, outletId);
+  const agent = agentOrLocked(context, outletId);
   const ask = await withTenant(db, context, async (tx) => {
     const { order, pos } = await readPosOrder(tx, context, outletId, orderId);
     const [earlier] = await tx
@@ -109,7 +115,11 @@ export function getPosEdcTransaction(
   actorUserId: UserId,
   ref: Ref,
 ): Promise<EdcTransaction> {
-  return agentOrLocked().get(context, actorUserId, refOf(context, ref));
+  return agentOrLocked(context, ref.outletId).get(
+    context,
+    actorUserId,
+    refOf(context, ref),
+  );
 }
 
 export function inquirePosEdcTransaction(
@@ -117,7 +127,11 @@ export function inquirePosEdcTransaction(
   actorUserId: UserId,
   ref: Ref,
 ): Promise<EdcTransaction> {
-  return agentOrLocked().inquire(context, actorUserId, refOf(context, ref));
+  return agentOrLocked(context, ref.outletId).inquire(
+    context,
+    actorUserId,
+    refOf(context, ref),
+  );
 }
 
 export function cancelPosEdcTransaction(
@@ -125,5 +139,9 @@ export function cancelPosEdcTransaction(
   actorUserId: UserId,
   ref: Ref,
 ): Promise<EdcTransaction> {
-  return agentOrLocked().cancel(context, actorUserId, refOf(context, ref));
+  return agentOrLocked(context, ref.outletId).cancel(
+    context,
+    actorUserId,
+    refOf(context, ref),
+  );
 }

@@ -1,0 +1,39 @@
+# B2 legend-wasr7.21 progres
+
+Brief: `legend/docs/briefs/1272-b2-brief.md`. Cabang `ws/1272-b2`, migrasi 0541 saja.
+
+## Rencana
+
+1. Migrasi 0541 + skema `db/schema/edc-bridge.ts`:
+   - `edc_bridge_devices` (id ULID, tenant, outlet, label, token_hash unik, created_by, last_seen_at, revoked_at), lookup pra-auth lewat `app.edc_bridge_resolve_token(hash)` (SECURITY DEFINER, pola `app.mcp_resolve_token`).
+   - `edc_bridge_terminal_leases` (satu baris per terminal: device_id, lease_id, issued_at, ttl_ms).
+   - `edc_bridge_commands` (commandId, tenant, outlet, terminal, device, lease, op, trace, sent_at, result_outcome, result_at, release_sent_at): pencocokan `result` dan sumber `sale_record_release`.
+   - `payment_edc_terminals`: `connection_kind` (`bridge`|`bca_cloud`, default bridge), `bridge_device_id` (FK tenant+outlet+device), `link_port`, `link_baud_rate`.
+   - BRI: `edcBankSchema` + semua CHECK `bank IN (...)` (terminal, edc_transactions, settlement CSV) + enum admin.
+2. Izin: pakai `payment.edc.manage` yang sudah ada (tidak menambah izin baru).
+3. Agent: `registry.get(bank, target?)` (target = baris terminal) supaya provider dipilih per terminal; `NotSentError` diekspor (`edcNotSentError`) supaya provider jembatan yang tidak mengirim apa pun -> `failed` "tidak pernah dikirim". Aturan uang lain tidak diubah.
+4. `edge/edc/bridge-codec.ts` (antarmuka isi pesan bank + codec simulator JSON, ditolak di production), `bridge-provider.ts` (EdcProvider di atas sesi WSS), `cloud-runtime.ts` (satu agent cloud, sesi per perangkat, lease DB, perpanjang 30 s, ttl 120 s, kunci outlet lewat `agent.start`), `resolver.ts` (edge dulu, lalu cloud).
+5. `routes/edc-bridge.routes.ts`: WSS `/api/edc-bridge` (Bearer token perangkat), router HTTP `/api/edc-bridge/devices` (daftar/terbitkan/cabut/tugaskan terminal).
+6. `sale_record_release`: dipanggil sesudah impor settlement X2 untuk trace yang `matched`.
+7. Test gagal-dulu: `src/test/edc-bridge-cloud.test.ts` + emulator `src/test/helpers/edc-bridge-emulator.ts`.
+
+## Status
+
+- Sudah (4e99b6681): migrasi 0541, agent `registry.get(bank, terminal)` + `edcNotSentError`, `bridge-codec.ts`, `bridge-provider.ts`, `cloud-runtime.ts`, `resolver.ts`, services pakai resolver, release sesudah impor X2, `routes/edc-bridge.routes.ts` (HTTP + WSS), server.ts + flag `EDC_BRIDGE_ENABLED` (EDC_AGENT_ENABLED dijaga mati di single-vm), BRI di enum/CHECK + alias CSV kosong, catatan "Cloud" dan "Provider cloud" di `docs/design/edc-bridge-protocol.md`.
+- Test: `src/test/edc-bridge-cloud.test.ts` 11/11 lulus 3x berturut (run pertama b2-6 timeout 5 s menunggu command sekali, waitFor dinaikkan ke 15 s).
+- Regresi 11 file / 189 test lulus (bridge-cloud, e7, runtime-867, agent, contract, csv-parse, edc-rls, payment-admin, db/rls, outlet-rls, provision-roles-audit). Typecheck api + web lulus (label BRI ditambah di katalog `paymentAdmin.bank`), `db:generate` kosong, prettier/eslint/text-contract lulus.
+- Keputusan CTO (kunci outlet hilang di cloud): proses API tidak dimatikan; hanya outlet itu berhenti (socket jembatan ditutup `goodbye server_shutdown`, lease lepas dari memori, perintah di kabel jalan sampai tenggat lalu `unknown`, hasil sesudahnya = hasil terlambat), permintaan baru `EDC_AGENT_NOT_READY`, ambil ulang kunci dengan backoff 1 s..30 s, log `alert: edc_cloud_outlet_lock_lost`. Edge tetap fail-stop. Test b2-12 gagal-dulu dengan runtime lama (`process.exit called`), lulus sesudahnya; B2 12/12, regresi EDC 6 file 104 test lulus, typecheck api lulus.
+- Selesai; menunggu review K xhigh.
+- Sisa / di luar B2: kode pasang 8 karakter + batas salah per IP (protokol "Token perangkat", sisa B4), UI BRI di `edc-panel.tsx` (B4), codec bank (B5), `bca_cloud` (B5a).
+
+## Review K (docs/qa/1272-b2-review.md, Keputusan CTO 27 Nov)
+
+- Selesai:
+  - P2-1 (072249822): terminal dengan sale pending/unknown/wire terbuka tidak bisa pindah tablet, ganti port/baud, atau dilepas (`EDC_TERMINAL_BUSY`). Test b2-13 gagal-dulu lalu lulus.
+  - P2-2 (072249822): test API perangkat b2-14 (403 per outlet, 404 lintas outlet/tenant, no-store, token tidak di log/audit, cabut lewat route menutup socket). Lulus juga di kode lama: tidak ada bug, cakupan saja.
+  - P2-3 (1ba5f343a): `ensureOutlet` publik, `startOutlets` saat boot, `prepareSale` lazily; `CloudEdcProvider.outlets()`; doc "Provider cloud". Test b2-15 gagal-dulu lalu lulus.
+  - P3-1..4 (707433ef7): sesudah socket.send tidak pernah "not sent"; satu renew per sesi; tulis perintah/hasil dicoba ulang 3x, ack hanya sesudah tersimpan, alert `edc_cloud_result_persist_failed`; `result_evidence` tanpa PAN (kolom baru di 0541). Test b2-16, b2-18, b2-19 gagal-dulu lalu lulus; b2-17 (renew bertumpuk) lulus juga di kode lama (balapan tidak bisa dipaksa di test), jadi hanya penjaga regresi.
+  - P3-5: dicatat di `edc-bridge-protocol.md`, tidak diubah.
+  - P3-6: test A2 lintas outlet di b2-7 (lulus juga di kode lama, cakupan saja). CSV BRI ditolak `EDC_SETTLEMENT_FORMAT_UNVERIFIED` (file parse ada di diff B2); test di edc-reconciliation gagal-dulu lalu lulus.
+- Bukti akhir: regresi EDC 9 file 190 test lulus; typecheck api dan web lulus; `db:generate` kosong.
+- Menunggu re-review architect (diff perbaikan saja).

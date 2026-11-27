@@ -94,7 +94,7 @@ import {
 } from "../../services/pos-order-support.ts";
 import { emitEdcTransactionEvent } from "./events.ts";
 import { EDC_LATE_RESPONSE_WINDOW_MS } from "./late-response.ts";
-import type { EdcProviderRegistry } from "./registry.ts";
+import type { EdcProviderLookup } from "./registry.ts";
 
 export type Database = NodePgDatabase<typeof schema>;
 type Ownership =
@@ -117,7 +117,10 @@ export type EdcAgentDeps = {
   /** Pool behind `db`, for the per-outlet advisory lock. Defaults to
    * `db.$client` (set by `drizzle(pool)`). */
   pool?: Pool;
-  registry: Pick<EdcProviderRegistry, "get">;
+  /** B2: `get(bank, terminalRow)` lets a cloud registry pick the provider
+   * per terminal and refuse one whose transport is not here, before any
+   * ledger row exists. */
+  registry: EdcProviderLookup;
   saleTimeoutMs?: number;
   inquiryTimeoutMs?: number;
   cancelTimeoutMs?: number;
@@ -229,11 +232,19 @@ function defaultTrace(): string {
 }
 
 /** The owner check refused a call right before the terminal: nothing was
- * sent. Distinct from an adapter failure, which may have reached the wire. */
+ * sent. Distinct from an adapter failure, which may have reached the wire.
+ * B2: a cloud provider whose transport is gone throws it from `sale` only
+ * when it put nothing on the wire (`edcNotSentError`); the sale is then
+ * `failed` "never sent", not `unknown`. */
 class NotSentError extends EdcError {
   constructor() {
     super("EDC_AGENT_NOT_READY");
   }
+}
+
+/** For a provider's `sale`: nothing left this process for the terminal. */
+export function edcNotSentError(): EdcError {
+  return new NotSentError();
 }
 
 function notFound(): CoreError {
@@ -1289,7 +1300,7 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
       selectTerminal(tx, ctx, row.outletId, row.terminalId),
     );
     if (!terminal) throw new EdcError("EDC_TERMINAL_UNAVAILABLE");
-    const provider = registry.get(row.bank);
+    const provider = registry.get(row.bank, terminal);
     // No inquiry at this terminal: the cashier resolves it there.
     if (provider.capabilities.inquiry === "none") return row;
     const ecrTerminal = toEcrTerminal(terminal, provider.bank);
@@ -1665,7 +1676,7 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
           !terminal.supportedMethods.includes(input.method)
         )
           throw new EdcError("EDC_TERMINAL_UNAVAILABLE");
-        const provider = registry.get(terminal.bankCode);
+        const provider = registry.get(terminal.bankCode, terminal);
         const at = now();
         const [row] = await tx
           .insert(edcTransactions)
@@ -1894,7 +1905,7 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
           throw new EdcError("EDC_TERMINAL_UNAVAILABLE");
         }
         // Unknown bank fails here, before any row exists.
-        registry.get(terminal.bankCode);
+        registry.get(terminal.bankCode, terminal);
 
         const id = randomUUID();
         inFlight.add(id);
@@ -1991,7 +2002,7 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
         selectTerminal(tx, ctx, row.outletId, row.terminalId),
       );
       if (!terminal) throw new EdcError("EDC_TERMINAL_UNAVAILABLE");
-      const provider = registry.get(row.bank);
+      const provider = registry.get(row.bank, terminal);
       if (!provider.capabilities.cancelInProgress)
         throw new EdcError("EDC_CANCEL_UNSUPPORTED");
       const ecrTerminal = toEcrTerminal(terminal, provider.bank);
