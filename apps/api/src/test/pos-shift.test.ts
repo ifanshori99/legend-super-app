@@ -2541,7 +2541,7 @@ describe("POS-03 round 2: a close approval is bound to one count and its varianc
         await asOwnerTenant(tenant.tenantId, async (client) => {
           await client.query(
             `UPDATE approval_requests
-                SET status = 'approved', decided_by = $3, decided_at = now(),
+                SET status = 'approved', decided_by = $3, decided_at = GREATEST(now(), created_at),
                     reason = 'Disetujui lewat ponsel'
               WHERE tenant_id = $1 AND chain_id = $2`,
             [tenant.tenantId, chainId, supervisor.userId],

@@ -439,7 +439,15 @@ async function patchWhileManagerRoleExpires(
     // later than the pre-lock time, and past valid_until when the role is expiring.
     const releaseNotBefore = expiring ? validUntil + 150 : Date.now() + 400;
     while (Date.now() < releaseNotBefore) await sleep(20);
-    const releasedAt = Date.now();
+    // The service stamps with the database clock, which can differ from this process's
+    // clock by a few ms (Docker VM): take the release instant from the database too.
+    const releasedAt = Number(
+      (
+        await holder.query<{ ms: string }>(
+          "SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS ms",
+        )
+      ).rows[0]!.ms,
+    );
     await holder.query("COMMIT");
     return { res: await pending, releasedAt };
   } finally {

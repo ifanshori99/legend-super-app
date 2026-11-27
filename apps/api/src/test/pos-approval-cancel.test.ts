@@ -487,7 +487,7 @@ describe("E3 POST /api/pos-overrides/approvals/:requestId/cancel", () => {
     const { requestId: level1 } = await openPhoneOverride({ token });
     await owner.query(
       `UPDATE approval_requests SET required_levels = 2, status = 'approved',
-         decided_by = $2, decided_at = now(), reason = 'Level 1 setuju.' WHERE id = $1`,
+         decided_by = $2, decided_at = GREATEST(now(), created_at), reason = 'Level 1 setuju.' WHERE id = $1`,
       [level1, otherStaff.userId],
     );
     const { rows } = await owner.query<{ id: string }>(
@@ -594,7 +594,7 @@ describe("E3 POST /api/pos-overrides/approvals/:requestId/cancel", () => {
       const { requestId } = await openPhoneOverride({ token });
       await owner.query(
         `UPDATE approval_requests
-           SET status = $2, decided_by = $3, decided_at = now(), reason = 'Diputus supervisor.'
+           SET status = $2, decided_by = $3, decided_at = GREATEST(now(), created_at), reason = 'Diputus supervisor.'
          WHERE id = $1`,
         [requestId, status, otherStaff.userId],
       );
@@ -650,7 +650,7 @@ describe("E3 GET /api/pos-overrides/approvals/:requestId (PhoneWait poll)", () =
     const { requestId } = await openPhoneOverride({ token });
     await owner.query(
       `UPDATE approval_requests
-         SET status = 'rejected', decided_by = $2, decided_at = now(), reason = 'Nilai tidak sesuai.'
+         SET status = 'rejected', decided_by = $2, decided_at = GREATEST(now(), created_at), reason = 'Nilai tidak sesuai.'
        WHERE id = $1`,
       [requestId, otherStaff.userId],
     );

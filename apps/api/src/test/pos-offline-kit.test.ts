@@ -319,8 +319,19 @@ describe("O1 kit issue", () => {
       [seededTenantId, seededOutletA, first.catalogVersion],
     );
     expect(snapshots.rows).toHaveLength(1);
-    expect(snapshots.rows[0]!.catalogs).toEqual(
-      JSON.parse(JSON.stringify(first.catalogs)),
+    // The catalogue version leaves the read stamp (`updatedAt`) out, so the
+    // stored snapshot keeps the stamp of whichever kit stored it first (an
+    // earlier test of this outlet can have): compare the priced content only.
+    const withoutStamp = (catalogs: unknown) => {
+      const copy = JSON.parse(JSON.stringify(catalogs)) as Record<
+        string,
+        Record<string, unknown>
+      >;
+      for (const catalog of Object.values(copy)) delete catalog.updatedAt;
+      return copy;
+    };
+    expect(withoutStamp(snapshots.rows[0]!.catalogs)).toEqual(
+      withoutStamp(first.catalogs),
     );
     const kits = await owner.query<{ snapshot: unknown }>(
       "SELECT snapshot FROM pos_offline_kits WHERE tenant_id = $1 AND id = ANY($2)",
