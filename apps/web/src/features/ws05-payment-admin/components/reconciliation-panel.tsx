@@ -5,6 +5,7 @@
 import * as React from "react";
 import { useRetainedAttempt } from "../../../lib/use-retained-attempt.ts";
 import { useT } from "@/components/i18n";
+import { ApiError } from "@/lib/api/errors";
 import { Link } from "@tanstack/react-router";
 import { Upload } from "lucide-react";
 import { Badge, StatusPill } from "@/components/ui/badge";
@@ -78,8 +79,20 @@ export function ReconciliationPanel() {
   const outlets = useAccountOutlets();
   const [outletId, setOutletId] = React.useState<string | null>(null);
   const selectedOutletId = outletId ?? outlets[0]?.id ?? null;
-  const summary = useReconciliationSummary();
-  const cases = useReconciliationCases();
+  // An outlet-only reconciler: the tenant-wide reads answer 403, so cases and
+  // the summary follow the picked outlet instead (the API checks it again).
+  const [outletScoped, setOutletScoped] = React.useState(false);
+  const scope = outletScoped ? (selectedOutletId ?? undefined) : undefined;
+  const summary = useReconciliationSummary(scope);
+  const cases = useReconciliationCases(scope);
+  const refused = (error: unknown) =>
+    error instanceof ApiError && error.status === 403;
+  if (
+    !outletScoped &&
+    selectedOutletId !== null &&
+    (refused(summary.error) || refused(cases.error))
+  )
+    setOutletScoped(true);
   const [status, setStatus] = React.useState<
     ReconciliationCaseView["status"] | "all"
   >(ALL);
@@ -115,7 +128,11 @@ export function ReconciliationPanel() {
             <FormField
               label={t("paymentAdmin.routing.outlet")}
               required
-              hint={t("gatewaySettlement.list.outletHint")}
+              hint={t(
+                outletScoped
+                  ? "gatewaySettlement.list.outletHintScoped"
+                  : "gatewaySettlement.list.outletHint",
+              )}
               className="sm:w-64"
             >
               <Select
@@ -151,6 +168,15 @@ export function ReconciliationPanel() {
           </Button>
         </div>
       </div>
+
+      {outletScoped && (
+        <p
+          role="note"
+          className="rounded-container border-(length:--border-w) bg-primary-tint px-4 py-3 text-sm leading-5 text-primary"
+        >
+          {t("gatewaySettlement.list.outletScoped")}
+        </p>
+      )}
 
       {summary.isPending ? (
         <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">

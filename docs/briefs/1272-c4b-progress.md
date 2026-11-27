@@ -22,6 +22,6 @@
 ## Batasan
 
 - Web tidak tahu izin per outlet: pemilih memakai outlet akun (`access.outlets`), outlet pertama bawaan; API menolak 403 bila tanpa `payment.reconcile` di outlet itu (teks galat jelas).
-- Kasus terbuka tingkat tenant butuh izin rekonsiliasi tingkat tenant; pemegang izin per outlet saja melihat galat muat (API belum punya gabungan beberapa outlet).
+- Pemegang izin rekonsiliasi per outlet: kasus + ringkasan tingkat tenant dijawab 403, panel beralih ke outlet terpilih dengan catatan "Menampilkan outlet terpilih" (test `ws05-reconciliation-scope.test.ts`). Gabungan beberapa outlet sekaligus belum ada di API.
 - Format asli Duitku belum didukung (bead legend-osqou.53).
 - Review K architect (uang) + ui-auditor belum dijalankan.

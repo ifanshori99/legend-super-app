@@ -105,6 +105,9 @@ export const gatewaySettlementMessages = {
     title: "Settlement terakhir",
     outletHint:
       "Untuk daftar settlement dan impor. Kasus terbuka mencakup semua outlet.",
+    outletHintScoped: "Untuk kasus terbuka, daftar settlement, dan impor.",
+    outletScoped:
+      "Menampilkan outlet terpilih. Akun ini memegang izin rekonsiliasi per outlet.",
     emptyTitle: "Belum ada settlement diimpor",
     emptyHint:
       "Laporan settlement yang diimpor untuk outlet ini tampil di sini.",
