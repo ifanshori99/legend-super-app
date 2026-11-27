@@ -98,7 +98,10 @@ import { HttpError } from "../lib/http-error.ts";
 import { logger } from "../lib/logger.ts";
 import { recordAudit } from "./audit-writer.ts";
 import { outletContext } from "./device-pin-support.ts";
-import { resolveDeviceOutlet } from "./device-pin.service.ts";
+import {
+  resolveDeviceOutlet,
+  resolveDeviceOutletStrict,
+} from "./device-pin.service.ts";
 import { sourceIdToDb } from "./inventory.service.ts";
 import type { Tx } from "./menu-internals.ts";
 import { orderRevenueSplit } from "./order-revenue.ts";
@@ -397,7 +400,7 @@ export async function reportPosOfflineStuck(
       );
   };
   // 1. The caller, the kit and the approver's permission, before the PIN.
-  await withTenant(db, context, async (tx) => {
+  const kit = await withTenant(db, context, async (tx) => {
     await assertOutletPermission(
       tx,
       context,
@@ -405,8 +408,14 @@ export async function reportPosOfflineStuck(
       outletId,
       "shift.cash.operate",
     );
-    await stuckKitOf(tx, context, outletId, event);
+    return stuckKitOf(tx, context, outletId, event);
   });
+  // The registry is read before the PIN and before the run row lock. A lookup
+  // error is a 503 to retry, never "device gone" (nothing is held then).
+  const kitDeviceOutletId =
+    input.stuck === "sequence_gap"
+      ? null
+      : await resolveDeviceOutletStrict(tenant.tenantId, kit.deviceId);
   await withTenant(db, approver, assertApprover);
   // 2. The PIN: counted and committed on its own.
   await attemptApproverPin(tenant, {
@@ -421,7 +430,15 @@ export async function reportPosOfflineStuck(
   try {
     return await withTenant(db, context, async (tx) => {
       await assertApprover(tx);
-      return storeStuckSale(tx, context, caller, outletId, input, now);
+      return storeStuckSale(
+        tx,
+        context,
+        caller,
+        outletId,
+        input,
+        kitDeviceOutletId,
+        now,
+      );
     });
   } catch (error) {
     if (sqlStateOf(error) === "23505")
@@ -512,6 +529,7 @@ async function storeStuckSale(
   caller: OfflineStuckCaller,
   outletId: OutletId,
   input: ReportPosOfflineStuckInput,
+  kitDeviceOutletId: string | null,
   now: Date,
 ): Promise<OfflineEventResult> {
   const { event } = input;
@@ -568,7 +586,7 @@ async function storeStuckSale(
     callerDeviceId: caller.deviceId,
     kitDeviceId: kit.deviceId,
     runDeviceId: run.deviceId,
-    kitDeviceOutletId: await resolveDeviceOutlet(tenantId, kit.deviceId),
+    kitDeviceOutletId,
     outletId,
     sequenceNumber: event.sequenceNumber,
     lastNumber: run.lastNumber,

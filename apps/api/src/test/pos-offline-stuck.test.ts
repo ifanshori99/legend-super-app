@@ -37,7 +37,9 @@ import {
   type PosOfflineKit,
 } from "@starter/shared/pos";
 import { createApp } from "../app.ts";
+import { createDeviceOutletResolver } from "../services/device-outlet-resolver.ts";
 import {
+  type DeviceOutletResolver,
   setDeviceOutletResolver,
   setStaffPin,
 } from "../services/device-pin.service.ts";
@@ -96,6 +98,12 @@ async function asOwner<T>(run: (client: PoolClient) => Promise<T>) {
     client.release();
   }
 }
+
+const testResolver: DeviceOutletResolver = async ({ tenantId, deviceId }) =>
+  tenantId === seededTenantId
+    ? (movedDevices.get(deviceId) ??
+      (devices.has(deviceId) ? seededOutletA : null))
+    : null;
 
 const callerOf = (till: Till) => ({
   userId: userIdSchema.parse(till.cashier.userId),
@@ -291,12 +299,7 @@ const lastNumberOf = async (sequenceId: string) => {
 
 beforeAll(async () => {
   app = createApp();
-  setDeviceOutletResolver(async ({ tenantId, deviceId }) =>
-    tenantId === seededTenantId
-      ? (movedDevices.get(deviceId) ??
-        (devices.has(deviceId) ? seededOutletA : null))
-      : null,
-  );
+  setDeviceOutletResolver(testResolver);
   await seedMenu();
   supervisor = await outletSupervisor(app, "Offline Stuck Supervisor");
   await setStaffPin(
@@ -472,6 +475,35 @@ describe("offline stuck report (1273 P2-1)", () => {
         { ...callerOf(till), deviceId: null },
       ),
     ).toMatchObject({ status: "held", reason: "stuck_kit_unknown" });
+  });
+
+  it("a registry lookup error is a 503 to retry, not a missing device: nothing is held", async () => {
+    const till = await newTill();
+    const kit = await kitFor(till);
+    const next = sale(kit, (await lastNumberOf(kit.receiptRun.sequenceId)) + 1);
+    devices.delete(till.deviceId);
+    setDeviceOutletResolver(
+      createDeviceOutletResolver({
+        lookup: async () => {
+          throw new Error("registry down");
+        },
+      }),
+    );
+    try {
+      for (const caller of [
+        { ...callerOf(till), deviceId: null },
+        callerOf(till),
+      ])
+        await expect(
+          report(till, next, "kit_unknown", {}, caller),
+        ).rejects.toMatchObject({ status: 503 });
+      expect(await rowsOf(next.eventId)).toBe(0);
+      expect(await lastNumberOf(kit.receiptRun.sequenceId)).toBe(
+        next.sequenceNumber - 1,
+      );
+    } finally {
+      setDeviceOutletResolver(testResolver);
+    }
   });
 
   it("a tablet moved to another outlet is not its own device: its report holds", async () => {
