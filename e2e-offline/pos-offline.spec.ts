@@ -1,7 +1,7 @@
 // O5 (legend-wasr7.9): the cashier tablet offline, in a real browser on a
 // tenant host. See playwright.offline.config.ts for the harness.
 //
-// STATUS (27 Nov): WIP, blocked at the first sale. Harness proven (tenant host,
+// STATUS (27 Nov): full scenario. Harness proven (tenant host,
 // cookie domain, session, shift, kit, real offline, screenshots); a click on the
 // menu tile "Kopi Susu" does not add it to the cart in this build, see
 // docs/briefs/1272-o5-progress.md.
@@ -304,6 +304,18 @@ test("the offline till: sell, queue, close refused, ingest once, sign out", asyn
   test.setTimeout(240_000);
   await page.addInitScript((token) => {
     window.localStorage.setItem("legend.device.token", token);
+    // Harness only: these http test origins are not secure contexts (production
+    // is https), so Chromium hides crypto.randomUUID, which the cart needs for
+    // its line ids. Found 27 Nov: without it "Kopi Susu" never reaches the cart.
+    if (typeof crypto.randomUUID !== "function")
+      (crypto as { randomUUID: () => string }).randomUUID = () =>
+        "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) =>
+          (
+            Number(c) ^
+            (crypto.getRandomValues(new Uint8Array(1))[0]! &
+              (15 >> (Number(c) / 4)))
+          ).toString(16),
+        ) as `${string}-${string}-${string}-${string}-${string}`;
   }, deviceToken());
   await page.goto("/sign-in");
   const signIn = await browserCall(page, "POST", "/api/auth/sign-in/email", {
@@ -337,15 +349,12 @@ test("the offline till: sell, queue, close refused, ingest once, sign out", asyn
   await expect(offlineBanner).toBeVisible({ timeout: 40_000 });
   await shot(page, "banner");
 
-  // Phones: the cart is its own view, and opening it is a navigation of the
-  // app that needs the internet. Open it while online, then cut the internet
-  // again; the cart and the offline kit stay on the tablet.
-  await context.setOffline(false);
-  await expect(offlineBanner).toBeHidden({ timeout: 60_000 });
+  // Phones: the cart is its own view and opening it is a navigation of the
+  // app. Offline it must still work (release bug found 27 Nov: the root
+  // beforeLoad read the session from the server and landed on "Terjadi
+  // kesalahan"). The cart and the offline kit stay on the tablet.
   await page.getByRole("button", { name: /Lihat keranjang/ }).click();
   await expect(page.getByText("Subtotal · 1 item").first()).toBeVisible();
-  await context.setOffline(true);
-  await page.waitForTimeout(3_000);
 
   for (const viewport of VIEWPORTS) {
     await page.setViewportSize(viewport);
@@ -366,7 +375,7 @@ test("the offline till: sell, queue, close refused, ingest once, sign out", asyn
     await shot(page, "bayar");
     await pay.getByRole("button", { name: "Simpan penjualan" }).click();
     await expect(
-      page.getByText("Penjualan disimpan di tablet").first(),
+      page.getByRole("heading", { name: "Penjualan disimpan di tablet" }),
     ).toBeVisible();
     await shot(page, "tersimpan");
     await page
@@ -384,12 +393,14 @@ test("the offline till: sell, queue, close refused, ingest once, sign out", asyn
   // Nothing reached the cloud while the tablet was offline.
   expect(await offlineSales()).toEqual([]);
 
-  // Shift close is refused while the queue is not empty (the screen is opened
-  // by the app's own router: the tablet has no internet to load a new page).
-  await page.evaluate(() => {
-    window.history.pushState({}, "", "/pos/shift/tutup");
-    window.dispatchEvent(new PopStateEvent("popstate"));
-  });
+  // Shift close is refused while the queue is not empty. The tablet gets its
+  // internet back but the batch endpoint keeps failing (a flaky link), so the
+  // two sales stay on the tablet; the close screen is a real page load.
+  await context.route("**/api/outlets/*/pos/offline-batch", (route) =>
+    route.abort(),
+  );
+  await context.setOffline(false);
+  await page.goto("/pos/shift/tutup");
   await expect(page.getByText("Shift belum bisa ditutup").first()).toBeVisible({
     timeout: 30_000,
   });
@@ -399,10 +410,10 @@ test("the offline till: sell, queue, close refused, ingest once, sign out", asyn
   await shot(page, "keluar");
   await page.getByRole("button", { name: "Tetap di sini" }).click();
   expect(await offlineSales()).toEqual([]);
+  await context.unroute("**/api/outlets/*/pos/offline-batch");
 
   // The internet is back: the queue sends itself, the cloud holds each sale
   // once, at the price the tablet showed (Rp25.000 + PBJT 10%).
-  await context.setOffline(false);
   await expect
     .poll(async () => (await offlineSales()).length, { timeout: 120_000 })
     .toBe(2);
